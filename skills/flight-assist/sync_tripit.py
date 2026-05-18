@@ -61,9 +61,23 @@ def main() -> int:
 
 
 def _emit_diff(diff: dict) -> None:
-    """Write the sync-contract JSON to stdout (single line)."""
-    has_changes = bool(diff.get("added")) or bool(diff.get("removed"))
-    payload = {"wake_agent": has_changes, "data": diff}
+    """Write the sync-contract JSON to stdout (single line).
+
+    Wraps the added/removed lists into the same `data.events` shape
+    the precheck script emits, so SKILL.md Step 3's composition
+    table is the single consumer contract — no separate sync-wake
+    payload to document. Per `coding-policy: script-delegation`
+    "Precheck Gating": data must carry the inputs the agent needs.
+    """
+    events = []
+    for flight_id in diff.get("added", []) or []:
+        events.append({"flight_id": flight_id, "event": {"reason": "tracked_flight_added"}})
+    for flight_id in diff.get("removed", []) or []:
+        events.append({"flight_id": flight_id, "event": {"reason": "tracked_flight_removed"}})
+    has_events = bool(events)
+    payload = {"wake_agent": has_events, "data": {"events": events}}
+    if "error" in diff:
+        payload["data"]["error"] = diff["error"]
     print(json.dumps(payload, separators=(",", ":")))
 
 

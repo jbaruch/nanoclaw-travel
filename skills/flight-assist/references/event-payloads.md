@@ -98,8 +98,28 @@ Fires once per flight at `T-arr − 15min`.
 
 Fires when byAir returns 404 for a previously-tracked flight. The agent should surface this to the user (don't auto-delete state — let the user confirm).
 
+### Sync-driven (from `sync_tripit.py`)
+
+The daily sync script also emits via the same `data.events` shape so SKILL.md's composition table has a single contract.
+
+#### `tracked_flight_added`
+
+```json
+{"reason": "tracked_flight_added"}
+```
+
+Fires when a flight appeared in `byair_list_trips` that wasn't on the active-flights index. The sync script writes the initial state record; the agent doesn't need to do anything beyond optionally informing the user.
+
+#### `tracked_flight_removed`
+
+```json
+{"reason": "tracked_flight_removed"}
+```
+
+Fires when a previously-tracked flight is no longer in `byair_list_trips` (e.g., the trip expired or the user untracked it upstream). The sync script deletes the per-flight state file.
+
 ## Composition Discipline
 
 - One event = one notification line, unless multiple events for the same `flight_id` arrive in one cycle (then merge per the ordering rule in SKILL.md Step 3).
 - Don't fabricate fields — every field above is OPTIONAL on the event dict except `reason`. Render `<missing>` or skip the substring rather than inventing a value.
-- Times in the event payload are in the airport's local timezone (RFC 3339 with offset) — display as-is per `coding-policy: temporal-awareness` ("Times are in local airport timezone"), don't convert to user's home tz.
+- Times in the event payload are in the airport's local timezone (RFC 3339 with offset) — display as-is per byAir's instructions block ("Times are in local airport timezone (RFC3339 with offset, e.g. +02:00). Show the time as-is — do not convert or add timezone abbreviations").

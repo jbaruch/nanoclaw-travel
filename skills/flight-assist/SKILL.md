@@ -60,6 +60,8 @@ The full event-shape contract is in `references/event-payloads.md`; consult it w
 | `time_to_leave` | "Leave by `<leave_by>` to make `<code>` (`<travel_time_minutes>` min drive with current traffic)." |
 | `arrival_logistics` | Surface baggage carousel (read from `last_snapshot.baggage`), suggest a rideshare ETA if location is available, and note lounge access if connecting. Read flight state for context |
 | `removed_upstream` | "Flight `<code>` no longer tracked upstream — remove from active trips if intentional." Don't auto-delete; let the user confirm |
+| `tracked_flight_added` | Silent in most cases (the daily sync added a flight to the tracking index). Surface only when the user explicitly asked "what's new" or when `data.events` contains nothing else worth reporting |
+| `tracked_flight_removed` | "Flight `<code>` stopped tracking — daily sync removed it from the active-flights index." Treat as informational, not actionable |
 
 For each event, fetch the per-flight state to enrich the notification (gate, terminal, ETD, ETA) by invoking `get-flight-state.py`:
 
