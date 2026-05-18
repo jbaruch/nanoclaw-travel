@@ -230,6 +230,66 @@ def test_delete_flight_state_rejects_bool_flight_id(state_root: Path):
         delete_flight_state(False)  # type: ignore[arg-type]
 
 
+def test_write_config_rejects_non_string_home_address(state_root: Path):
+    with pytest.raises(ValueError, match="home_address"):
+        write_config({"home_address": 12345})  # type: ignore[dict-item]
+
+
+def test_write_config_rejects_unknown_key(state_root: Path):
+    with pytest.raises(ValueError, match="unknown field"):
+        write_config({"home_address": "OK", "undocumented_key": "value"})
+
+
+def test_write_config_drops_caller_schema_version_but_allows_it(state_root: Path):
+    """Caller may supply schema_version; it's silently overridden, not rejected."""
+    write_config({"home_address": "X", "schema_version": 999})
+    loaded = read_config()
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+
+
+def test_write_flight_state_rejects_phase_markers_missing_key(state_root: Path):
+    state = _make_flight_state()
+    del state["phase_markers"]["boarding_fired"]
+    with pytest.raises(ValueError, match=r"boarding_fired"):
+        write_flight_state(state)
+
+
+def test_write_flight_state_rejects_phase_markers_unknown_key(state_root: Path):
+    state = _make_flight_state()
+    state["phase_markers"]["typo_fired"] = False
+    with pytest.raises(ValueError, match="unknown keys"):
+        write_flight_state(state)
+
+
+def test_write_flight_state_rejects_non_bool_phase_marker(state_root: Path):
+    state = _make_flight_state()
+    state["phase_markers"]["boarding_fired"] = "yes"
+    with pytest.raises(ValueError, match=r"phase_markers\['boarding_fired'\]"):
+        write_flight_state(state)
+
+
+def test_read_flight_state_rejects_record_with_missing_required_field(state_root: Path):
+    """A hand-edited or corrupt file with schema_version: 1 but missing fields raises."""
+    state_root.mkdir(parents=True)
+    (state_root / "flight-12345.json").write_text(
+        json.dumps({"schema_version": STATE_SCHEMA_VERSION, "flight_id": 12345})
+    )
+    with pytest.raises(StateError, match="missing required field"):
+        read_flight_state(12345)
+
+
+def test_read_flight_state_rejects_wrong_type_field(state_root: Path):
+    """schema_version OK but a required field has the wrong type — StateError."""
+    state_root.mkdir(parents=True)
+    bad = _make_flight_state()
+    bad["scheduled_dep_time"] = 12345  # str expected
+    (state_root / "flight-12345.json").write_text(
+        json.dumps({**bad, "schema_version": STATE_SCHEMA_VERSION})
+    )
+    with pytest.raises(StateError, match="scheduled_dep_time"):
+        read_flight_state(12345)
+
+
 def test_corrupt_json_raises_state_error(state_root: Path):
     state_root.mkdir(parents=True)
     (state_root / CONFIG_FILE).write_text("{not valid json")

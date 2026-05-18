@@ -158,8 +158,40 @@ def read_config() -> dict | None:
     return _read_json_with_version(state_dir() / CONFIG_FILE)
 
 
+_CONFIG_OPTIONAL_FIELDS: dict[str, type] = {
+    "home_address": str,
+}
+
+
 def write_config(config: dict) -> None:
-    """Persist the tile-wide config. `schema_version` is set automatically."""
+    """Persist the tile-wide config. `schema_version` is set automatically.
+
+    Validates field types and rejects undocumented keys per the
+    writer/reader contract in `state-schema.md`. The optional fields
+    today are: `home_address` (str). Add new fields here when
+    bumping the config schema; same place as the schema doc.
+
+    Raises ValueError on:
+    - Wrong type for a documented field
+    - Any key not in `_CONFIG_OPTIONAL_FIELDS` (caller-supplied
+      `schema_version` is allowed but is always overwritten by the
+      canonical constant)
+    """
+    for key, value in config.items():
+        if key == "schema_version":
+            continue  # caller-supplied schema_version is dropped; canonical wins
+        if key not in _CONFIG_OPTIONAL_FIELDS:
+            raise ValueError(
+                f"write_config: unknown field '{key}' — see state-schema.md "
+                f"for the documented config shape, and bump the schema before "
+                f"introducing new fields"
+            )
+        expected_type = _CONFIG_OPTIONAL_FIELDS[key]
+        if not isinstance(value, expected_type):
+            raise ValueError(
+                f"write_config: field '{key}' is {type(value).__name__} "
+                f"{value!r}, expected {expected_type.__name__}"
+            )
     payload = {**config, "schema_version": STATE_SCHEMA_VERSION}
     _atomic_write_json(state_dir() / CONFIG_FILE, payload)
 
@@ -225,11 +257,46 @@ def write_active_flights(flight_ids: list[int]) -> None:
 def read_flight_state(flight_id: int) -> dict | None:
     """Return the per-flight state record or None on first run.
 
-    Raises ValueError if `flight_id` isn't a plain int — same contract
-    as write_flight_state and delete_flight_state.
+    Validates `flight_id` is a plain int (ValueError if not — same
+    contract as write_flight_state and delete_flight_state) and the
+    on-disk record contains every required field at the documented
+    type (StateError if not). A corrupt or hand-edited file with
+    `schema_version: 1` but missing fields is louder than a silent
+    pass-through that would crash the caller deeper in the precheck
+    pipeline.
     """
     _validate_flight_id(flight_id, fn_name="read_flight_state")
-    return _read_json_with_version(_flight_file(flight_id))
+    payload = _read_json_with_version(_flight_file(flight_id))
+    if payload is None:
+        return None
+    _validate_flight_state_payload(payload, source=_flight_file(flight_id))
+    return payload
+
+
+def _validate_flight_state_payload(payload: dict, *, source: Path) -> None:
+    """Verify a loaded flight-state record satisfies the required-fields contract.
+
+    Same contract write_flight_state enforces on input. Raises
+    StateError (not ValueError) because this is a read-side check on
+    persisted data; the caller's recovery is "remove or restore the
+    file", not "pass better arguments".
+    """
+    for field, expected_type in _REQUIRED_FLIGHT_STATE_FIELDS.items():
+        if field not in payload:
+            raise StateError(
+                f"flight state file {source} is missing required field "
+                f"'{field}' — remove the file and let the owner skill rewrite it"
+            )
+        value = payload[field]
+        if expected_type is int and isinstance(value, bool):
+            raise StateError(
+                f"flight state file {source} field '{field}' is bool {value!r}, expected int"
+            )
+        if not isinstance(value, expected_type):
+            raise StateError(
+                f"flight state file {source} field '{field}' is "
+                f"{type(value).__name__} {value!r}, expected {expected_type.__name__}"
+            )
 
 
 _REQUIRED_FLIGHT_STATE_FIELDS: dict[str, type | tuple[type, ...]] = {
@@ -290,8 +357,49 @@ def write_flight_state(state: dict) -> None:
                 f"write_flight_state: field '{field}' is "
                 f"{type(value).__name__} {value!r}, expected {expected_type.__name__}"
             )
+    _validate_phase_markers(state["phase_markers"])
     payload = {**state, "schema_version": STATE_SCHEMA_VERSION}
     _atomic_write_json(_flight_file(state["flight_id"]), payload)
+
+
+_PHASE_MARKER_KEYS = frozenset(
+    {
+        "day_before_fired",
+        "time_to_leave_fired",
+        "boarding_fired",
+        "arrival_logistics_fired",
+        "landed_acknowledged",
+    }
+)
+
+
+def _validate_phase_markers(phase_markers: dict) -> None:
+    """Verify phase_markers has exactly the 5 documented keys, all bool.
+
+    Per state-schema.md: phase_markers is `{day_before_fired,
+    time_to_leave_fired, boarding_fired, arrival_logistics_fired,
+    landed_acknowledged}` — each a plain `bool`. No undocumented
+    keys, no missing keys, no non-bool values.
+    """
+    actual_keys = set(phase_markers.keys())
+    missing = _PHASE_MARKER_KEYS - actual_keys
+    if missing:
+        raise ValueError(
+            f"write_flight_state: phase_markers missing keys "
+            f"{sorted(missing)} — see state-schema.md"
+        )
+    extra = actual_keys - _PHASE_MARKER_KEYS
+    if extra:
+        raise ValueError(
+            f"write_flight_state: phase_markers has unknown keys "
+            f"{sorted(extra)} — see state-schema.md"
+        )
+    for key, value in phase_markers.items():
+        if not isinstance(value, bool):
+            raise ValueError(
+                f"write_flight_state: phase_markers['{key}'] is "
+                f"{type(value).__name__} {value!r}, expected bool"
+            )
 
 
 def delete_flight_state(flight_id: int) -> bool:
