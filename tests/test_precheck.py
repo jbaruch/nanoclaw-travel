@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -112,8 +113,8 @@ def test_no_active_flights_yields_no_events(state_root: Path):
     assert events == []
 
 
-def test_first_cycle_for_new_flight_writes_state_and_fires_no_events(state_root: Path):
-    """First poll for a scheduled, on-time flight: write snapshot, no events."""
+def test_first_cycle_for_new_flight_writes_state_and_fires_day_before(state_root: Path):
+    """First poll past T-24h: write snapshot AND fire the day_before event."""
     write_active_flights([12345])
     fake_flight = _byair_flight(flight_id=12345)
 
@@ -253,6 +254,26 @@ def test_script_emits_single_line_json_with_no_active_flights(tmp_path: Path):
     last_line = result.stdout.strip().splitlines()[-1]
     payload = json.loads(last_line)
     assert payload == {"wake_agent": False, "data": {"events": []}}
+
+
+def test_byair_transport_error_degrades_only_that_flight(state_root: Path):
+    """A urllib URLError from byair_client should NOT collapse the entire cycle.
+
+    Per `coding-policy: error-handling` "Specific Exceptions" + "Graceful Fallback".
+    """
+    write_active_flights([12345])
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = urllib.error.URLError(
+            "synthetic network failure"
+        )
+        # _run_cycle must return cleanly (no exception); the URLError is
+        # caught at the inner boundary so other flights would still poll.
+        events = precheck._run_cycle(now_utc=fake_now)
+    assert events == []
+    # No state should have been written for this flight (no last_polled_at
+    # update, so it retries next cycle)
+    assert read_flight_state(12345) is None
 
 
 def test_script_safe_shape_on_byair_misconfig(tmp_path: Path):

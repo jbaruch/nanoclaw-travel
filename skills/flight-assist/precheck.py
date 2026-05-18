@@ -38,6 +38,7 @@ import json
 import os
 import sys
 import traceback
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -73,7 +74,7 @@ _BASE_CADENCE_MINUTES = {
     "diverted": 60,
 }
 
-# Window for queriying maps_client for travel time. Past this window
+# Window for querying maps_client for travel time. Past this window
 # the time-to-leave marker has either fired or doesn't matter.
 _TIME_TO_LEAVE_QUERY_WINDOW_HOURS = 6
 
@@ -137,6 +138,19 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
             # cycle).
             print(
                 f"flight-assist precheck: byair error for flight {flight_id}: {byair_err}",
+                file=sys.stderr,
+            )
+            continue
+        except urllib.error.URLError as transport_err:
+            # Transient transport failure (network, DNS, byAir down).
+            # Degrade this flight's poll for this cycle instead of
+            # collapsing the whole precheck via the outer catch — other
+            # flights' polls still get a chance. last_polled_at is not
+            # updated, so the cadence-gate fires for this flight next
+            # cycle. Per `coding-policy: error-handling` "Specific
+            # Exceptions" + "Graceful Fallback".
+            print(
+                f"flight-assist precheck: transport error for flight {flight_id}: {transport_err}",
                 file=sys.stderr,
             )
             continue
@@ -267,10 +281,8 @@ def _interval_for(
     base = _BASE_CADENCE_MINUTES.get(status, 30)
     if status == "scheduled" and scheduled_dep is not None:
         time_to_dep = scheduled_dep - now_utc
-        if time_to_dep <= timedelta(hours=2):
-            return 10  # T-2h to T-0
         if time_to_dep <= timedelta(hours=6):
-            return 10
+            return 10  # tightened to 10 min as departure approaches
         return 30
     if status in ("en_route", "departed") and scheduled_arr is not None:
         time_to_arr = scheduled_arr - now_utc
@@ -312,6 +324,16 @@ def _maybe_query_travel_time(
     except MapsError as maps_err:
         print(
             f"flight-assist precheck: maps error for flight: {maps_err}",
+            file=sys.stderr,
+        )
+        return None
+    except urllib.error.URLError as transport_err:
+        # Transient transport failure to Google (network, DNS, API down).
+        # Degrade just this maps query — return None so time_to_leave
+        # defers to the next cycle. Per `coding-policy: error-handling`
+        # "Specific Exceptions" + "Graceful Fallback".
+        print(
+            f"flight-assist precheck: maps transport error: {transport_err}",
             file=sys.stderr,
         )
         return None
