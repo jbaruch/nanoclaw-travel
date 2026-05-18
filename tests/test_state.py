@@ -159,6 +159,75 @@ def test_future_schema_version_raises_state_error(state_root: Path):
         read_config()
 
 
+def test_past_schema_version_raises_state_error(state_root: Path):
+    """schema_version < current must raise StateError today (no migrations registered)."""
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text(json.dumps({"schema_version": 0, "home_address": "X"}))
+    with pytest.raises(StateError, match="schema_version"):
+        read_config()
+
+
+def test_string_schema_version_raises_state_error(state_root: Path):
+    """A non-int schema_version (string) must raise StateError, not TypeError."""
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text(json.dumps({"schema_version": "1"}))
+    with pytest.raises(StateError, match="schema_version of type str"):
+        read_config()
+
+
+def test_bool_schema_version_raises_state_error(state_root: Path):
+    """`bool` is a subclass of `int` in Python — exclude it explicitly."""
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text(json.dumps({"schema_version": True}))
+    with pytest.raises(StateError, match="schema_version of type bool"):
+        read_config()
+
+
+def test_float_schema_version_raises_state_error(state_root: Path):
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text(json.dumps({"schema_version": 1.0}))
+    with pytest.raises(StateError, match="schema_version of type float"):
+        read_config()
+
+
+def test_active_flights_missing_flight_ids_field_raises(state_root: Path):
+    state_root.mkdir(parents=True)
+    (state_root / ACTIVE_FLIGHTS_FILE).write_text(
+        json.dumps({"schema_version": STATE_SCHEMA_VERSION})
+    )
+    with pytest.raises(StateError, match="missing required field"):
+        read_active_flights()
+
+
+def test_active_flights_with_string_element_raises(state_root: Path):
+    """No silent coercion of stringified ints — strict type enforcement."""
+    state_root.mkdir(parents=True)
+    (state_root / ACTIVE_FLIGHTS_FILE).write_text(
+        json.dumps({"schema_version": STATE_SCHEMA_VERSION, "flight_ids": [1, "2", 3]})
+    )
+    with pytest.raises(StateError, match=r"flight_ids\[1\] is str"):
+        read_active_flights()
+
+
+def test_active_flights_with_float_element_raises(state_root: Path):
+    state_root.mkdir(parents=True)
+    (state_root / ACTIVE_FLIGHTS_FILE).write_text(
+        json.dumps({"schema_version": STATE_SCHEMA_VERSION, "flight_ids": [1, 2.5, 3]})
+    )
+    with pytest.raises(StateError, match=r"flight_ids\[1\] is float"):
+        read_active_flights()
+
+
+def test_active_flights_with_bool_element_raises(state_root: Path):
+    """`True` would pass `isinstance(_, int)` without the bool guard."""
+    state_root.mkdir(parents=True)
+    (state_root / ACTIVE_FLIGHTS_FILE).write_text(
+        json.dumps({"schema_version": STATE_SCHEMA_VERSION, "flight_ids": [True, 2]})
+    )
+    with pytest.raises(StateError, match=r"flight_ids\[0\] is bool"):
+        read_active_flights()
+
+
 def test_non_object_json_raises_state_error(state_root: Path):
     state_root.mkdir(parents=True)
     (state_root / ACTIVE_FLIGHTS_FILE).write_text(json.dumps([1, 2, 3]))

@@ -5,7 +5,7 @@ deltas between byAir snapshots. State lives under
 `/workspace/state/flight-assist/` in production; tests override the
 directory via the `FLIGHT_ASSIST_STATE_DIR` environment variable.
 
-Files written (all single-flat JSON, all carry `schema_version: 1`):
+Files written (all JSON, all carry `schema_version: 1` at the top level):
 
     config.json                       — home_address, etc. (set via /setup)
     active-flights.json               — list of currently-tracked flight_ids
@@ -94,14 +94,19 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
 
 
 def _read_json_with_version(path: Path) -> dict | None:
-    """Read a JSON file, verify schema_version. Return None if not present.
+    """Read a JSON file, validate schema_version. Return None if missing.
 
-    Raises StateError on JSON corruption or on a schema_version newer
-    than this module knows about (forward incompatibility).
+    Raises StateError on any of: JSON corruption, non-object payload,
+    missing schema_version, schema_version of a non-int type
+    (including bool, since `bool` is a subclass of `int` in Python),
+    or schema_version higher than the current module constant.
 
-    A schema_version OLDER than the current one falls through to the
-    caller — only the owner skill migrates. Non-owner callers that get
-    a mismatch must treat the record as missing.
+    schema_version equal to STATE_SCHEMA_VERSION returns the payload.
+    schema_version LOWER than the current is reserved for owner-skill
+    migration paths; today STATE_SCHEMA_VERSION is 1 so no older
+    version exists. When a v2 ships, the owner-skill migration logic
+    adds branches above this method that upgrade-and-rewrite before
+    returning.
     """
     if not path.exists():
         return None
@@ -113,15 +118,22 @@ def _read_json_with_version(path: Path) -> dict | None:
         ) from decode_err
     if not isinstance(payload, dict):
         raise StateError(f"state file {path} is not a JSON object — found {type(payload).__name__}")
-    version = payload.get("schema_version")
-    if version is None:
+    if "schema_version" not in payload:
         raise StateError(
             f"state file {path} is missing schema_version — owner skill must rewrite or remove it"
         )
-    if version > STATE_SCHEMA_VERSION:
+    version = payload["schema_version"]
+    # `bool` is a subclass of `int` in Python — exclude it so `True`/`False`
+    # don't sneak through as schema_version values.
+    if not isinstance(version, int) or isinstance(version, bool):
         raise StateError(
-            f"state file {path} has schema_version {version}, this module knows "
-            f"only up to {STATE_SCHEMA_VERSION} — upgrade flight-assist before reading"
+            f"state file {path} has schema_version of type {type(version).__name__} "
+            f"({version!r}), expected int — remove the file and let the owner skill rewrite it"
+        )
+    if version != STATE_SCHEMA_VERSION:
+        raise StateError(
+            f"state file {path} has schema_version {version}, this module is at "
+            f"{STATE_SCHEMA_VERSION} — upgrade or downgrade flight-assist, or remove the file"
         )
     return payload
 
@@ -138,16 +150,35 @@ def write_config(config: dict) -> None:
 
 
 def read_active_flights() -> list[int]:
-    """Return the list of currently-tracked flight_ids. Empty list if no index."""
+    """Return the list of currently-tracked flight_ids. Empty list if no index.
+
+    Raises StateError if the field is missing, of the wrong shape, or
+    contains any non-int element. No silent coercion: a stored
+    `"123"` raises rather than parsing to 123, so the writer-side
+    contract documented in `state-schema.md` is enforced strictly.
+    """
     payload = _read_json_with_version(state_dir() / ACTIVE_FLIGHTS_FILE)
     if payload is None:
         return []
-    flight_ids = payload.get("flight_ids", [])
+    if "flight_ids" not in payload:
+        raise StateError(
+            "active-flights.json is missing required field 'flight_ids' — "
+            "remove the file and let the owner skill rewrite it"
+        )
+    flight_ids = payload["flight_ids"]
     if not isinstance(flight_ids, list):
         raise StateError(
             f"active-flights.json has flight_ids of type {type(flight_ids).__name__}, expected list"
         )
-    return [int(fid) for fid in flight_ids]
+    for index, fid in enumerate(flight_ids):
+        # `bool` is a subclass of `int`; exclude it so `True`/`False` don't
+        # accidentally pass as flight IDs.
+        if not isinstance(fid, int) or isinstance(fid, bool):
+            raise StateError(
+                f"active-flights.json flight_ids[{index}] is "
+                f"{type(fid).__name__} {fid!r}, expected int — fix the file"
+            )
+    return list(flight_ids)
 
 
 def write_active_flights(flight_ids: list[int]) -> None:

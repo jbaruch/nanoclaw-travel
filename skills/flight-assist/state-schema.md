@@ -140,9 +140,16 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Only `flight-assist` migrates. On a `schema_version` older than `STATE_SCHEMA_VERSION` (the current constant in `state.py`), the owner skill upgrades the record in-place via the next write. On a `schema_version` NEWER than the current constant, `state.py` raises `StateError` — never silently downgrade.
+Today `STATE_SCHEMA_VERSION` is `1` — no older version exists, so the migration paths below describe the contract for future bumps.
 
-Reader skills (non-owners) raise `StateError` on schema mismatch; they do not migrate.
+`state.py`'s read helpers enforce strict equality on `schema_version`:
+
+- Equal to current → return the payload
+- Higher than current → `StateError` (forward incompatibility; never silently downgrade)
+- Lower than current → `StateError` (no migration logic registered yet)
+- Missing, wrong type (non-int, including `bool`) → `StateError` with actionable repair message
+
+When a v2 ships, the owner skill (`flight-assist`) adds explicit migration branches that read the old shape, upgrade it, write the new shape, and return. Reader skills (non-owners) keep the strict-equality behavior — they get `StateError` on any mismatched version and treat the data as "no usable prior state".
 
 ## Bump Procedure
 
