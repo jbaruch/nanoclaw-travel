@@ -40,6 +40,37 @@ def state_root(tmp_path: Path, monkeypatch) -> Path:
     return root
 
 
+def _make_flight_state(flight_id: int = 12345, **overrides) -> dict:
+    """Build a minimum-valid flight-state dict for write_flight_state.
+
+    Returns every required field per `state-schema.md`. Tests that want
+    to exercise a specific field override it via `**overrides`.
+    """
+    base = {
+        "flight_id": flight_id,
+        "code": "XX123",
+        "ownership": "mine",
+        "trip_id": 678,
+        "scheduled_dep_time": "2026-05-17T09:00:00-07:00",
+        "scheduled_arr_time": "2026-05-17T11:09:00-07:00",
+        "dep_airport_id": 20,
+        "arr_airport_id": 28,
+        "last_polled_at": "2026-05-17T18:42:11Z",
+        "phase_markers": {
+            "day_before_fired": False,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+        },
+        "last_snapshot": None,
+        "last_wake_at": None,
+        "last_wake_reason": None,
+    }
+    base.update(overrides)
+    return base
+
+
 def test_state_dir_defaults_to_workspace(monkeypatch):
     monkeypatch.delenv("FLIGHT_ASSIST_STATE_DIR", raising=False)
     assert str(state_dir()) == "/workspace/state/flight-assist"
@@ -88,27 +119,7 @@ def test_read_flight_state_returns_none_when_missing(state_root: Path):
 
 
 def test_write_then_read_flight_state_roundtrips(state_root: Path):
-    state = {
-        "flight_id": 12345,
-        "code": "XX123",
-        "ownership": "mine",
-        "trip_id": 678,
-        "scheduled_dep_time": "2026-05-17T09:00:00-07:00",
-        "scheduled_arr_time": "2026-05-17T11:09:00-07:00",
-        "dep_airport_id": 20,
-        "arr_airport_id": 28,
-        "last_polled_at": "2026-05-17T18:42:11Z",
-        "last_snapshot": None,
-        "phase_markers": {
-            "day_before_fired": False,
-            "time_to_leave_fired": False,
-            "boarding_fired": False,
-            "arrival_logistics_fired": False,
-            "landed_acknowledged": False,
-        },
-        "last_wake_at": None,
-        "last_wake_reason": None,
-    }
+    state = _make_flight_state(flight_id=12345, code="XX123")
     write_flight_state(state)
     loaded = read_flight_state(12345)
     assert loaded is not None
@@ -118,17 +129,78 @@ def test_write_then_read_flight_state_roundtrips(state_root: Path):
 
 
 def test_write_flight_state_requires_flight_id(state_root: Path):
+    state = _make_flight_state()
+    del state["flight_id"]
     with pytest.raises(ValueError, match="flight_id"):
-        write_flight_state({"code": "XX123"})
+        write_flight_state(state)
 
 
 def test_write_flight_state_requires_integer_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id"):
-        write_flight_state({"flight_id": "not-an-int", "code": "XX123"})
+        write_flight_state(_make_flight_state(flight_id="not-an-int"))
+
+
+def test_write_flight_state_rejects_bool_for_int_field(state_root: Path):
+    """`bool` is an int subclass; must be rejected for flight_id."""
+    with pytest.raises(ValueError, match="bool"):
+        write_flight_state(_make_flight_state(flight_id=True))
+
+
+def test_write_flight_state_requires_code(state_root: Path):
+    state = _make_flight_state()
+    del state["code"]
+    with pytest.raises(ValueError, match="'code'"):
+        write_flight_state(state)
+
+
+def test_write_flight_state_requires_phase_markers(state_root: Path):
+    state = _make_flight_state()
+    del state["phase_markers"]
+    with pytest.raises(ValueError, match="phase_markers"):
+        write_flight_state(state)
+
+
+def test_write_flight_state_wrong_type_for_str_field(state_root: Path):
+    """scheduled_dep_time must be str — passing an int raises ValueError."""
+    with pytest.raises(ValueError, match="scheduled_dep_time"):
+        write_flight_state(_make_flight_state(scheduled_dep_time=12345))
+
+
+def test_write_flight_state_wrong_type_for_dict_field(state_root: Path):
+    """phase_markers must be dict — passing a list raises ValueError."""
+    with pytest.raises(ValueError, match="phase_markers"):
+        write_flight_state(_make_flight_state(phase_markers=["a", "b"]))
+
+
+def test_write_flight_state_optional_fields_may_be_omitted(state_root: Path):
+    """last_snapshot / last_wake_at / last_wake_reason are optional."""
+    state = _make_flight_state()
+    del state["last_snapshot"]
+    del state["last_wake_at"]
+    del state["last_wake_reason"]
+    write_flight_state(state)
+    loaded = read_flight_state(state["flight_id"])
+    assert loaded is not None
+    assert "last_snapshot" not in loaded
+
+
+def test_write_active_flights_rejects_non_list(state_root: Path):
+    with pytest.raises(ValueError, match="must be a list"):
+        write_active_flights("123")  # type: ignore[arg-type]
+
+
+def test_write_active_flights_rejects_string_elements(state_root: Path):
+    with pytest.raises(ValueError, match=r"flight_ids\[1\] is str"):
+        write_active_flights([1, "2", 3])  # type: ignore[list-item]
+
+
+def test_write_active_flights_rejects_bool_elements(state_root: Path):
+    with pytest.raises(ValueError, match=r"flight_ids\[0\] is bool"):
+        write_active_flights([True, 2])  # type: ignore[list-item]
 
 
 def test_delete_flight_state_removes_existing_file(state_root: Path):
-    write_flight_state({"flight_id": 999})
+    write_flight_state(_make_flight_state(flight_id=999))
     assert read_flight_state(999) is not None
     assert delete_flight_state(999) is True
     assert read_flight_state(999) is None
@@ -260,8 +332,8 @@ def test_write_creates_state_directory(state_root: Path):
 
 def test_state_files_use_separate_paths(state_root: Path):
     """Each flight gets its own file; writes to one don't disturb another."""
-    write_flight_state({"flight_id": 100, "code": "A"})
-    write_flight_state({"flight_id": 200, "code": "B"})
+    write_flight_state(_make_flight_state(flight_id=100, code="A"))
+    write_flight_state(_make_flight_state(flight_id=200, code="B"))
     assert read_flight_state(100)["code"] == "A"
     assert read_flight_state(200)["code"] == "B"
     files = sorted(p.name for p in state_root.iterdir())

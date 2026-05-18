@@ -182,7 +182,24 @@ def read_active_flights() -> list[int]:
 
 
 def write_active_flights(flight_ids: list[int]) -> None:
-    """Persist the active-flights index."""
+    """Persist the active-flights index.
+
+    Validates the input matches the documented schema (list of plain int)
+    before writing. `bool` is rejected even though it's an int subclass,
+    so `[True]` doesn't sneak through. Strings, floats, and other
+    iterables raise ValueError immediately rather than writing
+    schema-invalid JSON that the reader will reject later.
+    """
+    if not isinstance(flight_ids, list):
+        raise ValueError(
+            "write_active_flights: flight_ids must be a list — " f"got {type(flight_ids).__name__}"
+        )
+    for index, fid in enumerate(flight_ids):
+        if not isinstance(fid, int) or isinstance(fid, bool):
+            raise ValueError(
+                f"write_active_flights: flight_ids[{index}] is "
+                f"{type(fid).__name__} {fid!r}, expected int"
+            )
     payload = {
         "schema_version": STATE_SCHEMA_VERSION,
         "flight_ids": list(flight_ids),
@@ -195,20 +212,58 @@ def read_flight_state(flight_id: int) -> dict | None:
     return _read_json_with_version(_flight_file(flight_id))
 
 
+_REQUIRED_FLIGHT_STATE_FIELDS: dict[str, type | tuple[type, ...]] = {
+    "flight_id": int,
+    "code": str,
+    "ownership": str,
+    "trip_id": int,
+    "scheduled_dep_time": str,
+    "scheduled_arr_time": str,
+    "dep_airport_id": int,
+    "arr_airport_id": int,
+    "last_polled_at": str,
+    "phase_markers": dict,
+}
+
+
 def write_flight_state(state: dict) -> None:
     """Persist a per-flight state record.
 
-    Requires `flight_id` in the dict. `schema_version` is set
-    automatically — overwrites any caller-supplied version.
+    Validates the input matches the required-fields portion of the
+    contract documented in `state-schema.md` before writing. Required
+    keys (with types):
+
+        flight_id (int), code (str), ownership (str), trip_id (int),
+        scheduled_dep_time (str), scheduled_arr_time (str),
+        dep_airport_id (int), arr_airport_id (int),
+        last_polled_at (str), phase_markers (dict)
+
+    Optional keys (no type check on this side; readers must tolerate
+    missing or null): last_snapshot, last_wake_at, last_wake_reason.
+
+    `schema_version` is overwritten by the canonical constant — any
+    caller-supplied value is dropped.
+
+    Raises ValueError on missing keys or wrong types so the writer
+    never persists a record the reader would reject.
     """
-    flight_id = state.get("flight_id")
-    if not isinstance(flight_id, int):
-        raise ValueError(
-            "write_flight_state: state dict must include integer 'flight_id' — "
-            f"got {flight_id!r}"
-        )
+    for field, expected_type in _REQUIRED_FLIGHT_STATE_FIELDS.items():
+        if field not in state:
+            raise ValueError(
+                f"write_flight_state: missing required field '{field}' — "
+                f"see state-schema.md for the full required set"
+            )
+        value = state[field]
+        # Reject bool when expecting int (bool is an int subclass in Python).
+        if expected_type is int and isinstance(value, bool):
+            raise ValueError(f"write_flight_state: field '{field}' is bool {value!r}, expected int")
+        if not isinstance(value, expected_type):
+            raise ValueError(
+                f"write_flight_state: field '{field}' is "
+                f"{type(value).__name__} {value!r}, expected {expected_type.__name__}"
+            )
     payload = {**state, "schema_version": STATE_SCHEMA_VERSION}
-    _atomic_write_json(_flight_file(flight_id), payload)
+    _atomic_write_json(_flight_file(state["flight_id"]), payload)
 
 
 def delete_flight_state(flight_id: int) -> bool:
