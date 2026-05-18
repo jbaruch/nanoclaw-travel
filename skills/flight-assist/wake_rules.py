@@ -98,11 +98,18 @@ def detect_wake_events(prev: dict | None, new: dict) -> list[dict]:
 
     # Inbound delay prediction: only when ≥ threshold AND not previously
     # fired at a similar magnitude (within INBOUND_DELAY_DEDUPE_MINUTES).
+    #
+    # Dedupe only counts as "already fired" if the prior value was ALSO
+    # ≥ threshold — meaning we DID fire on it. A prior value below
+    # threshold did not fire, so the threshold-crossing case (e.g., 18
+    # → 21 min) must still emit an event even if the magnitude shift
+    # is within the dedupe window.
     new_predicted = _inbound_predicted_minutes(new)
     prev_predicted = _inbound_predicted_minutes(prev) if prev is not None else None
     if new_predicted is not None and new_predicted >= INBOUND_DELAY_THRESHOLD_MINUTES:
         already_fired_at_similar = (
             prev_predicted is not None
+            and prev_predicted >= INBOUND_DELAY_THRESHOLD_MINUTES
             and abs(new_predicted - prev_predicted) < INBOUND_DELAY_DEDUPE_MINUTES
         )
         if not already_fired_at_similar:

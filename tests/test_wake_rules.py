@@ -275,6 +275,24 @@ def test_inbound_with_negative_delay_does_not_fire():
     assert not any(e["reason"] == "inbound_delay_predicted" for e in events)
 
 
+def test_inbound_threshold_crossing_within_dedupe_window_fires():
+    """Prior below threshold (no fire) → new at/above threshold (within dedupe)
+    must STILL fire. Dedupe only suppresses re-firing on prior values that
+    themselves crossed the threshold."""
+    prev = _snapshot(inbound={"predicted_delay_minutes": INBOUND_DELAY_THRESHOLD_MINUTES - 2})
+    # Within dedupe of prev, but prev never fired (below threshold)
+    new = _snapshot(
+        inbound={
+            "predicted_delay_minutes": INBOUND_DELAY_THRESHOLD_MINUTES + 1,
+            "predicted_time": "2026-05-17T09:25:00-07:00",
+        }
+    )
+    events = detect_wake_events(prev, new)
+    inbound_events = [e for e in events if e["reason"] == "inbound_delay_predicted"]
+    assert len(inbound_events) == 1
+    assert inbound_events[0]["delay_minutes"] == INBOUND_DELAY_THRESHOLD_MINUTES + 1
+
+
 # ---------------------------------------------------------------------------
 # Carousel reveal
 # ---------------------------------------------------------------------------
