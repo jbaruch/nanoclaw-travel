@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Skills — added
+
+- **`skills/flight-assist/byair_client.py`** — Python HTTP client wrapping the byAir streamable-HTTP MCP endpoint as a JSON-RPC API. Used by the (forthcoming) precheck script, not registered as a Claude MCP tool inside the agent container — the precheck filters the ~13KB raw byAir response down to a ~1KB operational slice before any state write, so the agent never sees the full payload. stdlib-only (`urllib.request` + `json`) per `coding-policy: dependency-management`. Public API: `ByAirClient.from_env()` + `get_flight()` / `list_trips()` / `get_flight_notifications()`. Wraps `isError: true` responses as `ByAirError(error_type, message)`; HTTP errors propagate as `urllib.error.HTTPError`. Sessions are managed lazily with one transparent re-init + retry on session-invalid 4xx; a second failure surfaces the underlying HTTPError so the caller sees the real transport error.
+
 ### Rules
 
 - **Closed-loop carve-out claimed for `jbaruch/coding-policy: plugin-evals`** (2026-05-18). This tile is part of the `jbaruch/nanoclaw-*` plugin fleet — a fully-automated agent loop satisfying all three preconditions of the rule's "Narrow exception for closed-loop automated systems with no human eval-result consumption" clause: (1) no human reviews eval output for this tile in any form (no eval scores, no lift deltas, no scenario-by-scenario diffs, no regression alerts); (2) no automated gate consumes eval results (no `evals.yml` workflow, no publish-tile eval step, no downstream dashboard or paging route); (3) the owner accepts that re-introducing any consumption of eval results later — whether human review OR automated gating — requires re-introducing evals first under the standard requirement. Matches the carve-out previously claimed by `jbaruch/nanoclaw-admin` on 2026-05-09 and inherited by every `jbaruch/nanoclaw-*` tile thereafter. No `evals/` directory ships in this tile.
