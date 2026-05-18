@@ -341,6 +341,13 @@ def test_write_flight_state_allows_optional_field_as_none(state_root: Path):
     assert loaded["last_wake_at"] is None
 
 
+def test_write_flight_state_rejects_unknown_top_level_field(state_root: Path):
+    """The persisted JSON shape is bounded by state-schema.md — extras raise."""
+    state = _make_flight_state(some_typo_field="value")
+    with pytest.raises(ValueError, match="unknown fields"):
+        write_flight_state(state)
+
+
 def test_corrupt_json_raises_state_error(state_root: Path):
     state_root.mkdir(parents=True)
     (state_root / CONFIG_FILE).write_text("{not valid json")

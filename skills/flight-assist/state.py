@@ -366,6 +366,19 @@ def write_flight_state(state: dict) -> None:
     Raises ValueError on missing keys or wrong types so the writer
     never persists a record the reader would reject.
     """
+    # Reject undocumented top-level keys so the persisted JSON shape is
+    # bounded by state-schema.md. `schema_version` is allowed but
+    # always overwritten below by the canonical constant.
+    allowed_keys = (
+        set(_REQUIRED_FLIGHT_STATE_FIELDS) | set(_OPTIONAL_FLIGHT_STATE_FIELDS) | {"schema_version"}
+    )
+    extra_keys = set(state.keys()) - allowed_keys
+    if extra_keys:
+        raise ValueError(
+            f"write_flight_state: unknown fields {sorted(extra_keys)} — "
+            f"see state-schema.md for the documented record shape, and bump "
+            f"the schema before introducing new fields"
+        )
     if "flight_id" not in state:
         raise ValueError(
             "write_flight_state: missing required field 'flight_id' — "
