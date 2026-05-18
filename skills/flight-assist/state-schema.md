@@ -156,6 +156,6 @@ When a v2 ships, the owner skill (`flight-assist`) adds explicit migration branc
 When adding or renaming a field:
 
 1. Bump `STATE_SCHEMA_VERSION` in `state.py` and document the new shape in this file
-2. Add migration logic to `state.py` that reads old `schema_version` and rewrites the upgraded shape
-3. Update any reader skill that knows about the old shape so it tolerates both versions during the rollout
-4. CHANGELOG entry under `## Unreleased` describing the version bump and migration path
+2. Add migration logic to `state.py` that reads old `schema_version` and rewrites the upgraded shape via the owner-skill code path (the precheck, the agent on wake, sync-tripit — every entry point that uses `read_flight_state` from inside `flight-assist`)
+3. Non-owner reader skills (other tiles, future cross-tile composition) must NOT migrate; they get `StateError` on any mismatched `schema_version` and treat the data as "no usable prior state". No tolerance window. Migration happens exclusively on the owner-skill's next read
+4. CHANGELOG entry under `## Unreleased` describing the version bump and the owner-side migration path
