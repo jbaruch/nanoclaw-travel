@@ -31,25 +31,15 @@ Finish here.
 
 ## Step 2 — Set home base
 
-When the user provides their home address (e.g., "set my home base to 1 Infinite Loop, Cupertino, CA"), persist it to the tile-wide config file the precheck reads for `time_to_leave` queries.
-
-Inline Python (run via `python3 -c`) to call the writer with proper validation:
+When the user provides their home address (e.g., "set my home base to 1 Infinite Loop, Cupertino, CA"), invoke the `set-home-base.py` script to persist it to the tile-wide config the precheck reads for `time_to_leave` queries.
 
 ```bash
-python3 -c "
-import sys
-sys.path.insert(0, '/home/node/.claude/skills/tessl__flight-assist')
-from state import write_config, read_config
-existing = read_config() or {}
-existing['home_address'] = '<address from user>'
-write_config(existing)
-print('home_address set:', existing['home_address'])
-"
+python3 /home/node/.claude/skills/tessl__flight-assist/scripts/set-home-base.py "<address from user>"
 ```
 
-Substitute `<address from user>` with the exact text the user provided. Quote-escape single quotes in the address.
+The script writes the address to `/workspace/state/flight-assist/config.json` (atomic, idempotent), preserves any other config keys, and prints `{"home_address": "..."}` to stdout. Exit 0 on success, exit 2 on usage/validation failure.
 
-Emit one confirmation line: `Home base set: <address>`. Finish here.
+Emit one confirmation line to the user: `Home base set: <address>`. Finish here.
 
 ## Step 3 — Compose wake event notification
 
@@ -71,17 +61,13 @@ The full event-shape contract is in `references/event-payloads.md`; consult it w
 | `arrival_logistics` | Surface baggage carousel (read from `last_snapshot.baggage`), suggest a rideshare ETA if location is available, and note lounge access if connecting. Read flight state for context |
 | `removed_upstream` | "Flight `<code>` no longer tracked upstream — remove from active trips if intentional." Don't auto-delete; let the user confirm |
 
-For each event, fetch the per-flight state to enrich the notification (gate, terminal, ETD, ETA):
+For each event, fetch the per-flight state to enrich the notification (gate, terminal, ETD, ETA) by invoking `get-flight-state.py`:
 
 ```bash
-python3 -c "
-import json, sys
-sys.path.insert(0, '/home/node/.claude/skills/tessl__flight-assist')
-from state import read_flight_state
-state = read_flight_state(<flight_id>)
-print(json.dumps(state))
-"
+python3 /home/node/.claude/skills/tessl__flight-assist/scripts/get-flight-state.py <flight_id>
 ```
+
+Outputs the full state record as single-line JSON on stdout, or `{"error": "..."}` when the flight has no state on disk. Use the `last_snapshot.dep_gate`, `last_snapshot.arr_gate`, `dep_terminal`, etc. to fill in the notification template.
 
 If multiple events share the same `flight_id` (e.g., `gate_change` + `delay` in one cycle), compose ONE notification per flight that merges them, ordered: cancel/divert first, then time-sensitive (boarding, time_to_leave), then info (gate, delay, inbound), then logistics (carousel, arrival).
 
