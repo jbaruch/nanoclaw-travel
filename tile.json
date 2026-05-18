@@ -4,15 +4,21 @@
   "summary": "Flight notifications via byAir: delay, gate, connection risk, inbound aircraft delay, time-to-leave, arrival logistics. NanoClaw per-chat overlay tile.",
   "entrypoint": "README.md",
   "private": false,
-  "keywords": ["nanoclaw", "flight", "byair", "travel", "notifications"],
-  "rules": {
-    "flight-data-locality": {
-      "rules": "rules/flight-data-locality.md"
-    }
-  },
+  "keywords": [
+    "nanoclaw",
+    "flight",
+    "byair",
+    "travel",
+    "notifications"
+  ],
   "skills": {
     "flight-assist": {
       "path": "skills/flight-assist/SKILL.md"
+    }
+  },
+  "steering": {
+    "flight-data-locality": {
+      "rules": "rules/flight-data-locality.md"
     }
   }
 }

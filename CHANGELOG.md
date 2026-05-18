@@ -20,7 +20,7 @@
 
 - **CI workflows** — `test.yml` runs ruff + pytest on every PR; `publish-tile.yml` uses `jbaruch/coding-policy/.github/actions/skill-review@<sha>` (the canonical changed-skills loop) before `tessl tile lint` and `tesslio/patch-version-publish` on `main`.
 
-- **`pyproject.toml` + `requirements-dev.txt`** — pytest 8.3.4 + ruff 0.7.4, ruff scoped to `tests/` per `coding-policy: ci-safety` (production code lints in a follow-up PR matched to when production code lands).
+- **`pyproject.toml` + `requirements-dev.txt`** — pytest 8.3.4 + ruff 0.7.4, ruff scoped to `tests/` and `skills/` per `coding-policy: code-formatting` (every shipped Python file goes through lint + format check; new skill scripts under `skills/<name>/scripts/` inherit coverage automatically).
 
 - **MIT license** — matches the public `nanoclaw-*` fleet.
 

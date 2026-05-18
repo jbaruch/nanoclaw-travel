@@ -9,7 +9,7 @@ Process steps in order. Do not skip ahead.
 
 ## Step 1 — Run the env diagnostic
 
-Run the env-presence check:
+Run the env-presence check (`scripts/check-env.py` relative to this skill; the NanoClaw runtime mounts every `tessl__*` skill at `/home/node/.claude/skills/tessl__<skill-name>/`, so the absolute path the agent must literally invoke is):
 
 ```bash
 python3 /home/node/.claude/skills/tessl__flight-assist/scripts/check-env.py
