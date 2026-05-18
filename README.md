@@ -46,10 +46,24 @@ Store both in OneCLI vault. Never commit. See [.env.example](.env.example) for t
 
 | Skill | Description |
 |-------|-------------|
-| [flight-assist](skills/flight-assist/SKILL.md) | Sequential workflow: diagnose env credentials. Will evolve into an action router as polling and event composition land |
+| [flight-assist](skills/flight-assist/SKILL.md) | Action router: diagnose credentials, set home base, or compose a user-facing notification from a precheck wake event (delay, gate change, cancellation, boarding, time-to-leave, carousel, day-before, arrival logistics, tracked-flight add/remove) |
+
+## Skill scripts
+
+The skill bundle includes three executable scripts the agent invokes via the SKILL.md actions:
+
+- `scripts/check-env.py` — verifies BYAIR_MCP_URL + GOOGLE_MAPS_API_KEY are set
+- `scripts/set-home-base.py` — persists home address to tile config for time-to-leave queries
+- `scripts/get-flight-state.py` — fetches a flight's last-known snapshot to enrich notifications
+
+Plus two scheduler-invoked scripts (not user-facing):
+
+- `precheck.py` — runs every ~2 min, polls byAir per cadence ladder, emits wake events
+- `sync_tripit.py` — runs daily, reconciles tracked flights against byAir's `list_trips`
 
 ## Status
 
-- **v0.1.0 (initial scaffold)** — rule + env-diagnostic skill; remaining V1 capabilities land in subsequent PRs
+- **V1** — flight-data-locality rule, full action-router SKILL.md, precheck orchestrator with cadence-gated byAir polling, stateful flight tracking, delta-driven wake rules (cancel, divert, gate, delay, inbound delay, boarding, carousel reveal), time-based wake gates (day-before, time-to-leave, arrival logistics), daily sync against `byair_list_trips`
+- **V1.1 (planned)** — connection-risk derivation (capability 4); the event slot is reserved in the composition table, the trip-traversal logic ships in a follow-up
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
