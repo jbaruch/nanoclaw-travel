@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Rules
+
+- **Closed-loop carve-out claimed for `jbaruch/coding-policy: plugin-evals`** (2026-05-18). This tile is part of the `jbaruch/nanoclaw-*` plugin fleet — a fully-automated agent loop satisfying all three preconditions of the rule's "Narrow exception for closed-loop automated systems with no human eval-result consumption" clause: (1) no human reviews eval output for this tile in any form (no eval scores, no lift deltas, no scenario-by-scenario diffs, no regression alerts); (2) no automated gate consumes eval results (no `evals.yml` workflow, no publish-tile eval step, no downstream dashboard or paging route); (3) the owner accepts that re-introducing any consumption of eval results later — whether human review OR automated gating — requires re-introducing evals first under the standard requirement. Matches the carve-out previously claimed by `jbaruch/nanoclaw-admin` on 2026-05-09 and inherited by every `jbaruch/nanoclaw-*` tile thereafter. No `evals/` directory ships in this tile.
+
 ### Initial scaffold
 
 - **`tile.json`** — declares `jbaruch/nanoclaw-flight-assist` 0.1.0, public, with one rule (`flight-data-locality`) and one skill (`flight-assist`)
@@ -19,3 +23,5 @@
 - **`pyproject.toml` + `requirements-dev.txt`** — pytest 8.3.4 + ruff 0.7.4, ruff scoped to `tests/` per `coding-policy: ci-safety` (production code lints in a follow-up PR matched to when production code lands).
 
 - **MIT license** — matches the public `nanoclaw-*` fleet.
+
+- **`.tileignore`** — excludes repo-only files (CI, tests, build artifacts, dev-time tessl-install scaffolding) from the published Tessl tile per `coding-policy: context-artifacts`.
