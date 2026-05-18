@@ -154,6 +154,14 @@ def test_gate_unchanged_does_not_fire():
     assert not any(e["reason"] == "gate_change" for e in events)
 
 
+def test_gate_removal_fires_gate_change():
+    """B25 → None is a change worth surfacing — the data feed lost info."""
+    prev = _snapshot(dep_gate="B25")
+    new = _snapshot(dep_gate=None)
+    events = detect_wake_events(prev, new)
+    assert {"reason": "gate_change", "side": "dep", "from": "B25", "to": None} in events
+
+
 # ---------------------------------------------------------------------------
 # Delay (dep_time shift)
 # ---------------------------------------------------------------------------
@@ -273,6 +281,33 @@ def test_inbound_with_negative_delay_does_not_fire():
     new = _snapshot(inbound={"predicted_delay_minutes": -10})
     events = detect_wake_events(prev=None, new=new)
     assert not any(e["reason"] == "inbound_delay_predicted" for e in events)
+
+
+def test_inbound_dedupe_boundary_is_inclusive():
+    """Shift of exactly 5 min from a prior fired magnitude must NOT re-fire."""
+    prev = _snapshot(inbound={"predicted_delay_minutes": 30})
+    new = _snapshot(
+        inbound={
+            "predicted_delay_minutes": 30 + INBOUND_DELAY_DEDUPE_MINUTES,
+            "predicted_time": "X",
+        }
+    )
+    events = detect_wake_events(prev, new)
+    assert not any(e["reason"] == "inbound_delay_predicted" for e in events)
+
+
+def test_inbound_dedupe_boundary_plus_one_re_fires():
+    """Shift one minute beyond the dedupe boundary DOES re-fire."""
+    prev = _snapshot(inbound={"predicted_delay_minutes": 30})
+    new = _snapshot(
+        inbound={
+            "predicted_delay_minutes": 30 + INBOUND_DELAY_DEDUPE_MINUTES + 1,
+            "predicted_time": "X",
+        }
+    )
+    events = detect_wake_events(prev, new)
+    inbound_events = [e for e in events if e["reason"] == "inbound_delay_predicted"]
+    assert len(inbound_events) == 1
 
 
 def test_inbound_threshold_crossing_within_dedupe_window_fires():

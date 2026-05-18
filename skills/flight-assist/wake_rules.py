@@ -77,12 +77,14 @@ def detect_wake_events(prev: dict | None, new: dict) -> list[dict]:
 
     # Gate change: dep_gate or arr_gate differs from a prior non-null value.
     # First sight of a gate (None → "B25") is not a "change" — that's
-    # the schedule revealing initial info, not a re-gate.
+    # the schedule revealing initial info, not a re-gate. But a gate
+    # being removed (B25 → None) IS a change worth surfacing: the data
+    # feed has lost information the user previously relied on.
     if prev is not None:
         for side, field in (("dep", "dep_gate"), ("arr", "arr_gate")):
             old_gate = prev.get(field)
             new_gate = new.get(field)
-            if old_gate is not None and new_gate is not None and old_gate != new_gate:
+            if old_gate is not None and old_gate != new_gate:
                 events.append(
                     {"reason": "gate_change", "side": side, "from": old_gate, "to": new_gate}
                 )
@@ -110,7 +112,9 @@ def detect_wake_events(prev: dict | None, new: dict) -> list[dict]:
         already_fired_at_similar = (
             prev_predicted is not None
             and prev_predicted >= INBOUND_DELAY_THRESHOLD_MINUTES
-            and abs(new_predicted - prev_predicted) < INBOUND_DELAY_DEDUPE_MINUTES
+            # "within 5 min" is inclusive: a shift of EXACTLY 5 min still counts
+            # as similar enough to suppress; only a shift > 5 min re-fires.
+            and abs(new_predicted - prev_predicted) <= INBOUND_DELAY_DEDUPE_MINUTES
         )
         if not already_fired_at_similar:
             inbound = new.get("inbound") or {}
