@@ -290,6 +290,57 @@ def test_read_flight_state_rejects_wrong_type_field(state_root: Path):
         read_flight_state(12345)
 
 
+def test_read_flight_state_rejects_empty_phase_markers(state_root: Path):
+    """Read-side phase_markers structural check: empty dict raises."""
+    state_root.mkdir(parents=True)
+    bad = _make_flight_state()
+    bad["phase_markers"] = {}
+    (state_root / "flight-12345.json").write_text(
+        json.dumps({**bad, "schema_version": STATE_SCHEMA_VERSION})
+    )
+    with pytest.raises(StateError, match="phase_markers missing keys"):
+        read_flight_state(12345)
+
+
+def test_read_flight_state_rejects_non_bool_phase_marker(state_root: Path):
+    """Read-side phase_markers structural check: non-bool value raises."""
+    state_root.mkdir(parents=True)
+    bad = _make_flight_state()
+    bad["phase_markers"]["boarding_fired"] = "yes"
+    (state_root / "flight-12345.json").write_text(
+        json.dumps({**bad, "schema_version": STATE_SCHEMA_VERSION})
+    )
+    with pytest.raises(StateError, match=r"phase_markers\['boarding_fired'\]"):
+        read_flight_state(12345)
+
+
+def test_read_flight_state_rejects_wrong_type_optional_field(state_root: Path):
+    """Optional fields: when present, must match documented type."""
+    state_root.mkdir(parents=True)
+    bad = _make_flight_state()
+    bad["last_wake_at"] = 12345  # str or None expected
+    (state_root / "flight-12345.json").write_text(
+        json.dumps({**bad, "schema_version": STATE_SCHEMA_VERSION})
+    )
+    with pytest.raises(StateError, match="last_wake_at"):
+        read_flight_state(12345)
+
+
+def test_write_flight_state_rejects_wrong_type_optional_field(state_root: Path):
+    """write_flight_state validates optional-field types too."""
+    state = _make_flight_state(last_wake_at=12345)  # str or None expected
+    with pytest.raises(ValueError, match="last_wake_at"):
+        write_flight_state(state)
+
+
+def test_write_flight_state_allows_optional_field_as_none(state_root: Path):
+    """None is acceptable for any optional field per the schema."""
+    state = _make_flight_state(last_wake_at=None, last_wake_reason=None, last_snapshot=None)
+    write_flight_state(state)
+    loaded = read_flight_state(state["flight_id"])
+    assert loaded["last_wake_at"] is None
+
+
 def test_corrupt_json_raises_state_error(state_root: Path):
     state_root.mkdir(parents=True)
     (state_root / CONFIG_FILE).write_text("{not valid json")

@@ -273,13 +273,22 @@ def read_flight_state(flight_id: int) -> dict | None:
     return payload
 
 
-def _validate_flight_state_payload(payload: dict, *, source: Path) -> None:
-    """Verify a loaded flight-state record satisfies the required-fields contract.
+_OPTIONAL_FLIGHT_STATE_FIELDS: dict[str, tuple[type, ...]] = {
+    # last_snapshot: object (validated only structurally — its sub-shape
+    # comes from byair_client.get_flight() and may carry optional sub-fields)
+    "last_snapshot": (dict, type(None)),
+    "last_wake_at": (str, type(None)),
+    "last_wake_reason": (str, type(None)),
+}
 
-    Same contract write_flight_state enforces on input. Raises
-    StateError (not ValueError) because this is a read-side check on
-    persisted data; the caller's recovery is "remove or restore the
-    file", not "pass better arguments".
+
+def _validate_flight_state_payload(payload: dict, *, source: Path) -> None:
+    """Verify a loaded flight-state record satisfies the documented contract.
+
+    Same contract write_flight_state enforces on input, plus the optional
+    fields validated for type-or-None. Raises StateError (not ValueError)
+    because this is a read-side check on persisted data; the caller's
+    recovery is "remove or restore the file", not "pass better arguments".
     """
     for field, expected_type in _REQUIRED_FLIGHT_STATE_FIELDS.items():
         if field not in payload:
@@ -296,6 +305,29 @@ def _validate_flight_state_payload(payload: dict, *, source: Path) -> None:
             raise StateError(
                 f"flight state file {source} field '{field}' is "
                 f"{type(value).__name__} {value!r}, expected {expected_type.__name__}"
+            )
+
+    # Phase markers structurally validated on read too, not just on write,
+    # so a hand-edited file with `phase_markers: {}` raises rather than
+    # silently passing through.
+    try:
+        _validate_phase_markers(payload["phase_markers"])
+    except ValueError as marker_err:
+        raise StateError(
+            f"flight state file {source}: {marker_err} — " "remove or restore the file"
+        ) from marker_err
+
+    # Optional fields: when present, type-check against the documented shape.
+    # Absent is fine; that's what "optional" means.
+    for field, allowed_types in _OPTIONAL_FLIGHT_STATE_FIELDS.items():
+        if field not in payload:
+            continue
+        value = payload[field]
+        if not isinstance(value, allowed_types):
+            type_names = "/".join(t.__name__ for t in allowed_types)
+            raise StateError(
+                f"flight state file {source} field '{field}' is "
+                f"{type(value).__name__} {value!r}, expected {type_names}"
             )
 
 
@@ -358,6 +390,21 @@ def write_flight_state(state: dict) -> None:
                 f"{type(value).__name__} {value!r}, expected {expected_type.__name__}"
             )
     _validate_phase_markers(state["phase_markers"])
+
+    # Optional fields: when present in the caller's dict, type-check them
+    # against the documented shape so the writer never persists a record
+    # the reader would reject.
+    for field, allowed_types in _OPTIONAL_FLIGHT_STATE_FIELDS.items():
+        if field not in state:
+            continue
+        value = state[field]
+        if not isinstance(value, allowed_types):
+            type_names = "/".join(t.__name__ for t in allowed_types)
+            raise ValueError(
+                f"write_flight_state: field '{field}' is "
+                f"{type(value).__name__} {value!r}, expected {type_names}"
+            )
+
     payload = {**state, "schema_version": STATE_SCHEMA_VERSION}
     _atomic_write_json(_flight_file(state["flight_id"]), payload)
 
