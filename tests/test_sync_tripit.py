@@ -129,6 +129,41 @@ def test_sync_handles_empty_upstream(state_root: Path):
     assert read_active_flights() == []
 
 
+def test_initialize_flight_with_flight_id_key(state_root: Path):
+    """initialize_flight_from_byair tolerates `flight_id` instead of `id`."""
+    fake_now = datetime(2026, 5, 18, 4, 0, 0, tzinfo=timezone.utc)
+    flight = {
+        "flight_id": 42,  # precheck's internal key, not byair's `id`
+        "code": "XX42",
+        "ownership": "mine",
+        "scheduledDepTime": "2026-05-18T17:00:00+00:00",
+        "scheduledArrTime": "2026-05-18T20:00:00+00:00",
+        "depAirport": {"id": 20},
+        "arrAirport": {"id": 28},
+    }
+    sync_tripit.initialize_flight_from_byair(flight=flight, now_utc=fake_now)
+    state = read_flight_state(42)
+    assert state is not None
+    assert state["flight_id"] == 42
+    assert state["code"] == "XX42"
+
+
+def test_initialize_flight_with_id_key(state_root: Path):
+    """initialize_flight_from_byair also tolerates `id` (byair raw shape)."""
+    fake_now = datetime(2026, 5, 18, 4, 0, 0, tzinfo=timezone.utc)
+    sync_tripit.initialize_flight_from_byair(flight=_flight(42), now_utc=fake_now)
+    state = read_flight_state(42)
+    assert state is not None
+    assert state["flight_id"] == 42
+
+
+def test_initialize_flight_with_no_id_is_a_no_op(state_root: Path):
+    """A flight dict without either id or flight_id silently no-ops."""
+    fake_now = datetime(2026, 5, 18, 4, 0, 0, tzinfo=timezone.utc)
+    sync_tripit.initialize_flight_from_byair(flight={"code": "XX"}, now_utc=fake_now)
+    assert read_active_flights() == []  # nothing written
+
+
 def test_sync_handles_multi_trip_payload(state_root: Path):
     """Each trip's flights all roll into the same active-flights index."""
     fake_now = datetime(2026, 5, 18, 4, 0, 0, tzinfo=timezone.utc)

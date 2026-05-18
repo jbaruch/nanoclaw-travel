@@ -176,14 +176,20 @@ def _initial_state(flight: dict, *, now_utc: datetime) -> dict:
 # flight_id not on the active-flights index. The precheck doesn't
 # need the full sync — just the per-flight state initialization.
 def initialize_flight_from_byair(*, flight: dict, now_utc: datetime) -> None:
-    """Write the initial state record for a flight first seen via the precheck."""
-    if not isinstance(flight.get("id"), int) and not isinstance(flight.get("flight_id"), int):
-        return
-    state = _initial_state(flight, now_utc=now_utc)
-    # Tolerate either id or flight_id from the caller.
-    if "id" not in flight and "flight_id" in flight:
-        state["flight_id"] = flight["flight_id"]
-    write_flight_state(state)
+    """Write the initial state record for a flight first seen via the precheck.
+
+    Tolerates either `id` (byair_get_flight raw shape) or `flight_id`
+    (precheck's internal shape) as the integer identifier. Normalizes
+    to `id` before calling `_initial_state` so the downstream lookup
+    doesn't KeyError on flight_id-only payloads.
+    """
+    flight_id = flight.get("id")
+    if not isinstance(flight_id, int) or isinstance(flight_id, bool):
+        flight_id = flight.get("flight_id")
+        if not isinstance(flight_id, int) or isinstance(flight_id, bool):
+            return
+    normalized = {**flight, "id": flight_id}
+    write_flight_state(_initial_state(normalized, now_utc=now_utc))
 
 
 # Provide read_flight_state as a re-export so callers can do the
