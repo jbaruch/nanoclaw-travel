@@ -1,13 +1,18 @@
 ---
 name: flight-assist
-description: Diagnose the flight-assist tile's environment. Verify byAir and Google Maps credentials are present. Triggers - "check flight-assist env", "diagnose flight-assist", "verify flight-assist setup", "is flight-assist ready", "flight-assist diagnostic".
+description: Flight notifications and prep for tracked trips. Diagnose env, set home base, or compose a user-facing message from a precheck wake event. Triggers - "check flight-assist env", "diagnose flight-assist", "set flight-assist home base", "set home address", "configure flight-assist", "flight delay notification", "gate change notification", "cancellation notification", "boarding alert", "time to leave alert", "inbound delay notification", "baggage carousel", "arrival logistics", "day before sanity check", "flight removed upstream".
 ---
 
 # Flight Assist
 
-Process steps in order. Do not skip ahead.
+This skill is an action router — pick the step that matches the user's intent and execute only that step. Do not run other steps; do not parallelize.
 
-## Step 1 — Run the env diagnostic
+Available actions:
+- Diagnose env (verify byAir + Google Maps credentials)
+- Set home base (record the user's home address for time-to-leave)
+- Compose a user-facing notification from a precheck wake event
+
+## Step 1 — Diagnose env
 
 Run the env-presence check (`scripts/check-env.py` relative to this skill; the NanoClaw runtime mounts every `tessl__*` skill at `/home/node/.claude/skills/tessl__<skill-name>/`, so the absolute path the agent must literally invoke is):
 
@@ -15,20 +20,71 @@ Run the env-presence check (`scripts/check-env.py` relative to this skill; the N
 python3 /home/node/.claude/skills/tessl__flight-assist/scripts/check-env.py
 ```
 
-The script reads `BYAIR_MCP_URL` and `GOOGLE_MAPS_API_KEY`, prints single-line JSON on stdout, exits 0. Proceed immediately to Step 2.
+The script reads `BYAIR_MCP_URL` and `GOOGLE_MAPS_API_KEY`, prints single-line JSON on stdout, exits 0.
 
-## Step 2 — Report the result
-
-Parse the JSON payload. Boolean fields:
-
-- `byair_url_present` — `BYAIR_MCP_URL` is set
-- `maps_key_present` — `GOOGLE_MAPS_API_KEY` is set
-
-Both `true`: emit `flight-assist credentials present`. Finish here.
-
-Either `false`: emit one line per missing variable with the fix:
+Parse the JSON. Both `true`: emit `flight-assist credentials present`. Either `false`: emit one line per missing variable:
 
 - `BYAIR_MCP_URL missing. Add personal MCP link from https://byairapp.com/mcp/ to OneCLI vault and restart container.`
 - `GOOGLE_MAPS_API_KEY missing. Create a Distance Matrix API key at https://console.cloud.google.com/apis/credentials and add to OneCLI vault.`
 
-Do not invent additional diagnostics. Finish here.
+Finish here.
+
+## Step 2 — Set home base
+
+When the user provides their home address (e.g., "set my home base to 1 Infinite Loop, Cupertino, CA"), persist it to the tile-wide config file the precheck reads for `time_to_leave` queries.
+
+Inline Python (run via `python3 -c`) to call the writer with proper validation:
+
+```bash
+python3 -c "
+import sys
+sys.path.insert(0, '/home/node/.claude/skills/tessl__flight-assist')
+from state import write_config, read_config
+existing = read_config() or {}
+existing['home_address'] = '<address from user>'
+write_config(existing)
+print('home_address set:', existing['home_address'])
+"
+```
+
+Substitute `<address from user>` with the exact text the user provided. Quote-escape single quotes in the address.
+
+Emit one confirmation line: `Home base set: <address>`. Finish here.
+
+## Step 3 — Compose wake event notification
+
+This step fires when the precheck script wakes the agent with a `data.events` payload. Each event is `{"flight_id": int, "event": {"reason": "...", ...}}`. Compose one human-readable notification per event.
+
+The full event-shape contract is in `references/event-payloads.md`; consult it when an event's `reason` is unfamiliar. The reason → notification mapping for the documented events:
+
+| `reason` | Notification |
+|----------|-------------|
+| `cancelled` | "Flight `<code>` cancelled." Include rebooking-options link if the user opted in |
+| `diverted` | "Flight `<code>` diverted." |
+| `gate_change` | "Gate change: `<code>` moved from `<from>` to `<to>`." If `to` is null, "Gate `<from>` removed from `<code>`." |
+| `delay` | "Flight `<code>` delayed by `<delay_minutes>` min. New departure: `<new_dep_time>` (local)." Negative `delay_minutes` = advanced; phrase as "moved earlier by N min" |
+| `inbound_delay_predicted` | "Inbound aircraft delay predicted: `<delay_minutes>` min for `<code>`. New estimated departure: `<predicted_time>`." |
+| `boarding_started` | "Boarding now: `<code>`. Gate `<dep_gate>`, terminal `<dep_terminal>`." |
+| `carousel_revealed` | "Baggage carousel for `<code>`: `<baggage>`." |
+| `day_before` | Day-before sanity check: read the user's calendar via MCP if available, list any events that overlap the flight window (T-3h before dep through T+3h after arr), and summarize. Read flight state via `read_flight_state(flight_id)` for context |
+| `time_to_leave` | "Leave by `<leave_by>` to make `<code>` (`<travel_time_minutes>` min drive with current traffic)." |
+| `arrival_logistics` | Surface baggage carousel (read from `last_snapshot.baggage`), suggest a rideshare ETA if location is available, and note lounge access if connecting. Read flight state for context |
+| `removed_upstream` | "Flight `<code>` no longer tracked upstream — remove from active trips if intentional." Don't auto-delete; let the user confirm |
+
+For each event, fetch the per-flight state to enrich the notification (gate, terminal, ETD, ETA):
+
+```bash
+python3 -c "
+import json, sys
+sys.path.insert(0, '/home/node/.claude/skills/tessl__flight-assist')
+from state import read_flight_state
+state = read_flight_state(<flight_id>)
+print(json.dumps(state))
+"
+```
+
+If multiple events share the same `flight_id` (e.g., `gate_change` + `delay` in one cycle), compose ONE notification per flight that merges them, ordered: cancel/divert first, then time-sensitive (boarding, time_to_leave), then info (gate, delay, inbound), then logistics (carousel, arrival).
+
+After composing, route the notification through the user's main channel (the orchestrator handles routing; the skill just produces the message text).
+
+If no actionable text would result for an event (e.g., a duplicate notification you've already sent within the last 10 min), proceed silently — do not echo "no notification needed". Finish here.
