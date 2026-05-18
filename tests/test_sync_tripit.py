@@ -66,7 +66,7 @@ def test_first_sync_adds_all_upstream_flights(state_root: Path):
     with patch("sync_tripit.ByAirClient.from_env") as mock_byair:
         mock_byair.return_value.list_trips.return_value = payload
         diff = sync_tripit._run_sync(now_utc=fake_now)
-    assert diff["added"] == [100, 200]
+    assert [e["flight_id"] for e in diff["added"]] == [100, 200]
     assert diff["removed"] == []
     assert read_active_flights() == [100, 200]
     assert read_flight_state(100) is not None
@@ -98,7 +98,11 @@ def test_sync_removes_expired_flights(state_root: Path):
         mock_byair.return_value.list_trips.return_value = payload
         diff = sync_tripit._run_sync(now_utc=fake_now)
     assert diff["added"] == []
-    assert diff["removed"] == [200]
+    assert [e["flight_id"] for e in diff["removed"]] == [200]
+    # The removed-event payload carries the prior-state metadata so SKILL.md
+    # can compose the notification without re-reading the (now-deleted) state.
+    assert diff["removed"][0]["code"] == "XX123"
+    assert diff["removed"][0]["scheduled_dep_time"] == "2026-05-18T17:00:00+00:00"
     assert read_active_flights() == [100]
     assert read_flight_state(200) is None
     assert read_flight_state(100) is not None
@@ -112,8 +116,8 @@ def test_sync_adds_and_removes_in_one_pass(state_root: Path):
     with patch("sync_tripit.ByAirClient.from_env") as mock_byair:
         mock_byair.return_value.list_trips.return_value = payload
         diff = sync_tripit._run_sync(now_utc=fake_now)
-    assert diff["added"] == [200, 300]
-    assert diff["removed"] == [100]
+    assert [e["flight_id"] for e in diff["added"]] == [200, 300]
+    assert [e["flight_id"] for e in diff["removed"]] == [100]
     assert read_active_flights() == [200, 300]
 
 
@@ -125,7 +129,7 @@ def test_sync_handles_empty_upstream(state_root: Path):
     with patch("sync_tripit.ByAirClient.from_env") as mock_byair:
         mock_byair.return_value.list_trips.return_value = {"trips": []}
         diff = sync_tripit._run_sync(now_utc=fake_now)
-    assert diff["removed"] == [100, 200]
+    assert [e["flight_id"] for e in diff["removed"]] == [100, 200]
     assert read_active_flights() == []
 
 
@@ -176,7 +180,7 @@ def test_sync_handles_multi_trip_payload(state_root: Path):
     with patch("sync_tripit.ByAirClient.from_env") as mock_byair:
         mock_byair.return_value.list_trips.return_value = payload
         diff = sync_tripit._run_sync(now_utc=fake_now)
-    assert diff["added"] == [100, 200, 300]
+    assert [e["flight_id"] for e in diff["added"]] == [100, 200, 300]
     assert read_flight_state(100)["trip_id"] == 1
     assert read_flight_state(200)["trip_id"] == 2
     assert read_flight_state(300)["trip_id"] == 2

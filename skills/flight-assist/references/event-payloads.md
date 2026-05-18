@@ -105,18 +105,28 @@ The daily sync script also emits via the same `data.events` shape so SKILL.md's 
 #### `tracked_flight_added`
 
 ```json
-{"reason": "tracked_flight_added"}
+{
+  "reason": "tracked_flight_added",
+  "code": "XX123",
+  "scheduled_dep_time": "2026-05-18T17:00:00+00:00",
+  "scheduled_arr_time": "2026-05-18T20:00:00+00:00"
+}
 ```
 
-Fires when a flight appeared in `byair_list_trips` that wasn't on the active-flights index. The sync script writes the initial state record; the agent doesn't need to do anything beyond optionally informing the user.
+Fires when a flight appeared in `byair_list_trips` that wasn't on the active-flights index. The sync script writes the initial state record; the event carries the flight code + scheduled times so the agent has notification context without re-reading state.
 
 #### `tracked_flight_removed`
 
 ```json
-{"reason": "tracked_flight_removed"}
+{
+  "reason": "tracked_flight_removed",
+  "code": "XX123",
+  "scheduled_dep_time": "2026-05-18T17:00:00+00:00",
+  "scheduled_arr_time": "2026-05-18T20:00:00+00:00"
+}
 ```
 
-Fires when a previously-tracked flight is no longer in `byair_list_trips` (e.g., the trip expired or the user untracked it upstream). The sync script deletes the per-flight state file.
+Fires when a previously-tracked flight is no longer in `byair_list_trips` (e.g., the trip expired or the user untracked it upstream). The sync script deletes the per-flight state file — the event payload captures the prior-state metadata BEFORE the delete so the agent's composition template has `code` to render. Reading state by `flight_id` after this event arrives returns None (state already deleted).
 
 ## Composition Discipline
 

@@ -70,10 +70,30 @@ def _emit_diff(diff: dict) -> None:
     "Precheck Gating": data must carry the inputs the agent needs.
     """
     events = []
-    for flight_id in diff.get("added", []) or []:
-        events.append({"flight_id": flight_id, "event": {"reason": "tracked_flight_added"}})
-    for flight_id in diff.get("removed", []) or []:
-        events.append({"flight_id": flight_id, "event": {"reason": "tracked_flight_removed"}})
+    for entry in diff.get("added", []) or []:
+        events.append(
+            {
+                "flight_id": entry["flight_id"],
+                "event": {
+                    "reason": "tracked_flight_added",
+                    "code": entry.get("code"),
+                    "scheduled_dep_time": entry.get("scheduled_dep_time"),
+                    "scheduled_arr_time": entry.get("scheduled_arr_time"),
+                },
+            }
+        )
+    for entry in diff.get("removed", []) or []:
+        events.append(
+            {
+                "flight_id": entry["flight_id"],
+                "event": {
+                    "reason": "tracked_flight_removed",
+                    "code": entry.get("code"),
+                    "scheduled_dep_time": entry.get("scheduled_dep_time"),
+                    "scheduled_arr_time": entry.get("scheduled_arr_time"),
+                },
+            }
+        )
     has_events = bool(events)
     payload = {"wake_agent": has_events, "data": {"events": events}}
     if "error" in diff:
@@ -137,21 +157,42 @@ def _reconcile_active_flights(upstream_flights: list[dict], *, now_utc: datetime
     upstream_by_id = {
         flight["id"]: flight for flight in upstream_flights if isinstance(flight.get("id"), int)
     }
-    for flight_id in added_ids:
+
+    # Build added entries with the upstream flight metadata.
+    added: list[dict] = []
+    for flight_id in sorted(added_ids):
         flight = upstream_by_id[flight_id]
         write_flight_state(_initial_state(flight, now_utc=now_utc))
+        added.append(
+            {
+                "flight_id": flight_id,
+                "code": flight.get("code"),
+                "scheduled_dep_time": flight.get("scheduledDepTime"),
+                "scheduled_arr_time": flight.get("scheduledArrTime"),
+            }
+        )
 
-    for flight_id in removed_ids:
+    # Capture removed-flight metadata BEFORE deleting state (the
+    # notification template in SKILL.md needs `code` + scheduled times
+    # to compose "Flight <code> stopped tracking...").
+    removed: list[dict] = []
+    for flight_id in sorted(removed_ids):
+        prior = read_flight_state(flight_id)
+        removed.append(
+            {
+                "flight_id": flight_id,
+                "code": prior.get("code") if prior else None,
+                "scheduled_dep_time": prior.get("scheduled_dep_time") if prior else None,
+                "scheduled_arr_time": prior.get("scheduled_arr_time") if prior else None,
+            }
+        )
         delete_flight_state(flight_id)
 
     # Persist the new active-flights index. read_active_flights returns
     # sorted/preserved order; here we sort for determinism.
     write_active_flights(sorted(upstream_ids))
 
-    return {
-        "added": sorted(added_ids),
-        "removed": sorted(removed_ids),
-    }
+    return {"added": added, "removed": removed}
 
 
 def _initial_state(flight: dict, *, now_utc: datetime) -> dict:
