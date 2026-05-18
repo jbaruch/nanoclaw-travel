@@ -210,6 +210,26 @@ def test_delete_flight_state_returns_false_when_missing(state_root: Path):
     assert delete_flight_state(404) is False
 
 
+def test_read_flight_state_rejects_non_int_flight_id(state_root: Path):
+    with pytest.raises(ValueError, match="flight_id must be int"):
+        read_flight_state("12345")  # type: ignore[arg-type]
+
+
+def test_read_flight_state_rejects_bool_flight_id(state_root: Path):
+    with pytest.raises(ValueError, match="flight_id must be int"):
+        read_flight_state(True)  # type: ignore[arg-type]
+
+
+def test_delete_flight_state_rejects_non_int_flight_id(state_root: Path):
+    with pytest.raises(ValueError, match="flight_id must be int"):
+        delete_flight_state("12345")  # type: ignore[arg-type]
+
+
+def test_delete_flight_state_rejects_bool_flight_id(state_root: Path):
+    with pytest.raises(ValueError, match="flight_id must be int"):
+        delete_flight_state(False)  # type: ignore[arg-type]
+
+
 def test_corrupt_json_raises_state_error(state_root: Path):
     state_root.mkdir(parents=True)
     (state_root / CONFIG_FILE).write_text("{not valid json")

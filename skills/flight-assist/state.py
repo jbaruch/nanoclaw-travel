@@ -76,6 +76,21 @@ def state_dir() -> Path:
     return Path(os.environ.get(_STATE_DIR_ENV, _DEFAULT_STATE_DIR))
 
 
+def _validate_flight_id(flight_id: object, *, fn_name: str) -> None:
+    """Reject anything that isn't a plain int (excluding bool).
+
+    Used by every public function that takes a `flight_id` so the
+    read / write / delete paths share the same contract per
+    `coding-policy: stateful-artifacts`. Raising ValueError on a
+    bad type is louder than silently forming `flight-True.json` or
+    `flight-not-int.json` paths.
+    """
+    if not isinstance(flight_id, int) or isinstance(flight_id, bool):
+        raise ValueError(
+            f"{fn_name}: flight_id must be int, got " f"{type(flight_id).__name__} {flight_id!r}"
+        )
+
+
 def _flight_file(flight_id: int) -> Path:
     return state_dir() / f"{_FLIGHT_FILE_PREFIX}{flight_id}{_FLIGHT_FILE_SUFFIX}"
 
@@ -208,7 +223,12 @@ def write_active_flights(flight_ids: list[int]) -> None:
 
 
 def read_flight_state(flight_id: int) -> dict | None:
-    """Return the per-flight state record or None on first run."""
+    """Return the per-flight state record or None on first run.
+
+    Raises ValueError if `flight_id` isn't a plain int — same contract
+    as write_flight_state and delete_flight_state.
+    """
+    _validate_flight_id(flight_id, fn_name="read_flight_state")
     return _read_json_with_version(_flight_file(flight_id))
 
 
@@ -247,7 +267,15 @@ def write_flight_state(state: dict) -> None:
     Raises ValueError on missing keys or wrong types so the writer
     never persists a record the reader would reject.
     """
+    if "flight_id" not in state:
+        raise ValueError(
+            "write_flight_state: missing required field 'flight_id' — "
+            "see state-schema.md for the full required set"
+        )
+    _validate_flight_id(state["flight_id"], fn_name="write_flight_state")
     for field, expected_type in _REQUIRED_FLIGHT_STATE_FIELDS.items():
+        if field == "flight_id":
+            continue  # handled above so the error names the function consistently
         if field not in state:
             raise ValueError(
                 f"write_flight_state: missing required field '{field}' — "
@@ -267,7 +295,12 @@ def write_flight_state(state: dict) -> None:
 
 
 def delete_flight_state(flight_id: int) -> bool:
-    """Remove a per-flight state file. Returns True if a file was deleted."""
+    """Remove a per-flight state file. Returns True if a file was deleted.
+
+    Raises ValueError if `flight_id` isn't a plain int — same contract
+    as read_flight_state and write_flight_state.
+    """
+    _validate_flight_id(flight_id, fn_name="delete_flight_state")
     path = _flight_file(flight_id)
     if not path.exists():
         return False
