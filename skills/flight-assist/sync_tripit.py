@@ -50,7 +50,7 @@ def main() -> int:
     # "skip waking the agent". A bare programming bug bubbling out
     # would silently disable the wake contract for every subsequent
     # run; catch it here, emit safe-shape JSON, return 0.
-    try:  # noqa: BLE001 — outer-boundary-process-contract
+    try:
         diff = _run_sync(now_utc=datetime.now(timezone.utc))
         _emit_diff(diff)
         return 0

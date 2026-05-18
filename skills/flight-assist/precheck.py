@@ -86,7 +86,7 @@ def main() -> int:
     # bubbling out would silently disable the wake contract for every
     # subsequent run, so the outermost catch emits a safe-shape JSON +
     # writes the traceback to stderr per error-handling.md's carve-out.
-    try:  # noqa: BLE001 — see outer-boundary-process-contract comment above
+    try:
         events = _run_cycle(now_utc=datetime.now(timezone.utc))
         _emit({"wake_agent": bool(events), "data": {"events": events}})
         return 0
