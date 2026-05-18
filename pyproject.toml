@@ -3,13 +3,14 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 
 [tool.ruff]
-# Scoped to tests/ in v0.1.0. Production code lints land in the PR
-# that adds production code — keeps lint-config scope coherent with
-# what's actually in tree, per `jbaruch/coding-policy: ci-safety`
-# (don't smuggle CI changes for things outside this PR's stated
-# scope).
-src = ["tests"]
-include = ["tests/**/*.py"]
+# Cover both shipped Python (skills/) and test code (tests/) per
+# `jbaruch/coding-policy: code-formatting` — every Python file the
+# tile actually ships goes through lint + format check, not just
+# tests. The scaffold's one shipped script lives under
+# skills/flight-assist/scripts/; new skill scripts inherit coverage
+# automatically.
+src = ["tests", "skills"]
+include = ["tests/**/*.py", "skills/**/*.py"]
 line-length = 100
 
 [tool.ruff.lint]
