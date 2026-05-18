@@ -2,7 +2,7 @@
 
 [![tessl](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.tessl.io%2Fv1%2Fbadges%2Fjbaruch%2Fnanoclaw-flight-assist)](https://tessl.io/registry/jbaruch/nanoclaw-flight-assist)
 
-Actionable flight notifications for NanoClaw — replaces generic "21 minutes to departure" reminders with alerts that actually change what you do. Powered by [byAir](https://byairapp.com/mcp/) for flight data and Google Maps Distance Matrix for traffic-aware time-to-leave.
+Actionable flight notifications for NanoClaw. Replaces generic "21 minutes to departure" reminders with alerts that change behavior. Powered by [byAir](https://byairapp.com/mcp/) for flight data and Google Maps Distance Matrix for traffic-aware time-to-leave.
 
 Per-chat overlay tile. Install via NanoClaw's `containerConfig.additionalTiles` mechanism.
 
@@ -34,19 +34,19 @@ additionalTiles: ["jbaruch/nanoclaw-flight-assist"]
 | `BYAIR_MCP_URL` | byAir streamable-HTTP MCP endpoint (includes API key) | https://byairapp.com/mcp/ — Pro subscription, personal MCP link |
 | `GOOGLE_MAPS_API_KEY` | Distance Matrix API key for time-to-leave | https://console.cloud.google.com/apis/credentials |
 
-Both go into OneCLI vault — never committed.
+Store both in OneCLI vault. Never commit. See [.env.example](.env.example) for the contract; GitHub Actions secrets configuration link is in its file header.
 
 ## Rules
 
 | Rule | Summary |
 |------|---------|
-| [flight-data-locality](rules/flight-data-locality.md) | byAir is the single upstream for flight data; don't mix in AeroAPI / Flighty / airline-specific APIs |
+| [flight-data-locality](rules/flight-data-locality.md) | byAir is the single upstream for flight data; AeroAPI / Flighty / airline-specific APIs forbidden |
 
 ## Skills
 
 | Skill | Description |
 |-------|-------------|
-| [flight-assist](skills/flight-assist/SKILL.md) | Action router for flight setup, env diagnostics, and (future) event composition |
+| [flight-assist](skills/flight-assist/SKILL.md) | Sequential workflow: diagnose env credentials. Will evolve into an action router as polling and event composition land |
 
 ## Status
 
