@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+# Cover both shipped Python (skills/) and test code (tests/) per
+# `jbaruch/coding-policy: code-formatting` — every Python file the
+# tile actually ships goes through lint + format check, not just
+# tests. The scaffold's one shipped script lives under
+# skills/flight-assist/scripts/; new skill scripts inherit coverage
+# automatically.
+src = ["tests", "skills"]
+include = ["tests/**/*.py", "skills/**/*.py"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
