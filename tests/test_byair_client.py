@@ -89,10 +89,26 @@ def test_from_env_raises_when_url_unset(monkeypatch):
         ByAirClient.from_env()
 
 
-def test_from_env_constructs_when_url_set(monkeypatch):
+def test_from_env_uses_url_from_env_var(monkeypatch):
+    """A from_env-constructed client sends requests to the URL from BYAIR_MCP_URL."""
     monkeypatch.setenv("BYAIR_MCP_URL", SYNTH_URL)
+    captured_urls = []
+
+    def fake_urlopen(request, **kwargs):
+        captured_urls.append(request.full_url)
+        method = json.loads(request.data).get("method")
+        if method == "initialize":
+            return _initialize_response()
+        if method == "notifications/initialized":
+            return _initialized_notification_ack()
+        return _tool_response({"id": 1})
+
     c = ByAirClient.from_env()
-    assert c._url == SYNTH_URL
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        c.get_flight(flight_id=1)
+
+    assert all(url == SYNTH_URL for url in captured_urls)
+    assert len(captured_urls) >= 3
 
 
 def test_constructor_rejects_empty_url():
@@ -153,18 +169,35 @@ def test_list_trips_passes_arguments(client):
     }
 
 
-def test_initialize_captures_session_id(client):
-    payload = {"id": 1}
-    responses = iter(
-        [
-            _initialize_response(session_id="ALT_SESSION_xyz"),
-            _initialized_notification_ack(),
-            _tool_response(payload),
-        ]
-    )
-    with patch("urllib.request.urlopen", side_effect=lambda *a, **k: next(responses)):
+def test_session_id_from_initialize_is_sent_on_subsequent_calls(client):
+    """The session-id captured from initialize must appear on subsequent
+    tools/call request headers (observed via the captured request, not via
+    private client state)."""
+    alt_session = "ALT_SESSION_xyz"
+    captured_requests = []
+
+    def fake_urlopen(request, **kwargs):
+        captured_requests.append(
+            {"data": json.loads(request.data), "headers": dict(request.headers)}
+        )
+        method = captured_requests[-1]["data"].get("method")
+        if method == "initialize":
+            return _initialize_response(session_id=alt_session)
+        if method == "notifications/initialized":
+            return _initialized_notification_ack()
+        return _tool_response({"id": 1})
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
         client.get_flight(flight_id=1)
-    assert client._session_id == "ALT_SESSION_xyz"
+
+    notification = next(
+        r for r in captured_requests if r["data"].get("method") == "notifications/initialized"
+    )
+    tool_call = next(r for r in captured_requests if r["data"].get("method") == "tools/call")
+    # urllib lower-cases header names on the Request object; check the
+    # capitalization-insensitive variants
+    assert notification["headers"].get("Mcp-session-id") == alt_session
+    assert tool_call["headers"].get("Mcp-session-id") == alt_session
 
 
 def test_subsequent_calls_reuse_session(client):

@@ -10,7 +10,9 @@ stdlib-only: `urllib.request` + `json` per `jbaruch/coding-policy:
 dependency-management` (Stdlib First).
 
 Public API:
-    from skills.flight_assist.byair_client import ByAirClient, ByAirError
+    # The skill bundle dir is added to sys.path at invocation time; this
+    # module is imported by its bare name (matches nanoclaw-core's convention).
+    from byair_client import ByAirClient, ByAirError
 
     client = ByAirClient.from_env()
     flight = client.get_flight(flight_id=12345)
@@ -103,17 +105,17 @@ class ByAirClient:
             self._initialize()
         try:
             return self._tools_call(name, arguments)
-        except _SessionExpired as first_failure:
+        except _SessionExpired:
             # One transparent re-init + retry per `coding-policy: error-handling`
             # "Graceful Fallback". A second failure surfaces the underlying
-            # HTTPError so the caller sees the actual transport error, not
-            # the internal _SessionExpired signal.
+            # HTTPError from the SECOND attempt, so diagnostics reflect the
+            # final transport failure rather than a stale prior error.
             self._session_id = None
             self._initialize()
             try:
                 return self._tools_call(name, arguments)
-            except _SessionExpired:
-                raise first_failure.__cause__ from None
+            except _SessionExpired as second_failure:
+                raise second_failure.__cause__ from None
 
     def _initialize(self) -> None:
         """Run the MCP initialize handshake; capture the session-id header."""
@@ -127,7 +129,7 @@ class ByAirClient:
         )
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
+            "Accept": "application/json",
             "MCP-Protocol-Version": _PROTOCOL_VERSION,
         }
         response, response_headers = self._http_post(headers, payload)
@@ -151,7 +153,7 @@ class ByAirClient:
         payload = self._rpc_envelope("tools/call", {"name": name, "arguments": arguments})
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
+            "Accept": "application/json",
             "MCP-Protocol-Version": _PROTOCOL_VERSION,
             "Mcp-Session-Id": self._session_id,
         }
