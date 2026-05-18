@@ -50,6 +50,6 @@ Store both in OneCLI vault. Never commit. See [.env.example](.env.example) for t
 
 ## Status
 
-- **v0.1.0 (initial scaffold)** — rule + env-diagnostic skill. byAir client, maps client, state mgmt, wake rules, phase markers, and event composition land in subsequent PRs
+- **v0.1.0 (initial scaffold)** — rule + env-diagnostic skill; remaining V1 capabilities land in subsequent PRs
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
