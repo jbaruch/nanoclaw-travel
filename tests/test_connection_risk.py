@@ -611,13 +611,13 @@ def test_missed_connection_false_when_window_positive():
 
 
 def test_multi_timezone_sort_uses_utc_not_string():
-    """JST leg in the morning sorts before PDT leg in the morning of the same date.
+    """Sort key must compare parsed UTC, not raw RFC3339 strings.
 
-    "2026-05-17T08:00:00+09:00" (JST = 23:00 UTC on May 16) and
-    "2026-05-17T10:00:00-07:00" (PDT = 17:00 UTC on May 17) — naive string
-    sort would put JST first but UTC sort agrees (JST is actually
-    earlier). The opposite case proves the test: an evening JST leg
-    that string-sorts AFTER a morning PDT leg is actually earlier.
+    PDT leg `2026-05-17T09:00:00-07:00` is UTC `2026-05-17T16:00:00Z`.
+    JST leg `2026-05-17T23:00:00+09:00` is UTC `2026-05-17T14:00:00Z`.
+    By UTC, the JST leg is two hours EARLIER, but a naive string sort
+    on the local-time strings ("09:00" < "23:00") would place the PDT
+    leg first.
     """
     pdt_leg = _state(
         flight_id=1,
@@ -625,7 +625,7 @@ def test_multi_timezone_sort_uses_utc_not_string():
         code="USJP1",
         dep_airport_id=20,
         arr_airport_id=28,
-        # PDT 09:00 = UTC 16:00 (later in UTC than the JST leg below)
+        # PDT 09:00 = UTC 16:00 — string-sorts FIRST, but UTC second
         scheduled_dep_time="2026-05-17T09:00:00-07:00",
         scheduled_arr_time="2026-05-17T11:00:00-07:00",
     )
@@ -635,9 +635,7 @@ def test_multi_timezone_sort_uses_utc_not_string():
         code="USJP2",
         dep_airport_id=28,
         arr_airport_id=40,
-        # JST 23:00 on May 17 = UTC 14:00 on May 17 — EARLIER in UTC
-        # than the PDT 09:00 = UTC 16:00 above, despite the local time
-        # string ordering suggesting the opposite.
+        # JST 23:00 = UTC 14:00 — string-sorts LAST, but UTC first
         scheduled_dep_time="2026-05-17T23:00:00+09:00",
         scheduled_arr_time="2026-05-18T01:00:00+09:00",
     )

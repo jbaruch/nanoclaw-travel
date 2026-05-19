@@ -229,11 +229,14 @@ def _resolve_min_transfer_minutes(config: dict) -> int:
     """Return the validated `min_transfer_minutes` from config, or the default.
 
     The on-disk config can be hand-edited; `write_config` rejects bad
-    types but a manually-edited file with `"min_transfer_minutes": "45"`
-    or `True` would slip past the writer. Coerce defensively here so a
-    corrupt config doesn't propagate into `detect_connection_risks` and
-    surface as a TypeError that the outer-boundary catch then suppresses
-    for the whole cycle.
+    types and negative values but a manually-edited file with
+    `"min_transfer_minutes": "45"` or `True` would slip past the writer.
+    Coerce defensively here so a corrupt config doesn't propagate into
+    `detect_connection_risks` and surface as the `ValueError` the public
+    API raises on invalid input — which the outer-boundary catch would
+    then suppress for the entire cycle. Falling back to the default keeps
+    the cycle running while the stderr diagnostic flags the bad config
+    for the operator.
     """
     value = config.get("min_transfer_minutes")
     if value is None:

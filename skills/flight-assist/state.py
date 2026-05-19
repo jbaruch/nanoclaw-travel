@@ -171,7 +171,7 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
         phase_markers = payload.get("phase_markers")
         if isinstance(phase_markers, dict) and "connection_at_risk_fired" not in phase_markers:
             phase_markers["connection_at_risk_fired"] = False
-        payload["schema_version"] = 2
+        payload["schema_version"] = STATE_SCHEMA_VERSION
         _atomic_write_json(path, payload)
         return payload
     # Unknown older version: refuse to silently pass through. The
@@ -201,11 +201,14 @@ def write_config(config: dict) -> None:
 
     Validates field types and rejects undocumented keys per the
     writer/reader contract in `state-schema.md`. The optional fields
-    today are: `home_address` (str). Add new fields here when
-    bumping the config schema; same place as the schema doc.
+    today are: `home_address` (str) and `min_transfer_minutes` (int,
+    non-negative). Add new fields here when bumping the config schema;
+    same place as the schema doc.
 
     Raises ValueError on:
-    - Wrong type for a documented field
+    - Wrong type for a documented field (incl. `bool` rejected when an
+      int field is expected — `bool` is an `int` subclass in Python)
+    - `min_transfer_minutes` below zero
     - Any key not in `_CONFIG_OPTIONAL_FIELDS` (caller-supplied
       `schema_version` is allowed but is always overwritten by the
       canonical constant)
