@@ -454,6 +454,70 @@ def test_connection_risk_excludes_removed_upstream_flights(state_root: Path):
     assert not any(e["event"]["reason"] == "connection_at_risk" for e in events)
 
 
+def test_connection_risk_excludes_poll_failed_flights(state_root: Path):
+    """A flight whose poll attempted but failed (transport error) this cycle
+    is unverified and must not contribute to a derived connection_at_risk."""
+    leg1 = _make_state(
+        flight_id=1,
+        last_polled_at="2026-05-18T16:00:00Z",  # past 5-min cadence
+        trip_id=999,
+        scheduled_dep_time="2026-05-18T17:00:00+00:00",
+        scheduled_arr_time="2026-05-18T19:00:00+00:00",
+        dep_airport_id=20,
+        arr_airport_id=28,
+        last_snapshot={
+            "code": "AA100",
+            "computed_status": "departed",
+            "computed_status_detail": "...",
+            "computed_phase_progress": None,
+            "computed_phase_risk": None,
+            "computed_phase_overdue": None,
+            "dep_gate": None,
+            "arr_gate": None,
+            "dep_terminal": None,
+            "arr_terminal": None,
+            "dep_time": "2026-05-18T17:00:00+00:00",
+            "arr_time": "2026-05-18T19:30:00+00:00",
+            "baggage": None,
+            "inbound": {
+                "aircraft_model": None,
+                "registration": None,
+                "flew": None,
+                "predicted_delay_minutes": None,
+            },
+            "position_lat": None,
+            "position_lon": None,
+        },
+    )
+    leg2 = _make_state(
+        flight_id=2,
+        last_polled_at="2026-05-18T16:00:00Z",
+        trip_id=999,
+        code="AA200",
+        scheduled_dep_time="2026-05-18T20:00:00+00:00",
+        scheduled_arr_time="2026-05-18T22:00:00+00:00",
+        dep_airport_id=28,
+        arr_airport_id=40,
+        last_snapshot=None,
+    )
+    write_flight_state(leg1)
+    write_flight_state(leg2)
+    write_active_flights([1, 2])
+
+    fake_now = datetime(2026, 5, 18, 16, 30, 0, tzinfo=timezone.utc)
+    # Both polls fail with URLError — neither was verified this cycle.
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = urllib.error.URLError(
+            "synthetic network failure"
+        )
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    # No removed_upstream (the failures weren't 404s) and no
+    # connection_at_risk (snapshots unverified this cycle).
+    assert not any(e["event"]["reason"] == "connection_at_risk" for e in events)
+    assert not any(e["event"]["reason"] == "removed_upstream" for e in events)
+
+
 def test_connection_risk_honors_config_override(state_root: Path):
     """config.json's min_transfer_minutes overrides the default."""
     from state import write_config

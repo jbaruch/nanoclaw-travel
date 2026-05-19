@@ -613,40 +613,60 @@ def test_missed_connection_false_when_window_positive():
 def test_multi_timezone_sort_uses_utc_not_string():
     """Sort key must compare parsed UTC, not raw RFC3339 strings.
 
-    PDT leg `2026-05-17T09:00:00-07:00` is UTC `2026-05-17T16:00:00Z`.
-    JST leg `2026-05-17T23:00:00+09:00` is UTC `2026-05-17T14:00:00Z`.
-    By UTC, the JST leg is two hours EARLIER, but a naive string sort
-    on the local-time strings ("09:00" < "23:00") would place the PDT
-    leg first.
+    Crafted so the correct UTC sort produces a CHAINED pair (firing an
+    event), while a naive string sort would invert the pair into a
+    non-chaining order (no event). This way the test fails if the
+    implementation regresses to a raw-string sort.
+
+    Leg-A (Sydney departure): `2026-05-17T22:00:00+10:00` =
+    `2026-05-17T12:00:00Z`. Airports 20→28.
+    Leg-B (Chicago departure): `2026-05-17T18:00:00-05:00` =
+    `2026-05-17T23:00:00Z`. Airports 28→40.
+
+    String compare: `"2026-05-17T18..."` (B) < `"2026-05-17T22..."` (A)
+    — string sort places B before A. The pair-walker would then try
+    (B, A), but B.arr_airport_id (40) ≠ A.dep_airport_id (20), so no
+    event would fire.
+
+    UTC compare: A (12:00Z) < B (23:00Z) — UTC sort places A before B.
+    The pair-walker tries (A, B), A.arr_airport_id (28) ==
+    B.dep_airport_id (28), and the projected transfer window of 25 min
+    (B at 23:00Z minus A.arr at 22:35Z) falls below the 45-min default.
+    A `connection_at_risk` event fires for B.
     """
-    pdt_leg = _state(
+    leg_a = _state(
         flight_id=1,
         trip_id=100,
-        code="USJP1",
+        code="AA-AUS",
         dep_airport_id=20,
         arr_airport_id=28,
-        # PDT 09:00 = UTC 16:00 — string-sorts FIRST, but UTC second
-        scheduled_dep_time="2026-05-17T09:00:00-07:00",
-        scheduled_arr_time="2026-05-17T11:00:00-07:00",
+        # AEST 22:00 → UTC 12:00 (string-sorts SECOND, UTC sorts FIRST)
+        scheduled_dep_time="2026-05-17T22:00:00+10:00",
+        # AEST 08:35 next day → UTC 22:35 same day (25 min before B dep)
+        scheduled_arr_time="2026-05-18T08:35:00+10:00",
     )
-    jst_leg = _state(
+    leg_b = _state(
         flight_id=2,
         trip_id=100,
-        code="USJP2",
+        code="AA-CHI",
         dep_airport_id=28,
         arr_airport_id=40,
-        # JST 23:00 = UTC 14:00 — string-sorts LAST, but UTC first
-        scheduled_dep_time="2026-05-17T23:00:00+09:00",
-        scheduled_arr_time="2026-05-18T01:00:00+09:00",
+        # CDT 18:00 → UTC 23:00 (string-sorts FIRST, UTC sorts SECOND)
+        scheduled_dep_time="2026-05-17T18:00:00-05:00",
+        scheduled_arr_time="2026-05-17T20:00:00-05:00",
     )
-    # Caller passes them in the "wrong" order — sort must normalize via UTC.
-    groups = detect_connection_risks(flight_states=[pdt_leg, jst_leg], now_utc=_NOW)
-    # No connection emitted (airports don't chain), but the relevant
-    # assertion is that the sort didn't crash and grouping found the
-    # pair. To test the sort directly, exercise _group_by_trip via the
-    # public API: the function returns [] here because no airport
-    # matches, but it ran without error and reached the inner pair walk.
-    assert groups == []
+    # Need a now_utc that's within 24h of leg-A's scheduled departure
+    # (12:00 UTC May 17). Default _NOW already satisfies that.
+    events = detect_connection_risks(flight_states=[leg_a, leg_b], now_utc=_NOW)
+    # If sort regressed to string-based, pair-walker would try (B, A)
+    # which doesn't chain (40 != 20) and emit nothing. UTC sort yields
+    # (A, B) which chains and fires.
+    assert len(events) == 1
+    fired_for_flight_id, event = events[0]
+    assert fired_for_flight_id == 2
+    assert event["leg1_code"] == "AA-AUS"
+    assert event["leg2_code"] == "AA-CHI"
+    assert event["transfer_minutes_remaining"] == 25
 
 
 # ---------------------------------------------------------------------------

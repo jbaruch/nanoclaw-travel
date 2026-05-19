@@ -122,11 +122,23 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
 
     aggregated_events: list[dict] = []
     # Per `coding-policy: stateful-artifacts` — on-disk state is a
-    # last-seen snapshot, not ground truth. A flight that returned
-    # `not_found` this cycle has been verified removed upstream; its
-    # stale on-disk record must NOT feed into cross-flight derivations
-    # like connection_risk that would emit alerts based on the lie.
+    # last-seen snapshot, not ground truth. Two distinct exclusion
+    # categories feed the cross-flight pass's eligibility decision:
+    #
+    # - `removed_upstream_ids`: flights confirmed gone (byAir 404).
+    #   Their stale snapshot must never produce a derived alert because
+    #   we KNOW it's a lie.
+    # - `poll_failed_ids`: flights whose poll was attempted this cycle
+    #   and failed (non-404 byAir error, URLError transport failure).
+    #   We can't verify the snapshot is current, and the rule says
+    #   "before acting on a recalled value, verify against the live
+    #   source" — failed verification means we don't act.
+    #
+    # Flights NOT due to poll this cycle keep their cadence-bounded
+    # freshness contract and remain eligible — their snapshot is within
+    # the cadence ladder's staleness budget by construction.
     removed_upstream_ids: set[int] = set()
+    poll_failed_ids: set[int] = set()
     for flight_id in active_flight_ids:
         try:
             flight_events = _process_flight(
@@ -147,11 +159,13 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
                 continue
             # Other byAir errors: log to stderr, skip this flight this
             # cycle (don't update last_polled_at so it retries next
-            # cycle).
+            # cycle). The cycle attempted verification and failed, so
+            # the flight is excluded from cross-flight derivations.
             print(
                 f"flight-assist precheck: byair error for flight {flight_id}: {byair_err}",
                 file=sys.stderr,
             )
+            poll_failed_ids.add(flight_id)
             continue
         except urllib.error.URLError as transport_err:
             # Transient transport failure (network, DNS, byAir down).
@@ -160,26 +174,26 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
             # flights' polls still get a chance. last_polled_at is not
             # updated, so the cadence-gate fires for this flight next
             # cycle. Per `coding-policy: error-handling` "Specific
-            # Exceptions" + "Graceful Fallback".
-            #
-            # Note: transport error is NOT removed-upstream; the
-            # snapshot is just stale-unverified-this-cycle. The
-            # connection-risk pass still uses it (the cadence ladder
-            # bounds staleness; treating "couldn't ping this cycle" as
-            # "definitely removed" would over-suppress).
+            # Exceptions" + "Graceful Fallback". This cycle attempted
+            # verification and failed, so the flight is excluded from
+            # cross-flight derivations per `coding-policy:
+            # stateful-artifacts` (verify before recall).
             print(
                 f"flight-assist precheck: transport error for flight {flight_id}: {transport_err}",
                 file=sys.stderr,
             )
+            poll_failed_ids.add(flight_id)
             continue
         for event in flight_events:
             aggregated_events.append({"flight_id": flight_id, "event": event})
 
     # Connection-risk pass: walks the now-up-to-date on-disk state to
     # group flights by trip_id and emit cross-flight risk events. Excludes
-    # flights that this cycle confirmed removed upstream — their stale
-    # state must not contribute to a derived alert.
-    risk_candidate_ids = [fid for fid in active_flight_ids if fid not in removed_upstream_ids]
+    # both removed-upstream flights (snapshot known to lie) and
+    # poll-failed flights (snapshot unverified this cycle) per
+    # stateful-artifacts.
+    excluded_ids = removed_upstream_ids | poll_failed_ids
+    risk_candidate_ids = [fid for fid in active_flight_ids if fid not in excluded_ids]
     aggregated_events.extend(
         _check_connection_risks(
             active_flight_ids=risk_candidate_ids,
