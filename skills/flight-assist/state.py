@@ -470,12 +470,12 @@ _PHASE_MARKER_KEYS = frozenset(
 
 
 def _validate_phase_markers(phase_markers: dict) -> None:
-    """Verify phase_markers has exactly the 5 documented keys, all bool.
+    """Verify phase_markers has exactly the 6 documented keys, all bool.
 
     Per state-schema.md: phase_markers is `{day_before_fired,
     time_to_leave_fired, boarding_fired, arrival_logistics_fired,
-    landed_acknowledged}` — each a plain `bool`. No undocumented
-    keys, no missing keys, no non-bool values.
+    landed_acknowledged, connection_at_risk_fired}` — each a plain `bool`.
+    No undocumented keys, no missing keys, no non-bool values.
     """
     actual_keys = set(phase_markers.keys())
     missing = _PHASE_MARKER_KEYS - actual_keys

@@ -74,6 +74,7 @@ Fires when `baggage` transitions `null` → populated.
   "leg1_flight_id": 12345,
   "connecting_airport_id": 28,
   "transfer_minutes_remaining": 32,
+  "missed_connection": false,
   "scheduled_layover_minutes": 70,
   "min_transfer_minutes": 45,
   "projected_leg1_arr_time": "2026-05-17T13:28:00-07:00",
@@ -82,6 +83,8 @@ Fires when `baggage` transitions `null` → populated.
 ```
 
 Fires when the projected transfer window between leg-1 arrival and leg-2 departure falls below `min_transfer_minutes` (configurable via `config.json:min_transfer_minutes`, default 45). The event is keyed to leg-2's `flight_id` (the at-risk downstream leg) so the once-per-flight phase marker (`connection_at_risk_fired`) survives leg-1 landing.
+
+`missed_connection` is `true` when `transfer_minutes_remaining` is at or below zero — i.e., leg-1 is projected to arrive at or after leg-2 has already departed, so the connection is structurally lost. SKILL.md branches on the flag to render a "rebook required" message instead of a sub-zero "boards in N min" string.
 
 Suppression rules:
 

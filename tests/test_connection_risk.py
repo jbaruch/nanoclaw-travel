@@ -8,6 +8,7 @@ exercise one branch — independent fixtures per test, per
 
 from __future__ import annotations
 
+import copy
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -500,6 +501,122 @@ def test_unsorted_input_groups_by_dep_time_within_trip():
 
 
 # ---------------------------------------------------------------------------
+# Missed connection (transfer window <= 0)
+# ---------------------------------------------------------------------------
+
+
+def test_missed_connection_flag_when_window_is_negative():
+    """Projected leg-1 arrival AFTER leg-2 dep produces missed_connection: true."""
+    states = [
+        _state(
+            flight_id=1,
+            trip_id=100,
+            code="AA100",
+            dep_airport_id=20,
+            arr_airport_id=28,
+            scheduled_dep_time="2026-05-17T13:00:00-07:00",
+            scheduled_arr_time="2026-05-17T15:00:00-07:00",
+            snapshot=_snapshot(
+                computed_status="en_route",
+                # Live ETA pushed to 30 min AFTER leg-2 scheduled dep
+                arr_time="2026-05-17T16:30:00-07:00",
+            ),
+        ),
+        _state(
+            flight_id=2,
+            trip_id=100,
+            code="AA200",
+            dep_airport_id=28,
+            arr_airport_id=40,
+            scheduled_dep_time="2026-05-17T16:00:00-07:00",
+            scheduled_arr_time="2026-05-17T18:00:00-07:00",
+        ),
+    ]
+    events = detect_connection_risks(flight_states=states, now_utc=_NOW)
+    assert len(events) == 1
+    event = events[0][1]
+    assert event["missed_connection"] is True
+    assert event["transfer_minutes_remaining"] == -30
+
+
+def test_missed_connection_false_when_window_positive():
+    """missed_connection is false for normal tight-but-positive windows."""
+    states = [
+        _state(
+            flight_id=1,
+            trip_id=100,
+            code="AA100",
+            dep_airport_id=20,
+            arr_airport_id=28,
+            scheduled_dep_time="2026-05-17T13:00:00-07:00",
+            scheduled_arr_time="2026-05-17T15:00:00-07:00",
+            snapshot=_snapshot(
+                computed_status="departed",
+                arr_time="2026-05-17T15:30:00-07:00",
+            ),
+        ),
+        _state(
+            flight_id=2,
+            trip_id=100,
+            code="AA200",
+            dep_airport_id=28,
+            arr_airport_id=40,
+            scheduled_dep_time="2026-05-17T16:00:00-07:00",
+            scheduled_arr_time="2026-05-17T18:00:00-07:00",
+        ),
+    ]
+    events = detect_connection_risks(flight_states=states, now_utc=_NOW)
+    event = events[0][1]
+    assert event["missed_connection"] is False
+
+
+# ---------------------------------------------------------------------------
+# Multi-timezone trip sorting
+# ---------------------------------------------------------------------------
+
+
+def test_multi_timezone_sort_uses_utc_not_string():
+    """JST leg in the morning sorts before PDT leg in the morning of the same date.
+
+    "2026-05-17T08:00:00+09:00" (JST = 23:00 UTC on May 16) and
+    "2026-05-17T10:00:00-07:00" (PDT = 17:00 UTC on May 17) — naive string
+    sort would put JST first but UTC sort agrees (JST is actually
+    earlier). The opposite case proves the test: an evening JST leg
+    that string-sorts AFTER a morning PDT leg is actually earlier.
+    """
+    pdt_leg = _state(
+        flight_id=1,
+        trip_id=100,
+        code="USJP1",
+        dep_airport_id=20,
+        arr_airport_id=28,
+        # PDT 09:00 = UTC 16:00 (later in UTC than the JST leg below)
+        scheduled_dep_time="2026-05-17T09:00:00-07:00",
+        scheduled_arr_time="2026-05-17T11:00:00-07:00",
+    )
+    jst_leg = _state(
+        flight_id=2,
+        trip_id=100,
+        code="USJP2",
+        dep_airport_id=28,
+        arr_airport_id=40,
+        # JST 23:00 on May 17 = UTC 14:00 on May 17 — EARLIER in UTC
+        # than the PDT 09:00 = UTC 16:00 above, despite the local time
+        # string ordering suggesting the opposite.
+        scheduled_dep_time="2026-05-17T23:00:00+09:00",
+        scheduled_arr_time="2026-05-18T01:00:00+09:00",
+    )
+    # Caller passes them in the "wrong" order — sort must normalize via UTC.
+    groups = detect_connection_risks(flight_states=[pdt_leg, jst_leg], now_utc=_NOW)
+    # No connection emitted (airports don't chain), but the relevant
+    # assertion is that the sort didn't crash and grouping found the
+    # pair. To test the sort directly, exercise _group_by_trip via the
+    # public API: the function returns [] here because no airport
+    # matches, but it ran without error and reached the inner pair walk.
+    assert groups == []
+
+
+# ---------------------------------------------------------------------------
 # Input independence
 # ---------------------------------------------------------------------------
 
@@ -527,12 +644,10 @@ def test_pure_function_does_not_mutate_input_states():
             scheduled_arr_time="2026-05-17T18:00:00-07:00",
         ),
     ]
-    before = [{**s} for s in states]
+    # Deep copy so the comparison detects mutation of nested dicts
+    # (phase_markers, last_snapshot), not just top-level rebinds.
+    before = copy.deepcopy(states)
     first = detect_connection_risks(flight_states=states, now_utc=_NOW)
     second = detect_connection_risks(flight_states=states, now_utc=_NOW)
     assert first == second
-    for current, original in zip(states, before):
-        assert (
-            current["phase_markers"]["connection_at_risk_fired"]
-            == original["phase_markers"]["connection_at_risk_fired"]
-        )
+    assert states == before

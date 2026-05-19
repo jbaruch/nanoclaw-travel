@@ -115,7 +115,7 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
     active_flight_ids = read_active_flights()
     config = read_config() or {}
     home_address = config.get("home_address")
-    min_transfer_minutes = config.get("min_transfer_minutes", DEFAULT_MIN_TRANSFER_MINUTES)
+    min_transfer_minutes = _resolve_min_transfer_minutes(config)
 
     byair = ByAirClient.from_env()
     maps = _maybe_maps_client()  # None when GOOGLE_MAPS_API_KEY unset
@@ -199,15 +199,40 @@ def _check_connection_risks(
         now_utc=now_utc,
         min_transfer_minutes=min_transfer_minutes,
     )
+    states_by_id = {s["flight_id"]: s for s in flight_states}
     emitted: list[dict] = []
     for leg2_flight_id, event in risks:
-        leg2_state = next((s for s in flight_states if s["flight_id"] == leg2_flight_id), None)
+        leg2_state = states_by_id.get(leg2_flight_id)
         if leg2_state is None:
             continue
         leg2_state["phase_markers"]["connection_at_risk_fired"] = True
         write_flight_state(leg2_state)
         emitted.append({"flight_id": leg2_flight_id, "event": event})
     return emitted
+
+
+def _resolve_min_transfer_minutes(config: dict) -> int:
+    """Return the validated `min_transfer_minutes` from config, or the default.
+
+    The on-disk config can be hand-edited; `write_config` rejects bad
+    types but a manually-edited file with `"min_transfer_minutes": "45"`
+    or `True` would slip past the writer. Coerce defensively here so a
+    corrupt config doesn't propagate into `detect_connection_risks` and
+    surface as a TypeError that the outer-boundary catch then suppresses
+    for the whole cycle.
+    """
+    value = config.get("min_transfer_minutes")
+    if value is None:
+        return DEFAULT_MIN_TRANSFER_MINUTES
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        print(
+            f"flight-assist precheck: config.json:min_transfer_minutes is "
+            f"{type(value).__name__} {value!r}, expected non-negative int — "
+            f"falling back to {DEFAULT_MIN_TRANSFER_MINUTES}",
+            file=sys.stderr,
+        )
+        return DEFAULT_MIN_TRANSFER_MINUTES
+    return value
 
 
 def _maybe_maps_client() -> MapsClient | None:

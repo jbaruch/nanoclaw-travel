@@ -96,7 +96,12 @@ def _group_by_trip(flight_states: list[dict]) -> list[list[dict]]:
 
     Single-leg trips (one flight per trip_id) are excluded since they
     have no connection to evaluate. Flights with trip_id == 0 (the sync
-    fallback) or non-int trip_id are skipped.
+    fallback) or non-int trip_id are skipped. Sort key is the parsed
+    UTC datetime — raw RFC3339 string ordering breaks for multi-timezone
+    itineraries (a leg in JST "2026-05-17T08:00:00+09:00" sorts before
+    a leg in PDT "2026-05-17T10:00:00-07:00" by string, but the JST leg
+    is actually 8h earlier in UTC). Legs missing or with unparseable
+    scheduled_dep_time sort last via a sentinel max-future.
     """
     by_trip: dict[int, list[dict]] = {}
     for state in flight_states:
@@ -105,11 +110,14 @@ def _group_by_trip(flight_states: list[dict]) -> list[list[dict]]:
             continue
         by_trip.setdefault(trip_id, []).append(state)
     groups: list[list[dict]] = []
+    sentinel = datetime.max.replace(tzinfo=timezone.utc)
     for trip_id in sorted(by_trip):
         legs = by_trip[trip_id]
         if len(legs) < 2:
             continue
-        legs_sorted = sorted(legs, key=lambda s: s.get("scheduled_dep_time") or "")
+        legs_sorted = sorted(
+            legs, key=lambda s: _parse_iso8601(s.get("scheduled_dep_time")) or sentinel
+        )
         groups.append(legs_sorted)
     return groups
 
@@ -187,7 +195,13 @@ def _evaluate_pair(
         "leg2_code": leg2.get("code") or (leg2.get("last_snapshot") or {}).get("code"),
         "leg1_flight_id": leg1.get("flight_id"),
         "connecting_airport_id": leg2.get("dep_airport_id"),
+        # transfer_minutes_remaining can be <= 0 when projected leg-1 arrival
+        # is AT or AFTER leg-2 scheduled departure (severe delay; the
+        # connection is structurally lost). missed_connection flags that
+        # case so SKILL.md can compose a "rebook required" notification
+        # instead of rendering "boards in -15 min".
         "transfer_minutes_remaining": transfer_minutes,
+        "missed_connection": transfer_minutes <= 0,
         "scheduled_layover_minutes": scheduled_layover_minutes,
         "min_transfer_minutes": min_transfer_minutes,
         "projected_leg1_arr_time": projected_arr_str,
