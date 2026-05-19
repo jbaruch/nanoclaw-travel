@@ -62,6 +62,36 @@ Fires on `computed_status` transition into `boarding`. First-cycle "already boar
 
 Fires when `baggage` transitions `null` → populated.
 
+### Cross-flight (from `connection_risk.py`)
+
+#### `connection_at_risk`
+
+```json
+{
+  "reason": "connection_at_risk",
+  "leg1_code": "AA100",
+  "leg2_code": "AA200",
+  "leg1_flight_id": 12345,
+  "connecting_airport_id": 28,
+  "transfer_minutes_remaining": 32,
+  "missed_connection": false,
+  "scheduled_layover_minutes": 70,
+  "min_transfer_minutes": 45,
+  "projected_leg1_arr_time": "2026-05-17T13:28:00-07:00",
+  "scheduled_leg2_dep_time": "2026-05-17T14:00:00-07:00"
+}
+```
+
+Fires when the projected transfer window between leg-1 arrival and leg-2 departure falls below `min_transfer_minutes` (configurable via `config.json:min_transfer_minutes`, default 45). The event is keyed to leg-2's `flight_id` (the at-risk downstream leg) so the once-per-flight phase marker (`connection_at_risk_fired`) survives leg-1 landing.
+
+`missed_connection` is `true` when `transfer_minutes_remaining` is at or below zero — i.e., leg-1 is projected to arrive at or after leg-2 has already departed, so the connection is structurally lost. SKILL.md branches on the flag to render a "rebook required" message instead of a sub-zero "boards in N min" string.
+
+Suppression rules:
+
+- Skips when leg-1 status is `landed` (outcome observable), `cancelled`, or `diverted` (a more specific alert path fires)
+- Skips when leg-1 scheduled departure is more than 24h away (early projections are too speculative)
+- Skips when `connection_at_risk_fired` is already `true` on the leg-2 record (once-per-flight)
+
 ### Time-based (from `phase_markers.py`)
 
 #### `day_before`

@@ -46,6 +46,10 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_BUNDLE_DIR))
 
 from byair_client import ByAirClient, ByAirError  # noqa: E402
+from connection_risk import (  # noqa: E402
+    DEFAULT_MIN_TRANSFER_MINUTES,
+    detect_connection_risks,
+)
 from maps_client import MapsClient, MapsError  # noqa: E402
 from phase_markers import (  # noqa: E402
     check_arrival_logistics,
@@ -111,11 +115,30 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
     active_flight_ids = read_active_flights()
     config = read_config() or {}
     home_address = config.get("home_address")
+    min_transfer_minutes = _resolve_min_transfer_minutes(config)
 
     byair = ByAirClient.from_env()
     maps = _maybe_maps_client()  # None when GOOGLE_MAPS_API_KEY unset
 
     aggregated_events: list[dict] = []
+    # Per `coding-policy: stateful-artifacts` — on-disk state is a
+    # last-seen snapshot, not ground truth. Two distinct exclusion
+    # categories feed the cross-flight pass's eligibility decision:
+    #
+    # - `removed_upstream_ids`: flights confirmed gone (byAir 404).
+    #   Their stale snapshot must never produce a derived alert because
+    #   we KNOW it's a lie.
+    # - `poll_failed_ids`: flights whose poll was attempted this cycle
+    #   and failed (non-404 byAir error, URLError transport failure).
+    #   We can't verify the snapshot is current, and the rule says
+    #   "before acting on a recalled value, verify against the live
+    #   source" — failed verification means we don't act.
+    #
+    # Flights NOT due to poll this cycle keep their cadence-bounded
+    # freshness contract and remain eligible — their snapshot is within
+    # the cadence ladder's staleness budget by construction.
+    removed_upstream_ids: set[int] = set()
+    poll_failed_ids: set[int] = set()
     for flight_id in active_flight_ids:
         try:
             flight_events = _process_flight(
@@ -132,14 +155,17 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
                 aggregated_events.append(
                     {"flight_id": flight_id, "event": {"reason": "removed_upstream"}}
                 )
+                removed_upstream_ids.add(flight_id)
                 continue
             # Other byAir errors: log to stderr, skip this flight this
             # cycle (don't update last_polled_at so it retries next
-            # cycle).
+            # cycle). The cycle attempted verification and failed, so
+            # the flight is excluded from cross-flight derivations.
             print(
                 f"flight-assist precheck: byair error for flight {flight_id}: {byair_err}",
                 file=sys.stderr,
             )
+            poll_failed_ids.add(flight_id)
             continue
         except urllib.error.URLError as transport_err:
             # Transient transport failure (network, DNS, byAir down).
@@ -148,15 +174,96 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
             # flights' polls still get a chance. last_polled_at is not
             # updated, so the cadence-gate fires for this flight next
             # cycle. Per `coding-policy: error-handling` "Specific
-            # Exceptions" + "Graceful Fallback".
+            # Exceptions" + "Graceful Fallback". This cycle attempted
+            # verification and failed, so the flight is excluded from
+            # cross-flight derivations per `coding-policy:
+            # stateful-artifacts` (verify before recall).
             print(
                 f"flight-assist precheck: transport error for flight {flight_id}: {transport_err}",
                 file=sys.stderr,
             )
+            poll_failed_ids.add(flight_id)
             continue
         for event in flight_events:
             aggregated_events.append({"flight_id": flight_id, "event": event})
+
+    # Connection-risk pass: walks the now-up-to-date on-disk state to
+    # group flights by trip_id and emit cross-flight risk events. Excludes
+    # both removed-upstream flights (snapshot known to lie) and
+    # poll-failed flights (snapshot unverified this cycle) per
+    # stateful-artifacts.
+    excluded_ids = removed_upstream_ids | poll_failed_ids
+    risk_candidate_ids = [fid for fid in active_flight_ids if fid not in excluded_ids]
+    aggregated_events.extend(
+        _check_connection_risks(
+            active_flight_ids=risk_candidate_ids,
+            now_utc=now_utc,
+            min_transfer_minutes=min_transfer_minutes,
+        )
+    )
     return aggregated_events
+
+
+def _check_connection_risks(
+    *,
+    active_flight_ids: list[int],
+    now_utc: datetime,
+    min_transfer_minutes: int,
+) -> list[dict]:
+    """Run the cross-flight connection-risk pass and persist fired markers.
+
+    Returns the `{flight_id, event}`-shaped list ready to merge into the
+    precheck's aggregated event output. For each fired event, this
+    function flips the leg-2 flight's `connection_at_risk_fired` marker
+    in state so subsequent cycles don't re-fire.
+    """
+    flight_states: list[dict] = []
+    for fid in active_flight_ids:
+        state = read_flight_state(fid)
+        if state is not None:
+            flight_states.append(state)
+    risks = detect_connection_risks(
+        flight_states=flight_states,
+        now_utc=now_utc,
+        min_transfer_minutes=min_transfer_minutes,
+    )
+    states_by_id = {s["flight_id"]: s for s in flight_states}
+    emitted: list[dict] = []
+    for leg2_flight_id, event in risks:
+        leg2_state = states_by_id.get(leg2_flight_id)
+        if leg2_state is None:
+            continue
+        leg2_state["phase_markers"]["connection_at_risk_fired"] = True
+        write_flight_state(leg2_state)
+        emitted.append({"flight_id": leg2_flight_id, "event": event})
+    return emitted
+
+
+def _resolve_min_transfer_minutes(config: dict) -> int:
+    """Return the validated `min_transfer_minutes` from config, or the default.
+
+    The on-disk config can be hand-edited; `write_config` rejects bad
+    types and negative values but a manually-edited file with
+    `"min_transfer_minutes": "45"` or `True` would slip past the writer.
+    Coerce defensively here so a corrupt config doesn't propagate into
+    `detect_connection_risks` and surface as the `ValueError` the public
+    API raises on invalid input — which the outer-boundary catch would
+    then suppress for the entire cycle. Falling back to the default keeps
+    the cycle running while the stderr diagnostic flags the bad config
+    for the operator.
+    """
+    value = config.get("min_transfer_minutes")
+    if value is None:
+        return DEFAULT_MIN_TRANSFER_MINUTES
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        print(
+            f"flight-assist precheck: config.json:min_transfer_minutes is "
+            f"{type(value).__name__} {value!r}, expected non-negative int — "
+            f"falling back to {DEFAULT_MIN_TRANSFER_MINUTES}",
+            file=sys.stderr,
+        )
+        return DEFAULT_MIN_TRANSFER_MINUTES
+    return value
 
 
 def _maybe_maps_client() -> MapsClient | None:
@@ -431,6 +538,7 @@ def _initial_phase_markers() -> dict:
         "boarding_fired": False,
         "arrival_logistics_fired": False,
         "landed_acknowledged": False,
+        "connection_at_risk_fired": False,
     }
 
 

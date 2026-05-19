@@ -4,6 +4,26 @@
 
 ### Skills — added
 
+- **`skills/flight-assist/connection_risk.py`** — V1.1 cross-flight connection-risk detector (capability 4 of the V1 spec, previously deferred). Pure-function detector that groups on-disk per-flight state by `trip_id`, sorts each group by `scheduled_dep_time`, and walks consecutive (leg-1, leg-2) pairs where `arr_airport_id(leg-1) == dep_airport_id(leg-2)`. Emits `connection_at_risk` events when the projected transfer window (`scheduled_dep(leg-2) - projected_arr(leg-1)`, taking leg-1's live `arr_time` when populated and `scheduled_arr_time` as fallback) is below `min_transfer_minutes` (config-overridable, default 45). Suppression rules: leg-1 status in `{landed, cancelled, diverted}`, leg-1 scheduled departure > 24h away, `connection_at_risk_fired` already True on leg-2's marker. The event is keyed on leg-2's `flight_id` so the once-per-flight marker survives leg-1 landing. Closes #14.
+
+- **`skills/flight-assist/precheck.py`** — post-loop pass `_check_connection_risks` runs after every cycle's per-flight processing, reads the now-up-to-date flight states, calls `detect_connection_risks`, and flips `connection_at_risk_fired` on each fired leg-2 record before emitting the event. `_initial_phase_markers` includes the new marker key.
+
+- **`skills/flight-assist/SKILL.md`** — composition table gains a `connection_at_risk` row that renders the tight-connection notification. Description triggers extended with "connection at risk" / "tight connection alert" so the runtime matches the new intent.
+
+- **`skills/flight-assist/references/event-payloads.md`** — new "Cross-flight" section documenting the `connection_at_risk` shape and suppression rules.
+
+- **`skills/flight-assist/sync_tripit.py`** — `_initial_state` includes `connection_at_risk_fired: false` on the new-flight phase_markers dict.
+
+### State schema — v1 → v2
+
+- **`skills/flight-assist/state.py`** — `STATE_SCHEMA_VERSION` bumped to `2`. Owner-side migration (`_migrate`) handles the v1 → v2 upgrade: adds `connection_at_risk_fired: false` to per-flight `phase_markers`, rewrites at v2. Config and active-flights files have no shape change at v2; they receive a schema_version bump only via the same migration code path on first read. Per `coding-policy: stateful-artifacts` "Migration Policy", only the owner skill migrates — reader skills from other tiles continue to get `StateError` on mismatched version. Strict reader contract preserved: missing/wrong-type `schema_version`, schema_version higher than current, and corrupt JSON still raise `StateError` with actionable repair guidance.
+
+- **`skills/flight-assist/state.py`** — `_PHASE_MARKER_KEYS` extended with `connection_at_risk_fired`; the read+write validators reject phase_markers dicts missing the new key or carrying it as a non-bool. `_CONFIG_OPTIONAL_FIELDS` extended with `min_transfer_minutes: int` (with explicit bool-rejection on int fields to match the rest of the validator family).
+
+- **`skills/flight-assist/state-schema.md`** — documents v2 shape, the new `connection_at_risk_fired` marker (carried on leg-2 so it survives leg-1 landing), and the new optional `min_transfer_minutes` config field. The Migration Policy section names the v1 → v2 migration explicitly and reaffirms the owner-only migration discipline.
+
+### Skills — added (V1)
+
 - **`skills/flight-assist/sync_tripit.py`** — daily reconciliation of the active-flights index against byAir's `list_trips`. Reads upstream, diffs against the on-disk `active-flights.json`, writes initial state records for added flights, deletes state for removed flights, emits the same `{wake_agent: bool, data: {events: [...]}}` payload shape as `precheck.py` — sync adds use `reason: "tracked_flight_added"` and sync removes use `reason: "tracked_flight_removed"` so SKILL.md Step 3's composition table is the single consumer contract. Removed-flight events capture `code` + scheduled times BEFORE state deletion so the agent has the metadata it needs to render notifications. Same outer-boundary-process-contract carve-out as `precheck.py`. Exports `initialize_flight_from_byair()` for the precheck to call when it encounters a flight_id not yet on the index. stdlib-only.
 
 - **`skills/flight-assist/SKILL.md`** — full V1 action-router SKILL.md. Three actions: `Diagnose env` (preserved from v0.1.0), `Set home base` (records `home_address` to config via `state.write_config`), and `Compose wake event notification` (per-event-type composition table covering all 10 documented wake reasons — `cancelled`, `diverted`, `gate_change`, `delay`, `inbound_delay_predicted`, `boarding_started`, `carousel_revealed`, `day_before`, `time_to_leave`, `arrival_logistics`, `removed_upstream`). Multi-event merging rule (one notification per flight per cycle, ordered by urgency). References `references/event-payloads.md` for the full event-shape contract. Skill review: 90% (Description 90, Content 85).
@@ -25,10 +45,6 @@
 ### Rules
 
 - **Closed-loop carve-out claimed for `jbaruch/coding-policy: plugin-evals`** (2026-05-18). This tile is part of the `jbaruch/nanoclaw-*` plugin fleet — a fully-automated agent loop satisfying all three preconditions of the rule's "Narrow exception for closed-loop automated systems with no human eval-result consumption" clause: (1) no human reviews eval output for this tile in any form (no eval scores, no lift deltas, no scenario-by-scenario diffs, no regression alerts); (2) no automated gate consumes eval results (no `evals.yml` workflow, no publish-tile eval step, no downstream dashboard or paging route); (3) the owner accepts that re-introducing any consumption of eval results later — whether human review OR automated gating — requires re-introducing evals first under the standard requirement. Matches the carve-out previously claimed by `jbaruch/nanoclaw-admin` on 2026-05-09 and inherited by every `jbaruch/nanoclaw-*` tile thereafter. No `evals/` directory ships in this tile.
-
-### Known deferrals (V1.1)
-
-- **Connection-risk derivation** (capability 4 of the V1 spec) — the trip-traversal logic that walks `byair_list_trips` connections, compares leg-1 delay against the leg-1→leg-2 transfer window using a min-transfer-time table (intl/dom by connecting airport), and emits `connection_at_risk` events. The event slot is reserved in the precheck composition table (SKILL.md Step 3 will accept it cleanly when added); the trip-traversal code itself ships in V1.1.
 
 ### Initial scaffold
 
