@@ -384,6 +384,76 @@ def test_connection_risk_pass_fires_and_persists_marker(state_root: Path):
     assert second_risks == []
 
 
+def test_connection_risk_excludes_removed_upstream_flights(state_root: Path):
+    """A flight that emits removed_upstream this cycle must not also fuel
+    a connection_at_risk derived from its now-stale on-disk snapshot."""
+    from byair_client import ByAirError
+
+    leg1 = _make_state(
+        flight_id=1,
+        last_polled_at="2026-05-18T16:00:00Z",  # 30 min ago — past 5-min cadence
+        trip_id=999,
+        scheduled_dep_time="2026-05-18T17:00:00+00:00",
+        scheduled_arr_time="2026-05-18T19:00:00+00:00",
+        dep_airport_id=20,
+        arr_airport_id=28,
+        last_snapshot={
+            "code": "AA100",
+            "computed_status": "departed",
+            "computed_status_detail": "...",
+            "computed_phase_progress": None,
+            "computed_phase_risk": None,
+            "computed_phase_overdue": None,
+            "dep_gate": None,
+            "arr_gate": None,
+            "dep_terminal": None,
+            "arr_terminal": None,
+            "dep_time": "2026-05-18T17:00:00+00:00",
+            "arr_time": "2026-05-18T19:30:00+00:00",
+            "baggage": None,
+            "inbound": {
+                "aircraft_model": None,
+                "registration": None,
+                "flew": None,
+                "predicted_delay_minutes": None,
+            },
+            "position_lat": None,
+            "position_lon": None,
+        },
+    )
+    leg2 = _make_state(
+        flight_id=2,
+        last_polled_at="2026-05-18T16:00:00Z",  # 30 min ago — past cadence
+        trip_id=999,
+        code="AA200",
+        scheduled_dep_time="2026-05-18T20:00:00+00:00",
+        scheduled_arr_time="2026-05-18T22:00:00+00:00",
+        dep_airport_id=28,
+        arr_airport_id=40,
+        last_snapshot=None,
+    )
+    write_flight_state(leg1)
+    write_flight_state(leg2)
+    write_active_flights([1, 2])
+
+    fake_now = datetime(2026, 5, 18, 16, 30, 0, tzinfo=timezone.utc)
+    # Both flights' polls return not_found upstream — their stale state
+    # must not feed the connection-risk pass even though on-disk it
+    # would otherwise emit a tight-connection alert.
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = ByAirError(
+            "not_found", "Flight not found"
+        )
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    # removed_upstream fires for both flights (both got 404)
+    removed_reasons = [e for e in events if e["event"]["reason"] == "removed_upstream"]
+    assert {e["flight_id"] for e in removed_reasons} == {1, 2}
+
+    # No connection_at_risk — both legs were removed upstream this cycle
+    assert not any(e["event"]["reason"] == "connection_at_risk" for e in events)
+
+
 def test_connection_risk_honors_config_override(state_root: Path):
     """config.json's min_transfer_minutes overrides the default."""
     from state import write_config

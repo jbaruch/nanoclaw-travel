@@ -121,6 +121,12 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
     maps = _maybe_maps_client()  # None when GOOGLE_MAPS_API_KEY unset
 
     aggregated_events: list[dict] = []
+    # Per `coding-policy: stateful-artifacts` — on-disk state is a
+    # last-seen snapshot, not ground truth. A flight that returned
+    # `not_found` this cycle has been verified removed upstream; its
+    # stale on-disk record must NOT feed into cross-flight derivations
+    # like connection_risk that would emit alerts based on the lie.
+    removed_upstream_ids: set[int] = set()
     for flight_id in active_flight_ids:
         try:
             flight_events = _process_flight(
@@ -137,6 +143,7 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
                 aggregated_events.append(
                     {"flight_id": flight_id, "event": {"reason": "removed_upstream"}}
                 )
+                removed_upstream_ids.add(flight_id)
                 continue
             # Other byAir errors: log to stderr, skip this flight this
             # cycle (don't update last_polled_at so it retries next
@@ -154,6 +161,12 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
             # updated, so the cadence-gate fires for this flight next
             # cycle. Per `coding-policy: error-handling` "Specific
             # Exceptions" + "Graceful Fallback".
+            #
+            # Note: transport error is NOT removed-upstream; the
+            # snapshot is just stale-unverified-this-cycle. The
+            # connection-risk pass still uses it (the cadence ladder
+            # bounds staleness; treating "couldn't ping this cycle" as
+            # "definitely removed" would over-suppress).
             print(
                 f"flight-assist precheck: transport error for flight {flight_id}: {transport_err}",
                 file=sys.stderr,
@@ -163,12 +176,13 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
             aggregated_events.append({"flight_id": flight_id, "event": event})
 
     # Connection-risk pass: walks the now-up-to-date on-disk state to
-    # group flights by trip_id and emit cross-flight risk events. Reads
-    # state we just rewrote inside _process_flight; flights that were
-    # not due for poll still contribute their existing last_snapshot.
+    # group flights by trip_id and emit cross-flight risk events. Excludes
+    # flights that this cycle confirmed removed upstream — their stale
+    # state must not contribute to a derived alert.
+    risk_candidate_ids = [fid for fid in active_flight_ids if fid not in removed_upstream_ids]
     aggregated_events.extend(
         _check_connection_risks(
-            active_flight_ids=active_flight_ids,
+            active_flight_ids=risk_candidate_ids,
             now_utc=now_utc,
             min_transfer_minutes=min_transfer_minutes,
         )
