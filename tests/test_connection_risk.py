@@ -13,6 +13,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
@@ -498,6 +500,39 @@ def test_unsorted_input_groups_by_dep_time_within_trip():
     assert len(events) == 1
     assert events[0][1]["leg1_code"] == "AA100"
     assert events[0][1]["leg2_code"] == "AA200"
+
+
+# ---------------------------------------------------------------------------
+# min_transfer_minutes validation at the API boundary
+# ---------------------------------------------------------------------------
+
+
+def test_rejects_bool_min_transfer_minutes():
+    """bool is a subclass of int; True must not pass as 1 minute."""
+    with pytest.raises(ValueError, match="min_transfer_minutes"):
+        detect_connection_risks(
+            flight_states=[],
+            now_utc=_NOW,
+            min_transfer_minutes=True,  # type: ignore[arg-type]
+        )
+
+
+def test_rejects_string_min_transfer_minutes():
+    with pytest.raises(ValueError, match="min_transfer_minutes"):
+        detect_connection_risks(
+            flight_states=[],
+            now_utc=_NOW,
+            min_transfer_minutes="45",  # type: ignore[arg-type]
+        )
+
+
+def test_rejects_negative_min_transfer_minutes():
+    with pytest.raises(ValueError, match="min_transfer_minutes"):
+        detect_connection_risks(
+            flight_states=[],
+            now_utc=_NOW,
+            min_transfer_minutes=-5,
+        )
 
 
 # ---------------------------------------------------------------------------

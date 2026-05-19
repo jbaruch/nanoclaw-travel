@@ -78,7 +78,23 @@ def detect_connection_risks(
     where `projected_arr(leg-1)` comes from leg-1's live `arr_time`
     snapshot when present, otherwise from `scheduled_arr_time` (no live
     update yet means scheduled is the best estimate).
+
+    Raises ValueError if `min_transfer_minutes` is not a plain non-negative
+    int — `bool` is rejected (it's a subclass of `int` in Python so
+    `True` would silently behave as `1 min`), matching the validator
+    discipline applied to schema_version / flight_id / config fields
+    elsewhere in this tile.
     """
+    if (
+        not isinstance(min_transfer_minutes, int)
+        or isinstance(min_transfer_minutes, bool)
+        or min_transfer_minutes < 0
+    ):
+        raise ValueError(
+            f"detect_connection_risks: min_transfer_minutes must be a "
+            f"non-negative int, got {type(min_transfer_minutes).__name__} "
+            f"{min_transfer_minutes!r}"
+        )
     events: list[tuple[int, dict]] = []
     for trip_group in _group_by_trip(flight_states):
         events.extend(
