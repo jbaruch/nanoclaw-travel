@@ -227,6 +227,17 @@ def write_config(config: dict) -> None:
                 f"write_config: field '{key}' is {type(value).__name__} "
                 f"{value!r}, expected {expected_type.__name__}"
             )
+        # Key-specific range checks. `min_transfer_minutes` must be >= 0
+        # to match `_resolve_min_transfer_minutes` (precheck) and
+        # `detect_connection_risks` (public API), which both reject
+        # negatives. A negative value silently persisted here would
+        # surface as a fallback / ValueError downstream — louder to
+        # reject at the write surface.
+        if key == "min_transfer_minutes" and value < 0:
+            raise ValueError(
+                f"write_config: field 'min_transfer_minutes' is {value}, "
+                f"expected non-negative int"
+            )
     payload = {**config, "schema_version": STATE_SCHEMA_VERSION}
     _atomic_write_json(state_dir() / CONFIG_FILE, payload)
 

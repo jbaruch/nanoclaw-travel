@@ -253,6 +253,19 @@ def test_write_config_rejects_bool_min_transfer_minutes(state_root: Path):
         write_config({"min_transfer_minutes": True})  # type: ignore[dict-item]
 
 
+def test_write_config_rejects_negative_min_transfer_minutes(state_root: Path):
+    """Match the precheck and detect_connection_risks contracts."""
+    with pytest.raises(ValueError, match="non-negative"):
+        write_config({"min_transfer_minutes": -5})
+
+
+def test_write_config_accepts_zero_min_transfer_minutes(state_root: Path):
+    """Zero is the inclusive lower bound; non-negative means >= 0."""
+    write_config({"min_transfer_minutes": 0})
+    loaded = read_config()
+    assert loaded["min_transfer_minutes"] == 0
+
+
 def test_write_config_rejects_unknown_key(state_root: Path):
     with pytest.raises(ValueError, match="unknown field"):
         write_config({"home_address": "OK", "undocumented_key": "value"})
