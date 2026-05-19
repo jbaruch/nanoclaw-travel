@@ -62,6 +62,7 @@ def _make_flight_state(flight_id: int = 12345, **overrides) -> dict:
             "boarding_fired": False,
             "arrival_logistics_fired": False,
             "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
         },
         "last_snapshot": None,
         "last_wake_at": None,
@@ -369,12 +370,91 @@ def test_future_schema_version_raises_state_error(state_root: Path):
         read_config()
 
 
-def test_past_schema_version_raises_state_error(state_root: Path):
-    """schema_version < current must raise StateError today (no migrations registered)."""
+def test_unknown_past_schema_version_raises_state_error(state_root: Path):
+    """schema_version < current without a registered migration path raises."""
     state_root.mkdir(parents=True)
     (state_root / CONFIG_FILE).write_text(json.dumps({"schema_version": 0, "home_address": "X"}))
-    with pytest.raises(StateError, match="schema_version"):
+    with pytest.raises(StateError, match="no migration path"):
         read_config()
+
+
+def test_v1_to_v2_migration_adds_connection_at_risk_marker(state_root: Path):
+    """v1 per-flight state migrates: phase_markers gains connection_at_risk_fired."""
+    state_root.mkdir(parents=True)
+    v1_state = {
+        "schema_version": 1,
+        "flight_id": 12345,
+        "code": "AA2414",
+        "ownership": "mine",
+        "trip_id": 678,
+        "scheduled_dep_time": "2026-05-17T09:00:00-07:00",
+        "scheduled_arr_time": "2026-05-17T11:09:00-07:00",
+        "dep_airport_id": 20,
+        "arr_airport_id": 28,
+        "last_polled_at": "2026-05-17T18:42:11Z",
+        "last_snapshot": None,
+        "phase_markers": {
+            "day_before_fired": False,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+        },
+        "last_wake_at": None,
+        "last_wake_reason": None,
+    }
+    (state_root / "flight-12345.json").write_text(json.dumps(v1_state))
+
+    loaded = read_flight_state(12345)
+    assert loaded is not None
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["phase_markers"]["connection_at_risk_fired"] is False
+    # Migration rewrote the file: re-read from disk and verify persisted.
+    raw = json.loads((state_root / "flight-12345.json").read_text())
+    assert raw["schema_version"] == STATE_SCHEMA_VERSION
+    assert raw["phase_markers"]["connection_at_risk_fired"] is False
+
+
+def test_v1_to_v2_migration_idempotent_when_marker_present(state_root: Path):
+    """A v1 record that already has the new marker key migrates without conflict."""
+    state_root.mkdir(parents=True)
+    v1_state = {
+        "schema_version": 1,
+        "flight_id": 12345,
+        "code": "AA2414",
+        "ownership": "mine",
+        "trip_id": 678,
+        "scheduled_dep_time": "2026-05-17T09:00:00-07:00",
+        "scheduled_arr_time": "2026-05-17T11:09:00-07:00",
+        "dep_airport_id": 20,
+        "arr_airport_id": 28,
+        "last_polled_at": "2026-05-17T18:42:11Z",
+        "last_snapshot": None,
+        "phase_markers": {
+            "day_before_fired": False,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": True,  # caller pre-set
+        },
+        "last_wake_at": None,
+        "last_wake_reason": None,
+    }
+    (state_root / "flight-12345.json").write_text(json.dumps(v1_state))
+    loaded = read_flight_state(12345)
+    assert loaded["phase_markers"]["connection_at_risk_fired"] is True
+
+
+def test_v1_config_migration_bumps_version_without_shape_change(state_root: Path):
+    """v1 config files have no shape change at v2 — just schema_version bump."""
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text(
+        json.dumps({"schema_version": 1, "home_address": "1 Old Loop"})
+    )
+    loaded = read_config()
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["home_address"] == "1 Old Loop"
 
 
 def test_string_schema_version_raises_state_error(state_root: Path):

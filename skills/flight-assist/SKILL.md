@@ -1,6 +1,6 @@
 ---
 name: flight-assist
-description: Flight notifications and prep for tracked trips. Diagnose env, set home base, or compose a user-facing message from a precheck wake event. Triggers - "check flight-assist env", "diagnose flight-assist", "set flight-assist home base", "set home address", "configure flight-assist", "flight delay notification", "gate change notification", "cancellation notification", "boarding alert", "time to leave alert", "inbound delay notification", "baggage carousel", "arrival logistics", "day before sanity check", "flight removed upstream".
+description: Flight notifications and prep for tracked trips. Diagnose env, set home base, or compose a user-facing message from a precheck wake event. Triggers - "check flight-assist env", "diagnose flight-assist", "set flight-assist home base", "set home address", "configure flight-assist", "flight delay notification", "gate change notification", "cancellation notification", "boarding alert", "time to leave alert", "inbound delay notification", "baggage carousel", "arrival logistics", "day before sanity check", "flight removed upstream", "connection at risk", "tight connection alert".
 ---
 
 # Flight Assist
@@ -54,6 +54,7 @@ The full event-shape contract is in `references/event-payloads.md`; consult it w
 | `gate_change` | "Gate change: `<code>` moved from `<from>` to `<to>`." If `to` is null, "Gate `<from>` removed from `<code>`." |
 | `delay` | "Flight `<code>` delayed by `<delay_minutes>` min. New departure: `<new_dep_time>` (local)." Negative `delay_minutes` = advanced; phrase as "moved earlier by N min" |
 | `inbound_delay_predicted` | "Inbound aircraft delay predicted: `<delay_minutes>` min for `<code>`. New estimated departure: `<predicted_time>`." |
+| `connection_at_risk` | "Tight connection: `<leg2_code>` boards in `<transfer_minutes_remaining>` min after `<leg1_code>` arrives — below the `<min_transfer_minutes>`-min buffer. Consider rebooking now while `<leg1_code>` is on the ground." `flight_id` on this event refers to leg-2 (the downstream leg) |
 | `boarding_started` | "Boarding now: `<code>`. Gate `<dep_gate>`, terminal `<dep_terminal>`." |
 | `carousel_revealed` | "Baggage carousel for `<code>`: `<baggage>`." |
 | `day_before` | Day-before sanity check: read the user's calendar via MCP if available, list any events that overlap the flight window (T-3h before dep through T+3h after arr), and summarize. Read flight state via `read_flight_state(flight_id)` for context |

@@ -5,7 +5,7 @@ deltas between byAir snapshots. State lives under
 `/workspace/state/flight-assist/` in production; tests override the
 directory via the `FLIGHT_ASSIST_STATE_DIR` environment variable.
 
-Files written (all JSON, all carry `schema_version: 1` at the top level):
+Files written (all JSON, all carry `schema_version: 2` at the top level):
 
     config.json                       — home_address, etc. (set via /setup)
     active-flights.json               — list of currently-tracked flight_ids
@@ -47,7 +47,7 @@ import json
 import os
 from pathlib import Path
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 
 _DEFAULT_STATE_DIR = "/workspace/state/flight-assist"
 _STATE_DIR_ENV = "FLIGHT_ASSIST_STATE_DIR"
@@ -117,11 +117,9 @@ def _read_json_with_version(path: Path) -> dict | None:
     or schema_version higher than the current module constant.
 
     schema_version equal to STATE_SCHEMA_VERSION returns the payload.
-    schema_version LOWER than the current is reserved for owner-skill
-    migration paths; today STATE_SCHEMA_VERSION is 1 so no older
-    version exists. When a v2 ships, the owner-skill migration logic
-    adds branches above this method that upgrade-and-rewrite before
-    returning.
+    schema_version LOWER than the current runs the owner-side migration
+    in `_migrate` (which upgrade-and-rewrites the file before
+    returning). Unknown lower versions raise StateError.
     """
     if not path.exists():
         return None
@@ -145,12 +143,46 @@ def _read_json_with_version(path: Path) -> dict | None:
             f"state file {path} has schema_version of type {type(version).__name__} "
             f"({version!r}), expected int — remove the file and let the owner skill rewrite it"
         )
-    if version != STATE_SCHEMA_VERSION:
+    if version > STATE_SCHEMA_VERSION:
         raise StateError(
             f"state file {path} has schema_version {version}, this module is at "
-            f"{STATE_SCHEMA_VERSION} — upgrade or downgrade flight-assist, or remove the file"
+            f"{STATE_SCHEMA_VERSION} — upgrade flight-assist, or remove the file"
         )
+    if version < STATE_SCHEMA_VERSION:
+        payload = _migrate(payload, from_version=version, path=path)
     return payload
+
+
+def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
+    """Owner-side schema migration. Upgrades old payloads in place and rewrites.
+
+    Migrations are additive only — non-owner readers see the latest
+    schema after the owner skill (this module) reads any older file.
+    Per `coding-policy: stateful-artifacts`, only the owner skill
+    migrates; readers from other tiles get `StateError` on mismatch.
+
+    Each branch handles one version transition. Re-running a migration
+    on already-upgraded data is a no-op so the function is idempotent.
+    """
+    if from_version == 1:
+        # v1 → v2: add `connection_at_risk_fired: False` to per-flight
+        # phase_markers. Config and active-flights files have no shape
+        # change at v2 — they only get a schema_version bump.
+        phase_markers = payload.get("phase_markers")
+        if isinstance(phase_markers, dict) and "connection_at_risk_fired" not in phase_markers:
+            phase_markers["connection_at_risk_fired"] = False
+        payload["schema_version"] = 2
+        _atomic_write_json(path, payload)
+        return payload
+    # Unknown older version: refuse to silently pass through. The
+    # migration table above is the authoritative list of known
+    # upgrade paths; anything not listed is either corruption or a
+    # downgrade gap and needs human intervention.
+    raise StateError(
+        f"state file {path} has schema_version {from_version}, no migration "
+        f"path registered to reach {STATE_SCHEMA_VERSION} — remove the file or "
+        f"restore a known version"
+    )
 
 
 def read_config() -> dict | None:
@@ -160,6 +192,7 @@ def read_config() -> dict | None:
 
 _CONFIG_OPTIONAL_FIELDS: dict[str, type] = {
     "home_address": str,
+    "min_transfer_minutes": int,
 }
 
 
@@ -187,6 +220,8 @@ def write_config(config: dict) -> None:
                 f"introducing new fields"
             )
         expected_type = _CONFIG_OPTIONAL_FIELDS[key]
+        if expected_type is int and isinstance(value, bool):
+            raise ValueError(f"write_config: field '{key}' is bool {value!r}, expected int")
         if not isinstance(value, expected_type):
             raise ValueError(
                 f"write_config: field '{key}' is {type(value).__name__} "
@@ -429,6 +464,7 @@ _PHASE_MARKER_KEYS = frozenset(
         "boarding_fired",
         "arrival_logistics_fired",
         "landed_acknowledged",
+        "connection_at_risk_fired",
     }
 )
 

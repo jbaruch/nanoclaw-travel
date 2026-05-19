@@ -19,15 +19,17 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 1,
-  "home_address": "1 Infinite Loop, Cupertino, CA 95014"
+  "schema_version": 2,
+  "home_address": "1 Infinite Loop, Cupertino, CA 95014",
+  "min_transfer_minutes": 45
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `1`
+- `schema_version` (int, required) — currently `2`
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
+- `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
 
 ### `active-flights.json`
 
@@ -35,14 +37,14 @@ Index of currently-tracked flight IDs. Refreshed daily by the sync-tripit script
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "flight_ids": [12345, 67890, 11111]
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `1`
+- `schema_version` (int, required) — currently `2`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
 ### `flight-<flight_id>.json`
@@ -51,7 +53,7 @@ Per-flight state record. One file per tracked flight.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "flight_id": 12345,
   "code": "AA2414",
   "ownership": "mine",
@@ -89,7 +91,8 @@ Per-flight state record. One file per tracked flight.
     "time_to_leave_fired": false,
     "boarding_fired": false,
     "arrival_logistics_fired": false,
-    "landed_acknowledged": false
+    "landed_acknowledged": false,
+    "connection_at_risk_fired": false
   },
   "last_wake_at": null,
   "last_wake_reason": null
@@ -98,7 +101,7 @@ Per-flight state record. One file per tracked flight.
 
 Top-level fields:
 
-- `schema_version` (int, required) — `1`
+- `schema_version` (int, required) — `2`
 - `flight_id` (int, required) — byAir's flight identifier
 - `code` (string, required) — flight number like `"AA2414"`
 - `ownership` (string, required) — `"mine"` or `"friend"`
@@ -133,6 +136,7 @@ Top-level fields:
 - `boarding_fired` — Status transition to `boarding`
 - `arrival_logistics_fired` — T-arr−15min logistics push
 - `landed_acknowledged` — User acknowledged the landing notification
+- `connection_at_risk_fired` — Cross-flight: projected transfer window on this leg-2 has fallen below `min_transfer_minutes`. Carried on the leg-2 (downstream) record so the marker survives leg-1 landing
 
 ## Atomic Writes
 
@@ -140,16 +144,20 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Today `STATE_SCHEMA_VERSION` is `1` — no older version exists, so the migration paths below describe the contract for future bumps.
+Today `STATE_SCHEMA_VERSION` is `2`.
 
-`state.py`'s read helpers enforce strict equality on `schema_version`:
+`state.py`'s read helpers enforce these rules on `schema_version`:
 
 - Equal to current → return the payload
 - Higher than current → `StateError` (forward incompatibility; never silently downgrade)
-- Lower than current → `StateError` (no migration logic registered yet)
+- Lower than current → run the owner-side migration in `_migrate`, rewrite at the current version, return the upgraded payload
 - Missing, wrong type (non-int, including `bool`) → `StateError` with actionable repair message
 
-When a v2 ships, the owner skill (`flight-assist`) adds explicit migration branches that read the old shape, upgrade it, write the new shape, and return. Reader skills (non-owners) keep the strict-equality behavior — they get `StateError` on any mismatched version and treat the data as "no usable prior state".
+Reader skills (non-owners) keep the strict-equality behavior — they get `StateError` on any mismatched version and treat the data as "no usable prior state". Only the owner skill (`flight-assist`, this tile, via `state.py:_migrate`) migrates.
+
+### v1 → v2
+
+Per-flight state: `phase_markers` gains `connection_at_risk_fired: false`. The owner-side migration in `state.py:_migrate` adds the missing key on first read and rewrites the file at v2. Config and active-flights files have no shape change at v2 — they receive a schema_version bump only.
 
 ## Bump Procedure
 

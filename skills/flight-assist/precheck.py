@@ -46,6 +46,10 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_BUNDLE_DIR))
 
 from byair_client import ByAirClient, ByAirError  # noqa: E402
+from connection_risk import (  # noqa: E402
+    DEFAULT_MIN_TRANSFER_MINUTES,
+    detect_connection_risks,
+)
 from maps_client import MapsClient, MapsError  # noqa: E402
 from phase_markers import (  # noqa: E402
     check_arrival_logistics,
@@ -111,6 +115,7 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
     active_flight_ids = read_active_flights()
     config = read_config() or {}
     home_address = config.get("home_address")
+    min_transfer_minutes = config.get("min_transfer_minutes", DEFAULT_MIN_TRANSFER_MINUTES)
 
     byair = ByAirClient.from_env()
     maps = _maybe_maps_client()  # None when GOOGLE_MAPS_API_KEY unset
@@ -156,7 +161,53 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
             continue
         for event in flight_events:
             aggregated_events.append({"flight_id": flight_id, "event": event})
+
+    # Connection-risk pass: walks the now-up-to-date on-disk state to
+    # group flights by trip_id and emit cross-flight risk events. Reads
+    # state we just rewrote inside _process_flight; flights that were
+    # not due for poll still contribute their existing last_snapshot.
+    aggregated_events.extend(
+        _check_connection_risks(
+            active_flight_ids=active_flight_ids,
+            now_utc=now_utc,
+            min_transfer_minutes=min_transfer_minutes,
+        )
+    )
     return aggregated_events
+
+
+def _check_connection_risks(
+    *,
+    active_flight_ids: list[int],
+    now_utc: datetime,
+    min_transfer_minutes: int,
+) -> list[dict]:
+    """Run the cross-flight connection-risk pass and persist fired markers.
+
+    Returns the `{flight_id, event}`-shaped list ready to merge into the
+    precheck's aggregated event output. For each fired event, this
+    function flips the leg-2 flight's `connection_at_risk_fired` marker
+    in state so subsequent cycles don't re-fire.
+    """
+    flight_states: list[dict] = []
+    for fid in active_flight_ids:
+        state = read_flight_state(fid)
+        if state is not None:
+            flight_states.append(state)
+    risks = detect_connection_risks(
+        flight_states=flight_states,
+        now_utc=now_utc,
+        min_transfer_minutes=min_transfer_minutes,
+    )
+    emitted: list[dict] = []
+    for leg2_flight_id, event in risks:
+        leg2_state = next((s for s in flight_states if s["flight_id"] == leg2_flight_id), None)
+        if leg2_state is None:
+            continue
+        leg2_state["phase_markers"]["connection_at_risk_fired"] = True
+        write_flight_state(leg2_state)
+        emitted.append({"flight_id": leg2_flight_id, "event": event})
+    return emitted
 
 
 def _maybe_maps_client() -> MapsClient | None:
@@ -431,6 +482,7 @@ def _initial_phase_markers() -> dict:
         "boarding_fired": False,
         "arrival_logistics_fired": False,
         "landed_acknowledged": False,
+        "connection_at_risk_fired": False,
     }
 
 

@@ -221,6 +221,7 @@ def _initial_state(flight: dict, *, now_utc: datetime) -> dict:
             "boarding_fired": False,
             "arrival_logistics_fired": False,
             "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
         },
         "last_wake_at": None,
         "last_wake_reason": None,

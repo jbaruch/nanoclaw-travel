@@ -62,6 +62,33 @@ Fires on `computed_status` transition into `boarding`. First-cycle "already boar
 
 Fires when `baggage` transitions `null` → populated.
 
+### Cross-flight (from `connection_risk.py`)
+
+#### `connection_at_risk`
+
+```json
+{
+  "reason": "connection_at_risk",
+  "leg1_code": "AA100",
+  "leg2_code": "AA200",
+  "leg1_flight_id": 12345,
+  "connecting_airport_id": 28,
+  "transfer_minutes_remaining": 32,
+  "scheduled_layover_minutes": 70,
+  "min_transfer_minutes": 45,
+  "projected_leg1_arr_time": "2026-05-17T13:28:00-07:00",
+  "scheduled_leg2_dep_time": "2026-05-17T14:00:00-07:00"
+}
+```
+
+Fires when the projected transfer window between leg-1 arrival and leg-2 departure falls below `min_transfer_minutes` (configurable via `config.json:min_transfer_minutes`, default 45). The event is keyed to leg-2's `flight_id` (the at-risk downstream leg) so the once-per-flight phase marker (`connection_at_risk_fired`) survives leg-1 landing.
+
+Suppression rules:
+
+- Skips when leg-1 status is `landed` (outcome observable), `cancelled`, or `diverted` (a more specific alert path fires)
+- Skips when leg-1 scheduled departure is more than 24h away (early projections are too speculative)
+- Skips when `connection_at_risk_fired` is already `true` on the leg-2 record (once-per-flight)
+
 ### Time-based (from `phase_markers.py`)
 
 #### `day_before`

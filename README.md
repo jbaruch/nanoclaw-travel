@@ -6,7 +6,7 @@ Actionable flight notifications for NanoClaw. Replaces generic "21 minutes to de
 
 Per-chat overlay tile. Install via NanoClaw's `containerConfig.additionalTiles` mechanism.
 
-## Capabilities (target — V1 in progress)
+## Capabilities (V1.1 shipped)
 
 1. **Time-to-leave** — traffic-aware push N hours before departure ("leave by 11:30, traffic is 45 min")
 2. **Day-before sanity check** — diff against prior TripIt state; flag silent rebookings, seat changes, calendar conflicts
@@ -63,7 +63,7 @@ Plus two scheduler-invoked scripts (not user-facing):
 
 ## Status
 
+- **V1.1** — adds connection-risk derivation (capability 4). The precheck post-loop walks per-trip state, projects leg-1 arrival vs leg-2 scheduled departure, and emits `connection_at_risk` events when the transfer window falls below `min_transfer_minutes` (configurable, default 45). State schema bumped to v2 with owner-side migration
 - **V1** — flight-data-locality rule, full action-router SKILL.md, precheck orchestrator with cadence-gated byAir polling, stateful flight tracking, delta-driven wake rules (cancel, divert, gate, delay, inbound delay, boarding, carousel reveal), time-based wake gates (day-before, time-to-leave, arrival logistics), daily sync against `byair_list_trips`
-- **V1.1 (planned)** — connection-risk derivation (capability 4); the event slot is reserved in the composition table, the trip-traversal logic ships in a follow-up
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.

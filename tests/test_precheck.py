@@ -92,6 +92,7 @@ def _make_state(flight_id: int = 12345, **overrides) -> dict:
             "boarding_fired": False,
             "arrival_logistics_fired": False,
             "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
         },
         "last_wake_at": None,
         "last_wake_reason": None,
@@ -169,6 +170,7 @@ def test_gate_change_event_propagates_through_cycle(state_root: Path):
             "boarding_fired": False,
             "arrival_logistics_fired": False,
             "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
         },
     )
     write_flight_state(prior)
@@ -304,3 +306,138 @@ def test_script_safe_shape_on_byair_misconfig(tmp_path: Path):
     payload = json.loads(last_line)
     assert payload["wake_agent"] is False
     assert "BYAIR_MCP_URL" in result.stderr or "precheck_exception" in last_line
+
+
+# ---------------------------------------------------------------------------
+# Connection-risk integration
+# ---------------------------------------------------------------------------
+
+
+def test_connection_risk_pass_fires_and_persists_marker(state_root: Path):
+    """Two-leg trip with tight transfer: cycle should emit connection_at_risk
+    and flip the leg-2 marker so the next cycle does not re-fire."""
+    leg1 = _make_state(
+        flight_id=1,
+        last_polled_at="2026-05-18T16:29:30Z",
+        trip_id=999,
+        scheduled_dep_time="2026-05-18T17:00:00+00:00",
+        scheduled_arr_time="2026-05-18T19:00:00+00:00",
+        dep_airport_id=20,
+        arr_airport_id=28,
+        last_snapshot={
+            "code": "AA100",
+            "computed_status": "departed",
+            "computed_status_detail": "...",
+            "computed_phase_progress": None,
+            "computed_phase_risk": None,
+            "computed_phase_overdue": None,
+            "dep_gate": None,
+            "arr_gate": None,
+            "dep_terminal": None,
+            "arr_terminal": None,
+            "dep_time": "2026-05-18T17:00:00+00:00",
+            "arr_time": "2026-05-18T19:30:00+00:00",  # +30 min delay
+            "baggage": None,
+            "inbound": {
+                "aircraft_model": None,
+                "registration": None,
+                "flew": None,
+                "predicted_delay_minutes": None,
+            },
+            "position_lat": None,
+            "position_lon": None,
+        },
+    )
+    leg2 = _make_state(
+        flight_id=2,
+        last_polled_at="2026-05-18T16:29:30Z",
+        trip_id=999,
+        code="AA200",
+        scheduled_dep_time="2026-05-18T20:00:00+00:00",  # 30 min from projected arr
+        scheduled_arr_time="2026-05-18T22:00:00+00:00",
+        dep_airport_id=28,
+        arr_airport_id=40,
+        last_snapshot=None,
+    )
+    write_flight_state(leg1)
+    write_flight_state(leg2)
+    write_active_flights([1, 2])
+
+    fake_now = datetime(2026, 5, 18, 16, 30, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env"):
+        # Both flights have last_polled_at within cadence — get_flight not called
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    risk_events = [e for e in events if e["event"]["reason"] == "connection_at_risk"]
+    assert len(risk_events) == 1
+    assert risk_events[0]["flight_id"] == 2
+    assert risk_events[0]["event"]["transfer_minutes_remaining"] == 30
+    assert risk_events[0]["event"]["min_transfer_minutes"] == 45
+
+    # Marker persisted: next cycle should not re-fire
+    leg2_after = read_flight_state(2)
+    assert leg2_after["phase_markers"]["connection_at_risk_fired"] is True
+
+    with patch("precheck.ByAirClient.from_env"):
+        events_second = precheck._run_cycle(now_utc=fake_now)
+    second_risks = [e for e in events_second if e["event"]["reason"] == "connection_at_risk"]
+    assert second_risks == []
+
+
+def test_connection_risk_honors_config_override(state_root: Path):
+    """config.json's min_transfer_minutes overrides the default."""
+    from state import write_config
+
+    write_config({"min_transfer_minutes": 20})
+
+    leg1 = _make_state(
+        flight_id=1,
+        last_polled_at="2026-05-18T16:29:30Z",
+        trip_id=999,
+        scheduled_dep_time="2026-05-18T17:00:00+00:00",
+        scheduled_arr_time="2026-05-18T19:00:00+00:00",
+        dep_airport_id=20,
+        arr_airport_id=28,
+        last_snapshot={
+            "code": "AA100",
+            "computed_status": "departed",
+            "computed_status_detail": "...",
+            "computed_phase_progress": None,
+            "computed_phase_risk": None,
+            "computed_phase_overdue": None,
+            "dep_gate": None,
+            "arr_gate": None,
+            "dep_terminal": None,
+            "arr_terminal": None,
+            "dep_time": "2026-05-18T17:00:00+00:00",
+            "arr_time": "2026-05-18T19:30:00+00:00",
+            "baggage": None,
+            "inbound": {
+                "aircraft_model": None,
+                "registration": None,
+                "flew": None,
+                "predicted_delay_minutes": None,
+            },
+            "position_lat": None,
+            "position_lon": None,
+        },
+    )
+    leg2 = _make_state(
+        flight_id=2,
+        last_polled_at="2026-05-18T16:29:30Z",
+        trip_id=999,
+        code="AA200",
+        scheduled_dep_time="2026-05-18T20:00:00+00:00",  # 30 min — above 20 override
+        scheduled_arr_time="2026-05-18T22:00:00+00:00",
+        dep_airport_id=28,
+        arr_airport_id=40,
+        last_snapshot=None,
+    )
+    write_flight_state(leg1)
+    write_flight_state(leg2)
+    write_active_flights([1, 2])
+
+    fake_now = datetime(2026, 5, 18, 16, 30, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env"):
+        events = precheck._run_cycle(now_utc=fake_now)
+    assert not any(e["event"]["reason"] == "connection_at_risk" for e in events)
