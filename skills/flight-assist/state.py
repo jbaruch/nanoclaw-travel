@@ -213,10 +213,9 @@ def read_current_location() -> dict | None:
         longitude       (float, in [-180, 180])
         captured_at     (ISO-8601 UTC string)
 
-    Per the non-owner reader contract in `rules/stateful-artifacts.md`:
-    a `schema_version` mismatch (host bumped to a shape this reader
-    doesn't know) returns None rather than migrating. The orchestrator
-    is the sole writer; flight-assist reads.
+    Per the non-owner reader contract in `coding-policy:
+    stateful-artifacts`: a `schema_version` mismatch returns None
+    rather than migrating. The orchestrator is the sole writer.
 
     Freshness (age relative to `now`) is the caller's responsibility —
     this returns whatever is on disk, parsed and shape-validated only.

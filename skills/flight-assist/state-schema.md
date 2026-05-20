@@ -62,12 +62,18 @@ Latest known user location. **Owner is the host orchestrator**, not flight-assis
 
 Fields:
 
-- `schema_version` (int, required) — currently `1`. Tracked separately from `STATE_SCHEMA_VERSION` (the flight-assist-owned tile state) because the host is the sole writer; bumping is the host's responsibility. `read_current_location` requires equality with `state.CURRENT_LOCATION_SCHEMA_VERSION` and returns `None` on any mismatch (older or newer) per the non-owner reader contract
+- `schema_version` (int, required) — currently `1`. Tracked separately from `STATE_SCHEMA_VERSION`. The host owns version bumps. `read_current_location` requires equality with `state.CURRENT_LOCATION_SCHEMA_VERSION` and returns `None` on any mismatch
 - `latitude` (float, required) — degrees in `[-90, 90]`
 - `longitude` (float, required) — degrees in `[-180, 180]`
 - `captured_at` (RFC 3339 UTC, required) — when the orchestrator observed the location; consumers apply their own freshness window
 
-When the host bumps the shape, flight-assist's reader will return `None` until this tile is updated to recognise the new version — that's the intended non-owner reader behaviour. The precheck falls back to `home_address` in that window, matching the no-snapshot-on-disk path.
+Origin-resolution ladder used by `precheck._resolve_time_to_leave_origin`:
+
+1. Fresh snapshot — `now - captured_at <= 30 min` → formatted `"<latitude>,<longitude>"` for the Distance Matrix API
+2. `home_address` from `config.json`
+3. `None` — caller skips the maps query
+
+A `schema_version` mismatch (host bumped) returns `None` from the reader and the precheck falls back to `home_address`, matching the no-snapshot-on-disk path.
 
 ### `flight-<flight_id>.json`
 
