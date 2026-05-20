@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 STATE_SCHEMA_VERSION = 2
@@ -54,6 +55,8 @@ _STATE_DIR_ENV = "FLIGHT_ASSIST_STATE_DIR"
 
 CONFIG_FILE = "config.json"
 ACTIVE_FLIGHTS_FILE = "active-flights.json"
+CURRENT_LOCATION_FILE = "current-location.json"
+CURRENT_LOCATION_SCHEMA_VERSION = 1
 _FLIGHT_FILE_PREFIX = "flight-"
 _FLIGHT_FILE_SUFFIX = ".json"
 
@@ -188,6 +191,84 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
 def read_config() -> dict | None:
     """Return the tile-wide config (home_address, etc.) or None if not set."""
     return _read_json_with_version(state_dir() / CONFIG_FILE)
+
+
+def read_current_location() -> dict | None:
+    """Return the latest user-location snapshot, or None when unavailable.
+
+    Path: `state_dir()/current-location.json`. Owner is the host
+    orchestrator (which writes this file as the user's location updates
+    via Telegram live-location or message metadata); flight-assist is a
+    non-owner reader per `coding-policy: stateful-artifacts`. The
+    helper validates the documented shape and returns None on any
+    mismatch (missing file, malformed JSON, non-UTF-8 bytes, missing
+    required field, wrong type, `schema_version` not equal to
+    `CURRENT_LOCATION_SCHEMA_VERSION`) instead of raising — origin
+    resolution falls back to `home_address` when this returns None.
+
+    Required fields:
+
+        schema_version  (int, must equal CURRENT_LOCATION_SCHEMA_VERSION)
+        latitude        (float, in [-90, 90])
+        longitude       (float, in [-180, 180])
+        captured_at     (ISO-8601 UTC string)
+
+    Per the non-owner reader contract in `coding-policy:
+    stateful-artifacts`: a `schema_version` mismatch returns None
+    rather than migrating. The orchestrator is the sole writer.
+
+    Freshness (age relative to `now`) is the caller's responsibility —
+    this returns whatever is on disk, parsed and shape-validated only.
+    """
+    path = state_dir() / CURRENT_LOCATION_FILE
+    if not path.exists():
+        return None
+    # `read_text` raises `UnicodeDecodeError` on non-UTF-8 bytes — the
+    # host-owned file could be cut mid-write or land non-UTF-8 from a
+    # future host shape, both of which should resolve to "no usable
+    # snapshot" rather than propagating into the precheck's outer
+    # try/except.
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    version = payload.get("schema_version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version != CURRENT_LOCATION_SCHEMA_VERSION
+    ):
+        return None
+    lat = payload.get("latitude")
+    lng = payload.get("longitude")
+    captured = payload.get("captured_at")
+    # `bool` is an `int` subclass in Python — exclude so `True`/`False`
+    # don't sneak through as numeric coordinates.
+    if (
+        not isinstance(lat, (int, float))
+        or isinstance(lat, bool)
+        or not isinstance(lng, (int, float))
+        or isinstance(lng, bool)
+        or not isinstance(captured, str)
+    ):
+        return None
+    if not (-90 <= float(lat) <= 90) or not (-180 <= float(lng) <= 180):
+        return None
+    # `captured_at` is documented as ISO-8601 UTC; parse to confirm.
+    # `fromisoformat` accepts both `+00:00` and (since Python 3.11)
+    # trailing `Z`; we normalise the latter to keep older runtimes
+    # working. Anything that doesn't resolve to a UTC instant is
+    # rejected — a non-UTC zone would silently shift the freshness
+    # window the caller computes against `now_utc`.
+    try:
+        parsed = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        return None
+    return {"latitude": float(lat), "longitude": float(lng), "captured_at": captured}
 
 
 _CONFIG_OPTIONAL_FIELDS: dict[str, type] = {

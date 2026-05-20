@@ -47,6 +47,34 @@ Fields:
 - `schema_version` (int, required) — currently `2`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
+### `current-location.json`
+
+Latest known user location. **Owner is the host orchestrator**, not flight-assist — the host writes this file as Telegram live-location updates and message metadata arrive. flight-assist is a non-owner reader per `coding-policy: stateful-artifacts`: it consults the snapshot to resolve the time-to-leave origin (ladder lives in `precheck._resolve_time_to_leave_origin`), validates the documented shape, and returns `None` on any mismatch instead of raising or migrating.
+
+```json
+{
+  "schema_version": 1,
+  "latitude": 59.6519,
+  "longitude": 17.9186,
+  "captured_at": "2026-05-20T11:42:11Z"
+}
+```
+
+Fields:
+
+- `schema_version` (int, required) — currently `1`. Tracked separately from `STATE_SCHEMA_VERSION`. The host owns version bumps. `read_current_location` requires equality with `state.CURRENT_LOCATION_SCHEMA_VERSION` and returns `None` on any mismatch
+- `latitude` (float, required) — degrees in `[-90, 90]`
+- `longitude` (float, required) — degrees in `[-180, 180]`
+- `captured_at` (RFC 3339 UTC, required) — when the orchestrator observed the location; consumers apply their own freshness window
+
+Origin-resolution ladder used by `precheck._resolve_time_to_leave_origin`:
+
+1. Fresh snapshot — `now - captured_at <= 30 min` → formatted `"<latitude>,<longitude>"` for the Distance Matrix API
+2. `home_address` from `config.json`
+3. `None` — caller skips the maps query
+
+A `schema_version` mismatch (host bumped) returns `None` from the reader and the precheck falls back to `home_address`, matching the no-snapshot-on-disk path.
+
 ### `flight-<flight_id>.json`
 
 Per-flight state record. One file per tracked flight.
