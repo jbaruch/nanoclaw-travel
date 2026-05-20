@@ -1,6 +1,8 @@
 ---
 name: flight-assist
 description: Flight notifications and prep for tracked trips. Diagnose env, set home base, or compose a user-facing message from a precheck wake event. Triggers - "check flight-assist env", "diagnose flight-assist", "set flight-assist home base", "set home address", "configure flight-assist", "flight delay notification", "gate change notification", "cancellation notification", "boarding alert", "time to leave alert", "inbound delay notification", "baggage carousel", "arrival logistics", "day before sanity check", "flight removed upstream", "connection at risk", "tight connection alert".
+cadence: "*/2 * * * *"
+script: "precheck.py"
 ---
 
 # Flight Assist
@@ -31,7 +33,7 @@ Finish here.
 
 ## Step 2 — Set home base
 
-When the user provides their home address (e.g., "set my home base to 1 Infinite Loop, Cupertino, CA"), invoke the `set-home-base.py` script to persist it to the tile-wide config the precheck reads for `time_to_leave` queries.
+When the user provides their home address (e.g., "set my home base to 1 Infinite Loop, Cupertino, CA"), invoke the `set-home-base.py` script to persist it to the tile-wide config the precheck reads for `time_to_leave` queries as the fallback origin when no fresh live-location snapshot is available (see Step 3's `time_to_leave` row for the origin-resolution ladder).
 
 ```bash
 python3 /home/node/.claude/skills/tessl__flight-assist/scripts/set-home-base.py "<address from user>"
@@ -58,7 +60,7 @@ The full event-shape contract is in `references/event-payloads.md`; consult it w
 | `boarding_started` | "Boarding now: `<code>`. Gate `<dep_gate>`, terminal `<dep_terminal>`." |
 | `carousel_revealed` | "Baggage carousel for `<code>`: `<baggage>`." |
 | `day_before` | Day-before sanity check: read the user's calendar via MCP if available, list any events that overlap the flight window (T-3h before dep through T+3h after arr), and summarize. Read flight state via `read_flight_state(flight_id)` for context |
-| `time_to_leave` | "Leave by `<leave_by>` to make `<code>` (`<travel_time_minutes>` min drive with current traffic)." |
+| `time_to_leave` | "Leave by `<leave_by>` to make `<code>` (`<travel_time_minutes>` min drive with current traffic)." Origin is resolved by the precheck via the ladder: (1) fresh `current-location.json` snapshot (orchestrator-written, ≤ 30 min old) formatted as `lat,lng`, else (2) `home_address` from `config.json`, else (3) precheck skips the maps query entirely. A user travelling away from home gets travel times from where they actually are; the static home base remains the fallback for users who never share live location |
 | `arrival_logistics` | Surface baggage carousel (read from `last_snapshot.baggage`), suggest a rideshare ETA if location is available, and note lounge access if connecting. Read flight state for context |
 | `removed_upstream` | "Flight `<code>` no longer tracked upstream — remove from active trips if intentional." Don't auto-delete; let the user confirm |
 | `tracked_flight_added` | Silent in most cases (the daily sync added a flight to the tracking index). Surface only when the user explicitly asked "what's new" or when `data.events` contains nothing else worth reporting |

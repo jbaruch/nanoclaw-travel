@@ -54,6 +54,7 @@ _STATE_DIR_ENV = "FLIGHT_ASSIST_STATE_DIR"
 
 CONFIG_FILE = "config.json"
 ACTIVE_FLIGHTS_FILE = "active-flights.json"
+CURRENT_LOCATION_FILE = "current-location.json"
 _FLIGHT_FILE_PREFIX = "flight-"
 _FLIGHT_FILE_SUFFIX = ".json"
 
@@ -188,6 +189,54 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
 def read_config() -> dict | None:
     """Return the tile-wide config (home_address, etc.) or None if not set."""
     return _read_json_with_version(state_dir() / CONFIG_FILE)
+
+
+def read_current_location() -> dict | None:
+    """Return the latest user-location snapshot, or None when unavailable.
+
+    Path: `state_dir()/current-location.json`. Owner is the host
+    orchestrator (which writes this file as the user's location updates
+    via Telegram live-location or message metadata); flight-assist is a
+    non-owner reader per `coding-policy: stateful-artifacts`. The
+    helper validates the documented shape and returns None on any
+    mismatch (missing file, malformed JSON, missing required field,
+    wrong type) instead of raising — origin resolution falls back to
+    `home_address` when this returns None.
+
+    Required fields:
+
+        latitude     (float, in [-90, 90])
+        longitude    (float, in [-180, 180])
+        captured_at  (ISO-8601 UTC string)
+
+    Freshness (age relative to `now`) is the caller's responsibility —
+    this returns whatever is on disk, parsed and shape-validated only.
+    """
+    path = state_dir() / CURRENT_LOCATION_FILE
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    lat = payload.get("latitude")
+    lng = payload.get("longitude")
+    captured = payload.get("captured_at")
+    # `bool` is an `int` subclass in Python — exclude so `True`/`False`
+    # don't sneak through as numeric coordinates.
+    if (
+        not isinstance(lat, (int, float))
+        or isinstance(lat, bool)
+        or not isinstance(lng, (int, float))
+        or isinstance(lng, bool)
+        or not isinstance(captured, str)
+    ):
+        return None
+    if not (-90 <= float(lat) <= 90) or not (-180 <= float(lng) <= 180):
+        return None
+    return {"latitude": float(lat), "longitude": float(lng), "captured_at": captured}
 
 
 _CONFIG_OPTIONAL_FIELDS: dict[str, type] = {

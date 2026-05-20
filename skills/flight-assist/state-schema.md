@@ -47,6 +47,26 @@ Fields:
 - `schema_version` (int, required) — currently `2`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
+### `current-location.json`
+
+Latest known user location. **Owner is the host orchestrator**, not flight-assist — the host writes this file as Telegram live-location updates and message metadata arrive. flight-assist is a non-owner reader per `coding-policy: stateful-artifacts`: it consults the snapshot to resolve the time-to-leave origin (ladder lives in `precheck._resolve_time_to_leave_origin`), validates the documented shape, and returns `None` on any mismatch instead of raising or migrating.
+
+```json
+{
+  "latitude": 59.6519,
+  "longitude": 17.9186,
+  "captured_at": "2026-05-20T11:42:11Z"
+}
+```
+
+Fields:
+
+- `latitude` (float, required) — degrees in `[-90, 90]`
+- `longitude` (float, required) — degrees in `[-180, 180]`
+- `captured_at` (RFC 3339 UTC, required) — when the orchestrator observed the location; consumers apply their own freshness window
+
+This file does NOT carry `schema_version` because its owner is the host (not this tile), and the read helper (`state.read_current_location`) treats malformed payloads as "no snapshot" rather than as a versioned-state mismatch. The host writes a complete file via atomic rename; partial reads in flight-assist resolve to `None` and the precheck falls back to `home_address`.
+
 ### `flight-<flight_id>.json`
 
 Per-flight state record. One file per tracked flight.

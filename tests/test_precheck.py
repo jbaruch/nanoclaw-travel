@@ -102,6 +102,79 @@ def _make_state(flight_id: int = 12345, **overrides) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Origin-resolution ladder (issue #18)
+# ---------------------------------------------------------------------------
+
+
+def _write_current_location(
+    state_root: Path,
+    *,
+    latitude: float = 59.6519,
+    longitude: float = 17.9186,
+    captured_at: str,
+) -> None:
+    state_root.mkdir(parents=True, exist_ok=True)
+    (state_root / "current-location.json").write_text(
+        json.dumps({"latitude": latitude, "longitude": longitude, "captured_at": captured_at})
+    )
+
+
+def test_origin_ladder_prefers_fresh_current_location(state_root: Path):
+    """Fresh `current-location.json` (≤ 30 min old) wins over
+    `home_address` — the time-to-leave query uses the live coordinates
+    formatted as `"lat,lng"` (the Distance Matrix API accepts the
+    numeric pair natively)."""
+    now = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
+    _write_current_location(state_root, captured_at="2026-05-20T11:40:00Z")
+    origin = precheck._resolve_time_to_leave_origin(
+        home_address="1 Infinite Loop, Cupertino, CA", now_utc=now
+    )
+    assert origin == "59.6519,17.9186"
+
+
+def test_origin_ladder_falls_back_to_home_when_location_stale(state_root: Path):
+    """A stale snapshot (older than `_MAX_CURRENT_LOCATION_AGE_MINUTES`)
+    is ignored; the precheck falls back to `home_address`."""
+    now = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
+    _write_current_location(state_root, captured_at="2026-05-20T11:00:00Z")  # 60 min old
+    origin = precheck._resolve_time_to_leave_origin(
+        home_address="1 Infinite Loop, Cupertino, CA", now_utc=now
+    )
+    assert origin == "1 Infinite Loop, Cupertino, CA"
+
+
+def test_origin_ladder_ignores_future_captured_at(state_root: Path):
+    """A `captured_at` later than `now_utc` is rejected as untrusted
+    (clock skew / corruption) — fall back to `home_address` rather
+    than honour a snapshot from the future."""
+    now = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
+    _write_current_location(state_root, captured_at="2026-05-20T13:00:00Z")
+    origin = precheck._resolve_time_to_leave_origin(
+        home_address="1 Infinite Loop, Cupertino, CA", now_utc=now
+    )
+    assert origin == "1 Infinite Loop, Cupertino, CA"
+
+
+def test_origin_ladder_falls_back_to_home_when_location_missing(state_root: Path):
+    """No `current-location.json` on disk → `home_address` is the
+    origin (today's behaviour, preserved)."""
+    now = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
+    origin = precheck._resolve_time_to_leave_origin(
+        home_address="1 Infinite Loop, Cupertino, CA", now_utc=now
+    )
+    assert origin == "1 Infinite Loop, Cupertino, CA"
+
+
+def test_origin_ladder_returns_none_when_no_origin(state_root: Path):
+    """No location AND no home_address → None; the caller skips the
+    maps query entirely. Today's silent-failure mode for a user who
+    completed neither `/setup` nor live-location sharing."""
+    now = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
+    origin = precheck._resolve_time_to_leave_origin(home_address=None, now_utc=now)
+    assert origin is None
+
+
+# ---------------------------------------------------------------------------
 # Cycle-level tests
 # ---------------------------------------------------------------------------
 

@@ -59,6 +59,7 @@ from phase_markers import (  # noqa: E402
 from state import (  # noqa: E402
     read_active_flights,
     read_config,
+    read_current_location,
     read_flight_state,
     write_flight_state,
 )
@@ -81,6 +82,15 @@ _BASE_CADENCE_MINUTES = {
 # Window for querying maps_client for travel time. Past this window
 # the time-to-leave marker has either fired or doesn't matter.
 _TIME_TO_LEAVE_QUERY_WINDOW_HOURS = 6
+
+# Maximum age of a `current-location.json` snapshot to be considered
+# fresh enough to use as the time-to-leave origin. Older than this and
+# the precheck falls back to `home_address`, on the principle that a
+# stale location guess is worse than the user's static home base.
+# Issue #18 suggested 15–30 min; 30 is the more permissive value and
+# matches the orchestrator's typical location-write cadence on
+# Telegram live-location sharing.
+_MAX_CURRENT_LOCATION_AGE_MINUTES = 30
 
 
 def main() -> int:
@@ -398,6 +408,38 @@ def _interval_for(
     return base
 
 
+def _resolve_time_to_leave_origin(
+    *,
+    home_address: str | None,
+    now_utc: datetime,
+) -> str | None:
+    """Origin-resolution ladder for the time-to-leave Distance Matrix query.
+
+    Order of preference:
+
+    1. `current-location.json` (orchestrator-written) if present and the
+       snapshot is fresh — `now_utc - captured_at <= _MAX_CURRENT_LOCATION_AGE_MINUTES`.
+       Formatted as `"<lat>,<lng>"` for the Distance Matrix API, which
+       accepts numeric origin/destination pairs natively.
+    2. `home_address` from `config.json` (the legacy single-source).
+    3. `None` — neither origin available; caller skips the maps query.
+
+    A mobile user (constant traveler) gets correct travel times when
+    the orchestrator is publishing live location; the static home
+    address remains the fallback for users who never share location
+    and for the gap between location updates. Issue
+    `jbaruch/nanoclaw-flight-assist#18`.
+    """
+    loc = read_current_location()
+    if loc is not None:
+        captured = _parse_iso8601(loc.get("captured_at"))
+        if captured is not None:
+            age = now_utc - captured
+            if timedelta() <= age <= timedelta(minutes=_MAX_CURRENT_LOCATION_AGE_MINUTES):
+                return f"{loc['latitude']},{loc['longitude']}"
+    return home_address
+
+
 def _maybe_query_travel_time(
     *,
     maps: MapsClient | None,
@@ -411,11 +453,16 @@ def _maybe_query_travel_time(
 
     Returns None when:
     - MapsClient is None (key unset)
-    - home_address is None (user hasn't completed /setup)
+    - Origin resolution yields None (no fresh `current-location.json`
+      AND no `home_address` configured — the user hasn't completed
+      `/setup` and isn't sharing live location)
     - Scheduled departure is more than _TIME_TO_LEAVE_QUERY_WINDOW_HOURS away
     - time_to_leave has already fired (no need to re-query)
     """
-    if maps is None or not home_address or time_to_leave_already_fired:
+    if maps is None or time_to_leave_already_fired:
+        return None
+    origin = _resolve_time_to_leave_origin(home_address=home_address, now_utc=now_utc)
+    if not origin:
         return None
     dep_dt = _parse_iso8601(scheduled_dep_time)
     if dep_dt is None:
@@ -427,7 +474,7 @@ def _maybe_query_travel_time(
     if not destination:
         return None
     try:
-        result = maps.travel_time(origin=home_address, destination=destination)
+        result = maps.travel_time(origin=origin, destination=destination)
     except MapsError as maps_err:
         print(
             f"flight-assist precheck: maps error for flight: {maps_err}",

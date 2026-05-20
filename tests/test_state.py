@@ -19,11 +19,13 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 from state import (  # noqa: E402
     ACTIVE_FLIGHTS_FILE,
     CONFIG_FILE,
+    CURRENT_LOCATION_FILE,
     STATE_SCHEMA_VERSION,
     StateError,
     delete_flight_state,
     read_active_flights,
     read_config,
+    read_current_location,
     read_flight_state,
     state_dir,
     write_active_flights,
@@ -98,6 +100,62 @@ def test_write_config_overrides_caller_supplied_schema_version(state_root: Path)
     write_config({"home_address": "X", "schema_version": 99})
     loaded = read_config()
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+
+
+def test_read_current_location_returns_none_when_missing(state_root: Path):
+    """No `current-location.json` on disk → reader returns None
+    (caller falls back to `home_address`)."""
+    assert read_current_location() is None
+
+
+def test_read_current_location_roundtrips_valid_payload(state_root: Path):
+    """Well-formed snapshot is returned with the documented fields."""
+    state_root.mkdir(parents=True, exist_ok=True)
+    (state_root / CURRENT_LOCATION_FILE).write_text(
+        json.dumps(
+            {
+                "latitude": 59.6519,
+                "longitude": 17.9186,
+                "captured_at": "2026-05-20T11:42:11Z",
+            }
+        )
+    )
+    loc = read_current_location()
+    assert loc == {
+        "latitude": 59.6519,
+        "longitude": 17.9186,
+        "captured_at": "2026-05-20T11:42:11Z",
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not even json {{{",
+        json.dumps([1, 2, 3]),
+        json.dumps({"latitude": "59.6519", "longitude": 17.9186, "captured_at": "2026"}),
+        json.dumps({"latitude": True, "longitude": 17.9186, "captured_at": "2026"}),
+        json.dumps({"latitude": 59.6519, "longitude": 17.9186}),
+        json.dumps({"latitude": 999.0, "longitude": 0.0, "captured_at": "2026"}),
+        json.dumps({"latitude": 0.0, "longitude": 999.0, "captured_at": "2026"}),
+    ],
+    ids=[
+        "malformed-json",
+        "list-payload",
+        "lat-as-string",
+        "lat-as-bool",
+        "missing-captured_at",
+        "lat-out-of-range",
+        "lng-out-of-range",
+    ],
+)
+def test_read_current_location_returns_none_on_malformed(state_root: Path, payload: str):
+    """Any shape mismatch → None. The host orchestrator owns this file;
+    flight-assist is a non-owner reader and never raises on malformed
+    snapshots — it just falls back to `home_address`."""
+    state_root.mkdir(parents=True, exist_ok=True)
+    (state_root / CURRENT_LOCATION_FILE).write_text(payload)
+    assert read_current_location() is None
 
 
 def test_read_active_flights_returns_empty_when_missing(state_root: Path):
