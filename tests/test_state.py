@@ -20,6 +20,7 @@ from state import (  # noqa: E402
     ACTIVE_FLIGHTS_FILE,
     CONFIG_FILE,
     CURRENT_LOCATION_FILE,
+    CURRENT_LOCATION_SCHEMA_VERSION,
     STATE_SCHEMA_VERSION,
     StateError,
     delete_flight_state,
@@ -108,18 +109,26 @@ def test_read_current_location_returns_none_when_missing(state_root: Path):
     assert read_current_location() is None
 
 
+def _valid_location_payload(**overrides) -> dict:
+    """Build a minimally-valid `current-location.json` payload, with the
+    canonical schema_version stamped automatically. Tests override
+    individual fields to exercise the validator."""
+    base = {
+        "schema_version": CURRENT_LOCATION_SCHEMA_VERSION,
+        "latitude": 59.6519,
+        "longitude": 17.9186,
+        "captured_at": "2026-05-20T11:42:11Z",
+    }
+    base.update(overrides)
+    return base
+
+
 def test_read_current_location_roundtrips_valid_payload(state_root: Path):
-    """Well-formed snapshot is returned with the documented fields."""
+    """Well-formed snapshot is returned with the documented fields
+    (schema_version is stripped from the returned dict — callers only
+    need the geometry + timestamp)."""
     state_root.mkdir(parents=True, exist_ok=True)
-    (state_root / CURRENT_LOCATION_FILE).write_text(
-        json.dumps(
-            {
-                "latitude": 59.6519,
-                "longitude": 17.9186,
-                "captured_at": "2026-05-20T11:42:11Z",
-            }
-        )
-    )
+    (state_root / CURRENT_LOCATION_FILE).write_text(json.dumps(_valid_location_payload()))
     loc = read_current_location()
     assert loc == {
         "latitude": 59.6519,
@@ -133,11 +142,16 @@ def test_read_current_location_roundtrips_valid_payload(state_root: Path):
     [
         "not even json {{{",
         json.dumps([1, 2, 3]),
-        json.dumps({"latitude": "59.6519", "longitude": 17.9186, "captured_at": "2026"}),
-        json.dumps({"latitude": True, "longitude": 17.9186, "captured_at": "2026"}),
-        json.dumps({"latitude": 59.6519, "longitude": 17.9186}),
-        json.dumps({"latitude": 999.0, "longitude": 0.0, "captured_at": "2026"}),
-        json.dumps({"latitude": 0.0, "longitude": 999.0, "captured_at": "2026"}),
+        json.dumps(_valid_location_payload(latitude="59.6519")),
+        json.dumps(_valid_location_payload(latitude=True)),
+        json.dumps({k: v for k, v in _valid_location_payload().items() if k != "captured_at"}),
+        json.dumps(_valid_location_payload(latitude=999.0)),
+        json.dumps(_valid_location_payload(longitude=999.0)),
+        json.dumps({k: v for k, v in _valid_location_payload().items() if k != "schema_version"}),
+        json.dumps(_valid_location_payload(schema_version=CURRENT_LOCATION_SCHEMA_VERSION + 1)),
+        json.dumps(_valid_location_payload(schema_version=CURRENT_LOCATION_SCHEMA_VERSION - 1)),
+        json.dumps(_valid_location_payload(schema_version=True)),
+        json.dumps(_valid_location_payload(schema_version="1")),
     ],
     ids=[
         "malformed-json",
@@ -147,14 +161,33 @@ def test_read_current_location_roundtrips_valid_payload(state_root: Path):
         "missing-captured_at",
         "lat-out-of-range",
         "lng-out-of-range",
+        "missing-schema_version",
+        "schema_version-too-new",
+        "schema_version-too-old",
+        "schema_version-as-bool",
+        "schema_version-as-string",
     ],
 )
 def test_read_current_location_returns_none_on_malformed(state_root: Path, payload: str):
     """Any shape mismatch → None. The host orchestrator owns this file;
     flight-assist is a non-owner reader and never raises on malformed
-    snapshots — it just falls back to `home_address`."""
+    snapshots, missing or mismatched `schema_version`, or non-UTF-8
+    bytes — it just falls back to `home_address`."""
     state_root.mkdir(parents=True, exist_ok=True)
     (state_root / CURRENT_LOCATION_FILE).write_text(payload)
+    assert read_current_location() is None
+
+
+def test_read_current_location_returns_none_on_non_utf8_bytes(state_root: Path):
+    """A truncated UTF-8 sequence (or any non-UTF-8 byte stream) →
+    `read_text(encoding='utf-8')` raises `UnicodeDecodeError`; the
+    reader catches it and returns None instead of propagating, so a
+    partial host-side write never crashes the precheck."""
+    state_root.mkdir(parents=True, exist_ok=True)
+    # The first byte of a 4-byte UTF-8 codepoint (`\xf0`) with nothing
+    # behind it — a real truncation shape we'd see if the host got
+    # SIGKILLed mid-write before atomic-rename.
+    (state_root / CURRENT_LOCATION_FILE).write_bytes(b"\xf0")
     assert read_current_location() is None
 
 

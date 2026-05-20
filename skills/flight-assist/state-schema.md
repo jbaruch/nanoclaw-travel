@@ -53,6 +53,7 @@ Latest known user location. **Owner is the host orchestrator**, not flight-assis
 
 ```json
 {
+  "schema_version": 1,
   "latitude": 59.6519,
   "longitude": 17.9186,
   "captured_at": "2026-05-20T11:42:11Z"
@@ -61,11 +62,12 @@ Latest known user location. **Owner is the host orchestrator**, not flight-assis
 
 Fields:
 
+- `schema_version` (int, required) — currently `1`. Tracked separately from `STATE_SCHEMA_VERSION` (the flight-assist-owned tile state) because the host is the sole writer; bumping is the host's responsibility. `read_current_location` requires equality with `state.CURRENT_LOCATION_SCHEMA_VERSION` and returns `None` on any mismatch (older or newer) per the non-owner reader contract
 - `latitude` (float, required) — degrees in `[-90, 90]`
 - `longitude` (float, required) — degrees in `[-180, 180]`
 - `captured_at` (RFC 3339 UTC, required) — when the orchestrator observed the location; consumers apply their own freshness window
 
-This file does NOT carry `schema_version` because its owner is the host (not this tile), and the read helper (`state.read_current_location`) treats malformed payloads as "no snapshot" rather than as a versioned-state mismatch. The host writes a complete file via atomic rename; partial reads in flight-assist resolve to `None` and the precheck falls back to `home_address`.
+When the host bumps the shape, flight-assist's reader will return `None` until this tile is updated to recognise the new version — that's the intended non-owner reader behaviour. The precheck falls back to `home_address` in that window, matching the no-snapshot-on-disk path.
 
 ### `flight-<flight_id>.json`
 

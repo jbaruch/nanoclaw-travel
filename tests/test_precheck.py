@@ -114,8 +114,20 @@ def _write_current_location(
     captured_at: str,
 ) -> None:
     state_root.mkdir(parents=True, exist_ok=True)
+    # Stamp the current schema_version so the non-owner reader gate
+    # in state.read_current_location accepts the payload — host-side
+    # writes carry this field per state-schema.md.
+    from state import CURRENT_LOCATION_SCHEMA_VERSION
+
     (state_root / "current-location.json").write_text(
-        json.dumps({"latitude": latitude, "longitude": longitude, "captured_at": captured_at})
+        json.dumps(
+            {
+                "schema_version": CURRENT_LOCATION_SCHEMA_VERSION,
+                "latitude": latitude,
+                "longitude": longitude,
+                "captured_at": captured_at,
+            }
+        )
     )
 
 
