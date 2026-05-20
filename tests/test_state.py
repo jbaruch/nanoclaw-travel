@@ -152,6 +152,10 @@ def test_read_current_location_roundtrips_valid_payload(state_root: Path):
         json.dumps(_valid_location_payload(schema_version=CURRENT_LOCATION_SCHEMA_VERSION - 1)),
         json.dumps(_valid_location_payload(schema_version=True)),
         json.dumps(_valid_location_payload(schema_version="1")),
+        json.dumps(_valid_location_payload(captured_at="not-a-timestamp")),
+        json.dumps(_valid_location_payload(captured_at="2026-05-20")),
+        json.dumps(_valid_location_payload(captured_at="2026-05-20T11:42:11+02:00")),
+        json.dumps(_valid_location_payload(captured_at="2026-05-20T11:42:11")),
     ],
     ids=[
         "malformed-json",
@@ -166,6 +170,10 @@ def test_read_current_location_roundtrips_valid_payload(state_root: Path):
         "schema_version-too-old",
         "schema_version-as-bool",
         "schema_version-as-string",
+        "captured_at-unparseable",
+        "captured_at-date-only",
+        "captured_at-non-utc-offset",
+        "captured_at-naive-no-tz",
     ],
 )
 def test_read_current_location_returns_none_on_malformed(state_root: Path, payload: str):

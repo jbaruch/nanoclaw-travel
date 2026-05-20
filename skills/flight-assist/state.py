@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 STATE_SCHEMA_VERSION = 2
@@ -255,6 +256,18 @@ def read_current_location() -> dict | None:
     ):
         return None
     if not (-90 <= float(lat) <= 90) or not (-180 <= float(lng) <= 180):
+        return None
+    # `captured_at` is documented as ISO-8601 UTC; parse to confirm.
+    # `fromisoformat` accepts both `+00:00` and (since Python 3.11)
+    # trailing `Z`; we normalise the latter to keep older runtimes
+    # working. Anything that doesn't resolve to a UTC instant is
+    # rejected — a non-UTC zone would silently shift the freshness
+    # window the caller computes against `now_utc`.
+    try:
+        parsed = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
         return None
     return {"latitude": float(lat), "longitude": float(lng), "captured_at": captured}
 

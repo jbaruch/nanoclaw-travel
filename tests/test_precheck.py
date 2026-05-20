@@ -24,6 +24,8 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
 import precheck  # noqa: E402
 from state import (  # noqa: E402
+    CURRENT_LOCATION_FILE,
+    CURRENT_LOCATION_SCHEMA_VERSION,
     read_flight_state,
     write_active_flights,
     write_flight_state,
@@ -113,13 +115,14 @@ def _write_current_location(
     longitude: float = 17.9186,
     captured_at: str,
 ) -> None:
+    """Write a valid host-owned location snapshot to the per-test
+    state dir. Stamps the canonical `schema_version` so the non-owner
+    reader gate in `state.read_current_location` accepts the payload —
+    host-side writes carry this field per state-schema.md. Filename is
+    sourced from the production constant so a tile-side rename can't
+    leave these fixtures pointing at the old path."""
     state_root.mkdir(parents=True, exist_ok=True)
-    # Stamp the current schema_version so the non-owner reader gate
-    # in state.read_current_location accepts the payload — host-side
-    # writes carry this field per state-schema.md.
-    from state import CURRENT_LOCATION_SCHEMA_VERSION
-
-    (state_root / "current-location.json").write_text(
+    (state_root / CURRENT_LOCATION_FILE).write_text(
         json.dumps(
             {
                 "schema_version": CURRENT_LOCATION_SCHEMA_VERSION,
