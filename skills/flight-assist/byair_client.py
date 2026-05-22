@@ -129,7 +129,7 @@ class ByAirClient:
         )
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": _PROTOCOL_VERSION,
         }
         response, response_headers = self._http_post(headers, payload)
@@ -153,7 +153,7 @@ class ByAirClient:
         payload = self._rpc_envelope("tools/call", {"name": name, "arguments": arguments})
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": _PROTOCOL_VERSION,
             "Mcp-Session-Id": self._session_id,
         }
