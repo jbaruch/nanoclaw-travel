@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added — `check-travel-bookings` migrated from `nanoclaw-admin` (`jbaruch/nanoclaw-admin#299`)
+
+Per-chat travel concerns now consolidate under `nanoclaw-flight-assist`: flight notifications, time-to-leave, connection risk, arrival logistics, and now booking-gap detection. Coherent domain, single tile, single co-load for affected chats.
+
+Migration is structural — no behavioral changes to the skill or its two scripts. `SKILL.md`, `scripts/check-travel-bookings.py`, and `scripts/build-travel-db.py` copy across verbatim. The literal mount path `/home/node/.claude/skills/tessl__check-travel-bookings/scripts/<file>.py` used by `nightly-external-sync` Step 5 (`build-travel-db.py`) and `morning-brief` (`check-travel-bookings.py`) resolves to whichever tile owns the `check-travel-bookings` skill name — both consumers continue to work without code changes since the name doesn't change.
+
+Tests follow: `tests/test_check_travel_bookings.py` and `tests/test_build_travel_db.py` migrated. New `tests/conftest.py` adds the two fixtures (`check_travel_bookings`, `build_travel_db`) ported from admin's conftest. Both scripts read/write `/workspace/group/travel-db.json` and `/workspace/group/travel-booking-state.json`; the writer chain (`refresh-travel-schedule.py` → `build-travel-db.py`) is unchanged from admin's perspective.
+
+State plane note: existing `/workspace/group/travel-db.json` and `/workspace/group/travel-booking-state.json` carry across the migration as-is — they're group-scoped state files, not tile-shipped artifacts, so the deploy preserves operator-side snooze/resolve history.
+
 ### Review fixup (#21) — non-owner snapshot reader API + boundary handler at main()
 
 OpenAI policy reviewer requested changes on two precondition violations in PR #21 (commit 5103c8f). Both addressed here:

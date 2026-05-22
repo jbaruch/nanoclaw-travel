@@ -17,6 +17,9 @@
     },
     "sync-tripit": {
       "path": "skills/sync-tripit/SKILL.md"
+    },
+    "check-travel-bookings": {
+      "path": "skills/check-travel-bookings/SKILL.md"
     }
   },
   "steering": {
