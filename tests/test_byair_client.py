@@ -141,8 +141,7 @@ def test_accept_header_advertises_both_json_and_event_stream(client):
     assert len(captured_accept_headers) == 3
     for accept in captured_accept_headers:
         assert "application/json" in accept, (
-            f"Accept header must contain 'application/json' on every request. "
-            f"Got: {accept!r}"
+            f"Accept header must contain 'application/json' on every request. " f"Got: {accept!r}"
         )
         assert "text/event-stream" in accept, (
             f"Accept header must contain 'text/event-stream' on every request "
@@ -157,7 +156,7 @@ def test_sse_response_raises_actionable_error(client):
     a call we expected JSON for, raise a clear ByAirError instead of a
     cryptic json.JSONDecodeError. Verifies the Content-Type guard."""
     sse_response = _FakeResponse(
-        b"event: message\ndata: {\"chunk\": 1}\n\n",
+        b'event: message\ndata: {"chunk": 1}\n\n',
         {"content-type": "text/event-stream", "mcp-session-id": SYNTH_SESSION},
     )
     responses = iter([_initialize_response(), _initialized_notification_ack(), sse_response])
