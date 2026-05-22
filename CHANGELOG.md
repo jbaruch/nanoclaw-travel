@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fix — byAir MCP client `Accept` header missing `text/event-stream` (HTTP 400 on every call)
+
+`byair_client.py` set `Accept: application/json` on both `_initialize` and `_tools_call` outbound headers. The byAir MCP streamable-HTTP endpoint rejects with `HTTP 400 — "Accept must contain both 'application/json' and 'text/event-stream'"` because the MCP streamable-HTTP spec requires clients to advertise support for both response shapes (servers may stream tool responses via SSE). The `_SessionExpired` retry path doesn't engage on `initialize` because `self._session_id is None` at that point, so the original 400 propagated and the client could not complete the handshake. Result: every byAir call from a fresh process failed at the handshake, and `sync_tripit.py` could not populate `active-flights.json`. Combined with the orchestration gap leaving `sync_tripit` unscheduled, the precheck loop fired every 2 min, read an empty state file, and emitted `wake_agent: false` on every cycle — the skill was "installed but deaf" on flight days.
+
+Two-line fix: `Accept: "application/json"` → `Accept: "application/json, text/event-stream"` at both header sites. Verified live against the production byAir endpoint 2026-05-22 — `initialize` returned HTTP 200 with a valid `mcp-session-id`. Q-value forms (`application/json; q=1.0, text/event-stream; q=0.1`) are NOT accepted by the byAir server — it does substring matching after splitting on `,` and the parameter-suffixed entries don't match the bare-token check; the verified-working form is the plain comma-separated list.
+
+Defensive `Content-Type` guard added in `_http_post`: since the client now advertises `text/event-stream`, a server could pick SSE for some response. We don't parse SSE here (the operations this client uses — `initialize`, `notifications/initialized`, non-streaming tool calls — all return JSON in practice). The guard raises a clear `ByAirError("unsupported_response_shape", ...)` if Content-Type comes back as `text/event-stream`, rather than letting `json.loads` fail with a cryptic decoder error on `event:` / `data:` SSE prefixes.
+
+Adds two regression tests in `tests/test_byair_client.py`: one asserts the outbound `Accept` header includes both content types on initialize, notification, and tool-call requests (via mocked `urlopen` per `coding-policy: testing-standards`); the other asserts the Content-Type guard raises the actionable error on a mocked SSE response. 15/15 byair_client tests pass.
+
+The orchestration gap (no cadence-registry entry, no scheduled-task row for `sync_tripit` itself) lands separately — fixing the transport doesn't help if nothing ever invokes the feeder.
+
 ### Fix — install wake task + origin-resolution ladder (`jbaruch/nanoclaw-flight-assist#17`, `#18`)
 
 Two coupled bugs that left the skill installed-but-silent on a mobile traveller's flight days.

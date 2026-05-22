@@ -129,7 +129,7 @@ class ByAirClient:
         )
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": _PROTOCOL_VERSION,
         }
         response, response_headers = self._http_post(headers, payload)
@@ -153,7 +153,7 @@ class ByAirClient:
         payload = self._rpc_envelope("tools/call", {"name": name, "arguments": arguments})
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": _PROTOCOL_VERSION,
             "Mcp-Session-Id": self._session_id,
         }
@@ -179,6 +179,17 @@ class ByAirClient:
 
         On HTTP 4xx with a session-id-rejected status (400/404 after a session
         was issued), raises `_SessionExpired` so the caller can re-init and retry.
+
+        Content-Type guard: the byAir MCP server requires the `Accept` header
+        to advertise both `application/json` and `text/event-stream` (servers
+        MAY stream tool responses via SSE per the MCP streamable-HTTP spec).
+        For the operations this client uses (initialize, notifications, and
+        non-streaming tool calls — byair_get_flight, byair_list_trips,
+        byair_get_flight_notifications), the server returns JSON. We don't
+        parse SSE here. The Content-Type guard raises a clear actionable
+        error if the server picks SSE for one of our calls, rather than
+        letting `json.loads` fail with a cryptic decoder error on an
+        `event:` / `data:` prefix.
         """
         request = urllib.request.Request(self._url, data=payload, headers=headers, method="POST")
         try:
@@ -186,6 +197,17 @@ class ByAirClient:
                 response_headers = {k.lower(): v for k, v in response.headers.items()}
                 if not expect_response:
                     return ({}, response_headers)
+                content_type = response_headers.get("content-type", "")
+                if content_type.startswith("text/event-stream"):
+                    raise ByAirError(
+                        "unsupported_response_shape",
+                        f"byAir returned SSE response (Content-Type: {content_type}) on a "
+                        f"non-streaming call. This client does not yet parse SSE. The byAir "
+                        f"server should return JSON for byair_get_flight / byair_list_trips / "
+                        f"byair_get_flight_notifications; if SSE is returned for one of these, "
+                        f"the server's streaming behaviour changed and the client needs an "
+                        f"SSE-parsing path added in `_http_post`.",
+                    )
                 raw = response.read().decode("utf-8")
                 return (json.loads(raw), response_headers)
         except urllib.error.HTTPError as http_err:
