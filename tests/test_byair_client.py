@@ -116,6 +116,58 @@ def test_constructor_rejects_empty_url():
         ByAirClient("")
 
 
+def test_accept_header_advertises_both_json_and_event_stream(client):
+    """byAir MCP streamable-HTTP spec rejects the request with HTTP 400 if
+    the Accept header doesn't include BOTH 'application/json' AND
+    'text/event-stream'. Regression test for the v0.1.x bug where the
+    client sent only 'application/json' and every call failed at the
+    handshake. Asserts the substring presence (the server uses substring
+    matching, not parsed media-type lists)."""
+    captured_accept_headers = []
+
+    def fake_urlopen(request, **kwargs):
+        captured_accept_headers.append(request.headers.get("Accept", ""))
+        method = json.loads(request.data).get("method")
+        if method == "initialize":
+            return _initialize_response()
+        if method == "notifications/initialized":
+            return _initialized_notification_ack()
+        return _tool_response({"id": 1})
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        client.get_flight(flight_id=1)
+
+    # Three requests: initialize + notifications/initialized + tools/call
+    assert len(captured_accept_headers) == 3
+    for accept in captured_accept_headers:
+        assert "application/json" in accept, (
+            f"Accept header must contain 'application/json' on every request. "
+            f"Got: {accept!r}"
+        )
+        assert "text/event-stream" in accept, (
+            f"Accept header must contain 'text/event-stream' on every request "
+            f"(byAir MCP spec requirement — server returns HTTP 400 otherwise). "
+            f"Got: {accept!r}"
+        )
+
+
+def test_sse_response_raises_actionable_error(client):
+    """The client advertises text/event-stream in Accept (spec requirement)
+    but doesn't yet parse SSE response bodies. If the server picks SSE for
+    a call we expected JSON for, raise a clear ByAirError instead of a
+    cryptic json.JSONDecodeError. Verifies the Content-Type guard."""
+    sse_response = _FakeResponse(
+        b"event: message\ndata: {\"chunk\": 1}\n\n",
+        {"content-type": "text/event-stream", "mcp-session-id": SYNTH_SESSION},
+    )
+    responses = iter([_initialize_response(), _initialized_notification_ack(), sse_response])
+    with patch("urllib.request.urlopen", side_effect=lambda *a, **k: next(responses)):
+        with pytest.raises(ByAirError) as exc_info:
+            client.get_flight(flight_id=1)
+    assert exc_info.value.error_type == "unsupported_response_shape"
+    assert "SSE" in exc_info.value.message
+
+
 def test_get_flight_success(client):
     payload = {"id": 999, "code": "XX123", "computed_status": "scheduled"}
     responses = iter(
