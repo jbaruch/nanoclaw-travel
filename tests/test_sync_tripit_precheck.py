@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -26,12 +27,19 @@ precheck = importlib.util.module_from_spec(_spec)
 sys.modules["sync_tripit_precheck"] = precheck
 _spec.loader.exec_module(precheck)
 
-# State writers from the flight-assist skill — same `state` module
-# precheck imported, so writes here are observed by the precheck
-# reads under test. Tests patch state via FLIGHT_ASSIST_STATE_DIR
-# which `state.state_dir()` reads at call time.
+# State writers + snapshot readers from the flight-assist skill. The
+# precheck imports `state` lazily inside main() via `_load_flight_assist`;
+# the tests use the same module to populate fixtures the precheck will
+# later read via its own snapshot calls. `precheck` and this suite end
+# up sharing one `state` module object via sys.modules.
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
-from state import write_active_flights, write_flight_state  # noqa: E402
+import state as state_module  # noqa: E402
+from state import (  # noqa: E402
+    ACTIVE_FLIGHTS_FILE,
+    STATE_SCHEMA_VERSION,
+    write_active_flights,
+    write_flight_state,
+)
 
 # --------------------------------------------------------------------
 # Fixtures
@@ -80,7 +88,7 @@ def _flight_state(flight_id: int, *, dep_time: datetime) -> dict:
 def test_should_sync_cold_start_no_state(state_root):
     """No active-flights.json exists yet → first sync ever."""
     now = datetime(2026, 5, 22, 12, 0, 0, tzinfo=timezone.utc)
-    should, reason = precheck._should_sync_now(now=now)
+    should, reason = precheck._should_sync_now(state_module, now=now)
     assert should is True
     assert reason == "cold_start_no_state_file"
 
@@ -90,7 +98,7 @@ def test_should_sync_empty_state_recent_file(state_root):
     Result: no imminent flights AND state is recent → skip the byAir call."""
     write_active_flights([])
     now = datetime.now(timezone.utc)
-    should, reason = precheck._should_sync_now(now=now)
+    should, reason = precheck._should_sync_now(state_module, now=now)
     assert should is False
     assert reason == "no_imminent_flights_recent_sync"
 
@@ -101,11 +109,9 @@ def test_should_sync_stale_state_triggers_sync(state_root):
     active_path = state_root / "active-flights.json"
     # Backdate mtime to 7 hours ago — past the 6h threshold.
     old_ts = time.time() - 7 * 3600
-    import os
-
     os.utime(active_path, (old_ts, old_ts))
     now = datetime.now(timezone.utc)
-    should, reason = precheck._should_sync_now(now=now)
+    should, reason = precheck._should_sync_now(state_module, now=now)
     assert should is True
     assert reason.startswith("stale_state_age_")
 
@@ -116,7 +122,7 @@ def test_should_sync_imminent_flight_triggers_sync(state_root):
     # Flight 4 hours from now — imminent.
     write_flight_state(_flight_state(101, dep_time=now + timedelta(hours=4)))
     write_active_flights([101])
-    should, reason = precheck._should_sync_now(now=now)
+    should, reason = precheck._should_sync_now(state_module, now=now)
     assert should is True
     assert reason == "imminent_flight_101"
 
@@ -126,7 +132,7 @@ def test_should_sync_flight_outside_24h_with_recent_state_skips(state_root):
     now = datetime(2026, 5, 22, 12, 0, 0, tzinfo=timezone.utc)
     write_flight_state(_flight_state(202, dep_time=now + timedelta(hours=48)))
     write_active_flights([202])
-    should, reason = precheck._should_sync_now(now=now)
+    should, reason = precheck._should_sync_now(state_module, now=now)
     assert should is False
     assert reason == "no_imminent_flights_recent_sync"
 
@@ -137,7 +143,7 @@ def test_should_sync_flight_in_past_is_not_imminent(state_root):
     now = datetime(2026, 5, 22, 12, 0, 0, tzinfo=timezone.utc)
     write_flight_state(_flight_state(303, dep_time=now - timedelta(hours=1)))
     write_active_flights([303])
-    should, reason = precheck._should_sync_now(now=now)
+    should, reason = precheck._should_sync_now(state_module, now=now)
     assert should is False
     assert reason == "no_imminent_flights_recent_sync"
 
@@ -148,7 +154,7 @@ def test_should_sync_one_imminent_among_many_triggers(state_root):
     write_flight_state(_flight_state(404, dep_time=now + timedelta(hours=48)))
     write_flight_state(_flight_state(505, dep_time=now + timedelta(hours=6)))
     write_active_flights([404, 505])
-    should, reason = precheck._should_sync_now(now=now)
+    should, reason = precheck._should_sync_now(state_module, now=now)
     assert should is True
     # Reason names one specific flight — either is acceptable as long as
     # it's the imminent one (505), not the distant one (404).
@@ -166,8 +172,45 @@ def test_should_sync_malformed_dep_time_is_skipped_not_crashed(state_root):
     write_active_flights([606])
     # No imminent flights (the malformed one is skipped) → fall through to
     # stale-state check → state is fresh → skip.
-    should, reason = precheck._should_sync_now(now=now)
+    should, reason = precheck._should_sync_now(state_module, now=now)
     assert should is False
+
+
+def test_should_sync_does_not_migrate_old_active_flights(state_root):
+    """Non-owner reader contract per coding-policy: stateful-artifacts.
+
+    sync-tripit is a reader of flight-assist's state; it MUST NOT
+    trigger schema migrations. An on-disk v1 active-flights.json must
+    leave the file's bytes (and mtime) untouched after the precheck
+    runs its gate.
+    """
+    state_root.mkdir(parents=True, exist_ok=True)
+    active_path = state_root / ACTIVE_FLIGHTS_FILE
+    # Write a v1-shape index by hand. The schema_version is lower than
+    # the module's current STATE_SCHEMA_VERSION, so the owner-side
+    # `read_active_flights` would migrate-and-rewrite. The snapshot
+    # reader the precheck calls must not.
+    legacy_payload = {"schema_version": STATE_SCHEMA_VERSION - 1, "flight_ids": [999]}
+    active_path.write_text(json.dumps(legacy_payload))
+    # Backdate mtime so a touch by the precheck would be detectable
+    # against a freshly-stat'd "now" — gives the assert real signal.
+    old_ts = time.time() - 60
+    os.utime(active_path, (old_ts, old_ts))
+    before_mtime = active_path.stat().st_mtime_ns
+    before_bytes = active_path.read_bytes()
+
+    now = datetime.now(timezone.utc)
+    should, reason = precheck._should_sync_now(state_module, now=now)
+
+    # Old schema is "no usable prior state" → falls through to the
+    # mtime check, which sees a 60s-old file (well under the 6h stale
+    # threshold) and returns no_imminent_flights_recent_sync. The
+    # actual gate decision doesn't matter for this test; what matters
+    # is that the file is unchanged.
+    assert should is False
+    assert reason == "no_imminent_flights_recent_sync"
+    assert active_path.stat().st_mtime_ns == before_mtime
+    assert active_path.read_bytes() == before_bytes
 
 
 # --------------------------------------------------------------------
@@ -294,18 +337,26 @@ def test_main_outer_boundary_catches_unexpected_exception(state_root, monkeypatc
     assert payload["data"]["reason"] == "precheck_internal_error"
 
 
-def test_main_module_load_error_emits_safe_json(state_root, monkeypatch):
-    """When the bootstrap captured a module-load failure (e.g., missing
-    co-shipped flight-assist skill), main() must re-raise inside its
-    outer-boundary try and emit the safe-shape JSON. Without this
-    re-raise path, an import-time FileNotFoundError would bypass the
-    contract — agent-runner reads non-zero exit + empty stdout as
-    wake_agent=false silently, exactly the failure mode the carve-out
-    exists to prevent. Reviewer-cited issue (PR #21 OpenAI policy +
-    Copilot inline)."""
-    synthetic = FileNotFoundError("synthetic bootstrap failure")
-    monkeypatch.setattr(precheck, "_MODULE_LOAD_ERROR", synthetic)
+def test_main_bootstrap_failure_emits_safe_json(monkeypatch):
+    """If `_load_flight_assist` raises (e.g. the co-shipped skill is
+    missing from the install), the outer-boundary handler in main()
+    must still emit the safe-shape JSON and exit 0. Without this path,
+    a bootstrap FileNotFoundError would surface as exit 1 + empty
+    stdout, which the agent-runner reads as wake_agent=false silently
+    — exactly the failure mode the outer-boundary-process-contract
+    carve-out exists to prevent.
+
+    Patching `_load_flight_assist` is the structural replacement for
+    the previous module-level catch-all (now removed per OpenAI policy
+    reviewer feedback on PR #21 — handlers must sit at the outermost
+    process boundary, not at module-load level).
+    """
     buf = _capture_stdout(monkeypatch)
+
+    def _boom():
+        raise FileNotFoundError("synthetic bootstrap failure")
+
+    monkeypatch.setattr(precheck, "_load_flight_assist", _boom)
     rc = precheck.main()
     assert rc == 0
     payload = json.loads(buf.getvalue().strip())

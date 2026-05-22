@@ -25,9 +25,11 @@ from state import (  # noqa: E402
     StateError,
     delete_flight_state,
     read_active_flights,
+    read_active_flights_snapshot,
     read_config,
     read_current_location,
     read_flight_state,
+    read_flight_state_snapshot,
     state_dir,
     write_active_flights,
     write_config,
@@ -685,3 +687,114 @@ def test_state_files_use_separate_paths(state_root: Path):
     assert read_flight_state(200)["code"] == "B"
     files = sorted(p.name for p in state_root.iterdir())
     assert files == ["flight-100.json", "flight-200.json"]
+
+
+# --------------------------------------------------------------------
+# Non-owner reader API — read_active_flights_snapshot,
+# read_flight_state_snapshot.  These functions exist so non-owner skills
+# (sync-tripit, future cross-tile readers) can consult the latest
+# snapshot without triggering owner-side schema migrations. Contract
+# per `coding-policy: stateful-artifacts`: schema_version mismatch
+# returns "no usable prior state" instead of migrating; the next
+# owner-skill invocation performs the upgrade.
+# --------------------------------------------------------------------
+
+
+def test_read_active_flights_snapshot_returns_empty_when_missing(state_root: Path):
+    """Missing file → []. Matches the owner-side function's no-state branch."""
+    assert read_active_flights_snapshot() == []
+
+
+def test_read_active_flights_snapshot_returns_current_payload(state_root: Path):
+    """When schema_version matches, snapshot reader returns the payload."""
+    write_active_flights([111, 222])
+    assert read_active_flights_snapshot() == [111, 222]
+
+
+def test_read_active_flights_snapshot_skips_old_schema_without_migrating(state_root: Path):
+    """Non-owner reader contract: an older schema_version returns [] (no
+    usable prior state) and MUST NOT rewrite the file."""
+    state_root.mkdir(parents=True)
+    legacy_payload = {"schema_version": STATE_SCHEMA_VERSION - 1, "flight_ids": [999]}
+    path = state_root / ACTIVE_FLIGHTS_FILE
+    path.write_text(json.dumps(legacy_payload))
+    before_bytes = path.read_bytes()
+
+    assert read_active_flights_snapshot() == []
+    # File on disk is unchanged — no migration was performed.
+    assert path.read_bytes() == before_bytes
+
+
+def test_read_active_flights_snapshot_raises_state_error_on_corruption(state_root: Path):
+    """Integrity failures (corrupt JSON, future schema_version) still
+    raise — the snapshot reader only short-circuits old-schema cases."""
+    state_root.mkdir(parents=True)
+    (state_root / ACTIVE_FLIGHTS_FILE).write_text("{not valid json")
+    with pytest.raises(StateError):
+        read_active_flights_snapshot()
+
+
+def test_read_active_flights_snapshot_raises_on_future_schema_version(state_root: Path):
+    state_root.mkdir(parents=True)
+    (state_root / ACTIVE_FLIGHTS_FILE).write_text(
+        json.dumps({"schema_version": STATE_SCHEMA_VERSION + 1, "flight_ids": []})
+    )
+    with pytest.raises(StateError):
+        read_active_flights_snapshot()
+
+
+def test_read_flight_state_snapshot_returns_none_when_missing(state_root: Path):
+    """Missing per-flight file → None."""
+    assert read_flight_state_snapshot(12345) is None
+
+
+def test_read_flight_state_snapshot_returns_current_payload(state_root: Path):
+    """When schema_version matches, snapshot reader returns the payload."""
+    write_flight_state(_make_flight_state(flight_id=12345, code="AA2414"))
+    loaded = read_flight_state_snapshot(12345)
+    assert loaded is not None
+    assert loaded["code"] == "AA2414"
+
+
+def test_read_flight_state_snapshot_skips_old_schema_without_migrating(state_root: Path):
+    """Non-owner reader contract for per-flight state: older
+    schema_version returns None without rewriting the file."""
+    state_root.mkdir(parents=True)
+    v1_state = {
+        "schema_version": 1,
+        "flight_id": 12345,
+        "code": "AA2414",
+        "ownership": "mine",
+        "trip_id": 678,
+        "scheduled_dep_time": "2026-05-17T09:00:00-07:00",
+        "scheduled_arr_time": "2026-05-17T11:09:00-07:00",
+        "dep_airport_id": 20,
+        "arr_airport_id": 28,
+        "last_polled_at": "2026-05-17T18:42:11Z",
+        "last_snapshot": None,
+        "phase_markers": {
+            "day_before_fired": False,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+        },
+        "last_wake_at": None,
+        "last_wake_reason": None,
+    }
+    path = state_root / "flight-12345.json"
+    path.write_text(json.dumps(v1_state))
+    before_bytes = path.read_bytes()
+
+    assert read_flight_state_snapshot(12345) is None
+    # File on disk unchanged — no v1→v2 migration performed by the reader.
+    assert path.read_bytes() == before_bytes
+    # Sanity: the owner-side reader would have migrated and rewritten.
+    assert read_flight_state(12345)["phase_markers"]["connection_at_risk_fired"] is False
+    assert path.read_bytes() != before_bytes
+
+
+def test_read_flight_state_snapshot_rejects_non_int_flight_id(state_root: Path):
+    """Same flight_id validation as the owner-side reader."""
+    with pytest.raises(ValueError):
+        read_flight_state_snapshot("12345")

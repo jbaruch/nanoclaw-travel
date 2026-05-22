@@ -181,7 +181,7 @@ Today `STATE_SCHEMA_VERSION` is `2`.
 - Lower than current → run the owner-side migration in `_migrate`, rewrite at the current version, return the upgraded payload
 - Missing, wrong type (non-int, including `bool`) → `StateError` with actionable repair message
 
-Reader skills (non-owners) keep the strict-equality behavior — they get `StateError` on any mismatched version and treat the data as "no usable prior state". Only the owner skill (`flight-assist`, this tile, via `state.py:_migrate`) migrates.
+Non-owner readers (sync-tripit, future cross-tile composition) call the dedicated snapshot entry points: `read_active_flights_snapshot()` and `read_flight_state_snapshot(flight_id)`. These mirror the owner-side functions' return shapes but treat any `schema_version` lower than `STATE_SCHEMA_VERSION` as "no usable prior state" (return `[]` / `None`) without invoking `_migrate`. Integrity failures (corrupt JSON, missing required field at the current schema, higher-than-current `schema_version`) still raise `StateError` — those are operator-attention cases, not old-state cases. Only the owner skill (`flight-assist`, this tile, via `state.py:_migrate`) migrates.
 
 ### v1 → v2
 
@@ -193,5 +193,5 @@ When adding or renaming a field:
 
 1. Bump `STATE_SCHEMA_VERSION` in `state.py` and document the new shape in this file
 2. Add migration logic to `state.py` that reads old `schema_version` and rewrites the upgraded shape via the owner-skill code path (the precheck, the agent on wake, sync-tripit — every entry point that uses `read_flight_state` from inside `flight-assist`)
-3. Non-owner reader skills (other tiles, future cross-tile composition) must NOT migrate; they get `StateError` on any mismatched `schema_version` and treat the data as "no usable prior state". No tolerance window. Migration happens exclusively on the owner-skill's next read
+3. Non-owner reader skills (other tiles, future cross-tile composition) call `read_active_flights_snapshot` / `read_flight_state_snapshot` instead of the owner-side helpers; the snapshot readers treat any mismatched `schema_version` as "no usable prior state" and return without rewriting. Migration happens exclusively on the owner-skill's next read
 4. CHANGELOG entry under `## Unreleased` describing the version bump and the owner-side migration path

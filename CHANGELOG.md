@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Review fixup (#21) — non-owner snapshot reader API + boundary handler at main()
+
+OpenAI policy reviewer requested changes on two precondition violations in PR #21 (commit 5103c8f). Both addressed here:
+
+1. **Module-level catch-all in `skills/sync-tripit/precheck.py` broadens the `error-handling` outer-boundary carve-out.** Removed the bootstrap try/except wrapping the cross-skill import. Path resolution + `sys.path` injection + the `state` import now live in a new `_load_flight_assist()` helper invoked from inside `main()`'s try block, so the sole catch-all sits at the outermost process boundary as the carve-out requires. The `_load_flight_assist` failure path is exercised by `test_main_bootstrap_failure_emits_safe_json`.
+
+2. **Non-owner reader could invoke owner-side migrations.** `sync-tripit`'s precheck previously called `state.read_active_flights()` / `state.read_flight_state()`, both of which silently invoke `_migrate` and rewrite the file on `schema_version` mismatch — a violation of the single-owner contract in `coding-policy: stateful-artifacts`. Added a `migrate=True` kwarg to `_read_json_with_version` and exposed two dedicated non-owner reader entry points: `read_active_flights_snapshot()` and `read_flight_state_snapshot(flight_id)`. The snapshot readers treat any older `schema_version` as "no usable prior state" (return `[]` / `None`) and never write to disk; integrity failures (corrupt JSON, higher-than-current schema, missing required field at the current schema) still raise `StateError`. `precheck.py` now uses these snapshot readers. Owner-side `flight-assist` code paths are unchanged. `state-schema.md` documents the new reader contract.
+
+Test coverage extended: gate tests now exercise the snapshot API; new `test_should_sync_does_not_migrate_old_active_flights` asserts the file's bytes + mtime are unchanged after a precheck run against a v1-schema state file; six new tests in `tests/test_state.py` cover the snapshot reader API (missing file, current payload, old-schema no-migrate, corruption, future-version, flight_id validation).
+
 ### Feat — adaptive scheduler for sync_tripit (new `sync-tripit` skill)
 
 `sync_tripit.py` shipped at v0.1.0 with the docstring claim "Run cadence: daily at ~04:00 local" but never had a cadence-registry entry — the orchestrator never invoked it, so `active-flights.json` was never populated, and the existing 2-min flight-assist precheck loop fired into an empty state file every cycle. This is the orchestration half of the two-bug stack diagnosed live 2026-05-22 (byAir HTTP 400 was the transport half, addressed in PR #20).
