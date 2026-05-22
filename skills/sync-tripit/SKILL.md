@@ -1,6 +1,6 @@
 ---
 name: sync-tripit
-description: "Adaptive 5-minute scheduler for the TripIt/byAir → active-flights.json refresh. Precheck gates on 'any flight in next 24 hours OR active-flights.json older than 6 hours'; hits byAir only when the gate passes, idle otherwise. Day-of-travel polling for delays / gate changes / cancellations, cheap between travel windows. Use when active-flights.json isn't updating, byAir polling cadence isn't matching flight density, or setting up flight-assist on a new install."
+description: "Adaptive scheduler for the TripIt/byAir refresh of active-flights.json. Precheck-gated to keep byAir polling responsive on flight days and idle between travel windows. Use when active-flights.json isn't updating, byAir polling cadence isn't matching flight density, troubleshooting flight tracking / flight notifications / flight status updates / travel schedule refresh, or setting up flight-assist on a new install. The gate predicate and threshold constants live in precheck.py."
 cadence: "*/5 * * * *"
 script: "precheck.py"
 user-invocable: false
@@ -8,7 +8,7 @@ user-invocable: false
 
 # sync-tripit (adaptive scheduler)
 
-**Every step below is mandatory. Execute them in order. Do not skip, reorder, or abbreviate any step.**
+Process steps in order. Do not skip ahead.
 
 **Silence rule:** produces NO user-visible output. The precheck delegates wake-payload composition to `flight-assist/sync_tripit.py`, which emits `wake_agent: true` only on tracked-flight added/removed events.
 

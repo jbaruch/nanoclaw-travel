@@ -47,6 +47,7 @@ Store both in OneCLI vault. Never commit. See [.env.example](.env.example) for t
 | Skill | Description |
 |-------|-------------|
 | [flight-assist](skills/flight-assist/SKILL.md) | Action router: diagnose credentials, set home base, or compose a user-facing notification from a precheck wake event (delay, gate change, cancellation, boarding, time-to-leave, carousel, day-before, arrival logistics, tracked-flight add/remove) |
+| [sync-tripit](skills/sync-tripit/SKILL.md) | Adaptive scheduler that fires the byAir → `active-flights.json` refresh on a precheck-gated 5-min cadence — responsive on flight days, idle between travel windows. Diagnostic-only LLM surface (the gate + sync happen in the precheck script) |
 
 ## Skill scripts
 
@@ -56,10 +57,11 @@ The skill bundle includes three executable scripts the agent invokes via the SKI
 - `scripts/set-home-base.py` — persists home address to tile config for time-to-leave queries
 - `scripts/get-flight-state.py` — fetches a flight's last-known snapshot to enrich notifications
 
-Plus two scheduler-invoked scripts (not user-facing):
+Plus scheduler-invoked scripts (not user-facing):
 
-- `precheck.py` — runs every ~2 min, polls byAir per cadence ladder, emits wake events
-- `sync_tripit.py` — runs daily, reconciles tracked flights against byAir's `list_trips`
+- `flight-assist/precheck.py` — runs every ~2 min, polls byAir per cadence ladder, emits wake events
+- `sync-tripit/precheck.py` — runs every 5 min, adaptive-gated; delegates to `flight-assist/sync_tripit.py` only when a flight is imminent or the index is stale (see the `sync-tripit` skill for gate predicate + thresholds)
+- `flight-assist/sync_tripit.py` — the byAir → state reconciliation invoked by the sync-tripit scheduler
 
 ## Status
 

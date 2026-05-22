@@ -54,28 +54,55 @@ from pathlib import Path
 _FLIGHT_ASSIST_RUNTIME = Path("/home/node/.claude/skills/tessl__flight-assist")
 _FLIGHT_ASSIST_DEV = Path(__file__).resolve().parent.parent / "flight-assist"
 
-if _FLIGHT_ASSIST_RUNTIME.is_dir():
-    _FLIGHT_ASSIST_DIR = _FLIGHT_ASSIST_RUNTIME
-elif _FLIGHT_ASSIST_DEV.is_dir():
-    _FLIGHT_ASSIST_DIR = _FLIGHT_ASSIST_DEV
-else:
-    raise FileNotFoundError(
-        "sync-tripit precheck: cannot locate the co-shipped flight-assist skill at "
-        f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev). Both skills "
-        "ship from the same tile (jbaruch/nanoclaw-flight-assist); if one is missing the "
-        "other can't function."
+_MODULE_LOAD_ERROR: BaseException | None = None
+SYNC_TRIPIT_PATH: Path | None = None
+
+# Bootstrap wrapped so a missing co-deployment captures to a global and
+# re-raises inside main()'s try. Otherwise an import-time
+# FileNotFoundError would die before main() runs and the agent-runner
+# would read non-zero exit + empty stdout as wake_agent: false silently
+# — the exact contract failure mode outer-boundary-process-contract
+# exists to prevent.
+try:
+    if _FLIGHT_ASSIST_RUNTIME.is_dir():
+        _FLIGHT_ASSIST_DIR = _FLIGHT_ASSIST_RUNTIME
+    elif _FLIGHT_ASSIST_DEV.is_dir():
+        _FLIGHT_ASSIST_DIR = _FLIGHT_ASSIST_DEV
+    else:
+        raise FileNotFoundError(
+            "sync-tripit precheck: cannot locate the co-shipped flight-assist skill at "
+            f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev). Both skills "
+            "ship from the same tile (jbaruch/nanoclaw-flight-assist); if one is missing the "
+            "other can't function."
+        )
+    sys.path.insert(0, str(_FLIGHT_ASSIST_DIR))
+    SYNC_TRIPIT_PATH = _FLIGHT_ASSIST_DIR / "sync_tripit.py"
+    from state import (  # noqa: E402 — sys.path injection above
+        ACTIVE_FLIGHTS_FILE,
+        StateError,
+        read_active_flights,
+        read_flight_state,
+        state_dir,
     )
+except Exception as _bootstrap_err:  # noqa: BLE001 — outer-boundary-process-contract
+    _MODULE_LOAD_ERROR = _bootstrap_err
 
-sys.path.insert(0, str(_FLIGHT_ASSIST_DIR))
-SYNC_TRIPIT_PATH = _FLIGHT_ASSIST_DIR / "sync_tripit.py"
+    # Placeholder bindings so module load completes. main() re-raises
+    # _MODULE_LOAD_ERROR before any of these are reachable.
+    ACTIVE_FLIGHTS_FILE = ""
 
-from state import (  # noqa: E402 — sys.path injection above
-    ACTIVE_FLIGHTS_FILE,
-    StateError,
-    read_active_flights,
-    read_flight_state,
-    state_dir,
-)
+    class StateError(Exception):  # type: ignore[no-redef]
+        """Stub when flight-assist's state.py couldn't be imported."""
+
+    def read_active_flights() -> list[int]:  # type: ignore[no-redef]
+        raise _MODULE_LOAD_ERROR  # type: ignore[misc]
+
+    def read_flight_state(_fid: int) -> dict | None:  # type: ignore[no-redef]
+        raise _MODULE_LOAD_ERROR  # type: ignore[misc]
+
+    def state_dir() -> Path:  # type: ignore[no-redef]
+        raise _MODULE_LOAD_ERROR  # type: ignore[misc]
+
 
 # Gate thresholds. Imminent-flight window matches the user-stated
 # requirement ("only that frequent when there are flights in the next
@@ -163,6 +190,11 @@ def _emit(payload: dict) -> None:
 
 def main() -> int:
     try:
+        # Re-raise any captured module-load failure inside the
+        # outer-boundary try so it produces the safe JSON shape rather
+        # than dying as a silent non-zero exit.
+        if _MODULE_LOAD_ERROR is not None:
+            raise _MODULE_LOAD_ERROR
         now = datetime.now(timezone.utc)
         should_sync, reason = _should_sync_now(now=now)
 

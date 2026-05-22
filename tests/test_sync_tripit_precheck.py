@@ -292,3 +292,22 @@ def test_main_outer_boundary_catches_unexpected_exception(state_root, monkeypatc
     payload = json.loads(buf.getvalue().strip())
     assert payload["wake_agent"] is False
     assert payload["data"]["reason"] == "precheck_internal_error"
+
+
+def test_main_module_load_error_emits_safe_json(state_root, monkeypatch):
+    """When the bootstrap captured a module-load failure (e.g., missing
+    co-shipped flight-assist skill), main() must re-raise inside its
+    outer-boundary try and emit the safe-shape JSON. Without this
+    re-raise path, an import-time FileNotFoundError would bypass the
+    contract — agent-runner reads non-zero exit + empty stdout as
+    wake_agent=false silently, exactly the failure mode the carve-out
+    exists to prevent. Reviewer-cited issue (PR #21 OpenAI policy +
+    Copilot inline)."""
+    synthetic = FileNotFoundError("synthetic bootstrap failure")
+    monkeypatch.setattr(precheck, "_MODULE_LOAD_ERROR", synthetic)
+    buf = _capture_stdout(monkeypatch)
+    rc = precheck.main()
+    assert rc == 0
+    payload = json.loads(buf.getvalue().strip())
+    assert payload["wake_agent"] is False
+    assert payload["data"]["reason"] == "precheck_internal_error"
