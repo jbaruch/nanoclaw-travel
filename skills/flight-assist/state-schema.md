@@ -4,7 +4,7 @@ Documents the on-disk state files the flight-assist tile reads and writes. Per `
 
 ## Owner Skill
 
-`flight-assist` (this tile) is the sole owner. Only this skill migrates `schema_version`. Reader skills (other tiles, agent-side composition, sync-tripit) must treat any mismatched `schema_version` as "no usable prior state" and return without rewriting the file.
+`flight-assist` (this tile) is the sole owner. Only this skill migrates `schema_version`. Reader skills (other tiles, agent-side composition, sync-tripit) call the snapshot reader API — `read_active_flights_snapshot` / `read_flight_state_snapshot` — which treats a `schema_version` strictly below the current `STATE_SCHEMA_VERSION` as "no usable prior state" and returns without rewriting the file. A `schema_version` ABOVE the current still raises `StateError` from any reader (forward incompatibility — operators must upgrade the consumer tile, not be told there's nothing on disk).
 
 ## State Directory
 
@@ -181,7 +181,7 @@ Today `STATE_SCHEMA_VERSION` is `2`.
 - Lower than current → run the owner-side migration in `_migrate`, rewrite at the current version, return the upgraded payload
 - Missing, wrong type (non-int, including `bool`) → `StateError` with actionable repair message
 
-Non-owner readers (sync-tripit, future cross-tile composition) call the dedicated snapshot entry points: `read_active_flights_snapshot()` and `read_flight_state_snapshot(flight_id)`. These mirror the owner-side functions' return shapes but treat any `schema_version` lower than `STATE_SCHEMA_VERSION` as "no usable prior state" (return `[]` / `None`) without invoking `_migrate`. Integrity failures (corrupt JSON, missing required field at the current schema, higher-than-current `schema_version`) still raise `StateError` — those are operator-attention cases, not old-state cases. Only the owner skill (`flight-assist`, this tile, via `state.py:_migrate`) migrates.
+Non-owner readers (sync-tripit, future cross-tile composition) call the dedicated snapshot entry points: `read_active_flights_snapshot()` and `read_flight_state_snapshot(flight_id)`. These mirror the owner-side functions' return shapes but treat a `schema_version` strictly LESS THAN `STATE_SCHEMA_VERSION` as "no usable prior state" (return `[]` / `None`) without invoking `_migrate`. A `schema_version` ABOVE the current still raises `StateError` from the snapshot path (forward incompatibility); so does corrupt JSON or a missing required field at the current schema. Only the owner skill (`flight-assist`, this tile, via `state.py:_migrate`) migrates.
 
 ### v1 → v2
 

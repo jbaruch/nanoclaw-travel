@@ -41,10 +41,13 @@ Public API:
 
 Non-owner reader contract: any tile that reads (but does not own) this
 state — sync-tripit, future agent-side composition, other tiles — MUST
-use the `*_snapshot` entry points. They treat any schema_version
-mismatch as "no usable prior state" and return without rewriting the
-file, satisfying `coding-policy: stateful-artifacts`'s single-owner
-migration rule.
+use the `*_snapshot` entry points. They treat a schema_version BELOW
+the current `STATE_SCHEMA_VERSION` as "no usable prior state" (return
+None / []) without rewriting the file, satisfying `coding-policy:
+stateful-artifacts`'s single-owner migration rule. A schema_version
+ABOVE the current still raises `StateError` (forward incompatibility,
+not an old-state case) — operators need to upgrade the consumer tile,
+not be told there's nothing on disk.
 """
 
 from __future__ import annotations
@@ -126,8 +129,10 @@ def _read_json_with_version(path: Path, *, migrate: bool = True) -> dict | None:
     or schema_version higher than the current module constant.
 
     schema_version equal to STATE_SCHEMA_VERSION returns the payload.
-    schema_version LOWER than the current is handled per the `migrate`
-    kwarg:
+    schema_version HIGHER than current raises StateError regardless of
+    the `migrate` kwarg (forward incompatibility is never an old-state
+    case). schema_version LOWER than the current is handled per the
+    `migrate` kwarg:
     - `migrate=True` (owner path): runs `_migrate`, which upgrade-and-
       rewrites the file before returning. Unknown lower versions raise
       StateError.
@@ -381,17 +386,19 @@ def read_active_flights_snapshot() -> list[int]:
     """Non-owner reader entry point for the active-flights index.
 
     Same return shape as `read_active_flights`, but a schema_version
-    lower than `STATE_SCHEMA_VERSION` is treated as "no usable prior
-    state" (returns `[]`) instead of invoking `_migrate`. Per
+    strictly LESS THAN `STATE_SCHEMA_VERSION` is treated as "no usable
+    prior state" (returns `[]`) instead of invoking `_migrate`. Per
     `coding-policy: stateful-artifacts`, only the owner skill
     (flight-assist) may migrate; non-owner skills (sync-tripit, other
     tiles) call this function on every read so they never trigger an
     owner-side rewrite.
 
-    StateError on JSON corruption, non-object payload, missing
-    schema_version, or higher-than-current schema_version is still
-    raised — those are not "old state" cases, they are integrity
-    failures that need operator attention.
+    StateError is still raised on integrity failures: JSON corruption,
+    non-object payload, missing schema_version, schema_version of a
+    non-int type, or schema_version HIGHER than current
+    `STATE_SCHEMA_VERSION` (forward incompatibility — operators must
+    upgrade the consumer tile). The snapshot reader's "no usable prior
+    state" semantics apply ONLY to older versions.
     """
     payload = _read_json_with_version(state_dir() / ACTIVE_FLIGHTS_FILE, migrate=False)
     if payload is None:
@@ -467,17 +474,19 @@ def read_flight_state(flight_id: int) -> dict | None:
 def read_flight_state_snapshot(flight_id: int) -> dict | None:
     """Non-owner reader entry point for per-flight state.
 
-    Same shape as `read_flight_state`, but a schema_version lower than
-    `STATE_SCHEMA_VERSION` is treated as "no usable prior state"
-    (returns `None`) instead of invoking `_migrate`. Per
+    Same shape as `read_flight_state`, but a schema_version strictly
+    LESS THAN `STATE_SCHEMA_VERSION` is treated as "no usable prior
+    state" (returns `None`) instead of invoking `_migrate`. Per
     `coding-policy: stateful-artifacts`, only the owner skill
     (flight-assist) may migrate; non-owner skills call this so they
     never trigger an owner-side rewrite. The next owner-skill
     invocation upgrades the file on its own read.
 
-    StateError on integrity failures (corrupt JSON, missing required
-    field at the current schema, higher-than-current schema_version)
-    still raises — those are not "old state" cases.
+    StateError still raises on integrity failures: corrupt JSON,
+    missing required field at the current schema, schema_version
+    HIGHER than `STATE_SCHEMA_VERSION` (forward incompatibility —
+    operators must upgrade the consumer tile). The snapshot reader's
+    "no usable prior state" semantics apply ONLY to older versions.
     """
     _validate_flight_id(flight_id, fn_name="read_flight_state_snapshot")
     payload = _read_json_with_version(_flight_file(flight_id), migrate=False)
