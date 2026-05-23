@@ -248,7 +248,7 @@ def main():
         # contract; human-readable diagnostic to stderr per
         # `coding-policy: script-delegation` (Self-error-handling)
         # and `coding-policy: file-hygiene` (stderr for diagnostics).
-        print(json.dumps({"error": message}))
+        print(json.dumps({"error": message}, ensure_ascii=False))
         print(f"check-travel-bookings: {message}", file=sys.stderr)
         sys.exit(1)
 

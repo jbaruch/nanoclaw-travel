@@ -30,8 +30,10 @@ Schema:
 """
 
 import json
+import os
 import re
 import sys
+import tempfile
 from datetime import date, datetime, timezone
 
 SCHEDULE_PATH = "/workspace/group/travel-schedule.json"
@@ -117,8 +119,19 @@ def main():
         "trips": db_trips,
     }
 
-    with open(DB_PATH, "w", encoding="utf-8") as f:
-        json.dump(db, f, indent=2, ensure_ascii=False)
+    # Atomic write: temp file in the same directory, then os.replace.
+    # Protects downstream readers (check-travel-bookings.py, morning-brief)
+    # from a half-written DB if the process is interrupted mid-write.
+    db_dir = os.path.dirname(DB_PATH) or "."
+    fd, tmp_path = tempfile.mkstemp(prefix=".travel-db-", suffix=".tmp", dir=db_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(db, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, DB_PATH)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
 
     total_items = sum(len(evts) for t in db_trips.values() for evts in t["days"].values())
     print(f"travel-db.json: {len(db_trips)} trips, {total_items} item-events written")
