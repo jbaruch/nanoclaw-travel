@@ -5,9 +5,9 @@ description: Checks upcoming trips for missing bookings (flights, hotels, accomm
 
 # Check Travel Bookings
 
-**Run the script at `/home/node/.claude/skills/tessl__check-travel-bookings/scripts/check-travel-bookings.py` and interpret its JSON output. Do not implement the detection logic yourself.**
+Process steps in order. Do not skip ahead. Run the script — do not implement the detection logic yourself.
 
-## How to run
+## Step 1 — Run the script
 
 ```bash
 python3 /home/node/.claude/skills/tessl__check-travel-bookings/scripts/check-travel-bookings.py
@@ -25,17 +25,15 @@ The script outputs JSON:
 }
 ```
 
-If `gaps` is empty, stay silent. If present, format and send as Telegram message.
+`/workspace/group/travel-db.json` is rebuilt nightly by `tessl__nightly-external-sync` Step 5. Missing/unreadable/invalid DB → exit 1 with `{"error": "..."}` on stdout plus `check-travel-bookings: ...` on stderr. DB alerting is Step 5's responsibility. On non-zero exit, report error output and stop. On invalid JSON or missing fields, report the parse error with raw output.
 
-## Error handling
+Proceed immediately to Step 2.
 
-- `/workspace/group/travel-db.json` is rebuilt nightly by `tessl__nightly-external-sync` Step 5. Missing/unreadable/invalid DB → exit 1 with `{"error": "..."}` on stdout plus `check-travel-bookings: ...` on stderr. DB alerting is Step 5's responsibility
-- Non-zero exit code: report error output; do not parse
-- Invalid JSON or missing fields: report parse error with raw output
+## Step 2 — Interpret and report
 
-## Output format (when gaps found)
+If `gaps` is empty, stay silent (proceed silently — no output).
 
-Telegram HTML (parse_mode=HTML). If conversion needed, pipe through `/workspace/group/scripts/sanitize-html.py` (Markdown → Telegram HTML).
+If `gaps` is present, format as Telegram HTML (`parse_mode=HTML`). If conversion needed, pipe through `/workspace/group/scripts/sanitize-html.py` (Markdown → Telegram HTML):
 
 ```
 <b>Travel bookings to sort out:</b>
@@ -45,12 +43,14 @@ Telegram HTML (parse_mode=HTML). If conversion needed, pipe through `/workspace/
 
 Date range: `May 24–Jun 1` (abbreviated month, no year unless spans years).
 
-## State Management
+If the user is acting on a gap (snooze/resolve), proceed to Step 3. Otherwise finish here.
 
-When Baruch snoozes or resolves a trip, update `/workspace/group/travel-booking-state.json`:
+## Step 3 — Update snooze state
+
+Only run this step when Baruch snoozes or resolves a trip. Update `/workspace/group/travel-booking-state.json`:
 - Snooze: set `snooze_until` to a future date for the trip's slug
 - Resolved: remove the entry (next nightly rebuild reflects completed bookings)
 
 Slug format: `{normalized-summary}-{YYYY}-{MM}` (lowercase, spaces/punctuation → hyphens).
 
-After writing, verify file contains valid JSON before confirming.
+After writing, verify the file contains valid JSON before confirming. Finish here.

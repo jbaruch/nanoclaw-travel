@@ -129,7 +129,7 @@ def load_trips_from_db(db_path: str) -> list[dict] | None:
     back to a live fetch (see module docstring).
     """
     try:
-        with open(db_path) as f:
+        with open(db_path, encoding="utf-8") as f:
             db = json.load(f)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         # OSError covers FileNotFoundError, PermissionError, and other
@@ -258,7 +258,7 @@ def main():
     # except as the DB read so a permission glitch or non-UTF-8
     # write doesn't bring down the whole check.
     try:
-        with open(STATE_PATH) as f:
+        with open(STATE_PATH, encoding="utf-8") as f:
             snooze_state = json.load(f)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         snooze_state = {}

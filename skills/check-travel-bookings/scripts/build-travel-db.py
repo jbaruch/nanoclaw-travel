@@ -59,7 +59,7 @@ def make_slug(summary: str, start_str: str) -> str:
 
 def main():
     try:
-        with open(SCHEDULE_PATH) as f:
+        with open(SCHEDULE_PATH, encoding="utf-8") as f:
             events = json.load(f)
     except FileNotFoundError:
         print(
@@ -117,7 +117,7 @@ def main():
         "trips": db_trips,
     }
 
-    with open(DB_PATH, "w") as f:
+    with open(DB_PATH, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=2, ensure_ascii=False)
 
     total_items = sum(len(evts) for t in db_trips.values() for evts in t["days"].values())
