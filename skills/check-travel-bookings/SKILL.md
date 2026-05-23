@@ -50,8 +50,10 @@ If the user is acting on a gap (snooze/resolve), proceed to Step 3. Otherwise fi
 ## Step 3 — Update snooze state
 
 Only run this step when Baruch snoozes or resolves a trip. Update `/workspace/group/travel-booking-state.json`:
-- Snooze: set `snooze_until` to a future date for the trip's slug
+- Snooze: set `{"schema_version": 1, "snooze_until": "YYYY-MM-DD"}` for the trip's slug
 - Resolved: remove the entry (next nightly rebuild reflects completed bookings)
+
+Every entry MUST carry `schema_version: 1` per `coding-policy: stateful-artifacts` and the per-skill `state-schema.md`. The reader (`check-travel-bookings.py`) gates on this field; entries with a higher version are treated as forward-incompatible. Legacy entries lacking the field are accepted as implicit v1, but new entries must stamp it explicitly.
 
 Slug format: `{normalized-summary}-{YYYY}-{MM}` (lowercase, spaces/punctuation → hyphens).
 

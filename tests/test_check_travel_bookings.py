@@ -772,3 +772,169 @@ def test_main_checked_at_format(check_travel_bookings, monkeypatch, capsys):
     _, out, _ = _run(module, monkeypatch, capsys)
     payload = json.loads(out)
     assert payload["checked_at"] == "2026-04-30T12:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# Schema-version gate (state-schema.md sibling — stateful-artifacts contract)
+# ---------------------------------------------------------------------------
+
+
+def test_load_trips_from_db_accepts_explicit_schema_v1(check_travel_bookings):
+    """DB stamped with `schema_version: 1` reads normally — matches what
+    `build-travel-db.py` writes."""
+    module, db_path, _ = check_travel_bookings
+    payload = _db_payload({})
+    payload["schema_version"] = 1
+    db_path.write_text(json.dumps(payload))
+    trips = module.load_trips_from_db(str(db_path))
+    assert trips == []
+
+
+def test_load_trips_from_db_accepts_missing_schema_version_as_legacy_v1(
+    check_travel_bookings,
+):
+    """Legacy DBs from before the schema_version field was introduced
+    (e.g., the rolling pre-migration state on the NAS at deploy time)
+    are treated as implicit v1 — the field was introduced AT v1, no
+    prior version exists, so absence is grandfathered."""
+    module, db_path, _ = check_travel_bookings
+    payload = _db_payload({})
+    assert "schema_version" not in payload
+    db_path.write_text(json.dumps(payload))
+    trips = module.load_trips_from_db(str(db_path))
+    assert trips == []
+
+
+def test_load_trips_from_db_returns_none_on_forward_schema_version(check_travel_bookings):
+    """A DB stamped with a higher-than-current schema_version is
+    forward-incompatible — return None so main() lands in the
+    hard-error JSON path, surfacing operator-readable diagnostics
+    instead of attempting to parse an unknown shape."""
+    module, db_path, _ = check_travel_bookings
+    payload = _db_payload({})
+    payload["schema_version"] = 2
+    db_path.write_text(json.dumps(payload))
+    assert module.load_trips_from_db(str(db_path)) is None
+
+
+def test_load_trips_from_db_returns_none_on_non_int_schema_version(check_travel_bookings):
+    """A DB whose schema_version is not an int (string, list, bool)
+    is rejected — same forward-incompatibility branch."""
+    module, db_path, _ = check_travel_bookings
+    for bad_value in ["1", [1], True, 1.5]:
+        payload = _db_payload({})
+        payload["schema_version"] = bad_value
+        db_path.write_text(json.dumps(payload))
+        assert module.load_trips_from_db(str(db_path)) is None, f"non-int {bad_value!r} accepted"
+
+
+def _madrid_gap_payload():
+    """Single Madrid trip with transport but no lodging → 'рейсы есть,
+    отеля нет' gap fires unless snoozed."""
+    trip_start = _FROZEN_TODAY + timedelta(days=10)
+    trip_end = _FROZEN_TODAY + timedelta(days=14)
+    return _db_payload(
+        {
+            "madrid-2026-06": _trip_record(
+                summary="Madrid",
+                start=trip_start,
+                end=trip_end,
+                days={
+                    trip_start.isoformat(): [
+                        _item(type="Flight", summary="Outbound", start=trip_start),
+                    ],
+                    (trip_start + timedelta(days=3)).isoformat(): [
+                        _item(
+                            type="Flight",
+                            summary="Return",
+                            start=trip_start + timedelta(days=3),
+                        ),
+                    ],
+                },
+            ),
+        }
+    )
+
+
+def test_main_snooze_with_schema_v1_suppresses_gap(check_travel_bookings, monkeypatch, capsys):
+    """Snooze entry stamped with `schema_version: 1` is honored —
+    matches the contract the agent is now instructed to write per
+    SKILL.md Step 3."""
+    module, db_path, state_path = check_travel_bookings
+    db_path.write_text(json.dumps(_madrid_gap_payload()))
+    state_path.write_text(
+        json.dumps(
+            {
+                "madrid-2026-06": {
+                    "schema_version": 1,
+                    "snooze_until": (_FROZEN_TODAY + timedelta(days=2)).isoformat(),
+                }
+            }
+        )
+    )
+
+    _, out, _ = _run(module, monkeypatch, capsys)
+    output = json.loads(out)
+    assert output["gaps"] == []
+    assert output["complete_trips"] == 1
+
+
+def test_main_snooze_legacy_missing_schema_still_honored(
+    check_travel_bookings, monkeypatch, capsys
+):
+    """Snooze entry without `schema_version` is legacy data (implicit
+    v1) — honored to preserve existing snooze state across the
+    migration deploy."""
+    module, db_path, state_path = check_travel_bookings
+    db_path.write_text(json.dumps(_madrid_gap_payload()))
+    state_path.write_text(
+        json.dumps(
+            {
+                "madrid-2026-06": {
+                    "snooze_until": (_FROZEN_TODAY + timedelta(days=2)).isoformat(),
+                }
+            }
+        )
+    )
+
+    _, out, _ = _run(module, monkeypatch, capsys)
+    output = json.loads(out)
+    assert output["gaps"] == []
+    assert output["complete_trips"] == 1
+
+
+def test_main_snooze_with_forward_schema_ignored(check_travel_bookings, monkeypatch, capsys):
+    """Snooze entry with a higher-than-current schema_version is
+    forward-incompatible — ignored so the gap surfaces, preventing a
+    future-shape write from silently muting alerts on the current
+    reader."""
+    module, db_path, state_path = check_travel_bookings
+    db_path.write_text(json.dumps(_madrid_gap_payload()))
+    state_path.write_text(
+        json.dumps(
+            {
+                "madrid-2026-06": {
+                    "schema_version": 2,
+                    "snooze_until": (_FROZEN_TODAY + timedelta(days=2)).isoformat(),
+                }
+            }
+        )
+    )
+
+    _, out, _ = _run(module, monkeypatch, capsys)
+    output = json.loads(out)
+    assert len(output["gaps"]) == 1
+    assert output["gaps"][0]["slug"] == "madrid-2026-06"
+
+
+def test_main_snooze_non_dict_entry_ignored(check_travel_bookings, monkeypatch, capsys):
+    """Snooze entry that's not a dict (corrupt write, manual edit
+    error) — ignored without crashing. The gap surfaces so the
+    operator sees the underlying booking issue."""
+    module, db_path, state_path = check_travel_bookings
+    db_path.write_text(json.dumps(_madrid_gap_payload()))
+    state_path.write_text(json.dumps({"madrid-2026-06": "snoozed"}))
+
+    _, out, _ = _run(module, monkeypatch, capsys)
+    output = json.loads(out)
+    assert len(output["gaps"]) == 1

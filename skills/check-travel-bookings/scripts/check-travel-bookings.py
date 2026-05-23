@@ -23,6 +23,20 @@ from datetime import date, datetime, timedelta, timezone
 DB_PATH = "/workspace/group/travel-db.json"
 STATE_PATH = "/workspace/group/travel-booking-state.json"
 
+# Bump in lock-step with build-travel-db.py per
+# `coding-policy: stateful-artifacts` + state-schema.md sibling file.
+# Legacy data lacking schema_version is treated as implicit v1 (the
+# field was introduced at v1; no prior version exists). Higher
+# versions are forward-incompatible — return None / skip the entry.
+SCHEMA_VERSION = 1
+
+
+def _schema_compatible(value) -> bool:
+    """Accept v1 explicitly OR legacy data with no schema_version."""
+    if value is None:
+        return True
+    return isinstance(value, int) and not isinstance(value, bool) and value == SCHEMA_VERSION
+
 
 # ---------------------------------------------------------------------------
 # Core logic
@@ -146,6 +160,13 @@ def load_trips_from_db(db_path: str) -> list[dict] | None:
     # too so the contract in main() holds for the full set of bad-DB
     # shapes Step 5's failure branch is meant to alert on.
     if not isinstance(db, dict) or not isinstance(db.get("trips"), dict):
+        return None
+
+    # Schema-version gate per `coding-policy: stateful-artifacts` +
+    # state-schema.md sibling file. Legacy data without `schema_version`
+    # is implicit v1; higher versions are forward-incompatible (treat
+    # as no-prior-state).
+    if not _schema_compatible(db.get("schema_version")):
         return None
 
     trips = []
@@ -292,8 +313,16 @@ def main():
             complete_trips += 1
             continue
 
-        # Check snooze
+        # Check snooze. Per-entry schema_version gate per state-schema.md:
+        # entries with a higher-than-current schema_version are treated as
+        # forward-incompatible (no snooze active). Missing schema_version is
+        # legacy data, accepted as implicit v1. Non-dict entries are
+        # malformed → no snooze active.
         snooze_entry = snooze_state.get(slug, {})
+        if not isinstance(snooze_entry, dict) or not _schema_compatible(
+            snooze_entry.get("schema_version")
+        ):
+            snooze_entry = {}
         snooze_until_str = snooze_entry.get("snooze_until", "")
         if snooze_until_str:
             try:

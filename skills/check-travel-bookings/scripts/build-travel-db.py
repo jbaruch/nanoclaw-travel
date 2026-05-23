@@ -38,6 +38,10 @@ from datetime import date, datetime, timezone
 SCHEDULE_PATH = "/workspace/group/travel-schedule.json"
 DB_PATH = "/workspace/group/travel-db.json"
 
+# Bump in lock-step with check-travel-bookings.py per
+# `coding-policy: stateful-artifacts` + state-schema.md sibling file.
+SCHEMA_VERSION = 1
+
 
 def _parse_day(s: str) -> date:
     # Tolerate both shapes emitted by refresh-travel-schedule.py:
@@ -114,6 +118,7 @@ def main():
         }
 
     db = {
+        "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "trips": db_trips,
     }

@@ -163,6 +163,22 @@ def test_unknown_type_kept_with_default_order(build_travel_db, monkeypatch, caps
     assert types == ["Flight", "Boat"]
 
 
+def test_output_stamps_schema_version(build_travel_db, monkeypatch, capsys):
+    """Per `coding-policy: stateful-artifacts` + state-schema.md, every
+    write of `travel-db.json` carries `schema_version` matching the
+    module constant. Locks the contract so a future bump can't silently
+    drop the field."""
+    module, schedule_path, db_path = build_travel_db
+    schedule = [
+        _trip("trip-1", "Schema Trip", "2026-06-01", "2026-06-03"),
+    ]
+    schedule_path.write_text(json.dumps(schedule))
+    code, _, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    db = json.loads(db_path.read_text())
+    assert db["schema_version"] == module.SCHEMA_VERSION == 1
+
+
 def test_timed_item_buckets_by_date_and_preserves_time(build_travel_db, monkeypatch, capsys):
     """Timed-item shape from `refresh-travel-schedule.py` post-`nanoclaw-admin#289`
     (`start`/`end` as `YYYY-MM-DDTHH:MM:SSZ`) parses without error,
