@@ -389,9 +389,18 @@ def _process_flight(
 
 
 def _due_for_poll(prior_state: dict | None, now_utc: datetime) -> bool:
-    """Return True when the cadence-ladder interval has elapsed since last poll."""
+    """Return True when a byAir poll is due.
+
+    Three paths return True: no prior state, no snapshot yet (sync_tripit
+    seeded state but byAir has never been polled), or the cadence-ladder
+    interval has elapsed since the last successful poll.
+    """
     if prior_state is None:
         return True  # first cycle for this flight
+    if prior_state.get("last_snapshot") is None:
+        # sync_tripit seeds last_polled_at=now() with no snapshot; the
+        # snapshot is the de-facto "byAir polled successfully" sentinel.
+        return True
     last_polled = _parse_iso8601(prior_state.get("last_polled_at"))
     if last_polled is None:
         return True

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fix — `_due_for_poll` forces a poll when `last_snapshot` is None (`jbaruch/nanoclaw-flight-assist#26`)
+
+`_due_for_poll` now short-circuits to True when `last_snapshot is None`, so sync_tripit-seeded flights get polled on the next precheck tick instead of waiting up to a full cadence interval. Regression coverage: `test_seeded_state_with_no_snapshot_forces_poll`; two connection-risk tests updated to use a benign scheduled snapshot via the new `_scheduled_snapshot` helper.
+
 ### Added — `check-travel-bookings` migrated from `nanoclaw-admin` (`jbaruch/nanoclaw-admin#299`)
 
 Per-chat travel concerns now consolidate under `nanoclaw-flight-assist`: flight notifications, time-to-leave, connection risk, arrival logistics, and now booking-gap detection. Coherent domain, single tile, single co-load for affected chats.
