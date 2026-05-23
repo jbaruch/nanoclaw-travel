@@ -7,8 +7,9 @@ organises it into trips with all their items indexed by start date.
 ALL item types are stored; alert logic lives in the consumers.
 
 Output: /workspace/group/travel-db.json
-Schema:
+Schema (see sibling `state-schema.md` for the full contract):
   {
+    "schema_version": 1,
     "generated_at": "...",
     "trips": {
       "<slug>": {

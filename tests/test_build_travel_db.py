@@ -3,14 +3,16 @@
 Locks down the documented contract per `coding-policy: testing-standards`:
 
   - Reads `travel-schedule.json` (a flat event list); writes
-    `travel-db.json` with a `{generated_at, trips: {<slug>: {...}}}`
-    shape
+    `travel-db.json` with a `{schema_version, generated_at, trips: {<slug>: {...}}}`
+    shape per the sibling `state-schema.md`
   - Trips (events without `item-` in `uid`) are kept iff their `end`
     is on/after today; items overlap into the trip's days bucket
   - Each day's items are sorted by `TYPE_ORDER` (Flight, Rail,
     Lodging, Car Rental, then alphabetic)
+  - `schema_version` is stamped on every write, matching the module
+    constant; existing forward-versioned DBs are not overwritten
   - Exit 1 on missing schedule (with stderr diagnostic naming the
-    expected path)
+    expected path); exit 2 on attempted forward-schema downgrade
 """
 
 import json

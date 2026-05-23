@@ -12,7 +12,7 @@ live-ICS fallback here would only mask that signal. (The two-tier
 freshness probe in Step 4, `references/two-tier-probe.md`, is for
 `travel-schedule.json`, not the DB.)
 
-Alerts only on Flight + Lodging gaps; all item types are in the DB for future use.
+Alerts on transport (Flight or Rail) + Lodging gaps; all item types are in the DB for future use.
 """
 
 import json
