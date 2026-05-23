@@ -162,15 +162,38 @@ def main():
     os.replace(tmp_path, DB_PATH)
 
     total_items = sum(len(evts) for t in db_trips.values() for evts in t["days"].values())
-    print(f"travel-db.json: {len(db_trips)} trips, {total_items} item-events written")
-    for _, t in sorted(db_trips.items(), key=lambda x: x[1]["start"]):
+    trip_summary = []
+    for slug, t in sorted(db_trips.items(), key=lambda x: x[1]["start"]):
         type_counts: dict[str, int] = {}
         for evts in t["days"].values():
             for ev in evts:
                 type_counts[ev["type"]] = type_counts.get(ev["type"], 0) + 1
-        breakdown = ", ".join(f"{v}×{k}" for k, v in sorted(type_counts.items()))
-        print(f"  {t['start']}–{t['end']}  {t['summary']}")
-        print(f"    {breakdown or '(no items)'}")
+        trip_summary.append(
+            {
+                "slug": slug,
+                "summary": t["summary"],
+                "start": t["start"],
+                "end": t["end"],
+                "type_counts": type_counts,
+            }
+        )
+
+    # Structured JSON output per `coding-policy: script-delegation`
+    # (Script Requirements: JSON-producing). Operators reading the
+    # logs see the same shape regardless of trip count; downstream
+    # consumers (host-side audits, future cross-tile checks) can
+    # parse without ad-hoc prose-line regexes.
+    print(
+        json.dumps(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "trips_written": len(db_trips),
+                "item_events_written": total_items,
+                "trips": trip_summary,
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":

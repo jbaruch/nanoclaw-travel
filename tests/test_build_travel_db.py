@@ -184,6 +184,30 @@ def test_refuses_to_overwrite_forward_schema(build_travel_db, monkeypatch, capsy
     assert db_path.read_text() == pre_write
 
 
+def test_stdout_is_structured_json(build_travel_db, monkeypatch, capsys):
+    """Per `coding-policy: script-delegation`, scripts emit structured
+    JSON on stdout — not prose. The success-case stdout parses as a
+    single JSON object with `schema_version`, `trips_written`,
+    `item_events_written`, and a `trips` summary list."""
+    module, schedule_path, db_path = build_travel_db
+    schedule = [
+        _trip("trip-1", "Vienna", "2026-06-10", "2026-06-13"),
+        _item("item-1", "Outbound", "2026-06-10", "2026-06-10", "Flight"),
+        _item("item-2", "Hotel", "2026-06-10", "2026-06-13", "Lodging"),
+    ]
+    schedule_path.write_text(json.dumps(schedule))
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["schema_version"] == 1
+    assert payload["trips_written"] == 1
+    assert payload["item_events_written"] == 2
+    assert len(payload["trips"]) == 1
+    summary = payload["trips"][0]
+    assert summary["summary"] == "Vienna"
+    assert summary["type_counts"] == {"Flight": 1, "Lodging": 1}
+
+
 def test_output_stamps_schema_version(build_travel_db, monkeypatch, capsys):
     """Per `coding-policy: stateful-artifacts` + state-schema.md, every
     write of `travel-db.json` carries `schema_version` matching the

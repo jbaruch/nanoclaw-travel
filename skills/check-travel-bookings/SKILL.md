@@ -49,12 +49,18 @@ If the user is acting on a gap (snooze/resolve), proceed to Step 3. Otherwise fi
 
 ## Step 3 — Update snooze state
 
-Only run this step when Baruch snoozes or resolves a trip. Update `/workspace/group/travel-booking-state.json`:
-- Snooze: set `{"schema_version": 1, "snooze_until": "YYYY-MM-DD"}` for the trip's slug
-- Resolved: remove the entry (next nightly rebuild reflects completed bookings)
+Only run this step when Baruch snoozes or resolves a trip. Invoke the bundled mutation script; do not hand-edit `/workspace/group/travel-booking-state.json` directly. The slug-to-trip fuzzy-match (e.g., "snooze JNation" → `jnation-2026-05`) stays in the agent's hands per `coding-policy: script-delegation`; the script handles the deterministic JSON mutation.
 
-Every entry MUST carry `schema_version: 1` per `coding-policy: stateful-artifacts` and the per-skill `state-schema.md`. The reader (`check-travel-bookings.py`) gates on this field; entries with a higher version are treated as forward-incompatible. Legacy entries lacking the field are accepted as implicit v1, but new entries must stamp it explicitly.
+```bash
+# Snooze a trip until a future date
+python3 /home/node/.claude/skills/tessl__check-travel-bookings/scripts/update-travel-booking-state.py \
+    --slug <slug> --action snooze --until YYYY-MM-DD
+
+# Resolve (remove the entry; next nightly rebuild reflects the booked state)
+python3 /home/node/.claude/skills/tessl__check-travel-bookings/scripts/update-travel-booking-state.py \
+    --slug <slug> --action resolve
+```
 
 Slug format: `{normalized-summary}-{YYYY}-{MM}` (lowercase, spaces/punctuation → hyphens).
 
-After writing, verify the file contains valid JSON before confirming. Finish here.
+The script emits single-line JSON to stdout `{"action": "...", "slug": "...", "state": {...}}` (the post-update snooze map) on success, or a stderr diagnostic with non-zero exit on validation failure (missing `--until` for snooze, invalid ISO date, etc.). Every snoozed entry the script writes carries `schema_version: 1` per `state-schema.md`. Finish here.

@@ -33,7 +33,7 @@ Compact day-indexed projection of upcoming trips.
 Per-trip snooze and resolve markers for surfacing in `check-travel-bookings` and `morning-brief`.
 
 - **Owner skill:** `check-travel-bookings` (this skill)
-- **Writers:** the agent, via SKILL.md Step 3 — direct JSON edit. Every entry carries `schema_version: 1`.
+- **Writer:** `scripts/update-travel-booking-state.py` (invoked by SKILL.md Step 3). The script stamps `schema_version: 1` on every written entry.
 - **Reader:** `scripts/check-travel-bookings.py`
 - **Schema:**
 
