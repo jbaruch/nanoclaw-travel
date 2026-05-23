@@ -947,6 +947,23 @@ def test_main_snooze_with_forward_schema_ignored(check_travel_bookings, monkeypa
     assert output["gaps"][0]["slug"] == "madrid-2026-06"
 
 
+def test_main_snooze_state_non_dict_root_treated_as_empty(
+    check_travel_bookings, monkeypatch, capsys
+):
+    """Valid JSON in `travel-booking-state.json` whose root is a list
+    (or any non-object) crashes `.get(...)` if not guarded. Per the
+    advisory-snooze contract, any non-dict root means \"no snoozes
+    active\" — the gap surfaces and the script doesn't blow up."""
+    module, db_path, state_path = check_travel_bookings
+    db_path.write_text(json.dumps(_madrid_gap_payload()))
+    state_path.write_text(json.dumps(["not", "a", "dict"]))
+
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    output = json.loads(out)
+    assert len(output["gaps"]) == 1
+
+
 def test_main_snooze_non_dict_entry_ignored(check_travel_bookings, monkeypatch, capsys):
     """Snooze entry that's not a dict (corrupt write, manual edit
     error) — ignored without crashing. The gap surfaces so the

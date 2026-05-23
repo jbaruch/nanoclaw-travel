@@ -306,6 +306,11 @@ def main():
             snooze_state = json.load(f)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         snooze_state = {}
+    # Valid JSON but wrong root shape (a list, a scalar, etc.) would
+    # crash `.get(...)` below. Per the advisory-snooze contract, any
+    # non-dict root means "no snoozes active".
+    if not isinstance(snooze_state, dict):
+        snooze_state = {}
 
     gaps = []
     complete_trips = 0

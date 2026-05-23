@@ -100,7 +100,19 @@ def main(argv: list[str] | None = None) -> int:
     else:  # resolve
         state.pop(args.slug, None)
 
-    _atomic_write(args.state_path, state)
+    try:
+        _atomic_write(args.state_path, state)
+    except OSError as exc:
+        # PermissionError, ENOSPC, cross-device EXDEV, etc. surface
+        # as a clean stderr diagnostic + non-zero exit instead of an
+        # uncaught traceback. The mutation didn't land — `os.replace`
+        # is atomic, so partial state is impossible.
+        print(
+            f"update-travel-booking-state: failed to write {args.state_path}: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
 
     print(
         json.dumps(

@@ -143,3 +143,23 @@ def test_invalid_action_rejected_at_argparse(update_script, capsys, monkeypatch)
     module, state_path = update_script
     with pytest.raises(SystemExit):
         module.main(_argv(state_path, "--slug", "x-2026-01", "--action", "explode"))
+
+
+def test_atomic_write_oserror_surfaces_as_diagnostic(update_script, capsys, monkeypatch):
+    """_atomic_write() failure (PermissionError, ENOSPC, cross-device
+    EXDEV, etc.) surfaces as a clean stderr diagnostic + exit 1
+    instead of an uncaught traceback. os.replace is atomic so partial
+    state is impossible."""
+    module, state_path = update_script
+
+    def _raises(*_a, **_kw):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(module, "_atomic_write", _raises)
+    code = module.main(
+        _argv(state_path, "--slug", "madrid-2026-06", "--action", "snooze", "--until", "2026-07-01")
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "update-travel-booking-state:" in err
+    assert "PermissionError" in err
