@@ -76,6 +76,33 @@ def _byair_flight(
     }
 
 
+def _scheduled_snapshot(*, code: str = "XX123") -> dict:
+    """Minimal scheduled-status snapshot for tests asserting cadence-gate behavior."""
+    return {
+        "code": code,
+        "computed_status": "scheduled",
+        "computed_status_detail": "...",
+        "computed_phase_progress": None,
+        "computed_phase_risk": None,
+        "computed_phase_overdue": None,
+        "dep_gate": None,
+        "arr_gate": None,
+        "dep_terminal": None,
+        "arr_terminal": None,
+        "dep_time": "2026-05-18T17:00:00+00:00",
+        "arr_time": None,
+        "baggage": None,
+        "inbound": {
+            "aircraft_model": None,
+            "registration": None,
+            "flew": None,
+            "predicted_delay_minutes": None,
+        },
+        "position_lat": None,
+        "position_lon": None,
+    }
+
+
 def _make_state(flight_id: int = 12345, **overrides) -> dict:
     base = {
         "flight_id": flight_id,
@@ -317,6 +344,36 @@ def test_cadence_gating_skips_recent_polls(state_root: Path):
     assert events == []
 
 
+def test_seeded_state_with_no_snapshot_forces_poll(state_root: Path):
+    """sync_tripit seeds last_polled_at=now() + last_snapshot=None. The next
+    precheck cycle MUST poll byAir despite the fresh last_polled_at, because
+    last_snapshot is the de-facto 'byAir polled successfully' sentinel.
+
+    Regression for jbaruch/nanoclaw-flight-assist#26.
+    """
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T16:29:50Z",  # 10s ago — well within 30-min cadence
+        scheduled_dep_time="2026-05-19T16:00:00+00:00",  # T-24h, day_before threshold
+        last_snapshot=None,
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    fake_flight = _byair_flight(flight_id=12345)
+    fake_now = datetime(2026, 5, 18, 16, 30, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+        assert mock_byair_from_env.return_value.get_flight.call_count == 1
+
+    reasons = [e["event"]["reason"] for e in events]
+    assert "day_before" in reasons
+    persisted = read_flight_state(12345)
+    assert persisted["last_snapshot"] is not None
+    assert persisted["phase_markers"]["day_before_fired"] is True
+
+
 # ---------------------------------------------------------------------------
 # Script-level (subprocess) test for the JSON contract
 # ---------------------------------------------------------------------------
@@ -445,7 +502,7 @@ def test_connection_risk_pass_fires_and_persists_marker(state_root: Path):
         scheduled_arr_time="2026-05-18T22:00:00+00:00",
         dep_airport_id=28,
         arr_airport_id=40,
-        last_snapshot=None,
+        last_snapshot=_scheduled_snapshot(code="AA200"),
     )
     write_flight_state(leg1)
     write_flight_state(leg2)
@@ -653,7 +710,7 @@ def test_connection_risk_honors_config_override(state_root: Path):
         scheduled_arr_time="2026-05-18T22:00:00+00:00",
         dep_airport_id=28,
         arr_airport_id=40,
-        last_snapshot=None,
+        last_snapshot=_scheduled_snapshot(code="AA200"),
     )
     write_flight_state(leg1)
     write_flight_state(leg2)

@@ -392,6 +392,10 @@ def _due_for_poll(prior_state: dict | None, now_utc: datetime) -> bool:
     """Return True when the cadence-ladder interval has elapsed since last poll."""
     if prior_state is None:
         return True  # first cycle for this flight
+    if prior_state.get("last_snapshot") is None:
+        # sync_tripit seeds last_polled_at=now() with no snapshot; the
+        # snapshot is the de-facto "byAir polled successfully" sentinel.
+        return True
     last_polled = _parse_iso8601(prior_state.get("last_polled_at"))
     if last_polled is None:
         return True

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fix — `_due_for_poll` forces a poll when `last_snapshot` is None (`jbaruch/nanoclaw-flight-assist#26`)
+
+`sync_tripit.py` seeds new flight state with `last_polled_at = now()` and `last_snapshot = None`. The next `flight-assist/precheck.py` cycle read the fresh `last_polled_at`, decided the cadence interval (up to 30 min for `scheduled` flights >6h away) hadn't elapsed, and skipped the first byAir poll. Time-based phase markers (`day_before`, `time_to_leave`, `arrival_logistics`) evaluate inside the poll cycle, so they were delayed by up to a full cadence interval after sync_tripit seeded the flight — caught in production on AC1714 day-before where T-24h was 2h 56m before the seed and `day_before_fired` stayed False until the next cadence tick.
+
+Fix at `_due_for_poll`: a `last_snapshot is None` shortcut returns True before checking cadence. `last_snapshot` is already the de-facto "byAir polled successfully" sentinel — `_process_flight` only populates it after a successful poll — and the only production path to "recent `last_polled_at` + no snapshot" is the sync_tripit seed. No schema migration. One forced poll per seeded flight; the very next cycle writes the snapshot and resumes cadence-gated behavior.
+
+Tests: new `test_seeded_state_with_no_snapshot_forces_poll` exercises the regression directly. Two existing connection-risk tests that modeled the buggy state on leg2 (`test_connection_risk_pass_fires_and_persists_marker`, `test_connection_risk_honors_config_override`) now give leg2 a benign scheduled snapshot via the new `_scheduled_snapshot` helper, so cadence-gating is the gate again, not the snapshot-missing override. Connection-risk derivation only reads leg1's snapshot, so the fixture change is behavior-neutral.
+
 ### Added — `check-travel-bookings` migrated from `nanoclaw-admin` (`jbaruch/nanoclaw-admin#299`)
 
 Per-chat travel concerns now consolidate under `nanoclaw-flight-assist`: flight notifications, time-to-leave, connection risk, arrival logistics, and now booking-gap detection. Coherent domain, single tile, single co-load for affected chats.
