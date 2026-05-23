@@ -163,6 +163,25 @@ def test_unknown_type_kept_with_default_order(build_travel_db, monkeypatch, caps
     assert types == ["Flight", "Boat"]
 
 
+def test_refuses_to_overwrite_forward_schema(build_travel_db, monkeypatch, capsys):
+    """Per state-schema.md migration policy, the writer must NOT
+    overwrite a `travel-db.json` already stamped with a higher
+    schema_version than the writer's constant. Otherwise an older
+    writer (post-rollback or post-downgrade) would clobber forward-
+    migrated state. Exit code 2 + stderr diagnostic name the upgrade
+    path so operators can recover."""
+    module, schedule_path, db_path = build_travel_db
+    schedule_path.write_text(json.dumps([_trip("trip-1", "Lisbon", "2026-06-01", "2026-06-03")]))
+    db_path.write_text(json.dumps({"schema_version": 99, "trips": {}}))
+    pre_write = db_path.read_text()
+    code, _, err = _run(module, monkeypatch, capsys)
+    assert code == 2
+    assert "schema_version=99" in err
+    assert "refusing to downgrade" in err
+    # DB on disk is unchanged
+    assert db_path.read_text() == pre_write
+
+
 def test_output_stamps_schema_version(build_travel_db, monkeypatch, capsys):
     """Per `coding-policy: stateful-artifacts` + state-schema.md, every
     write of `travel-db.json` carries `schema_version` matching the

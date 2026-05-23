@@ -117,6 +117,32 @@ def main():
             "days": dict(sorted(days.items())),  # sorted by date
         }
 
+    # Forward-incompatibility guard per state-schema.md migration
+    # policy: if a future writer has already stamped travel-db.json
+    # with a higher schema_version, do NOT overwrite it with this
+    # older writer's output. Best-effort read — any error (file
+    # missing, malformed, no schema_version) means "no forward state,
+    # safe to write".
+    try:
+        with open(DB_PATH, encoding="utf-8") as f:
+            existing = json.load(f)
+        existing_version = existing.get("schema_version") if isinstance(existing, dict) else None
+        if (
+            isinstance(existing_version, int)
+            and not isinstance(existing_version, bool)
+            and existing_version > SCHEMA_VERSION
+        ):
+            print(
+                f"ERROR: existing {DB_PATH} has schema_version={existing_version} > "
+                f"writer's {SCHEMA_VERSION}; refusing to downgrade. Upgrade "
+                "this skill (`tessl__check-travel-bookings`) before re-running "
+                "`nightly-external-sync` Step 5.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        pass  # No forward state on disk; proceed with write.
+
     db = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
