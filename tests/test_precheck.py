@@ -351,7 +351,9 @@ def test_seeded_state_with_no_snapshot_forces_poll(state_root: Path):
 
     Regression for jbaruch/nanoclaw-flight-assist#26.
     """
-    scheduled_dep = "2026-05-19T16:00:00+00:00"  # T-24h relative to fake_now
+    # dep is 23h 30m after fake_now, so the T-24h day_before threshold has
+    # already passed by 30 min — day_before must fire on this forced poll.
+    scheduled_dep = "2026-05-19T16:00:00+00:00"
     scheduled_arr = "2026-05-19T19:00:00+00:00"
     prior = _make_state(
         flight_id=12345,
