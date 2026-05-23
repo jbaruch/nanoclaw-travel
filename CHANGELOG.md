@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added — `check-travel-bookings` migrated from `nanoclaw-admin` (`jbaruch/nanoclaw-admin#299`)
+
+Per-chat travel concerns now consolidate under `nanoclaw-flight-assist`: flight notifications, time-to-leave, connection risk, arrival logistics, and now booking-gap detection. Coherent domain, single tile, single co-load for affected chats.
+
+Migration is structural. `skills/check-travel-bookings/scripts/check-travel-bookings.py` and `skills/check-travel-bookings/scripts/build-travel-db.py` carry across with these edits, all from review feedback during PR #22:
+
+- Non-behavioral cleanup: ruff-driven formatting (single → double quotes); B007/F841 `slug` / `item_count` dead-variable cleanup in `build-travel-db.py`; explicit `encoding="utf-8"` on file opens
+- Hardening: `build-travel-db.py` now writes `travel-db.json` atomically (same-dir `.tmp` + `os.replace`) matching the `_atomic_write_json` pattern in `skills/flight-assist/state.py` — readers no longer see a half-written DB if the process is killed mid-write
+- Diagnostic accuracy: `check-travel-bookings.py` adds `ensure_ascii=False` on the error-JSON path so operator-facing diagnostic messages keep their non-ASCII punctuation intact
+- Stateful-artifacts contract — `travel-db.json` and `travel-booking-state.json` carry `schema_version: 1` per `coding-policy: stateful-artifacts`. New `state-schema.md` sibling documents owner / writers / readers / migration policy for both artifacts. The writer (`build-travel-db.py`) stamps `schema_version` on every output; the reader (`check-travel-bookings.py`) gates on it with explicit branches for legacy-implicit-v1, forward-incompatible (`> 1`), and non-int values. Snooze entries in `travel-booking-state.json` carry the same per-record field. Nine new tests pin the contract: DB at v1 / missing / forward / non-int; snooze entries at v1 / legacy / forward / non-dict-corrupt
+- Test infra: `tests/conftest.py:_load` asserts `spec` and `spec.loader` are non-None so fixture-loading misconfigs fail at `_load` time with an actionable message instead of a deeper `AttributeError`
+
+`skills/check-travel-bookings/SKILL.md` was restructured to follow `skill-authoring`'s execution-mode preamble + flat numbered step format (policy reviewer feedback); content is preserved, and Step 3 now instructs the agent to stamp `schema_version: 1` on snooze entries. The `gaps[]` example payload includes the `uncovered_nights` field the script actually emits.
+
+Resolves the stateful-artifacts gap originally filed as #23 — that issue can close once this PR merges. The literal mount path `/home/node/.claude/skills/tessl__check-travel-bookings/scripts/<file>.py` used by `nightly-external-sync` Step 5 (`build-travel-db.py`) and `morning-brief` (`check-travel-bookings.py`) resolves to whichever tile owns the `check-travel-bookings` skill name — both consumers continue to work without code changes since the name doesn't change.
+
+Tests follow: `tests/test_check_travel_bookings.py` and `tests/test_build_travel_db.py` migrated. New `tests/conftest.py` adds the two fixtures (`check_travel_bookings`, `build_travel_db`) ported from admin's conftest. Both scripts read/write `/workspace/group/travel-db.json` and `/workspace/group/travel-booking-state.json`; the writer chain (`refresh-travel-schedule.py` → `build-travel-db.py`) is unchanged from admin's perspective.
+
+State plane note: existing `/workspace/group/travel-db.json` and `/workspace/group/travel-booking-state.json` carry across the migration as-is — they're group-scoped state files, not tile-shipped artifacts, so the deploy preserves operator-side snooze/resolve history.
+
 ### Review fixup (#21) — non-owner snapshot reader API + boundary handler at main()
 
 OpenAI policy reviewer requested changes on two precondition violations in PR #21 (commit 5103c8f). Both addressed here:
