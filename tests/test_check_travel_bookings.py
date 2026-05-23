@@ -763,6 +763,26 @@ def test_main_corrupt_db_exits_1(check_travel_bookings, monkeypatch, capsys):
     assert "check-travel-bookings:" in err
 
 
+def test_main_forward_schema_db_surfaces_upgrade_diagnostic(
+    check_travel_bookings, monkeypatch, capsys
+):
+    """When the DB is rejected because its schema_version is higher
+    than the reader's, the operator-facing diagnostic must name the
+    detected version + the actionable upgrade path — rather than the
+    generic "missing/unreadable/invalid" message that points at
+    Step 5 in vain (Step 5 already wrote the file successfully; it's
+    just newer than this consumer)."""
+    module, db_path, _ = check_travel_bookings
+    db_path.write_text(json.dumps({"schema_version": 99, "trips": {}}))
+
+    code, out, err = _run(module, monkeypatch, capsys)
+    assert code == 1
+    payload = json.loads(out)
+    assert "schema_version=99" in payload["error"]
+    assert "upgrade" in payload["error"]
+    assert "schema_version=99" in err
+
+
 def test_main_checked_at_format(check_travel_bookings, monkeypatch, capsys):
     """`checked_at` is UTC ISO-8601 with `Z` suffix per the
     documented output shape."""

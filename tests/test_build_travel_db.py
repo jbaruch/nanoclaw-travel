@@ -1,4 +1,4 @@
-"""Baseline tests for check-travel-bookings/scripts/build-travel-db.py.
+"""Baseline tests for skills/check-travel-bookings/scripts/build-travel-db.py.
 
 Locks down the documented contract per `coding-policy: testing-standards`:
 

@@ -252,18 +252,41 @@ def load_trips_from_db(db_path: str) -> list[dict] | None:
 # ---------------------------------------------------------------------------
 
 
+def _diagnose_db_failure(db_path: str) -> str:
+    """Best-effort second read after `load_trips_from_db` returned None.
+    Distinguishes a forward-incompatible schema_version (upgrade needed)
+    from generic unreadable/missing/shape errors, so the operator
+    diagnostic surfaces the actionable cause rather than a generic
+    'unreadable' message that points at Step 5 in vain."""
+    try:
+        with open(db_path, encoding="utf-8") as f:
+            db = json.load(f)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "missing, unreadable, or structurally invalid"
+    if isinstance(db, dict):
+        version = db.get("schema_version")
+        if isinstance(version, int) and not isinstance(version, bool) and version > SCHEMA_VERSION:
+            return (
+                f"has forward-incompatible schema_version={version}; "
+                f"this skill supports v{SCHEMA_VERSION} — upgrade the "
+                "`tessl__check-travel-bookings` tile"
+            )
+    return "missing, unreadable, or structurally invalid"
+
+
 def main():
     today = date.today()
 
     trips = load_trips_from_db(DB_PATH)
     if trips is None:
+        detail = _diagnose_db_failure(DB_PATH)
         message = (
-            f"travel-db.json missing, unreadable, or structurally "
-            f"invalid at {DB_PATH} — tessl__nightly-external-sync "
-            "Step 5 (Rebuild travel-db.json from the schedule) "
-            "should have built it. Check that step's last run "
-            "and any scheduled continuation in "
-            "`scheduled_tasks` for the failure mode."
+            f"travel-db.json {detail} at {DB_PATH} — "
+            "tessl__nightly-external-sync Step 5 (Rebuild "
+            "travel-db.json from the schedule) should have "
+            "built it. Check that step's last run and any "
+            "scheduled continuation in `scheduled_tasks` for "
+            "the failure mode."
         )
         # Machine-readable JSON to stdout for the script-output
         # contract; human-readable diagnostic to stderr per
