@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fix — bound `ByAirClient` per-call timeout in precheck to 8s (`jbaruch/nanoclaw-flight-assist#28`)
+
+`precheck._run_cycle` now instantiates `ByAirClient.from_env(timeout=8.0)` instead of relying on the default 30s. A single slow byAir response previously raced the 30s `execFile` budget in `agent-runner` and surfaced as `precheck-error: execfile-error` — killing the whole cycle and producing a `task_run_logs` `status='error'` row that pinned `nanoclaw-admin` heartbeat into `system_health_issues` wake mode for 24h. With the per-call timeout below the outer budget, slow upstream calls fall through the existing transient-transport branch in `_run_cycle`, which skips the affected flight for one cycle (cadence gate retries it next tick) and lets other flights' polls complete.
+
+Companion change in `ByAirClient._http_post`: `urlopen(..., timeout=X)` wraps connect-side socket timeouts as `urllib.error.URLError`, but a timeout during `response.read()` of the body propagates raw `TimeoutError` (since `socket.timeout` is aliased to `TimeoutError` in Python 3.10+). The body-read path is now wrapped to normalize `TimeoutError` into `URLError`, so `_run_cycle`'s transient-transport branch catches every transport timeout uniformly rather than letting body-read timeouts fall through to the outermost `precheck_exception` boundary and re-create the original cycle-kill symptom. Regression test: `test_body_read_timeout_surfaces_as_urlerror`.
+
 ### Fix — `_due_for_poll` forces a poll when `last_snapshot` is None (`jbaruch/nanoclaw-flight-assist#26`)
 
 `_due_for_poll` now short-circuits to True when `last_snapshot is None`, so sync_tripit-seeded flights get polled on the next precheck tick instead of waiting up to a full cadence interval. Regression coverage: `test_seeded_state_with_no_snapshot_forces_poll`; two connection-risk tests updated to use a benign scheduled snapshot via the new `_scheduled_snapshot` helper.

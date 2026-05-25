@@ -359,6 +359,41 @@ def test_malformed_response_raises_byair_error(client):
     assert exc_info.value.error_type == "malformed_response"
 
 
+def test_body_read_timeout_surfaces_as_urlerror(client):
+    """A TimeoutError during response.read() must surface as urllib.error.URLError.
+
+    `urlopen(..., timeout=X)` wraps connect-side socket timeouts as URLError,
+    but a timeout while reading the body propagates raw TimeoutError. The
+    client must normalize so `_run_cycle`'s transient-transport branch
+    catches every transport timeout uniformly. Regression for #28.
+    """
+
+    class _ReadTimeoutResponse:
+        headers = {"content-type": "application/json"}
+
+        def read(self):
+            raise TimeoutError("body read exceeded socket timeout")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    responses = iter(
+        [
+            _initialize_response(),
+            _initialized_notification_ack(),
+            _ReadTimeoutResponse(),
+        ]
+    )
+    with patch("urllib.request.urlopen", side_effect=lambda *a, **k: next(responses)):
+        with pytest.raises(urllib.error.URLError) as exc_info:
+            client.get_flight(flight_id=1)
+    assert "timed out" in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, TimeoutError)
+
+
 def test_initialize_without_session_id_raises():
     """Server response missing the mcp-session-id header is unrecoverable."""
     client = ByAirClient(SYNTH_URL)

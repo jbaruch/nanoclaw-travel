@@ -229,6 +229,21 @@ def test_no_active_flights_yields_no_events(state_root: Path):
     assert events == []
 
 
+def test_run_cycle_passes_bounded_per_call_timeout_to_byair_client(state_root: Path):
+    """`_run_cycle` must instantiate ByAirClient with the bounded per-call timeout.
+
+    The 8s cap is the load-bearing fix for #28 — without it the outer 30s
+    execFile budget races the client's default 30s and the whole cycle dies
+    as execfile-error. Pin the value here so a future refactor cannot
+    silently drop or rename the kwarg.
+    """
+    write_active_flights([])
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        precheck._run_cycle(now_utc=datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc))
+    mock_byair_from_env.assert_called_once_with(timeout=precheck._BYAIR_CALL_TIMEOUT_SECONDS)
+    assert precheck._BYAIR_CALL_TIMEOUT_SECONDS == 8.0
+
+
 def test_first_cycle_for_new_flight_writes_state_and_fires_day_before(state_root: Path):
     """First poll past T-24h: write snapshot AND fire the day_before event."""
     write_active_flights([12345])

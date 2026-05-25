@@ -92,6 +92,14 @@ _TIME_TO_LEAVE_QUERY_WINDOW_HOURS = 6
 # Telegram live-location sharing.
 _MAX_CURRENT_LOCATION_AGE_MINUTES = 30
 
+# Per-call timeout for the byAir HTTP client inside `_run_cycle`. The outer
+# `execFile` budget in agent-runner is 30s; a single slow byAir response at
+# the client's default 30s timeout would race that budget and surface as
+# `precheck-error: execfile-error`. 8s allows several slow calls to fail-fast
+# into the URLError transient-transport branch before the outer budget runs
+# out, converting a whole-cycle kill into per-flight retries. Per #28.
+_BYAIR_CALL_TIMEOUT_SECONDS = 8.0
+
 
 def main() -> int:
     # outer-boundary-process-contract: this script is the scheduled-task's
@@ -136,7 +144,7 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
     # Copilot review on `jbaruch/nanoclaw-flight-assist#19`.
     cycle_origin = _resolve_time_to_leave_origin(home_address=home_address, now_utc=now_utc)
 
-    byair = ByAirClient.from_env()
+    byair = ByAirClient.from_env(timeout=_BYAIR_CALL_TIMEOUT_SECONDS)
     maps = _maybe_maps_client()  # None when GOOGLE_MAPS_API_KEY unset
 
     aggregated_events: list[dict] = []

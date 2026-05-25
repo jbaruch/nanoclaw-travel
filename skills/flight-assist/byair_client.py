@@ -215,6 +215,13 @@ class ByAirClient:
             if http_err.code in (400, 404) and self._session_id is not None:
                 raise _SessionExpired() from http_err
             raise
+        except TimeoutError as timeout_err:
+            # `urlopen` wraps connect-side socket timeouts as URLError, but a
+            # timeout during `response.read()` of the body surfaces as raw
+            # TimeoutError (socket.timeout is aliased to TimeoutError since
+            # Python 3.10). Normalize so callers see a single transport-error
+            # type per this module's docstring contract. Per #28.
+            raise urllib.error.URLError(f"timed out: {timeout_err}") from timeout_err
 
     def _rpc_envelope(
         self, method: str, params: dict | None, *, notification: bool = False
