@@ -136,7 +136,11 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
     # Copilot review on `jbaruch/nanoclaw-flight-assist#19`.
     cycle_origin = _resolve_time_to_leave_origin(home_address=home_address, now_utc=now_utc)
 
-    byair = ByAirClient.from_env()
+    # 8s per-call cap keeps a slow byAir response from consuming the whole
+    # 30s execFile budget in agent-runner; URLError from the per-call timeout
+    # falls into the transient-transport branch below and retries next cycle
+    # rather than killing the cycle as `execfile-error`. Per #28.
+    byair = ByAirClient.from_env(timeout=8.0)
     maps = _maybe_maps_client()  # None when GOOGLE_MAPS_API_KEY unset
 
     aggregated_events: list[dict] = []
