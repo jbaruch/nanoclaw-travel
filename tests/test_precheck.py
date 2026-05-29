@@ -244,6 +244,39 @@ def test_run_cycle_passes_bounded_per_call_timeout_to_byair_client(state_root: P
     assert precheck._BYAIR_CALL_TIMEOUT_SECONDS == 8.0
 
 
+def test_run_cycle_passes_bounded_per_call_timeout_to_maps_client(state_root: Path, monkeypatch):
+    """`_run_cycle` must instantiate MapsClient with the bounded per-call timeout.
+
+    The Maps query runs inside `_process_flight` stacked on the byAir poll. The
+    MapsClient default is 10s, which (added to the byAir 8s) overran the 30s
+    agent-runner hard-kill and surfaced as execfile-error
+    (jbaruch/nanoclaw#562). Pin the kwarg + value so a refactor can't silently
+    drop it.
+    """
+    write_active_flights([])
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "synthetic-key")
+    with patch("precheck.MapsClient.from_env") as mock_maps_from_env:
+        precheck._run_cycle(now_utc=datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc))
+    mock_maps_from_env.assert_called_once_with(timeout=precheck._MAPS_CALL_TIMEOUT_SECONDS)
+    assert precheck._MAPS_CALL_TIMEOUT_SECONDS == 8.0
+
+
+def test_poll_headroom_covers_byair_plus_maps_worst_case():
+    """Regression guard for the execfile-error hard-kill (jbaruch/nanoclaw#562).
+
+    A single `_process_flight` does one byAir poll AND one Maps query. The
+    poll-loop headroom reserved before the 30s kill must cover BOTH, or a
+    flight started just under the budget overruns and the whole cycle is
+    killed. The earlier headroom (10s) only covered the byAir poll.
+    """
+    assert (
+        precheck._CYCLE_POLL_HEADROOM_SECONDS
+        >= precheck._BYAIR_CALL_TIMEOUT_SECONDS + precheck._MAPS_CALL_TIMEOUT_SECONDS
+    )
+    # The budget must still leave positive time to start at least one poll.
+    assert precheck._CYCLE_WALL_CLOCK_BUDGET_SECONDS > 0
+
+
 def test_first_cycle_for_new_flight_writes_state_and_fires_day_before(state_root: Path):
     """First poll past T-24h: write snapshot AND fire the day_before event."""
     write_active_flights([12345])

@@ -110,6 +110,13 @@ _MAX_CURRENT_LOCATION_AGE_MINUTES = 30
 # out, converting a whole-cycle kill into per-flight retries. Per #28.
 _BYAIR_CALL_TIMEOUT_SECONDS = 8.0
 
+# Per-call timeout for the Maps Distance-Matrix client inside `_process_flight`.
+# Same rationale as byAir's bound (#28): the MapsClient default is 10s, but the
+# poll-loop headroom must reserve for it, so pin it to the byAir bound and derive
+# the headroom from both. Without this, a single slow Maps query stacked on a
+# byAir poll overran the 30s hard-kill — see the headroom note below.
+_MAPS_CALL_TIMEOUT_SECONDS = 8.0
+
 # Wall-clock budget for the whole poll loop. The agent-runner hard-kills the
 # precheck process at SCRIPT_TIMEOUT_MS = 30s (container/agent-runner/src/index.ts)
 # and surfaces the kill as `execfile-error`. Polls run sequentially, so several
@@ -117,11 +124,24 @@ _BYAIR_CALL_TIMEOUT_SECONDS = 8.0
 # their sum can exceed 30s — killing the whole cycle. #28 bounded each call but
 # not the cumulative total. `_run_cycle` stops starting new polls once this
 # budget elapses and defers the remaining flights to the next cycle. The budget
-# is the kill timeout minus headroom for one in-flight poll plus interpreter
-# startup/teardown, so a poll started just under the budget still returns before
-# the kill. Per #36.
+# is the kill timeout minus headroom for the worst-case work a single
+# already-started flight can still do plus interpreter startup/teardown, so a
+# poll started just under the budget still returns before the kill. Per #36.
+#
+# The headroom MUST cover one byAir poll PLUS one Maps travel-time query — both
+# happen inside a single `_process_flight`. The earlier 10s headroom only
+# covered the byAir poll, so a flight started just under the budget ran byAir
+# (8s) + Maps (10s default) ≈ 18s and overran the kill, surfacing as
+# `execfile-error` (jbaruch/nanoclaw#562 traced the heartbeat wake-storm partly
+# to these crashes). Deriving the headroom from the two call timeouts keeps it
+# correct if either changes.
 _SCRIPT_KILL_BUDGET_SECONDS = 30.0
-_CYCLE_POLL_HEADROOM_SECONDS = 10.0
+_INTERPRETER_TEARDOWN_HEADROOM_SECONDS = 4.0
+_CYCLE_POLL_HEADROOM_SECONDS = (
+    _BYAIR_CALL_TIMEOUT_SECONDS
+    + _MAPS_CALL_TIMEOUT_SECONDS
+    + _INTERPRETER_TEARDOWN_HEADROOM_SECONDS
+)
 _CYCLE_WALL_CLOCK_BUDGET_SECONDS = _SCRIPT_KILL_BUDGET_SECONDS - _CYCLE_POLL_HEADROOM_SECONDS
 
 
@@ -367,7 +387,7 @@ def _maybe_maps_client() -> MapsClient | None:
     """
     if not os.environ.get("GOOGLE_MAPS_API_KEY"):
         return None
-    return MapsClient.from_env()
+    return MapsClient.from_env(timeout=_MAPS_CALL_TIMEOUT_SECONDS)
 
 
 def _process_flight(

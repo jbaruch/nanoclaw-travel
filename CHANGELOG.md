@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fix — size the precheck poll-loop headroom for the Maps call, not just byAir (`jbaruch/nanoclaw#562`)
+
+Follow-up to #36's wall-clock budget. `execfile-error` kills kept recurring at ~34s (2026-05-27, 2026-05-29) — surfaced again while tracing the heartbeat wake-storm in `jbaruch/nanoclaw#562`, because each transient flight-assist crash pins heartbeat's 24h task-failure window open. #36 set `_CYCLE_POLL_HEADROOM_SECONDS = 10s`, reserved before the 30s hard-kill for "one in-flight poll" — but it only counted the byAir poll (8s) and ignored the Maps `travel_time` query that `_process_flight` runs on top of it. `_maybe_maps_client` instantiated `MapsClient.from_env()` with its 10s default, so a flight started just under the budget ran byAir (8s) + Maps (10s) ≈ 18s and overran the kill.
+
+The Maps client now takes the same bounded per-call timeout as byAir (`_MAPS_CALL_TIMEOUT_SECONDS = 8.0`), and `_CYCLE_POLL_HEADROOM_SECONDS` is derived from `byair + maps + interpreter-teardown` (20s, leaving a 10s start-budget) so the headroom is correct by construction if either timeout changes. Regression coverage: `test_run_cycle_passes_bounded_per_call_timeout_to_maps_client` pins the kwarg; `test_poll_headroom_covers_byair_plus_maps_worst_case` asserts the headroom ≥ byAir + Maps.
+
 ### Changed — cap the precheck poll horizon at 24h (`jbaruch/nanoclaw-flight-assist#38`)
 
 Root-cause follow-up to #36. The live index tracked 25 active flights with departures spread out to ~44 days, all polled on the 30-min `scheduled` cadence; their `last_polled_at` values cluster, so large batches (e.g. 17 flights) come due in a single cycle and the sequential byAir polls are what race the 30s execFile kill. `_due_for_poll` now skips any flight whose seeded `scheduled_dep_time` is more than `_POLL_HORIZON_HOURS = 24` away — it stays in `active-flights.json` (sync keeps the roster) but costs no byAir call until it crosses T-24h, at which point the first in-window poll fires `day_before`. The horizon clips nothing: T-24h is the earliest precheck event, and `connection_risk` already gates leg-1 on its own 24h lookahead and falls back to `scheduled_arr_time` for legs without a live snapshot, so horizon-skipped flights remain no-ops there. This shrinks the per-cycle poll batch at the source rather than only bounding it after the fact (#36's wall-clock budget remains the safety net). Regression coverage: `test_poll_horizon_skips_flight_departing_beyond_24h`, `test_poll_horizon_polls_flight_just_inside_24h`.
