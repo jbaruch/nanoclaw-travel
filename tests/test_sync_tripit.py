@@ -73,6 +73,18 @@ def test_first_sync_adds_all_upstream_flights(state_root: Path):
     assert read_flight_state(200) is not None
 
 
+def test_sync_fetches_only_owned_trips(state_root: Path):
+    """#29: the sync must request ownership="mine" so friends' tracked
+    flights never enter the active-flights index and never surface as
+    [M] wake events. byAir's list_trips default is "all"."""
+    payload = _trips_payload([_flight(100)])
+    fake_now = datetime(2026, 5, 18, 4, 0, 0, tzinfo=timezone.utc)
+    with patch("sync_tripit.ByAirClient.from_env") as mock_byair:
+        mock_byair.return_value.list_trips.return_value = payload
+        sync_tripit._run_sync(now_utc=fake_now)
+    mock_byair.return_value.list_trips.assert_called_once_with(status="active", ownership="mine")
+
+
 def test_sync_with_unchanged_upstream_no_diff(state_root: Path):
     write_active_flights([100])
     sync_tripit.initialize_flight_from_byair(

@@ -105,7 +105,13 @@ def _run_sync(*, now_utc: datetime) -> dict:
     """Execute one sync pass, returning the {added, removed} diff."""
     byair = ByAirClient.from_env()
     try:
-        trips_payload = byair.list_trips(status="active")
+        # ownership="mine" so friends' tracked trips never enter the
+        # active-flights index. byAir's default is "all", which pulled in
+        # friends' flights and surfaced [M] wake events (delay, gate,
+        # boarding) the operator can't act on. The request-side filter is
+        # authoritative; the per-flight `ownership` field in the response
+        # is unreliable (defaults to "mine" when omitted).
+        trips_payload = byair.list_trips(status="active", ownership="mine")
     except urllib.error.URLError as transport_err:
         # Transport failure: skip this sync pass. The next scheduled
         # run will retry. Per `coding-policy: error-handling`

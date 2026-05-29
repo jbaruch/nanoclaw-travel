@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fix — sync only the operator's own trips, not friends' (`jbaruch/nanoclaw-flight-assist#29`)
+
+`sync_tripit._run_sync` called `byair.list_trips(status="active")` with no ownership argument, so the client default `ownership="all"` pulled friends' tracked trips into `active-flights.json`. The precheck then surfaced `[M]` wake events (delay, gate change, boarding) for flights the operator isn't on and can't act on — pure noise. The sync now requests `ownership="mine"`, so friends' flights never enter the index. The request-side filter is authoritative; the per-flight `ownership` field in the response is unreliable (defaults to `"mine"` when byAir omits it). Regression coverage: `test_sync_fetches_only_owned_trips`.
+
+Deploy note: on the first sync after this ships, friends' flights already in `active-flights.json` reconcile as removed and would emit `tracked_flight_removed` (surfaced per SKILL.md). Prune those entries from the NAS state at deploy time to avoid a one-time "stopped tracking" burst. On-demand lookup of a friend's flight is tracked separately (expose byAir as an MCP tool to the agent).
+
 ### Fix — `build_lodging_ranges` no longer collapses repeat stays at one hotel (`jbaruch/nanoclaw-flight-assist#24`)
 
 `check-travel-bookings.py:build_lodging_ranges` keyed check-in / check-out dates in dicts by hotel name alone, so a trip that bookended the same hotel (stay → other cities → same hotel again) overwrote the first stay and produced at most one range per hotel — under-reporting lodging coverage and surfacing false uncovered nights. Per-hotel events are now replayed in date order with a check-out closing the most recently opened stay (LIFO); same-hotel stays don't overlap, so the open stay is the one a check-out belongs to. This keeps a stray earlier check-out from matching a later check-in and an orphan earlier check-in from stealing a later stay's check-out (both would misreport coverage). Orphan check-outs form no range; unmatched check-ins keep the existing 1-day fallback. Unique-per-hotel trips (the common path) are unaffected. Regression coverage: `test_build_lodging_ranges_multiple_stays_same_hotel`, `test_build_lodging_ranges_same_hotel_extra_checkin_defaults_one_day`, `test_build_lodging_ranges_stray_earlier_checkout_not_consumed`, `test_build_lodging_ranges_orphan_earlier_checkin_not_stealing_later_stay`.
