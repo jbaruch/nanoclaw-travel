@@ -327,6 +327,35 @@ def test_classify_trip_tail_home_night_not_flagged(check_travel_bookings):
     assert out["uncovered_nights"] == []
 
 
+def test_classify_trip_same_day_round_trip_no_uncovered(check_travel_bookings):
+    """A same-day round trip (out + back on one calendar day, the
+    return leg's arrival slipping past UTC midnight so trip_end is the
+    next day) needs no hotel: the single trip night IS a travel night,
+    so uncovered_nights is empty even with zero lodging. Regression
+    guard for admin#310."""
+    module, *_ = check_travel_bookings
+    trip_start = _FROZEN_TODAY + timedelta(days=10)
+    trip_end = trip_start + timedelta(days=1)
+    items = [
+        {
+            "item_type": "Flight",
+            "summary": "Outbound BNA→MIA",
+            "dtstart": trip_start,
+            "dtend": trip_start,
+        },
+        {
+            "item_type": "Flight",
+            "summary": "Return FLL→BNA",
+            "dtstart": trip_start,
+            "dtend": trip_end,  # arrival slips past UTC midnight
+        },
+    ]
+    out = module.classify_trip(items, trip_start, trip_end)
+    assert out["has_transport"] is True
+    assert out["has_lodging"] is False
+    assert out["uncovered_nights"] == []
+
+
 # ---------------------------------------------------------------------------
 # load_trips_from_db freshness
 # ---------------------------------------------------------------------------
@@ -693,6 +722,176 @@ def test_main_complete_trip_no_gap(check_travel_bookings, monkeypatch, capsys):
     output = json.loads(out)
     assert output["complete_trips"] == 1
     assert output["gaps"] == []
+
+
+def test_main_same_day_trip_no_false_hotel_gap(check_travel_bookings, monkeypatch, capsys):
+    """A same-day round trip with zero uncovered nights must NOT
+    surface 'рейсы есть, отеля нет' — there's no overnight stay to
+    miss. The trip counts as complete. Regression guard for admin#310:
+    the transport-without-lodging branch previously fired on
+    has_transport alone, flagging same-day trips that need no hotel."""
+    module, db_path, _ = check_travel_bookings
+    trip_start = _FROZEN_TODAY + timedelta(days=10)
+    trip_end = trip_start + timedelta(days=1)
+    payload = _db_payload(
+        {
+            "agentcon-miami-2026-06": _trip_record(
+                summary="Agentcon Miami",
+                start=trip_start,
+                end=trip_end,
+                days={
+                    trip_start.isoformat(): [
+                        _item(type="Flight", summary="AA487 BNA→MIA", start=trip_start),
+                    ],
+                    # Return leg filed under the next UTC day because its
+                    # arrival slips past midnight — the same shape that
+                    # tripped the false flag in production.
+                    trip_end.isoformat(): [
+                        _item(
+                            type="Flight",
+                            summary="WN1852 FLL→BNA",
+                            start=trip_start,
+                            end=trip_end,
+                        ),
+                    ],
+                },
+            ),
+        }
+    )
+    db_path.write_text(json.dumps(payload))
+
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    output = json.loads(out)
+    assert output["gaps"] == []
+    assert output["complete_trips"] == 1
+
+
+def test_main_one_night_single_leg_no_lodging_flagged(check_travel_bookings, monkeypatch, capsys):
+    """A one-night trip with a single transport leg that lands before
+    trip_end and no lodging is NOT a same-day round trip — the traveller
+    has arrived and stays over, so it must flag 'рейсы есть, отеля нет'.
+    It shares the same-day trip's shape (trip_nights == 1, uncovered
+    empty because the lone night is a travel night); the distinguisher
+    is that its arrival falls before trip_end rather than reaching it."""
+    module, db_path, _ = check_travel_bookings
+    trip_start = _FROZEN_TODAY + timedelta(days=10)
+    trip_end = trip_start + timedelta(days=1)
+    payload = _db_payload(
+        {
+            "oslo-talk-2026-05": _trip_record(
+                summary="Oslo Talk",
+                start=trip_start,
+                end=trip_end,
+                days={
+                    # Outbound only — no return leg in the data, so the
+                    # traveller is staying over and needs a hotel.
+                    trip_start.isoformat(): [
+                        _item(type="Flight", summary="SK4711 CPH→OSL", start=trip_start),
+                    ],
+                },
+            ),
+        }
+    )
+    db_path.write_text(json.dumps(payload))
+
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    output = json.loads(out)
+    assert output["complete_trips"] == 0
+    assert len(output["gaps"]) == 1
+    gap = output["gaps"][0]
+    assert gap["issue"] == "рейсы есть, отеля нет"
+    assert gap["uncovered_nights"] == []
+
+
+def test_main_multiday_single_transport_no_lodging_flagged(
+    check_travel_bookings, monkeypatch, capsys
+):
+    """A multi-night trip with transport but no lodging must still be
+    flagged 'рейсы есть, отеля нет' even when only one transport leg is
+    known — classify_trip's has_future_transport guard anchors no gap
+    night, so uncovered_nights is empty, but the trip genuinely needs a
+    hotel. Regression guard for the same-day narrowing: the outbound
+    lands well before trip_end, so the traveller is staying — the
+    predicate must not let a real multi-night gap slip through as
+    complete."""
+    module, db_path, _ = check_travel_bookings
+    trip_start = _FROZEN_TODAY + timedelta(days=10)
+    trip_end = trip_start + timedelta(days=5)
+    payload = _db_payload(
+        {
+            "berlin-conf-2026-05": _trip_record(
+                summary="Berlin Conf",
+                start=trip_start,
+                end=trip_end,
+                days={
+                    # Only the outbound leg is in the data; no return,
+                    # no lodging. classify_trip yields uncovered == [].
+                    trip_start.isoformat(): [
+                        _item(type="Flight", summary="LH401 TLV→BER", start=trip_start),
+                    ],
+                },
+            ),
+        }
+    )
+    db_path.write_text(json.dumps(payload))
+
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    output = json.loads(out)
+    assert output["complete_trips"] == 0
+    assert len(output["gaps"]) == 1
+    gap = output["gaps"][0]
+    assert gap["issue"] == "рейсы есть, отеля нет"
+    assert gap["uncovered_nights"] == []
+
+
+def test_main_one_night_connecting_outbound_no_lodging_flagged(
+    check_travel_bookings, monkeypatch, capsys
+):
+    """A one-night trip with two same-direction legs (a connecting
+    outbound, no return) is NOT a same-day round trip even though it has
+    two transport legs — both land on trip_start while trip_end is the
+    next day, so the traveller arrives and stays over. Leg count alone
+    would mistake it for a round trip; the arrival-before-trip_end signal
+    correctly flags 'рейсы есть, отеля нет'."""
+    module, db_path, _ = check_travel_bookings
+    trip_start = _FROZEN_TODAY + timedelta(days=10)
+    trip_end = trip_start + timedelta(days=1)
+    payload = _db_payload(
+        {
+            "singapore-summit-2026-05": _trip_record(
+                summary="Singapore Summit",
+                start=trip_start,
+                end=trip_end,
+                days={
+                    # Connecting outbound: both legs depart and arrive on
+                    # trip_start, no return. The traveller lands at the
+                    # destination and stays the night → needs a hotel.
+                    trip_start.isoformat(): [
+                        _item(type="Flight", summary="LX1 CPH→FRA", start=trip_start),
+                        _item(
+                            type="Flight",
+                            summary="SQ25 FRA→SIN",
+                            start=trip_start,
+                            uid="item-2@tripit",
+                        ),
+                    ],
+                },
+            ),
+        }
+    )
+    db_path.write_text(json.dumps(payload))
+
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    output = json.loads(out)
+    assert output["complete_trips"] == 0
+    assert len(output["gaps"]) == 1
+    gap = output["gaps"][0]
+    assert gap["issue"] == "рейсы есть, отеля нет"
+    assert gap["uncovered_nights"] == []
 
 
 def test_main_past_trip_filtered(check_travel_bookings, monkeypatch, capsys):
