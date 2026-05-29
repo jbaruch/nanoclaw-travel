@@ -17,7 +17,7 @@ The script outputs JSON:
 ```json
 {
   "gaps": [
-    {"trip": "JNation 2026", "start": "2026-05-24", "end": "2026-06-01", "issue": "рейсы есть, отеля нет", "slug": "jnation-2026-05", "uncovered_nights": []}
+    {"trip": "JNation 2026", "start": "2026-05-24", "end": "2026-06-01", "issue": "рейсы есть, отеля нет", "slug": "jnation-2026-05", "uncovered_nights": ["2026-05-24", "2026-05-25", "2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29", "2026-05-30", "2026-05-31"]}
   ],
   "checked_at": "2026-03-28T23:00:00Z",
   "total_trips": 10,
@@ -25,7 +25,7 @@ The script outputs JSON:
 }
 ```
 
-`uncovered_nights` is an array of ISO dates for trips flagged with "нет отеля на N ноч." and an empty array otherwise.
+`uncovered_nights` lists the ISO dates of trip nights with no lodging coverage. It is non-empty for both lodging-gap issues — "рейсы есть, отеля нет" (zero lodging) and "нет отеля на N ноч." (partial lodging) — and empty for complete trips and for same-day trips, which need no overnight stay and are not flagged.
 
 `/workspace/group/travel-db.json` is rebuilt nightly by `tessl__nightly-external-sync` Step 5. Missing/unreadable/invalid DB → exit 1 with `{"error": "..."}` on stdout plus `check-travel-bookings: ...` on stderr. DB alerting is Step 5's responsibility. On non-zero exit, report error output and stop. On invalid JSON or missing fields, report the parse error with raw output.
 
