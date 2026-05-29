@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fix — `build_lodging_ranges` no longer collapses repeat stays at one hotel (`jbaruch/nanoclaw-flight-assist#24`)
+
+`check-travel-bookings.py:build_lodging_ranges` keyed check-in / check-out dates in dicts by hotel name alone, so a trip that bookended the same hotel (stay → other cities → same hotel again) overwrote the first stay and produced at most one range per hotel — under-reporting lodging coverage and surfacing false uncovered nights. Check-ins and check-outs now accumulate as per-hotel date lists, sorted and paired chronologically (Nth check-in ↔ Nth check-out); an unpaired check-in still falls back to the existing 1-day default. Unique-per-hotel trips (the common path) are unaffected. Regression coverage: `test_build_lodging_ranges_multiple_stays_same_hotel`, `test_build_lodging_ranges_same_hotel_extra_checkin_defaults_one_day`.
+
 ### Fix — bound `ByAirClient` per-call timeout in precheck to 8s (`jbaruch/nanoclaw-flight-assist#28`)
 
 `precheck._run_cycle` now instantiates `ByAirClient.from_env(timeout=8.0)` instead of relying on the default 30s. A single slow byAir response previously raced the 30s `execFile` budget in `agent-runner` and surfaced as `precheck-error: execfile-error` — killing the whole cycle and producing a `task_run_logs` `status='error'` row that pinned `nanoclaw-admin` heartbeat into `system_health_issues` wake mode for 24h. With the per-call timeout below the outer budget, slow upstream calls fall through the existing transient-transport branch in `_run_cycle`, which skips the affected flight for one cycle (cadence gate retries it next tick) and lets other flights' polls complete.

@@ -153,6 +153,41 @@ def test_build_lodging_ranges_orphan_checkin_defaults_one_day(check_travel_booki
     assert ranges == [(_FROZEN_TODAY + timedelta(days=10), _FROZEN_TODAY + timedelta(days=11))]
 
 
+def test_build_lodging_ranges_multiple_stays_same_hotel(check_travel_bookings):
+    """Two separate stays at the same hotel (bookending a multi-city
+    trip) produce two distinct ranges, paired chronologically — not one
+    collapsed range that would under-report coverage."""
+    module, *_ = check_travel_bookings
+    items = [
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=10)},
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=12)},
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=20)},
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=22)},
+    ]
+    ranges = module.build_lodging_ranges(items)
+    assert ranges == [
+        (_FROZEN_TODAY + timedelta(days=10), _FROZEN_TODAY + timedelta(days=12)),
+        (_FROZEN_TODAY + timedelta(days=20), _FROZEN_TODAY + timedelta(days=22)),
+    ]
+
+
+def test_build_lodging_ranges_same_hotel_extra_checkin_defaults_one_day(check_travel_bookings):
+    """Same hotel with two check-ins but only one check-out: the earlier
+    stay pairs with the check-out, the unpaired second check-in falls
+    back to a 1-day range rather than being dropped."""
+    module, *_ = check_travel_bookings
+    items = [
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=10)},
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=12)},
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=20)},
+    ]
+    ranges = module.build_lodging_ranges(items)
+    assert ranges == [
+        (_FROZEN_TODAY + timedelta(days=10), _FROZEN_TODAY + timedelta(days=12)),
+        (_FROZEN_TODAY + timedelta(days=20), _FROZEN_TODAY + timedelta(days=21)),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # classify_trip branches
 # ---------------------------------------------------------------------------
