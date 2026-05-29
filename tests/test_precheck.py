@@ -438,6 +438,61 @@ def test_wall_clock_budget_defers_remaining_slow_flights(state_root: Path):
         assert read_flight_state(fid) is None
 
 
+def test_poll_horizon_skips_flight_departing_beyond_24h(state_root: Path):
+    """A seeded flight (no snapshot yet) departing more than 24h out is not
+    polled — sync keeps it in the index, but it costs no byAir call until it
+    approaches departure (#38). Its state is left untouched, so the cadence
+    gate picks it up once it crosses into the horizon.
+    """
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T16:00:00Z",
+        scheduled_dep_time="2026-05-19T22:00:00+00:00",  # 30h after fake_now
+        scheduled_arr_time="2026-05-20T01:00:00+00:00",
+        last_snapshot=None,
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        events = precheck._run_cycle(now_utc=fake_now)
+        # Beyond the horizon → no byAir poll at all.
+        assert mock_byair_from_env.return_value.get_flight.call_count == 0
+    assert events == []
+    persisted = read_flight_state(12345)
+    assert persisted["last_snapshot"] is None
+    assert persisted["last_polled_at"] == "2026-05-18T16:00:00Z"
+
+
+def test_poll_horizon_polls_flight_just_inside_24h(state_root: Path):
+    """A seeded flight departing within the 24h horizon is polled normally
+    (#38) — guards against an off-by-one that would starve in-window flights.
+    """
+    scheduled_dep = "2026-05-19T15:00:00+00:00"  # 23h after fake_now
+    scheduled_arr = "2026-05-19T18:00:00+00:00"
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T16:00:00Z",
+        scheduled_dep_time=scheduled_dep,
+        scheduled_arr_time=scheduled_arr,
+        last_snapshot=None,
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    fake_flight = _byair_flight(flight_id=12345, dep_time=scheduled_dep)
+    fake_flight["scheduledDepTime"] = scheduled_dep
+    fake_flight["scheduledArrTime"] = scheduled_arr
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        precheck._run_cycle(now_utc=fake_now)
+        assert mock_byair_from_env.return_value.get_flight.call_count == 1
+    persisted = read_flight_state(12345)
+    assert persisted["last_snapshot"] is not None
+
+
 # ---------------------------------------------------------------------------
 # Script-level (subprocess) test for the JSON contract
 # ---------------------------------------------------------------------------
@@ -871,3 +926,60 @@ def test_connection_risk_excludes_budget_deferred_flights(state_root: Path):
         after = read_flight_state(fid)
         assert after["last_polled_at"] == "2026-05-18T16:29:30Z"
         assert after["phase_markers"]["connection_at_risk_fired"] is False
+
+
+def test_connection_risk_fires_when_leg2_is_beyond_poll_horizon(state_root: Path):
+    """The 24h poll horizon (#38) must NOT suppress a connection_at_risk for a
+    leg-2 that sits just past the horizon while leg-1 is imminent.
+
+    leg-1 departs within 24h (polled), leg-2 departs ~26.5h out (horizon-
+    skipped, never polled, last_snapshot stays None). The transfer is tight
+    (30 min < 45). detect_connection_risks reads only leg-2's seeded
+    scheduled_dep_time / dep_airport_id / marker — none of which polling
+    refreshes — and gates leg-1 on its own 24h lookahead using leg-1's live
+    snapshot, so the alert still fires. This guards against a regression that
+    would exclude horizon-skipped flights from the cross-flight pass.
+    """
+    leg1 = _make_state(
+        flight_id=1,
+        last_polled_at="2026-05-18T15:00:00Z",
+        trip_id=999,
+        scheduled_dep_time="2026-05-19T15:00:00+00:00",  # 23h out — inside horizon
+        scheduled_arr_time="2026-05-19T18:00:00+00:00",
+        dep_airport_id=20,
+        arr_airport_id=28,
+        last_snapshot=None,  # seeded; forces a poll this cycle
+    )
+    leg2 = _make_state(
+        flight_id=2,
+        last_polled_at="2026-05-18T15:00:00Z",
+        trip_id=999,
+        code="AA200",
+        scheduled_dep_time="2026-05-19T18:30:00+00:00",  # 26.5h out — beyond horizon
+        scheduled_arr_time="2026-05-19T21:00:00+00:00",
+        dep_airport_id=28,
+        arr_airport_id=40,
+        last_snapshot=None,
+    )
+    write_flight_state(leg1)
+    write_flight_state(leg2)
+    write_active_flights([1, 2])
+
+    fake_flight = _byair_flight(flight_id=1)
+    fake_flight["scheduledDepTime"] = "2026-05-19T15:00:00+00:00"
+    fake_flight["scheduledArrTime"] = "2026-05-19T18:00:00+00:00"
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+        # leg-1 polled, leg-2 horizon-skipped → exactly one byAir call.
+        assert mock_byair_from_env.return_value.get_flight.call_count == 1
+
+    risk_events = [e for e in events if e["event"]["reason"] == "connection_at_risk"]
+    assert len(risk_events) == 1
+    assert risk_events[0]["flight_id"] == 2
+    assert risk_events[0]["event"]["transfer_minutes_remaining"] == 30
+    # leg-2 marker flipped by the risk pass, but it was never polled.
+    leg2_after = read_flight_state(2)
+    assert leg2_after["phase_markers"]["connection_at_risk_fired"] is True
+    assert leg2_after["last_snapshot"] is None
