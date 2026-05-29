@@ -349,7 +349,7 @@ def main():
         uncovered = classification.get("uncovered_nights", [])
         if classification["is_empty"]:
             issue = "ничего не забукано"
-        elif classification["has_transport"] and not classification["has_lodging"]:
+        elif classification["has_transport"] and not classification["has_lodging"] and uncovered:
             issue = "рейсы есть, отеля нет"
         elif classification["has_transport"] and uncovered:
             issue = f"нет отеля на {len(uncovered)} ноч.: {uncovered[0]}…{uncovered[-1]}"

@@ -327,6 +327,35 @@ def test_classify_trip_tail_home_night_not_flagged(check_travel_bookings):
     assert out["uncovered_nights"] == []
 
 
+def test_classify_trip_same_day_round_trip_no_uncovered(check_travel_bookings):
+    """A same-day round trip (out + back on one calendar day, the
+    return leg's arrival slipping past UTC midnight so trip_end is the
+    next day) needs no hotel: the single trip night IS a travel night,
+    so uncovered_nights is empty even with zero lodging. Regression
+    guard for admin#310."""
+    module, *_ = check_travel_bookings
+    trip_start = _FROZEN_TODAY + timedelta(days=10)
+    trip_end = trip_start + timedelta(days=1)
+    items = [
+        {
+            "item_type": "Flight",
+            "summary": "Outbound BNA→MIA",
+            "dtstart": trip_start,
+            "dtend": trip_start,
+        },
+        {
+            "item_type": "Flight",
+            "summary": "Return FLL→BNA",
+            "dtstart": trip_start,
+            "dtend": trip_end,  # arrival slips past UTC midnight
+        },
+    ]
+    out = module.classify_trip(items, trip_start, trip_end)
+    assert out["has_transport"] is True
+    assert out["has_lodging"] is False
+    assert out["uncovered_nights"] == []
+
+
 # ---------------------------------------------------------------------------
 # load_trips_from_db freshness
 # ---------------------------------------------------------------------------
@@ -693,6 +722,49 @@ def test_main_complete_trip_no_gap(check_travel_bookings, monkeypatch, capsys):
     output = json.loads(out)
     assert output["complete_trips"] == 1
     assert output["gaps"] == []
+
+
+def test_main_same_day_trip_no_false_hotel_gap(check_travel_bookings, monkeypatch, capsys):
+    """A same-day round trip with zero uncovered nights must NOT
+    surface 'рейсы есть, отеля нет' — there's no overnight stay to
+    miss. The trip counts as complete. Regression guard for admin#310:
+    the transport-without-lodging branch previously fired on
+    has_transport alone, flagging same-day trips that need no hotel."""
+    module, db_path, _ = check_travel_bookings
+    trip_start = _FROZEN_TODAY + timedelta(days=10)
+    trip_end = trip_start + timedelta(days=1)
+    payload = _db_payload(
+        {
+            "agentcon-miami-2026-06": _trip_record(
+                summary="Agentcon Miami",
+                start=trip_start,
+                end=trip_end,
+                days={
+                    trip_start.isoformat(): [
+                        _item(type="Flight", summary="AA487 BNA→MIA", start=trip_start),
+                    ],
+                    # Return leg filed under the next UTC day because its
+                    # arrival slips past midnight — the same shape that
+                    # tripped the false flag in production.
+                    trip_end.isoformat(): [
+                        _item(
+                            type="Flight",
+                            summary="WN1852 FLL→BNA",
+                            start=trip_start,
+                            end=trip_end,
+                        ),
+                    ],
+                },
+            ),
+        }
+    )
+    db_path.write_text(json.dumps(payload))
+
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    output = json.loads(out)
+    assert output["gaps"] == []
+    assert output["complete_trips"] == 1
 
 
 def test_main_past_trip_filtered(check_travel_bookings, monkeypatch, capsys):
