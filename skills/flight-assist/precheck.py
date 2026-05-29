@@ -37,8 +37,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import traceback
 import urllib.error
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -100,6 +102,20 @@ _MAX_CURRENT_LOCATION_AGE_MINUTES = 30
 # out, converting a whole-cycle kill into per-flight retries. Per #28.
 _BYAIR_CALL_TIMEOUT_SECONDS = 8.0
 
+# Wall-clock budget for the whole poll loop. The agent-runner hard-kills the
+# precheck process at SCRIPT_TIMEOUT_MS = 30s (container/agent-runner/src/index.ts)
+# and surfaces the kill as `execfile-error`. Polls run sequentially, so several
+# active flights on slow upstreams each pay up to _BYAIR_CALL_TIMEOUT_SECONDS and
+# their sum can exceed 30s — killing the whole cycle. #28 bounded each call but
+# not the cumulative total. `_run_cycle` stops starting new polls once this
+# budget elapses and defers the remaining flights to the next cycle. The budget
+# is the kill timeout minus headroom for one in-flight poll plus interpreter
+# startup/teardown, so a poll started just under the budget still returns before
+# the kill. Per #36.
+_SCRIPT_KILL_BUDGET_SECONDS = 30.0
+_CYCLE_POLL_HEADROOM_SECONDS = 10.0
+_CYCLE_WALL_CLOCK_BUDGET_SECONDS = _SCRIPT_KILL_BUDGET_SECONDS - _CYCLE_POLL_HEADROOM_SECONDS
+
 
 def main() -> int:
     # outer-boundary-process-contract: this script is the scheduled-task's
@@ -123,12 +139,22 @@ def _emit(payload: dict) -> None:
     print(json.dumps(payload, separators=(",", ":")))
 
 
-def _run_cycle(*, now_utc: datetime) -> list[dict]:
+def _run_cycle(
+    *,
+    now_utc: datetime,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> list[dict]:
     """Execute one precheck cycle, return aggregated wake events.
 
     `now_utc` is injected so tests can pin the clock without monkey-patching
     the `datetime` module (which breaks `fromisoformat()` deeper in the
     module). Production callers pass `datetime.now(timezone.utc)`.
+
+    `monotonic` is injected so tests can drive the wall-clock budget
+    deterministically without sleeping. Production callers use
+    `time.monotonic`. It measures elapsed time for the poll-loop budget;
+    `now_utc` is logical (cadence) time and must not be reused here because
+    a test that pins `now_utc` would otherwise freeze the budget clock too.
     """
     active_flight_ids = read_active_flights()
     config = read_config() or {}
@@ -149,7 +175,7 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
 
     aggregated_events: list[dict] = []
     # Per `coding-policy: stateful-artifacts` — on-disk state is a
-    # last-seen snapshot, not ground truth. Two distinct exclusion
+    # last-seen snapshot, not ground truth. Three distinct exclusion
     # categories feed the cross-flight pass's eligibility decision:
     #
     # - `removed_upstream_ids`: flights confirmed gone (byAir 404).
@@ -160,13 +186,36 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
     #   We can't verify the snapshot is current, and the rule says
     #   "before acting on a recalled value, verify against the live
     #   source" — failed verification means we don't act.
+    # - `deferred_ids`: flights skipped this cycle because the wall-clock
+    #   budget elapsed before we reached them. Unverified this cycle, same
+    #   as `poll_failed_ids` — exclude them so a stale snapshot doesn't
+    #   feed a derived alert. They retry next cycle.
     #
     # Flights NOT due to poll this cycle keep their cadence-bounded
     # freshness contract and remain eligible — their snapshot is within
     # the cadence ladder's staleness budget by construction.
     removed_upstream_ids: set[int] = set()
     poll_failed_ids: set[int] = set()
-    for flight_id in active_flight_ids:
+    deferred_ids: set[int] = set()
+    poll_deadline = monotonic() + _CYCLE_WALL_CLOCK_BUDGET_SECONDS
+    for index, flight_id in enumerate(active_flight_ids):
+        if monotonic() >= poll_deadline:
+            # Budget elapsed. Defer this flight and every flight after it
+            # to the next cycle rather than risk the agent-runner's 30s
+            # hard-kill mid-poll. Their `last_polled_at` is left untouched
+            # (we never call `_process_flight`), so the cadence gate retries
+            # them next tick — the same degraded-poll contract as the
+            # transient-transport branch below. Per #36.
+            remaining = active_flight_ids[index:]
+            deferred_ids.update(remaining)
+            print(
+                f"flight-assist precheck: wall-clock budget "
+                f"({_CYCLE_WALL_CLOCK_BUDGET_SECONDS:.0f}s) reached after "
+                f"{index} of {len(active_flight_ids)} flights; deferring "
+                f"{len(remaining)} to next cycle",
+                file=sys.stderr,
+            )
+            break
         try:
             flight_events = _process_flight(
                 flight_id=flight_id,
@@ -216,10 +265,10 @@ def _run_cycle(*, now_utc: datetime) -> list[dict]:
 
     # Connection-risk pass: walks the now-up-to-date on-disk state to
     # group flights by trip_id and emit cross-flight risk events. Excludes
-    # both removed-upstream flights (snapshot known to lie) and
-    # poll-failed flights (snapshot unverified this cycle) per
-    # stateful-artifacts.
-    excluded_ids = removed_upstream_ids | poll_failed_ids
+    # removed-upstream flights (snapshot known to lie), poll-failed flights
+    # (snapshot unverified this cycle), and budget-deferred flights (not
+    # polled this cycle) per stateful-artifacts.
+    excluded_ids = removed_upstream_ids | poll_failed_ids | deferred_ids
     risk_candidate_ids = [fid for fid in active_flight_ids if fid not in excluded_ids]
     aggregated_events.extend(
         _check_connection_risks(

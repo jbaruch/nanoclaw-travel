@@ -396,6 +396,48 @@ def test_seeded_state_with_no_snapshot_forces_poll(state_root: Path):
     assert persisted["phase_markers"]["day_before_fired"] is True
 
 
+def test_wall_clock_budget_defers_remaining_slow_flights(state_root: Path):
+    """Many active flights on slow upstreams must not let the cumulative poll
+    time exceed the agent-runner's 30s execFile hard-kill (#36).
+
+    Each byAir poll here burns 9 simulated seconds via an injected monotonic
+    clock; eight sequential polls would total 72s and trip the kill. The
+    wall-clock budget must stop starting new polls partway through and defer
+    the rest, leaving their state (and `last_polled_at`) untouched so the
+    cadence gate retries them next cycle.
+    """
+    active_ids = [1, 2, 3, 4, 5, 6, 7, 8]
+    write_active_flights(active_ids)
+
+    clock = {"t": 0.0}
+
+    def fake_monotonic() -> float:
+        return clock["t"]
+
+    def slow_poll(*, flight_id: int) -> dict:
+        clock["t"] += 9.0  # each poll burns 9 simulated seconds
+        return _byair_flight(flight_id=flight_id)
+
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = slow_poll
+        precheck._run_cycle(now_utc=fake_now, monotonic=fake_monotonic)
+
+    polled_count = mock_byair_from_env.return_value.get_flight.call_count
+    # The budget must engage: at least one flight polled, at least one deferred.
+    assert 1 <= polled_count < len(active_ids)
+    # Cumulative simulated poll time stayed under the 30s kill — without the
+    # budget all eight polls would total 72s and the cycle would be killed.
+    assert clock["t"] < precheck._SCRIPT_KILL_BUDGET_SECONDS
+    # Polled flights (the first `polled_count` in index order) wrote state;
+    # deferred flights were never touched, so they have no state on disk and
+    # their cadence gate fires again next cycle.
+    for fid in active_ids[:polled_count]:
+        assert read_flight_state(fid) is not None
+    for fid in active_ids[polled_count:]:
+        assert read_flight_state(fid) is None
+
+
 # ---------------------------------------------------------------------------
 # Script-level (subprocess) test for the JSON contract
 # ---------------------------------------------------------------------------
@@ -742,3 +784,90 @@ def test_connection_risk_honors_config_override(state_root: Path):
     with patch("precheck.ByAirClient.from_env"):
         events = precheck._run_cycle(now_utc=fake_now)
     assert not any(e["event"]["reason"] == "connection_at_risk" for e in events)
+
+
+def test_connection_risk_excludes_budget_deferred_flights(state_root: Path):
+    """A flight deferred because the wall-clock budget elapsed is unverified
+    this cycle and must not feed a derived connection_at_risk — same exclusion
+    as a poll-failed flight (#36).
+
+    A decoy first-cycle flight (id 9) burns the entire budget on its poll, so
+    both legs of the trip-999 transfer are deferred before they're reached.
+    Their tight-transfer on-disk state is identical to the fixture in
+    `test_connection_risk_pass_fires_and_persists_marker` (which fires when the
+    legs are eligible), so the only reason no risk fires here is the deferral.
+    The legs' state — including `last_polled_at` and the not-yet-fired marker —
+    must be left untouched for the next cycle.
+    """
+    leg1 = _make_state(
+        flight_id=1,
+        last_polled_at="2026-05-18T16:29:30Z",
+        trip_id=999,
+        scheduled_dep_time="2026-05-18T17:00:00+00:00",
+        scheduled_arr_time="2026-05-18T19:00:00+00:00",
+        dep_airport_id=20,
+        arr_airport_id=28,
+        last_snapshot={
+            "code": "AA100",
+            "computed_status": "departed",
+            "computed_status_detail": "...",
+            "computed_phase_progress": None,
+            "computed_phase_risk": None,
+            "computed_phase_overdue": None,
+            "dep_gate": None,
+            "arr_gate": None,
+            "dep_terminal": None,
+            "arr_terminal": None,
+            "dep_time": "2026-05-18T17:00:00+00:00",
+            "arr_time": "2026-05-18T19:30:00+00:00",  # +30 min delay
+            "baggage": None,
+            "inbound": {
+                "aircraft_model": None,
+                "registration": None,
+                "flew": None,
+                "predicted_delay_minutes": None,
+            },
+            "position_lat": None,
+            "position_lon": None,
+        },
+    )
+    leg2 = _make_state(
+        flight_id=2,
+        last_polled_at="2026-05-18T16:29:30Z",
+        trip_id=999,
+        code="AA200",
+        scheduled_dep_time="2026-05-18T20:00:00+00:00",  # 30 min from projected arr
+        scheduled_arr_time="2026-05-18T22:00:00+00:00",
+        dep_airport_id=28,
+        arr_airport_id=40,
+        last_snapshot=_scheduled_snapshot(code="AA200"),
+    )
+    write_flight_state(leg1)
+    write_flight_state(leg2)
+    # Decoy (id 9) is first in the index and first-cycle (no prior state), so
+    # it polls and exhausts the budget before either leg is reached.
+    write_active_flights([9, 1, 2])
+
+    clock = {"t": 0.0}
+
+    def fake_monotonic() -> float:
+        return clock["t"]
+
+    def slow_poll(*, flight_id: int) -> dict:
+        clock["t"] += 25.0  # a single poll exhausts the wall-clock budget
+        return _byair_flight(flight_id=flight_id)
+
+    fake_now = datetime(2026, 5, 18, 16, 30, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = slow_poll
+        events = precheck._run_cycle(now_utc=fake_now, monotonic=fake_monotonic)
+
+    # Only the decoy was polled; both trip-999 legs hit the budget and deferred.
+    assert mock_byair_from_env.return_value.get_flight.call_count == 1
+    # Deferred legs are excluded from the risk pass → no connection_at_risk.
+    assert not any(e["event"]["reason"] == "connection_at_risk" for e in events)
+    # Both legs untouched: last_polled_at unchanged, marker not flipped.
+    for fid in (1, 2):
+        after = read_flight_state(fid)
+        assert after["last_polled_at"] == "2026-05-18T16:29:30Z"
+        assert after["phase_markers"]["connection_at_risk_fired"] is False
