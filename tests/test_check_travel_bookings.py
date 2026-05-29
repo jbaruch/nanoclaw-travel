@@ -153,6 +153,73 @@ def test_build_lodging_ranges_orphan_checkin_defaults_one_day(check_travel_booki
     assert ranges == [(_FROZEN_TODAY + timedelta(days=10), _FROZEN_TODAY + timedelta(days=11))]
 
 
+def test_build_lodging_ranges_multiple_stays_same_hotel(check_travel_bookings):
+    """Two separate stays at the same hotel (bookending a multi-city
+    trip) produce two distinct ranges, paired chronologically — not one
+    collapsed range that would under-report coverage."""
+    module, *_ = check_travel_bookings
+    items = [
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=10)},
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=12)},
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=20)},
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=22)},
+    ]
+    ranges = module.build_lodging_ranges(items)
+    assert ranges == [
+        (_FROZEN_TODAY + timedelta(days=10), _FROZEN_TODAY + timedelta(days=12)),
+        (_FROZEN_TODAY + timedelta(days=20), _FROZEN_TODAY + timedelta(days=22)),
+    ]
+
+
+def test_build_lodging_ranges_same_hotel_extra_checkin_defaults_one_day(check_travel_bookings):
+    """Same hotel with two check-ins but only one check-out: the earlier
+    stay pairs with the check-out, the unpaired second check-in falls
+    back to a 1-day range rather than being dropped."""
+    module, *_ = check_travel_bookings
+    items = [
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=10)},
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=12)},
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=20)},
+    ]
+    ranges = module.build_lodging_ranges(items)
+    assert ranges == [
+        (_FROZEN_TODAY + timedelta(days=10), _FROZEN_TODAY + timedelta(days=12)),
+        (_FROZEN_TODAY + timedelta(days=20), _FROZEN_TODAY + timedelta(days=21)),
+    ]
+
+
+def test_build_lodging_ranges_stray_earlier_checkout_not_consumed(check_travel_bookings):
+    """A stray check-out earlier than the check-in must not steal the
+    slot of the valid later check-out: greedy pairing skips it and the
+    check-in matches the day-12 check-out, not a 1-day fallback."""
+    module, *_ = check_travel_bookings
+    items = [
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=9)},
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=10)},
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=12)},
+    ]
+    ranges = module.build_lodging_ranges(items)
+    assert ranges == [(_FROZEN_TODAY + timedelta(days=10), _FROZEN_TODAY + timedelta(days=12))]
+
+
+def test_build_lodging_ranges_orphan_earlier_checkin_not_stealing_later_stay(check_travel_bookings):
+    """An orphan earlier check-in (no check-out of its own) must not
+    consume the later valid stay's check-out: it falls back to 1 day and
+    the day-10→day-12 stay is reported intact — not an over-reported
+    day-5→day-12 range that would hide uncovered nights."""
+    module, *_ = check_travel_bookings
+    items = [
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=5)},
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=10)},
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=12)},
+    ]
+    ranges = module.build_lodging_ranges(items)
+    assert ranges == [
+        (_FROZEN_TODAY + timedelta(days=5), _FROZEN_TODAY + timedelta(days=6)),
+        (_FROZEN_TODAY + timedelta(days=10), _FROZEN_TODAY + timedelta(days=12)),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # classify_trip branches
 # ---------------------------------------------------------------------------

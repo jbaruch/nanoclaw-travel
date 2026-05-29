@@ -52,10 +52,19 @@ def make_slug(summary: str, start: date) -> str:
 def build_lodging_ranges(lodging_items: list[dict]) -> list[tuple]:
     """
     Pair 'Check-in: Hotel' and 'Check-out: Hotel' events by hotel name.
+    Multiple stays at the same hotel within one trip are matched by
+    replaying events per hotel in date order, where a check-out closes
+    the most recently opened stay (LIFO). At the same hotel stays don't
+    overlap, so the open stay is the one a check-out belongs to; LIFO
+    keeps a stray earlier check-out from matching a later check-in and an
+    orphan earlier check-in from stealing a later stay's check-out — both
+    of which would misreport coverage. Orphan check-outs form no range;
+    unmatched check-ins fall back to a 1-day range. Ranges are returned
+    sorted by check-in date.
     Returns list of (checkin_date, checkout_date) tuples.
     """
-    checkins: dict[str, date] = {}
-    checkouts: dict[str, date] = {}
+    checkins: dict[str, list[date]] = {}
+    checkouts: dict[str, list[date]] = {}
     for item in lodging_items:
         summary = item.get("summary", "")
         dtstart = item.get("dtstart")
@@ -63,17 +72,25 @@ def build_lodging_ranges(lodging_items: list[dict]) -> list[tuple]:
             continue
         if summary.startswith("Check-in:"):
             hotel = summary[len("Check-in:") :].strip()
-            checkins[hotel] = dtstart
+            checkins.setdefault(hotel, []).append(dtstart)
         elif summary.startswith("Check-out:"):
             hotel = summary[len("Check-out:") :].strip()
-            checkouts[hotel] = dtstart
+            checkouts.setdefault(hotel, []).append(dtstart)
     ranges = []
-    for hotel, ci in checkins.items():
-        co = checkouts.get(hotel)
-        if co and co > ci:
-            ranges.append((ci, co))
-        else:
+    for hotel, cis in checkins.items():
+        # (date, kind): kind 0 = check-out, 1 = check-in. Sorting the
+        # tuples processes a check-out before a check-in on the same day.
+        events = sorted([(d, 1) for d in cis] + [(d, 0) for d in checkouts.get(hotel, [])])
+        open_checkins: list[date] = []
+        for d, kind in events:
+            if kind == 1:
+                open_checkins.append(d)
+            elif open_checkins:
+                ci = open_checkins.pop()
+                ranges.append((ci, d) if d > ci else (ci, ci + timedelta(days=1)))
+        for ci in open_checkins:
             ranges.append((ci, ci + timedelta(days=1)))
+    ranges.sort()
     return ranges
 
 

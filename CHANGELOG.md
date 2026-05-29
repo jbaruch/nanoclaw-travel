@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fix — `build_lodging_ranges` no longer collapses repeat stays at one hotel (`jbaruch/nanoclaw-flight-assist#24`)
+
+`check-travel-bookings.py:build_lodging_ranges` keyed check-in / check-out dates in dicts by hotel name alone, so a trip that bookended the same hotel (stay → other cities → same hotel again) overwrote the first stay and produced at most one range per hotel — under-reporting lodging coverage and surfacing false uncovered nights. Per-hotel events are now replayed in date order with a check-out closing the most recently opened stay (LIFO); same-hotel stays don't overlap, so the open stay is the one a check-out belongs to. This keeps a stray earlier check-out from matching a later check-in and an orphan earlier check-in from stealing a later stay's check-out (both would misreport coverage). Orphan check-outs form no range; unmatched check-ins keep the existing 1-day fallback. Unique-per-hotel trips (the common path) are unaffected. Regression coverage: `test_build_lodging_ranges_multiple_stays_same_hotel`, `test_build_lodging_ranges_same_hotel_extra_checkin_defaults_one_day`, `test_build_lodging_ranges_stray_earlier_checkout_not_consumed`, `test_build_lodging_ranges_orphan_earlier_checkin_not_stealing_later_stay`.
+
 ### Fix — bound `ByAirClient` per-call timeout in precheck to 8s (`jbaruch/nanoclaw-flight-assist#28`)
 
 `precheck._run_cycle` now instantiates `ByAirClient.from_env(timeout=8.0)` instead of relying on the default 30s. A single slow byAir response previously raced the 30s `execFile` budget in `agent-runner` and surfaced as `precheck-error: execfile-error` — killing the whole cycle and producing a `task_run_logs` `status='error'` row that pinned `nanoclaw-admin` heartbeat into `system_health_issues` wake mode for 24h. With the per-call timeout below the outer budget, slow upstream calls fall through the existing transient-transport branch in `_run_cycle`, which skips the affected flight for one cycle (cadence gate retries it next tick) and lets other flights' polls complete.
