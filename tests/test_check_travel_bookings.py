@@ -767,6 +767,47 @@ def test_main_same_day_trip_no_false_hotel_gap(check_travel_bookings, monkeypatc
     assert output["complete_trips"] == 1
 
 
+def test_main_multiday_single_transport_no_lodging_flagged(
+    check_travel_bookings, monkeypatch, capsys
+):
+    """A multi-night trip with transport but no lodging must still be
+    flagged 'рейсы есть, отеля нет' even when only one transport leg is
+    known — classify_trip's has_future_transport guard anchors no gap
+    night, so uncovered_nights is empty, but the trip genuinely needs a
+    hotel. Regression guard for the same-day narrowing: the
+    `uncovered or trip_nights > 1` predicate must not let a real
+    multi-night gap slip through as complete."""
+    module, db_path, _ = check_travel_bookings
+    trip_start = _FROZEN_TODAY + timedelta(days=10)
+    trip_end = trip_start + timedelta(days=5)
+    payload = _db_payload(
+        {
+            "berlin-conf-2026-05": _trip_record(
+                summary="Berlin Conf",
+                start=trip_start,
+                end=trip_end,
+                days={
+                    # Only the outbound leg is in the data; no return,
+                    # no lodging. classify_trip yields uncovered == [].
+                    trip_start.isoformat(): [
+                        _item(type="Flight", summary="LH401 TLV→BER", start=trip_start),
+                    ],
+                },
+            ),
+        }
+    )
+    db_path.write_text(json.dumps(payload))
+
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    output = json.loads(out)
+    assert output["complete_trips"] == 0
+    assert len(output["gaps"]) == 1
+    gap = output["gaps"][0]
+    assert gap["issue"] == "рейсы есть, отеля нет"
+    assert gap["uncovered_nights"] == []
+
+
 def test_main_past_trip_filtered(check_travel_bookings, monkeypatch, capsys):
     """`trip_end < today` → trip is skipped before classification, not
     counted as complete OR a gap."""

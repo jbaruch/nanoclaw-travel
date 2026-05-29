@@ -347,9 +347,19 @@ def main():
 
         issue = None
         uncovered = classification.get("uncovered_nights", [])
+        trip_nights = (trip_end - trip_start).days
         if classification["is_empty"]:
             issue = "ничего не забукано"
-        elif classification["has_transport"] and not classification["has_lodging"] and uncovered:
+        # Same-day round trips need no hotel: their one night is a travel
+        # night, so uncovered is empty. Multi-night trips with no lodging
+        # must still flag even when uncovered is empty — that happens when
+        # only one transport leg is known and classify_trip's
+        # has_future_transport guard anchors no gap night.
+        elif (
+            classification["has_transport"]
+            and not classification["has_lodging"]
+            and (uncovered or trip_nights > 1)
+        ):
             issue = "рейсы есть, отеля нет"
         elif classification["has_transport"] and uncovered:
             issue = f"нет отеля на {len(uncovered)} ноч.: {uncovered[0]}…{uncovered[-1]}"
