@@ -276,6 +276,15 @@ def _run_cycle(
     # removed-upstream flights (snapshot known to lie), poll-failed flights
     # (snapshot unverified this cycle), and budget-deferred flights (not
     # polled this cycle) per stateful-artifacts.
+    #
+    # Horizon-skipped flights (departure > _POLL_HORIZON_HOURS) are NOT
+    # excluded, by design. detect_connection_risks reads only leg-2's seeded
+    # scheduled_dep_time / dep_airport_id / markers — never its last_snapshot
+    # (which polling never refreshes anyway; _build_flight_state preserves the
+    # sync-seeded scheduled times) — and gates leg-1 on its own 24h lookahead
+    # using leg-1's live, freshly-polled snapshot. So the firing decision never
+    # rests on a skipped flight's unverified snapshot, and a tight connection
+    # where leg-1 is imminent but leg-2 sits just past the horizon still fires.
     excluded_ids = removed_upstream_ids | poll_failed_ids | deferred_ids
     risk_candidate_ids = [fid for fid in active_flight_ids if fid not in excluded_ids]
     aggregated_events.extend(
@@ -456,14 +465,16 @@ def _process_flight(
 def _due_for_poll(prior_state: dict | None, now_utc: datetime) -> bool:
     """Return True when a byAir poll is due.
 
-    A poll is due when the flight is inside the `_POLL_HORIZON_HOURS`
-    window AND one of: no prior state, no snapshot yet (sync_tripit seeded
-    state but byAir has never been polled), or the cadence-ladder interval
-    has elapsed since the last successful poll. A flight departing beyond
-    the horizon is never polled, even when seeded with no snapshot.
+    A flight with no prior state at all (never seeded) is always polled —
+    there is no seeded departure time to range-check yet. For a seeded
+    flight, a poll is due only when departure is inside the
+    `_POLL_HORIZON_HOURS` window AND one of: no snapshot yet (sync_tripit
+    seeded state but byAir has never been polled), or the cadence-ladder
+    interval has elapsed since the last successful poll. A seeded flight
+    departing beyond the horizon is never polled, even with no snapshot.
     """
     if prior_state is None:
-        return True  # first cycle for this flight
+        return True  # first cycle, no seeded departure time to range-check
     scheduled_dep = _parse_iso8601(prior_state.get("scheduled_dep_time"))
     if scheduled_dep is not None and scheduled_dep - now_utc > timedelta(hours=_POLL_HORIZON_HOURS):
         return False
@@ -476,7 +487,6 @@ def _due_for_poll(prior_state: dict | None, now_utc: datetime) -> bool:
         return True
     snapshot = prior_state.get("last_snapshot") or {}
     status = snapshot.get("computed_status", "scheduled")
-    scheduled_dep = _parse_iso8601(prior_state.get("scheduled_dep_time"))
     scheduled_arr = _parse_iso8601(prior_state.get("scheduled_arr_time"))
     interval_minutes = _interval_for(status, now_utc, scheduled_dep, scheduled_arr)
     return now_utc - last_polled >= timedelta(minutes=interval_minutes)
