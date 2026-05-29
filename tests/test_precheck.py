@@ -438,6 +438,61 @@ def test_wall_clock_budget_defers_remaining_slow_flights(state_root: Path):
         assert read_flight_state(fid) is None
 
 
+def test_poll_horizon_skips_flight_departing_beyond_24h(state_root: Path):
+    """A seeded flight (no snapshot yet) departing more than 24h out is not
+    polled — sync keeps it in the index, but it costs no byAir call until it
+    approaches departure (#38). Its state is left untouched, so the cadence
+    gate picks it up once it crosses into the horizon.
+    """
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T16:00:00Z",
+        scheduled_dep_time="2026-05-19T22:00:00+00:00",  # 30h after fake_now
+        scheduled_arr_time="2026-05-20T01:00:00+00:00",
+        last_snapshot=None,
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        events = precheck._run_cycle(now_utc=fake_now)
+        # Beyond the horizon → no byAir poll at all.
+        assert mock_byair_from_env.return_value.get_flight.call_count == 0
+    assert events == []
+    persisted = read_flight_state(12345)
+    assert persisted["last_snapshot"] is None
+    assert persisted["last_polled_at"] == "2026-05-18T16:00:00Z"
+
+
+def test_poll_horizon_polls_flight_just_inside_24h(state_root: Path):
+    """A seeded flight departing within the 24h horizon is polled normally
+    (#38) — guards against an off-by-one that would starve in-window flights.
+    """
+    scheduled_dep = "2026-05-19T15:00:00+00:00"  # 23h after fake_now
+    scheduled_arr = "2026-05-19T18:00:00+00:00"
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T16:00:00Z",
+        scheduled_dep_time=scheduled_dep,
+        scheduled_arr_time=scheduled_arr,
+        last_snapshot=None,
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    fake_flight = _byair_flight(flight_id=12345, dep_time=scheduled_dep)
+    fake_flight["scheduledDepTime"] = scheduled_dep
+    fake_flight["scheduledArrTime"] = scheduled_arr
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        precheck._run_cycle(now_utc=fake_now)
+        assert mock_byair_from_env.return_value.get_flight.call_count == 1
+    persisted = read_flight_state(12345)
+    assert persisted["last_snapshot"] is not None
+
+
 # ---------------------------------------------------------------------------
 # Script-level (subprocess) test for the JSON contract
 # ---------------------------------------------------------------------------

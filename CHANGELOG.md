@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed — cap the precheck poll horizon at 24h (`jbaruch/nanoclaw-flight-assist#38`)
+
+Root-cause follow-up to #36. The live index tracked 25 active flights with departures spread out to ~44 days, all polled on the 30-min `scheduled` cadence; their `last_polled_at` values cluster, so large batches (e.g. 17 flights) come due in a single cycle and the sequential byAir polls are what race the 30s execFile kill. `_due_for_poll` now skips any flight whose seeded `scheduled_dep_time` is more than `_POLL_HORIZON_HOURS = 24` away — it stays in `active-flights.json` (sync keeps the roster) but costs no byAir call until it crosses T-24h, at which point the first in-window poll fires `day_before`. The horizon clips nothing: T-24h is the earliest precheck event, and `connection_risk` already gates leg-1 on its own 24h lookahead and falls back to `scheduled_arr_time` for legs without a live snapshot, so horizon-skipped flights remain no-ops there. This shrinks the per-cycle poll batch at the source rather than only bounding it after the fact (#36's wall-clock budget remains the safety net). Regression coverage: `test_poll_horizon_skips_flight_departing_beyond_24h`, `test_poll_horizon_polls_flight_just_inside_24h`.
+
 ### Fix — bound `_run_cycle` to a wall-clock budget so slow multi-flight cycles don't trip the 30s kill (`jbaruch/nanoclaw-flight-assist#36`)
 
 AyeAye flagged recurring `precheck script failed: execfile-error` on the `tessl__flight-assist` scheduled task (~5 fires over 4 days, each self-recovering next cycle), with every error row clustered at ~34–35s duration. Root cause: `_run_cycle` polls active flights sequentially, and #28 bounded each byAir call at 8s but not the cumulative total. With several active flights on slow upstreams the per-flight timeouts summed past the agent-runner's `SCRIPT_TIMEOUT_MS = 30s` execFile hard-kill (`container/agent-runner/src/index.ts`), killing the whole precheck — the observed ~34s being the 30s execFile timeout plus spawn/teardown.

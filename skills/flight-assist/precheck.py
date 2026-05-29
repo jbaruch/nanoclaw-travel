@@ -81,6 +81,14 @@ _BASE_CADENCE_MINUTES = {
     "diverted": 60,
 }
 
+# Poll horizon: flights whose scheduled departure is more than this many
+# hours away are not polled. sync_tripit keeps them in the index, but they
+# cost no byAir call until they approach departure — shrinking the per-cycle
+# poll batch at the source (the dominant pile-up behind #36). 24h clips
+# nothing: the earliest precheck event is `day_before` at T-24h, and
+# `connection_risk` already gates leg-1 on its own 24h lookahead. Per #38.
+_POLL_HORIZON_HOURS = 24
+
 # Window for querying maps_client for travel time. Past this window
 # the time-to-leave marker has either fired or doesn't matter.
 _TIME_TO_LEAVE_QUERY_WINDOW_HOURS = 6
@@ -448,12 +456,17 @@ def _process_flight(
 def _due_for_poll(prior_state: dict | None, now_utc: datetime) -> bool:
     """Return True when a byAir poll is due.
 
-    Three paths return True: no prior state, no snapshot yet (sync_tripit
-    seeded state but byAir has never been polled), or the cadence-ladder
-    interval has elapsed since the last successful poll.
+    A poll is due when the flight is inside the `_POLL_HORIZON_HOURS`
+    window AND one of: no prior state, no snapshot yet (sync_tripit seeded
+    state but byAir has never been polled), or the cadence-ladder interval
+    has elapsed since the last successful poll. A flight departing beyond
+    the horizon is never polled, even when seeded with no snapshot.
     """
     if prior_state is None:
         return True  # first cycle for this flight
+    scheduled_dep = _parse_iso8601(prior_state.get("scheduled_dep_time"))
+    if scheduled_dep is not None and scheduled_dep - now_utc > timedelta(hours=_POLL_HORIZON_HOURS):
+        return False
     if prior_state.get("last_snapshot") is None:
         # sync_tripit seeds last_polled_at=now() with no snapshot; the
         # snapshot is the de-facto "byAir polled successfully" sentinel.
