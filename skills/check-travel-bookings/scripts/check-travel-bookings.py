@@ -348,17 +348,22 @@ def main():
         issue = None
         uncovered = classification.get("uncovered_nights", [])
         trip_nights = (trip_end - trip_start).days
+        transport_legs = sum(1 for i in items if i.get("item_type") in ("Flight", "Rail"))
+        # A trip needs lodging unless it's a same-day round trip — one
+        # night (the return arrival often slips past UTC midnight, so
+        # trip_nights is 1) with an out-and-back pair of legs, whose
+        # only night is a travel night. A one-night trip with a single
+        # known leg is NOT a round trip: the traveller stays over and
+        # needs a hotel, so it must still flag even though its lone
+        # travel night leaves uncovered empty. A zero-night day trip
+        # needs no hotel at all.
+        trip_needs_lodging = trip_nights >= 1 and not (trip_nights == 1 and transport_legs >= 2)
         if classification["is_empty"]:
             issue = "ничего не забукано"
-        # Same-day round trips need no hotel: their one night is a travel
-        # night, so uncovered is empty. Multi-night trips with no lodging
-        # must still flag even when uncovered is empty — that happens when
-        # only one transport leg is known and classify_trip's
-        # has_future_transport guard anchors no gap night.
         elif (
             classification["has_transport"]
             and not classification["has_lodging"]
-            and (uncovered or trip_nights > 1)
+            and trip_needs_lodging
         ):
             issue = "рейсы есть, отеля нет"
         elif classification["has_transport"] and uncovered:
