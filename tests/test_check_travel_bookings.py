@@ -188,6 +188,20 @@ def test_build_lodging_ranges_same_hotel_extra_checkin_defaults_one_day(check_tr
     ]
 
 
+def test_build_lodging_ranges_stray_earlier_checkout_not_consumed(check_travel_bookings):
+    """A stray check-out earlier than the check-in must not steal the
+    slot of the valid later check-out: greedy pairing skips it and the
+    check-in matches the day-12 check-out, not a 1-day fallback."""
+    module, *_ = check_travel_bookings
+    items = [
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=9)},
+        {"summary": "Check-in: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=10)},
+        {"summary": "Check-out: Hotel Sol", "dtstart": _FROZEN_TODAY + timedelta(days=12)},
+    ]
+    ranges = module.build_lodging_ranges(items)
+    assert ranges == [(_FROZEN_TODAY + timedelta(days=10), _FROZEN_TODAY + timedelta(days=12))]
+
+
 # ---------------------------------------------------------------------------
 # classify_trip branches
 # ---------------------------------------------------------------------------

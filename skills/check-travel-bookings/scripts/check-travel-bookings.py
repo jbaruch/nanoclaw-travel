@@ -52,11 +52,13 @@ def make_slug(summary: str, start: date) -> str:
 def build_lodging_ranges(lodging_items: list[dict]) -> list[tuple]:
     """
     Pair 'Check-in: Hotel' and 'Check-out: Hotel' events by hotel name.
-    Multiple stays at the same hotel within one trip are paired
-    chronologically — the Nth check-in matches the Nth check-out — so a
-    trip that bookends the same hotel yields two distinct ranges instead
-    of collapsing to one (which would under-report coverage and surface
-    false uncovered nights).
+    Multiple stays at the same hotel within one trip are paired greedily:
+    each check-in (earliest first) takes the earliest later check-out not
+    already consumed. This yields two distinct ranges for a trip that
+    bookends the same hotel instead of collapsing to one (which would
+    under-report coverage and surface false uncovered nights), and keeps
+    a stray earlier check-out from stealing the slot of a valid later
+    stay. An unpaired check-in falls back to a 1-day range.
     Returns list of (checkin_date, checkout_date) tuples.
     """
     checkins: dict[str, list[date]] = {}
@@ -75,9 +77,15 @@ def build_lodging_ranges(lodging_items: list[dict]) -> list[tuple]:
     ranges = []
     for hotel, cis in checkins.items():
         cos = sorted(checkouts.get(hotel, []))
-        for idx, ci in enumerate(sorted(cis)):
-            co = cos[idx] if idx < len(cos) else None
-            if co and co > ci:
+        consumed = [False] * len(cos)
+        for ci in sorted(cis):
+            co = None
+            for idx, candidate in enumerate(cos):
+                if not consumed[idx] and candidate > ci:
+                    co = candidate
+                    consumed[idx] = True
+                    break
+            if co is not None:
                 ranges.append((ci, co))
             else:
                 ranges.append((ci, ci + timedelta(days=1)))
