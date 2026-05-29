@@ -768,12 +768,12 @@ def test_main_same_day_trip_no_false_hotel_gap(check_travel_bookings, monkeypatc
 
 
 def test_main_one_night_single_leg_no_lodging_flagged(check_travel_bookings, monkeypatch, capsys):
-    """A one-night trip with a single known transport leg and no lodging
-    is NOT a same-day round trip — the traveller stays over and needs a
-    hotel. It shares the same-day trip's shape (trip_nights == 1,
-    uncovered empty because the lone night is a travel night), so the
-    predicate must distinguish them by leg count: one leg means no
-    return, so flag 'рейсы есть, отеля нет'."""
+    """A one-night trip with a single transport leg that lands before
+    trip_end and no lodging is NOT a same-day round trip — the traveller
+    has arrived and stays over, so it must flag 'рейсы есть, отеля нет'.
+    It shares the same-day trip's shape (trip_nights == 1, uncovered
+    empty because the lone night is a travel night); the distinguisher
+    is that its arrival falls before trip_end rather than reaching it."""
     module, db_path, _ = check_travel_bookings
     trip_start = _FROZEN_TODAY + timedelta(days=10)
     trip_end = trip_start + timedelta(days=1)
@@ -812,9 +812,10 @@ def test_main_multiday_single_transport_no_lodging_flagged(
     flagged 'рейсы есть, отеля нет' even when only one transport leg is
     known — classify_trip's has_future_transport guard anchors no gap
     night, so uncovered_nights is empty, but the trip genuinely needs a
-    hotel. Regression guard for the same-day narrowing: the
-    `uncovered or trip_nights > 1` predicate must not let a real
-    multi-night gap slip through as complete."""
+    hotel. Regression guard for the same-day narrowing: the outbound
+    lands well before trip_end, so the traveller is staying — the
+    predicate must not let a real multi-night gap slip through as
+    complete."""
     module, db_path, _ = check_travel_bookings
     trip_start = _FROZEN_TODAY + timedelta(days=10)
     trip_end = trip_start + timedelta(days=5)
@@ -829,6 +830,53 @@ def test_main_multiday_single_transport_no_lodging_flagged(
                     # no lodging. classify_trip yields uncovered == [].
                     trip_start.isoformat(): [
                         _item(type="Flight", summary="LH401 TLV→BER", start=trip_start),
+                    ],
+                },
+            ),
+        }
+    )
+    db_path.write_text(json.dumps(payload))
+
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    output = json.loads(out)
+    assert output["complete_trips"] == 0
+    assert len(output["gaps"]) == 1
+    gap = output["gaps"][0]
+    assert gap["issue"] == "рейсы есть, отеля нет"
+    assert gap["uncovered_nights"] == []
+
+
+def test_main_one_night_connecting_outbound_no_lodging_flagged(
+    check_travel_bookings, monkeypatch, capsys
+):
+    """A one-night trip with two same-direction legs (a connecting
+    outbound, no return) is NOT a same-day round trip even though it has
+    two transport legs — both land on trip_start while trip_end is the
+    next day, so the traveller arrives and stays over. Leg count alone
+    would mistake it for a round trip; the arrival-before-trip_end signal
+    correctly flags 'рейсы есть, отеля нет'."""
+    module, db_path, _ = check_travel_bookings
+    trip_start = _FROZEN_TODAY + timedelta(days=10)
+    trip_end = trip_start + timedelta(days=1)
+    payload = _db_payload(
+        {
+            "singapore-summit-2026-05": _trip_record(
+                summary="Singapore Summit",
+                start=trip_start,
+                end=trip_end,
+                days={
+                    # Connecting outbound: both legs depart and arrive on
+                    # trip_start, no return. The traveller lands at the
+                    # destination and stays the night → needs a hotel.
+                    trip_start.isoformat(): [
+                        _item(type="Flight", summary="LX1 CPH→FRA", start=trip_start),
+                        _item(
+                            type="Flight",
+                            summary="SQ25 FRA→SIN",
+                            start=trip_start,
+                            uid="item-2@tripit",
+                        ),
                     ],
                 },
             ),

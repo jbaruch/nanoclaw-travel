@@ -25,7 +25,7 @@ The script outputs JSON:
 }
 ```
 
-`uncovered_nights` lists the ISO dates of trip nights with no lodging coverage. It drives the "нет отеля на N ноч." count, so that issue always carries entries. "рейсы есть, отеля нет" fires for any transport-without-lodging trip that needs a hotel — multi-night trips and one-night trips with a single known leg — and its `uncovered_nights` may be empty for those. Complete trips and same-day round trips (one night, out-and-back) report an empty array and are not flagged.
+`uncovered_nights` lists the ISO dates of trip nights with no lodging coverage. It drives the "нет отеля на N ноч." count; for the "рейсы есть, отеля нет" (no lodging at all) issue it may be empty, and complete trips report an empty array. Which trips are flagged is decided in `skills/check-travel-bookings/scripts/check-travel-bookings.py` — the skill consumes the output, it does not re-derive the selection.
 
 `/workspace/group/travel-db.json` is rebuilt nightly by `tessl__nightly-external-sync` Step 5. Missing/unreadable/invalid DB → exit 1 with `{"error": "..."}` on stdout plus `check-travel-bookings: ...` on stderr. DB alerting is Step 5's responsibility. On non-zero exit, report error output and stop. On invalid JSON or missing fields, report the parse error with raw output.
 

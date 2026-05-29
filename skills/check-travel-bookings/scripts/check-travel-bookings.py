@@ -348,16 +348,25 @@ def main():
         issue = None
         uncovered = classification.get("uncovered_nights", [])
         trip_nights = (trip_end - trip_start).days
-        transport_legs = sum(1 for i in items if i.get("item_type") in ("Flight", "Rail"))
-        # A trip needs lodging unless it's a same-day round trip — one
-        # night (the return arrival often slips past UTC midnight, so
-        # trip_nights is 1) with an out-and-back pair of legs, whose
-        # only night is a travel night. A one-night trip with a single
-        # known leg is NOT a round trip: the traveller stays over and
-        # needs a hotel, so it must still flag even though its lone
-        # travel night leaves uncovered empty. A zero-night day trip
-        # needs no hotel at all.
-        trip_needs_lodging = trip_nights >= 1 and not (trip_nights == 1 and transport_legs >= 2)
+        # A transport-only trip with no lodging needs a hotel unless the
+        # traveller is still in transit at the end of the trip window: a
+        # same-day round trip (whose return arrival often slips past UTC
+        # midnight) or a red-eye lands at or after trip_end, so no night
+        # is spent staying at a destination. When the latest transport
+        # arrival within the trip falls before trip_end, the traveller
+        # has landed and is staying over — a missing hotel is a real gap
+        # even when the lone travel night leaves uncovered empty. A
+        # zero-night day trip needs no hotel at all.
+        trip_arrivals = [
+            i["dtend"]
+            for i in items
+            if i.get("item_type") in ("Flight", "Rail")
+            and i.get("dtstart") is not None
+            and i.get("dtend") is not None
+            and trip_start <= i["dtstart"] < trip_end
+        ]
+        in_transit_through_end = bool(trip_arrivals) and max(trip_arrivals) >= trip_end
+        trip_needs_lodging = trip_nights >= 1 and not in_transit_through_end
         if classification["is_empty"]:
             issue = "ничего не забукано"
         elif (
