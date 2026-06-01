@@ -7,7 +7,7 @@ This skill owns two cross-invocation JSON state artifacts under `/workspace/grou
 Compact day-indexed projection of upcoming trips.
 
 - **Owner skill:** `check-travel-bookings` (this skill)
-- **Writer:** `scripts/build-travel-db.py` (invoked by admin's `nightly-external-sync` Step 5 via the literal tile-mount path `/home/node/.claude/skills/tessl__check-travel-bookings/scripts/build-travel-db.py`)
+- **Writer:** `scripts/build-travel-db.py` (invoked by this tile's `nightly-travel-sync` Step 4 via the literal tile-mount path `/home/node/.claude/skills/tessl__check-travel-bookings/scripts/build-travel-db.py`)
 - **Readers:**
   - `scripts/check-travel-bookings.py` (owner; gates on `schema_version`)
   - `nanoclaw-admin/morning-brief` (cross-tile, via the same script invoked as the reader)

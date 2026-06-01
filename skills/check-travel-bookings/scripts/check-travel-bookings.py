@@ -3,13 +3,13 @@
 Travel booking gap checker — reads from travel-db.json.
 
 travel-db.json is built nightly by build-travel-db.py inside
-`nightly-external-sync` Step 5 ("Rebuild travel-db.json from the
-schedule"). A missing, unreadable, or structurally invalid DB is a
-hard error: that Step 5's failure branch — `mcp__nanoclaw__send_message`
-notification + scheduled continuation per the skill's "Continuation
-handling" — is the correct alerting surface for DB issues. A silent
-live-ICS fallback here would only mask that signal. (The two-tier
-freshness probe in Step 4, `references/two-tier-probe.md`, is for
+`nightly-travel-sync` Step 4 ("Rebuild travel-db.json from the
+schedule") in the `nanoclaw-flight-assist` tile. A missing, unreadable,
+or structurally invalid DB is a hard error: that Step 4's failure
+branch — an `mcp__nanoclaw__send_message` notification, with the next
+daily cron re-running the bundle — is the correct alerting surface for
+DB issues. A silent live-ICS fallback here would only mask that signal.
+(The two-tier freshness probe in `nightly-travel-sync` Step 3 is for
 `travel-schedule.json`, not the DB.)
 
 Alerts on transport (Flight or Rail) + Lodging gaps; all item types are in the DB for future use.
@@ -175,7 +175,7 @@ def load_trips_from_db(db_path: str) -> list[dict] | None:
     # list, or db['trips'] is a list) would crash `.items()` below
     # with AttributeError. Treat root shape errors as "unreadable"
     # too so the contract in main() holds for the full set of bad-DB
-    # shapes Step 5's failure branch is meant to alert on.
+    # shapes Step 4's failure branch is meant to alert on.
     if not isinstance(db, dict) or not isinstance(db.get("trips"), dict):
         return None
 
@@ -274,7 +274,7 @@ def _diagnose_db_failure(db_path: str) -> str:
     Distinguishes a forward-incompatible schema_version (upgrade needed)
     from generic unreadable/missing/shape errors, so the operator
     diagnostic surfaces the actionable cause rather than a generic
-    'unreadable' message that points at Step 5 in vain."""
+    'unreadable' message that points at Step 4 in vain."""
     try:
         with open(db_path, encoding="utf-8") as f:
             db = json.load(f)
@@ -299,11 +299,10 @@ def main():
         detail = _diagnose_db_failure(DB_PATH)
         message = (
             f"travel-db.json {detail} at {DB_PATH} — "
-            "tessl__nightly-external-sync Step 5 (Rebuild "
+            "tessl__nightly-travel-sync Step 4 (Rebuild "
             "travel-db.json from the schedule) should have "
-            "built it. Check that step's last run and any "
-            "scheduled continuation in `scheduled_tasks` for "
-            "the failure mode."
+            "built it. Check that step's last run in "
+            "`task_run_logs` for the failure mode."
         )
         # Machine-readable JSON to stdout for the script-output
         # contract; human-readable diagnostic to stderr per
