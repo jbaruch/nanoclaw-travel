@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Test — restore the #41 lodging-pairing regression tests (`jbaruch/nanoclaw-flight-assist#41`)
+
+The #41 fix in `refresh-travel-schedule.py` (keep a past `Check-in:` whose matching `Check-out:` is still live, paired by trip-ID + hotel) shipped via the #318 extraction, but its four regression tests were dropped in transit — the fix landed uncovered in 0.1.22. This restores `test_lodging_checkin_retained_while_stay_live`, `test_lodging_fully_past_stay_dropped`, `test_lodging_checkin_not_rescued_across_trips`, and `test_lodging_pairing_requires_trip_id`, which lock the pairing behaviour against regression. No production-code change.
+
 ### Added — operator-local-tz phrasing for flight-assist surfaces (`jbaruch/nanoclaw-admin#305`)
 
 Companion to admin#305, which fixed maintenance surfaces (`heartbeat`, `morning-brief`) to phrase relative dates in the operator's timezone but left the flight-assist `day_before` surface — the one whose 2026-05-24 incident ("leg 1 today" at 21:36 the night before, container UTC already rolled to the next day) prompted the issue — to a separate fix. This is that fix.

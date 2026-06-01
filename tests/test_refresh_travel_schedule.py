@@ -458,3 +458,144 @@ def test_stdout_breakdown_summary(refresh_travel_schedule, monkeypatch, capsys):
     payload = json.loads(out)
     assert payload["events_written"] == 2
     assert payload["type_breakdown"] == {"Trip": 1, "Flight": 1}
+
+
+# ---------------------------------------------------------------------------
+# Lodging check-in / check-out pairing (issue #41)
+# ---------------------------------------------------------------------------
+
+
+def test_lodging_checkin_retained_while_stay_live(refresh_travel_schedule, monkeypatch, capsys):
+    """A Lodging `Check-in:` VEVENT whose own DTEND is already past
+    (check-in instant + 1h) is RETAINED when its matching `Check-out:`
+    (same trip-ID + hotel) is still in the future — frozen-now is
+    2026-04-30 12:00 UTC, the stay runs 04-29 → 05-02. Pre-fix the
+    per-event `end < now` filter dropped the check-in, orphaning the
+    check-out so check-travel-bookings.py reported a false 'no hotel'
+    gap (issue #41)."""
+    module, url_path, output_path = refresh_travel_schedule
+    url_path.write_text("https://tripit.example.test/feed.ics\n")
+    trip_url = "https://www.tripit.com/trip/show/id/377069320"
+    body = _ics(
+        [
+            ("DTSTART", "20260429T140000Z"),
+            ("DTEND", "20260429T150000Z"),
+            ("SUMMARY", "Check-in: Airbnb - Bruno"),
+            ("LOCATION", "Estoril, PT"),
+            ("UID", "item-checkin@tripit.com"),
+            ("DESCRIPTION", f"[Lodging] Airbnb - Bruno {trip_url}"),
+        ],
+        [
+            ("DTSTART", "20260502T100000Z"),
+            ("DTEND", "20260502T110000Z"),
+            ("SUMMARY", "Check-out: Airbnb - Bruno"),
+            ("LOCATION", "Estoril, PT"),
+            ("UID", "item-checkout@tripit.com"),
+            ("DESCRIPTION", f"[Lodging] Airbnb - Bruno {trip_url}"),
+        ],
+    )
+    _patch_urlopen(monkeypatch, body)
+
+    _run(module, monkeypatch, capsys)
+    events = json.loads(output_path.read_text())
+    summaries = [e["summary"] for e in events]
+    assert "Check-in: Airbnb - Bruno" in summaries
+    assert "Check-out: Airbnb - Bruno" in summaries
+
+
+def test_lodging_fully_past_stay_dropped(refresh_travel_schedule, monkeypatch, capsys):
+    """Once the stay is over (both check-in AND check-out DTEND before
+    frozen-now), the check-in is no longer rescued — there is no live
+    check-out, so both events drop as ordinary past events."""
+    module, url_path, output_path = refresh_travel_schedule
+    url_path.write_text("https://tripit.example.test/feed.ics\n")
+    trip_url = "https://www.tripit.com/trip/show/id/100"
+    body = _ics(
+        [
+            ("DTSTART", "20260410T140000Z"),
+            ("DTEND", "20260410T150000Z"),
+            ("SUMMARY", "Check-in: Old Hotel"),
+            ("UID", "item-oldin@tripit.com"),
+            ("DESCRIPTION", f"[Lodging] Old Hotel {trip_url}"),
+        ],
+        [
+            ("DTSTART", "20260412T100000Z"),
+            ("DTEND", "20260412T110000Z"),
+            ("SUMMARY", "Check-out: Old Hotel"),
+            ("UID", "item-oldout@tripit.com"),
+            ("DESCRIPTION", f"[Lodging] Old Hotel {trip_url}"),
+        ],
+    )
+    _patch_urlopen(monkeypatch, body)
+
+    _run(module, monkeypatch, capsys)
+    events = json.loads(output_path.read_text())
+    assert events == []
+
+
+def test_lodging_checkin_not_rescued_across_trips(refresh_travel_schedule, monkeypatch, capsys):
+    """The retain rule keys on trip-ID + hotel, not hotel alone. A past
+    stay at 'Marriott' (trip 100, fully past) must NOT be rescued by a
+    live future check-out at the same-named 'Marriott' in a different
+    trip (trip 200). The past trip's orphaned check-in stays dropped."""
+    module, url_path, output_path = refresh_travel_schedule
+    url_path.write_text("https://tripit.example.test/feed.ics\n")
+    body = _ics(
+        [
+            ("DTSTART", "20260410T140000Z"),
+            ("DTEND", "20260410T150000Z"),
+            ("SUMMARY", "Check-in: Marriott"),
+            ("UID", "item-trip100in@tripit.com"),
+            ("DESCRIPTION", "[Lodging] Marriott https://www.tripit.com/trip/show/id/100"),
+        ],
+        [
+            ("DTSTART", "20260502T100000Z"),
+            ("DTEND", "20260502T110000Z"),
+            ("SUMMARY", "Check-out: Marriott"),
+            ("UID", "item-trip200out@tripit.com"),
+            ("DESCRIPTION", "[Lodging] Marriott https://www.tripit.com/trip/show/id/200"),
+        ],
+    )
+    _patch_urlopen(monkeypatch, body)
+
+    _run(module, monkeypatch, capsys)
+    events = json.loads(output_path.read_text())
+    uids = [e["uid"] for e in events]
+    assert "item-trip100in@tripit.com" not in uids
+    assert "item-trip200out@tripit.com" in uids
+
+
+def test_lodging_pairing_requires_trip_id(refresh_travel_schedule, monkeypatch, capsys):
+    """Pairing keys on trip-ID + hotel, and the trip-ID is mandatory. A
+    `Check-in:`/`Check-out:` pair whose DESCRIPTION carries no
+    `trip/show/id/<n>` URL is NOT paired — so a past check-in is not
+    rescued even though a future check-out at the same hotel exists.
+    This keeps a feed that drops/changes the trip-URL format from
+    silently rescuing unrelated past check-ins across trips (a
+    false-negative); the check-in falls back to the plain past-event
+    filter and the visible #41 gap alert is the worst case."""
+    module, url_path, output_path = refresh_travel_schedule
+    url_path.write_text("https://tripit.example.test/feed.ics\n")
+    body = _ics(
+        [
+            ("DTSTART", "20260429T140000Z"),
+            ("DTEND", "20260429T150000Z"),
+            ("SUMMARY", "Check-in: Untagged Inn"),
+            ("UID", "item-untaggedin@tripit.com"),
+            ("DESCRIPTION", "[Lodging] Untagged Inn"),
+        ],
+        [
+            ("DTSTART", "20260502T100000Z"),
+            ("DTEND", "20260502T110000Z"),
+            ("SUMMARY", "Check-out: Untagged Inn"),
+            ("UID", "item-untaggedout@tripit.com"),
+            ("DESCRIPTION", "[Lodging] Untagged Inn"),
+        ],
+    )
+    _patch_urlopen(monkeypatch, body)
+
+    _run(module, monkeypatch, capsys)
+    events = json.loads(output_path.read_text())
+    summaries = [e["summary"] for e in events]
+    assert "Check-in: Untagged Inn" not in summaries  # past, unrescued
+    assert "Check-out: Untagged Inn" in summaries  # future, kept on its own
