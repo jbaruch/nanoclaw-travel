@@ -5,8 +5,8 @@ Locks down the documented contract per `coding-policy: testing-standards`:
   - DB-only flow: `travel-db.json` is the sole input. A missing,
     unreadable, or structurally invalid file is a hard error
     (`{"error": "..."}` + exit 1) — no live-ICS fallback. The
-    alerting surface is `nightly-external-sync` Step 5's failure
-    branch (notify + scheduled continuation), not the Step 4 probe
+    alerting surface is `nightly-travel-sync` Step 4's failure
+    branch (notify + daily cron re-run), not the Step 3 probe
     (which only watches `travel-schedule.json`)
   - Past trips (`trip_end < today`) are filtered before classification
   - `classify_trip` produces:
@@ -558,7 +558,7 @@ def test_load_trips_from_db_skips_list_valued_days(check_travel_bookings, monkey
 def test_load_trips_from_db_ignores_generated_at_age(check_travel_bookings, monkeypatch):
     """`generated_at` is no longer inspected — even a year-old DB
     parses normally. The freshness watchdog lives in
-    `nightly-external-sync`, not here."""
+    `nightly-travel-sync`, not here."""
     module, db_path, _ = check_travel_bookings
     monkeypatch.setattr(module, "datetime", _make_frozen_datetime(datetime))
     monkeypatch.setattr(module, "date", _make_frozen_date(date))
@@ -1000,8 +1000,8 @@ def test_main_snooze_expired_ignored(check_travel_bookings, monkeypatch, capsys)
 
 def test_main_missing_db_exits_1(check_travel_bookings, monkeypatch, capsys):
     """Missing DB → JSON `{"error": "..."}` on stdout, human-readable
-    diagnostic on stderr, exit 1. The Step 5 rebuild failure branch
-    in `nightly-external-sync` is the alerting surface for DB issues,
+    diagnostic on stderr, exit 1. The Step 4 rebuild failure branch
+    in `nightly-travel-sync` is the alerting surface for DB issues,
     so this script must not paper over the gap."""
     module, db_path, _ = check_travel_bookings
     assert not db_path.exists()
@@ -1036,7 +1036,7 @@ def test_main_forward_schema_db_surfaces_upgrade_diagnostic(
     than the reader's, the operator-facing diagnostic must name the
     detected version + the actionable upgrade path — rather than the
     generic "missing/unreadable/invalid" message that points at
-    Step 5 in vain (Step 5 already wrote the file successfully; it's
+    Step 4 in vain (Step 4 already wrote the file successfully; it's
     just newer than this consumer)."""
     module, db_path, _ = check_travel_bookings
     db_path.write_text(json.dumps({"schema_version": 99, "trips": {}}))

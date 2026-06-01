@@ -20,6 +20,9 @@
     },
     "check-travel-bookings": {
       "path": "skills/check-travel-bookings/SKILL.md"
+    },
+    "nightly-travel-sync": {
+      "path": "skills/nightly-travel-sync/SKILL.md"
     }
   },
   "steering": {

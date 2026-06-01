@@ -137,7 +137,7 @@ def main():
                 f"ERROR: existing {DB_PATH} has schema_version={existing_version} > "
                 f"writer's {SCHEMA_VERSION}; refusing to downgrade. Upgrade "
                 "this skill (`tessl__check-travel-bookings`) before re-running "
-                "`nightly-external-sync` Step 5.",
+                "`nightly-travel-sync` Step 4.",
                 file=sys.stderr,
             )
             sys.exit(2)

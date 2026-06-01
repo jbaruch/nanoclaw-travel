@@ -49,6 +49,7 @@ Store both in OneCLI vault. Never commit. See [.env.example](.env.example) for t
 | [flight-assist](skills/flight-assist/SKILL.md) | Action router: diagnose credentials, set home base, or compose a user-facing notification from a precheck wake event (delay, gate change, cancellation, boarding, time-to-leave, carousel, day-before, arrival logistics, tracked-flight add/remove) |
 | [sync-tripit](skills/sync-tripit/SKILL.md) | Adaptive scheduler that fires the byAir → `active-flights.json` refresh on a precheck-gated 5-min cadence — responsive on flight days, idle between travel windows. Diagnostic-only LLM surface (the gate + sync happen in the precheck script) |
 | [check-travel-bookings](skills/check-travel-bookings/SKILL.md) | Checks upcoming trips for missing bookings (flights, hotels, accommodation) by reading the nightly-built `travel-db.json`. Reports gaps for all upcoming trips — no date limit. Supports snooze state. Silent when all bookings are complete or snoozed. Use when the user asks about upcoming travel plans, itinerary completeness, missing reservations, or TripIt trip status. |
+| [nightly-travel-sync](skills/nightly-travel-sync/SKILL.md) | Daily travel-data refresh bundle: TripIt → Reclaim timezone sync, refresh `travel-schedule.json` from the TripIt iCal feed with a two-tier Gmail freshness probe, rebuild `travel-db.json`, then run `check-travel-bookings`. Precheck-gated on `travel-db.json` freshness; surfaces failures and relies on the daily cron + freshness probe to recover. Self-contained writer of the data `check-travel-bookings` reads. |
 
 ## Skill scripts
 
@@ -63,6 +64,8 @@ Plus scheduler-invoked scripts (not user-facing):
 - `flight-assist/precheck.py` — runs every ~2 min, polls byAir per cadence ladder, emits wake events
 - `sync-tripit/precheck.py` — runs every 5 min, adaptive-gated; delegates to `flight-assist/sync_tripit.py` only when a flight is imminent or the index is stale (see the `sync-tripit` skill for gate predicate + thresholds)
 - `flight-assist/sync_tripit.py` — the byAir → state reconciliation invoked by the sync-tripit scheduler
+- `nightly-travel-sync/precheck.py` — runs daily, gates the travel-data refresh on `travel-db.json` freshness (see the `nightly-travel-sync` skill + `precheck.py` for the cadence predicate)
+- `nightly-travel-sync/scripts/refresh-travel-schedule.py`, `check-travel-freshness.py`, `filter-tripit-bookings.py` — the travel-source writers + freshness probe the bundle drives
 
 ## Status
 
