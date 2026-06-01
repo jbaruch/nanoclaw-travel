@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added — operator-local-tz phrasing for flight-assist surfaces (`jbaruch/nanoclaw-admin#305`)
+
+Companion to admin#305, which fixed maintenance surfaces (`heartbeat`, `morning-brief`) to phrase relative dates in the operator's timezone but left the flight-assist `day_before` surface — the one whose 2026-05-24 incident ("leg 1 today" at 21:36 the night before, container UTC already rolled to the next day) prompted the issue — to a separate fix. This is that fix.
+
+New `rules/operator-local-tz-phrasing.md` (steering, `alwaysApply`) requires every relative-date word a flight-assist surface composes ("today" / "tomorrow" / "a travel day") to be labeled against the operator's local date. New `skills/flight-assist/scripts/read-current-tz.py` resolves `current_tz` from the host `tz_state` singleton at `/workspace/store/messages.db` (mounted RW in main/trusted containers). The overlay reads that store directly rather than admin's `heartbeat-precheck.json`, so it carries no `nanoclaw-admin` dependency; it fails open to `available: false` on any miss (missing DB/row, empty column, unsupported `schema_version`, unparseable zone) so a notification still fires with explicit-date phrasing. `home_tz` is deliberately not a fallback — relative-date phrasing needs where the operator is now.
+
+Scope is narrow: only the today/tomorrow wording. Displayed flight clock times stay in the airport-local zone byAir provides (`flight-data-locality` / byAir's "show as-is, don't convert" contract) — the rule never converts a departure/arrival time. SKILL.md Step 3 routes the `day_before` and arrival/delay/time-to-leave surfaces through the rule. Unit tests cover the reader's resolve + every degrade path.
+
 ### Added — `nightly-travel-sync` bundle finishes the #299 reader-without-writer split (`jbaruch/nanoclaw-admin#318`)
 
 #299 moved `check-travel-bookings` (the reader of `travel-db.json`) into this tile but left the **writers** behind in `nanoclaw-admin`'s `nightly-external-sync` bundle, so every chat loading the flight-assist overlay still required `nanoclaw-admin` just to refresh the data it consumes. This extracts the remaining travel-source scripts and the bundle steps that drive them into a flight-assist-owned skill.

@@ -27,7 +27,12 @@
   },
   "steering": {
     "flight-data-locality": {
-      "rules": "rules/flight-data-locality.md"
+      "rules": "rules/flight-data-locality.md",
+      "alwaysApply": true
+    },
+    "operator-local-tz-phrasing": {
+      "rules": "rules/operator-local-tz-phrasing.md",
+      "alwaysApply": true
     }
   }
 }
