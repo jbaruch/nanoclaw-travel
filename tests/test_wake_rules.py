@@ -375,3 +375,143 @@ def test_pure_function_no_state_mutation_on_inputs():
     first = detect_wake_events(prev, new)
     second = detect_wake_events(prev, new)
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# First-cycle schedule slip (#46) — a delay already baked into the first
+# snapshot, detected as dep_time vs scheduled_dep_time (no prior to delta).
+# ---------------------------------------------------------------------------
+
+
+def test_first_cycle_schedule_slip_above_threshold_fires():
+    """KL1017 (#46): first snapshot already sat at scheduled+31, delta rule
+    had no prior to compare against, so no delay ever fired."""
+    new = _snapshot(dep_time="2026-06-04T21:11:00+02:00")
+    events = detect_wake_events(prev=None, new=new, scheduled_dep_time="2026-06-04T20:40:00+02:00")
+    delay_events = [e for e in events if e["reason"] == "delay"]
+    assert len(delay_events) == 1
+    assert delay_events[0]["delay_minutes"] == 31
+    assert delay_events[0]["schedule_slip"] is True
+    assert delay_events[0]["new_dep_time"] == "2026-06-04T21:11:00+02:00"
+
+
+def test_first_cycle_schedule_slip_at_threshold_fires():
+    new = _snapshot(dep_time="2026-05-17T09:15:00-07:00")
+    events = detect_wake_events(prev=None, new=new, scheduled_dep_time="2026-05-17T09:00:00-07:00")
+    delay_events = [e for e in events if e["reason"] == "delay"]
+    assert len(delay_events) == 1
+    assert delay_events[0]["delay_minutes"] == DELAY_THRESHOLD_MINUTES
+
+
+def test_first_cycle_schedule_slip_below_threshold_does_not_fire():
+    new = _snapshot(dep_time="2026-05-17T09:14:00-07:00")  # 14 min
+    events = detect_wake_events(prev=None, new=new, scheduled_dep_time="2026-05-17T09:00:00-07:00")
+    assert not any(e["reason"] == "delay" for e in events)
+
+
+def test_first_cycle_on_time_does_not_fire():
+    new = _snapshot(dep_time="2026-05-17T09:00:00-07:00")
+    events = detect_wake_events(prev=None, new=new, scheduled_dep_time="2026-05-17T09:00:00-07:00")
+    assert not any(e["reason"] == "delay" for e in events)
+
+
+def test_first_cycle_early_departure_does_not_fire():
+    """An early first snapshot is not an actionable delay — only positive
+    slips (departing later than scheduled) surface."""
+    new = _snapshot(dep_time="2026-05-17T08:30:00-07:00")  # 30 min early
+    events = detect_wake_events(prev=None, new=new, scheduled_dep_time="2026-05-17T09:00:00-07:00")
+    assert not any(e["reason"] == "delay" for e in events)
+
+
+def test_first_cycle_schedule_slip_without_scheduled_time_does_not_fire():
+    """scheduled_dep_time absent (None) disables the first-cycle check
+    gracefully rather than raising."""
+    new = _snapshot(dep_time="2026-06-04T21:11:00+02:00")
+    events = detect_wake_events(prev=None, new=new, scheduled_dep_time=None)
+    assert not any(e["reason"] == "delay" for e in events)
+
+
+def test_persistent_schedule_slip_does_not_re_fire_once_prev_exists():
+    """The slip surfaces once on the first cycle; subsequent polls carry the
+    same slipped dep_time, so the delta rule sees no change and the
+    first-cycle branch is gated off — no re-fire each poll."""
+    slipped = _snapshot(dep_time="2026-06-04T21:11:00+02:00")
+    events = detect_wake_events(
+        prev=slipped, new=slipped, scheduled_dep_time="2026-06-04T20:40:00+02:00"
+    )
+    assert not any(e["reason"] == "delay" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Inbound delay retraction (#48) — a previously-surfaced prediction that
+# walks back below threshold or to null fires an all-clear.
+# ---------------------------------------------------------------------------
+
+
+def test_inbound_retraction_to_null_fires():
+    """DL59 (#48): inbound escalated to 'rebook now', then predicted_delay
+    retracted to null — without an all-clear the last surface stayed
+    'rebook now'."""
+    prev = _snapshot(inbound={"predicted_delay_minutes": 95})
+    new = _snapshot(inbound={"predicted_delay_minutes": None})
+    events = detect_wake_events(prev, new)
+    retractions = [e for e in events if e["reason"] == "inbound_delay_retracted"]
+    assert len(retractions) == 1
+    assert retractions[0]["prev_delay_minutes"] == 95
+    assert retractions[0]["new_delay_minutes"] is None
+
+
+def test_inbound_retraction_below_threshold_fires():
+    prev = _snapshot(inbound={"predicted_delay_minutes": 95})
+    new = _snapshot(inbound={"predicted_delay_minutes": INBOUND_DELAY_THRESHOLD_MINUTES - 5})
+    events = detect_wake_events(prev, new)
+    retractions = [e for e in events if e["reason"] == "inbound_delay_retracted"]
+    assert len(retractions) == 1
+    assert retractions[0]["new_delay_minutes"] == INBOUND_DELAY_THRESHOLD_MINUTES - 5
+
+
+def test_inbound_retraction_when_inbound_block_absent_fires():
+    """Inbound block dropping out entirely (None) is also a retraction."""
+    prev = _snapshot(inbound={"predicted_delay_minutes": 44})
+    new = _snapshot(inbound=None)
+    events = detect_wake_events(prev, new)
+    retractions = [e for e in events if e["reason"] == "inbound_delay_retracted"]
+    assert len(retractions) == 1
+    assert retractions[0]["prev_delay_minutes"] == 44
+    assert retractions[0]["new_delay_minutes"] is None
+
+
+def test_inbound_still_above_threshold_does_not_retract():
+    """A partial walk-back that stays at/above threshold is still a delay,
+    not an all-clear."""
+    prev = _snapshot(inbound={"predicted_delay_minutes": 95})
+    new = _snapshot(inbound={"predicted_delay_minutes": 80, "predicted_time": "X"})
+    events = detect_wake_events(prev, new)
+    assert not any(e["reason"] == "inbound_delay_retracted" for e in events)
+
+
+def test_inbound_retraction_requires_prior_above_threshold():
+    """If we never surfaced a delay (prior below threshold), there is nothing
+    to retract."""
+    prev = _snapshot(inbound={"predicted_delay_minutes": INBOUND_DELAY_THRESHOLD_MINUTES - 5})
+    new = _snapshot(inbound={"predicted_delay_minutes": None})
+    events = detect_wake_events(prev, new)
+    assert not any(e["reason"] == "inbound_delay_retracted" for e in events)
+
+
+def test_inbound_retraction_not_fired_on_first_cycle():
+    """No prior prediction (prev is None) means nothing was surfaced to
+    retract."""
+    new = _snapshot(inbound={"predicted_delay_minutes": None})
+    events = detect_wake_events(prev=None, new=new)
+    assert not any(e["reason"] == "inbound_delay_retracted" for e in events)
+
+
+def test_inbound_retraction_and_prediction_mutually_exclusive():
+    """A retraction never coincides with a fresh prediction in the same call."""
+    prev = _snapshot(inbound={"predicted_delay_minutes": 95})
+    new = _snapshot(inbound={"predicted_delay_minutes": None})
+    events = detect_wake_events(prev, new)
+    reasons = [e["reason"] for e in events]
+    assert "inbound_delay_retracted" in reasons
+    assert "inbound_delay_predicted" not in reasons

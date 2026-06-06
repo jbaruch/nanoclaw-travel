@@ -16,7 +16,7 @@ Public API:
     # module is imported by its bare name (matches nanoclaw-core's convention).
     from wake_rules import detect_wake_events
 
-    events = detect_wake_events(prev_snapshot, new_snapshot)
+    events = detect_wake_events(prev_snapshot, new_snapshot, scheduled_dep_time)
     # events = [{"reason": "gate_change", "from": "B25", "to": "B7"}, ...]
 
 Event shapes (every event has a `reason`; other fields depend on
@@ -27,15 +27,25 @@ the rule):
     {"reason": "gate_change", "side": "dep" | "arr",
      "from": "B25", "to": "B7"}
     {"reason": "delay", "delay_minutes": 22, "new_dep_time": "..."}
+    {"reason": "delay", "delay_minutes": 31, "new_dep_time": "...",
+     "schedule_slip": True}
     {"reason": "inbound_delay_predicted", "delay_minutes": 35,
      "predicted_time": "..."}
+    {"reason": "inbound_delay_retracted", "prev_delay_minutes": 95,
+     "new_delay_minutes": None}
     {"reason": "boarding_started"}
     {"reason": "carousel_revealed", "baggage": "CLM1"}
 
 Thresholds (constants below):
-    - Delay: ≥15 min change in dep_time vs prior dep_time
+    - Delay: ≥15 min change in dep_time vs prior dep_time. On the first
+      cycle (no prior snapshot) there is no prior dep_time to delta
+      against, so a delay already baked into the first snapshot is
+      detected as dep_time vs `scheduled_dep_time` instead
+      (`schedule_slip`); a pre-existing slip still surfaces.
     - Inbound delay prediction: ≥20 min, dedupe within 5 min vs
-      previously-fired magnitude
+      previously-fired magnitude. A previously-surfaced prediction that
+      walks back below threshold (or to null) fires a symmetric
+      `inbound_delay_retracted` all-clear.
 """
 
 from __future__ import annotations
@@ -47,15 +57,24 @@ INBOUND_DELAY_THRESHOLD_MINUTES = 20
 INBOUND_DELAY_DEDUPE_MINUTES = 5
 
 
-def detect_wake_events(prev: dict | None, new: dict) -> list[dict]:
+def detect_wake_events(
+    prev: dict | None, new: dict, scheduled_dep_time: str | None = None
+) -> list[dict]:
     """Return the list of wake events triggered by the delta `prev → new`.
 
     `prev` is None on the first cycle for a flight (no prior snapshot
-    on disk). Rules that depend on a prior value (gate_change, delay,
-    boarding_started transition, carousel_revealed transition) skip
-    when prev is None. Status transitions to `cancelled` / `diverted`
-    fire from a None prev too — the snapshot itself being cancelled
-    is news worth a notification.
+    on disk). Rules that depend on a prior value (gate_change, delta
+    delay, boarding_started transition, carousel_revealed transition)
+    skip when prev is None. Status transitions to `cancelled` /
+    `diverted` fire from a None prev too — the snapshot itself being
+    cancelled is news worth a notification.
+
+    `scheduled_dep_time` (RFC 3339 with offset) is the flight's
+    scheduled departure, held at the top level of the flight-state
+    record rather than inside the `last_snapshot` shape. It is used
+    only on the first cycle, to detect a delay already baked into the
+    first snapshot (a slip vs the schedule, which the delta rule cannot
+    see because there is no prior dep_time). None disables that check.
     """
     events: list[dict] = []
 
@@ -97,6 +116,27 @@ def detect_wake_events(prev: dict | None, new: dict) -> list[dict]:
             events.append(
                 {"reason": "delay", "delay_minutes": delay, "new_dep_time": new["dep_time"]}
             )
+    else:
+        # First cycle: there is no prior dep_time to delta against, so a
+        # delay already baked into the first snapshot we ever see would
+        # never surface (#46 — KL1017 sat at scheduled+31 across every
+        # poll and never woke the agent). Detect it as a slip of the
+        # fresh dep_time vs the scheduled departure. Only the first
+        # cycle uses this branch — once prev exists, the delta rule
+        # above catches any further shift, so the persistent slip is
+        # surfaced once and does not re-fire each poll. Only positive
+        # slips (departing later than scheduled) count; an early first
+        # snapshot is not an actionable delay.
+        slip = _delay_delta_minutes(scheduled_dep_time, new.get("dep_time"))
+        if slip is not None and slip >= DELAY_THRESHOLD_MINUTES:
+            events.append(
+                {
+                    "reason": "delay",
+                    "delay_minutes": slip,
+                    "new_dep_time": new["dep_time"],
+                    "schedule_slip": True,
+                }
+            )
 
     # Inbound delay prediction: only when ≥ threshold AND not previously
     # fired at a similar magnitude (within INBOUND_DELAY_DEDUPE_MINUTES).
@@ -125,6 +165,29 @@ def detect_wake_events(prev: dict | None, new: dict) -> list[dict]:
                     "predicted_time": inbound.get("predicted_time"),
                 }
             )
+
+    # Inbound delay retracted: we previously surfaced an inbound delay
+    # at/above threshold and the prediction has now walked back below
+    # threshold (or to null). Without an explicit all-clear the last
+    # surface the user saw was "connection at risk / rebook now", and
+    # the silence afterwards reads as "still bad" rather than "cleared"
+    # (#48 — DL59's inbound escalated to "rebook now", then retracted to
+    # null and both legs landed early, but no retraction ever fired).
+    # Symmetric to the prediction rule and mutually exclusive with it:
+    # the prediction branch needs new ≥ threshold, this one needs new
+    # below threshold or absent.
+    if (
+        prev_predicted is not None
+        and prev_predicted >= INBOUND_DELAY_THRESHOLD_MINUTES
+        and (new_predicted is None or new_predicted < INBOUND_DELAY_THRESHOLD_MINUTES)
+    ):
+        events.append(
+            {
+                "reason": "inbound_delay_retracted",
+                "prev_delay_minutes": prev_predicted,
+                "new_delay_minutes": new_predicted,
+            }
+        )
 
     # Carousel revealed: baggage transitions None → populated.
     if prev is not None:
