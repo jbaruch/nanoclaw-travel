@@ -37,7 +37,7 @@ Same trigger as `cancelled` but for `diverted` status.
 {"reason": "delay", "delay_minutes": 31, "new_dep_time": "2026-06-04T21:11:00+02:00", "schedule_slip": true}
 ```
 
-`delay_minutes` is `new_dep_time − prev_dep_time` in minutes. Positive = delayed, negative = moved earlier. Threshold ≥15 min (absolute). The `schedule_slip: true` variant fires once on the first poll when `new_dep_time` is already ≥15 min later than the scheduled departure (a delay baked in before tracking began, which the delta rule can't see) — `delay_minutes` is then `new_dep_time − scheduled_dep_time`, always positive. Compose it identically to a delta delay.
+`delay_minutes` is the size of the delay in minutes (positive = later than before, negative = moved earlier); `new_dep_time` is the departure to show. The optional `schedule_slip: true` flag marks a delay already present on the first poll; compose it identically to a plain delay. Firing thresholds and the slip-vs-schedule rule live in `wake_rules.py` (`detect_wake_events`; constants in the module docstring).
 
 #### `inbound_delay_predicted`
 
@@ -45,7 +45,7 @@ Same trigger as `cancelled` but for `diverted` status.
 {"reason": "inbound_delay_predicted", "delay_minutes": 35, "predicted_time": "2026-05-17T13:00:00-07:00"}
 ```
 
-Fires when byAir's `inbound.predicted_delay.delay_minutes` ≥ 20 min, with dedupe-within-5-min vs prior firing magnitude.
+`delay_minutes` is the predicted inbound-aircraft delay; `predicted_time` is the new estimated departure. Firing threshold and dedupe live in `wake_rules.py` (`detect_wake_events`).
 
 #### `inbound_delay_retracted`
 
@@ -53,7 +53,7 @@ Fires when byAir's `inbound.predicted_delay.delay_minutes` ≥ 20 min, with dedu
 {"reason": "inbound_delay_retracted", "prev_delay_minutes": 95, "new_delay_minutes": null}
 ```
 
-Fires when a previously-surfaced inbound prediction (≥20 min) walks back below threshold or to `null`. `new_delay_minutes` is the current prediction (`null` when retracted entirely). Send the all-clear even if an earlier surface escalated to "rebook now" — without it, silence reads as still-delayed. Mutually exclusive with `inbound_delay_predicted` in a single cycle.
+`prev_delay_minutes` is the delay last surfaced to the user; `new_delay_minutes` is the current prediction (`null` when retracted entirely). Send the all-clear even if an earlier surface escalated to "rebook now" — without it, silence reads as still-delayed. Firing conditions live in `wake_rules.py` (`detect_wake_events`).
 
 #### `boarding_started`
 
