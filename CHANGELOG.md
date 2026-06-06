@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed — ship `sync-tripit.sh`, the host-op wrapper missed in the #318 migration (`jbaruch/nanoclaw-flight-assist#45`)
+
+The #299/#318 split moved `nightly-travel-sync`'s three Python travel-source scripts into this tile (PR #42) but dropped `sync-tripit.sh`, the wrapper the `mcp__nanoclaw__sync_tripit()` host op resolves as `<groupDir>/scripts/sync-tripit.sh`. With no skill shipping it, fresh container spawns land without the file and the host op fails with `sync-tripit.sh not found` — surfaced in `nightly-travel-sync` Step 1, already broken in `telegram_swarm` (`telegram_main` only still worked off a stale Apr-27 copy a fresh spawn would lose). This adds the wrapper under `skills/nightly-travel-sync/scripts/` — the bundle whose Step 1 invokes the op — restoring the working pre-migration content (`cd` into the globally-installed `reclaim-tripit-timezones-sync`, `node sync.mjs sync --output=json`, under `set -euo pipefail` so a failed `cd`/`node` fails loudly instead of feeding stale state to the nightly consumer). No other code change; scripts ship with their skill dir, so no manifest edit.
+
 ### Test — restore the #41 lodging-pairing regression tests (`jbaruch/nanoclaw-flight-assist#41`)
 
 The #41 fix in `refresh-travel-schedule.py` (keep a past `Check-in:` whose matching `Check-out:` is still live, paired by trip-ID + hotel) shipped via the #318 extraction, but its four regression tests were dropped in transit — the fix landed uncovered in 0.1.22. This restores `test_lodging_checkin_retained_while_stay_live`, `test_lodging_fully_past_stay_dropped`, `test_lodging_checkin_not_rescued_across_trips`, and `test_lodging_pairing_requires_trip_id`, which lock the pairing behaviour against regression. No production-code change.
