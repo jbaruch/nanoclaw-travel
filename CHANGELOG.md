@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### Fixed — `wake_rules.py` detection gaps: pre-existing schedule slip + inbound-delay retraction (`jbaruch/nanoclaw-flight-assist#46`, `#48`)
+### Fix — `wake_rules.py` detection gaps: pre-existing schedule slip + inbound-delay retraction (`jbaruch/nanoclaw-flight-assist#46`, `jbaruch/nanoclaw-flight-assist#48`)
 
 Two symmetric blind spots in `detect_wake_events`, both leaving the operator with a stale read of a flight:
 
