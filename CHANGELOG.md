@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed — `wake_rules.py` detection gaps: pre-existing schedule slip + inbound-delay retraction (`jbaruch/nanoclaw-flight-assist#46`, `#48`)
+
+Two symmetric blind spots in `detect_wake_events`, both leaving the operator with a stale read of a flight:
+
+- **#46 — pre-existing schedule slip never fired `delay`.** Delay detection was purely a delta between consecutive `dep_time` polls, so a delay already baked into the *first* snapshot never surfaced (KL1017 AMS→LHR sat at `scheduled+31min` across every poll with no prior `dep_time` to delta against; `last_wake_at` stayed null). `detect_wake_events` now takes the flight's `scheduled_dep_time` (a top-level state field, not part of the `last_snapshot` shape) and, on the first cycle only, fires a `delay` (with `schedule_slip: True`) when `dep_time` slips ≥ threshold past schedule. First-cycle-only gating means the persistent slip surfaces once and the delta rule owns every later shift, so it can't re-fire each poll. `precheck.py` resolves `scheduled_dep_time` before the wake-rule call and passes it through.
+
+- **#48 — no event when an inbound-delay prediction walked back.** `inbound_delay_predicted` fired on the way up but nothing fired on the way down, so after byAir escalated DL59's inbound to "connection missed, rebook now" and then retracted the prediction to `null` (both legs ultimately landed early), the last surface the operator saw for hours was "rebook now" — silence read as "still bad". A symmetric `inbound_delay_retracted` event now fires when a previously-surfaced prediction (≥ threshold) walks back below threshold or to null, carrying `prev_delay_minutes`/`new_delay_minutes` so the agent can compose an all-clear. Mutually exclusive with the prediction rule.
+
+14 new `test_wake_rules.py` cases cover both: first-cycle slip at/above/below threshold, on-time, early, missing `scheduled_dep_time`, the persistent-slip no-re-fire guarantee; and retraction to null, below threshold, inbound-block-absent, partial-walk-back-still-above-threshold (no retraction), prior-below-threshold (nothing to retract), first-cycle, and prediction/retraction mutual exclusion.
+
 ### Test — restore the #41 lodging-pairing regression tests (`jbaruch/nanoclaw-flight-assist#41`)
 
 The #41 fix in `refresh-travel-schedule.py` (keep a past `Check-in:` whose matching `Check-out:` is still live, paired by trip-ID + hotel) shipped via the #318 extraction, but its four regression tests were dropped in transit — the fix landed uncovered in 0.1.22. This restores `test_lodging_checkin_retained_while_stay_live`, `test_lodging_fully_past_stay_dropped`, `test_lodging_checkin_not_rescued_across_trips`, and `test_lodging_pairing_requires_trip_id`, which lock the pairing behaviour against regression. No production-code change.

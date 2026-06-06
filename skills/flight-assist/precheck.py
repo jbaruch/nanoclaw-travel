@@ -419,16 +419,21 @@ def _process_flight(
 
     events: list[dict] = []
 
-    # Delta-driven events from wake_rules.
-    events.extend(detect_wake_events(prior_snapshot, new_snapshot))
-
-    # Time-based events from phase_markers.
+    # Scheduled departure lives at the top level of the flight-state
+    # record, not inside the snapshot shape — resolve it before the
+    # wake-rule call so first-cycle schedule-slip detection (#46) can
+    # compare the fresh dep_time against it.
     scheduled_dep_time = (
         prior_state["scheduled_dep_time"] if prior_state else raw_flight.get("scheduledDepTime")
     )
     scheduled_arr_time = (
         prior_state["scheduled_arr_time"] if prior_state else raw_flight.get("scheduledArrTime")
     )
+
+    # Delta-driven events from wake_rules.
+    events.extend(detect_wake_events(prior_snapshot, new_snapshot, scheduled_dep_time))
+
+    # Time-based events from phase_markers.
 
     fired, event = check_day_before(
         scheduled_dep_time=scheduled_dep_time,
