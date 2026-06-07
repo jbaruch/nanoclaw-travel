@@ -63,4 +63,4 @@ Skill(skill: "tessl__check-travel-bookings")
 
 Finds missing flights/hotels for upcoming trips. The inner skill reports gaps and is silent when all bookings are complete or snoozed.
 
-Emit exactly one `<internal>` line so a silent-success watchdog can distinguish healthy quiet from broken-silently runs: `<internal>nightly-travel-sync ran: clean</internal>` when no step surfaced anything in Steps 1–5, or `<internal>nightly-travel-sync ran: surfaced</internal>` when at least one did. No user-facing output. Finish here.
+Emit exactly one `<internal>` line so a silent-success watchdog can distinguish healthy quiet from broken-silently runs: `<internal>nightly-travel-sync ran <slot_key>: clean</internal>` when no step surfaced anything in Steps 1–5, or `<internal>nightly-travel-sync ran <slot_key>: surfaced</internal>` when at least one did. `<slot_key>` is today's UTC date in `YYYY-MM-DD` form. No user-facing output. Finish here.
