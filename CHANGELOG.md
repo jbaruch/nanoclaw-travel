@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed — per-skill `agentModel:` tier-down (`jbaruch/nanoclaw#613`)
+
+Pin cadence-skill models via `agentModel:` frontmatter so they stop defaulting to Opus: **Sonnet** (`claude-sonnet-4-6`) for `flight-assist` — itinerary/flight reasoning matters there; **Haiku** (`claude-haiku-4-5-20251001`) for the data-sync skills `nightly-travel-sync` and `sync-tripit`. Part of the #613 Claude tier-down.
+
 ### Fix — `nightly-travel-sync` ran-marker carries the `<slot_key>` date the #581 watchdog expects (`jbaruch/nanoclaw-flight-assist#51`)
 
 The skill's final-turn marker emitted `nightly-travel-sync ran: clean`/`: surfaced` with no date slot, so the #581 silent-success watchdog — which parses `task_run_logs.result` for `ran <YYYY-MM-DD>:` — classified a healthy run as `EMPTY (FRESH)` instead of `PASS`. The format only became observable after #45 fixed the underlying `sync-tripit.sh` failure that previously masked it. The marker now mirrors the sibling `nightly-cfp-sync` / `nightly-order-sync` template: `nightly-travel-sync ran <slot_key>: clean` (or `: surfaced`), where `<slot_key>` is today's UTC date in `YYYY-MM-DD` form. SKILL.md-only edit; no code change.

@@ -2,6 +2,7 @@
 name: nightly-travel-sync
 description: "Travel-data refresh bundle: TripIt → Reclaim timezone sync, refresh travel-schedule.json from the TripIt iCal feed with a two-tier Gmail freshness probe, rebuild travel-db.json, then check upcoming trips for booking gaps. Runs daily; precheck-gated on travel-db.json freshness. Triggers: 'sync trips', 'sync travel', 'update travel data', 'pull trip info', 'refresh travel schedule', 'rebuild travel db', 'check my bookings'."
 cadence: "0 6 * * * (TZ=local)"
+agentModel: "claude-haiku-4-5-20251001"
 script: "precheck.py"
 ---
 

@@ -2,6 +2,7 @@
 name: flight-assist
 description: Composes a user-facing flight notification — delay, gate change, cancellation, boarding, connection risk, inbound-delay, time-to-leave, baggage carousel, day-before check, or arrival logistics — from a byAir precheck wake event, and configures the tile (verify credentials, set home base). Use when a tracked-flight wake event needs a notification, or when setting up or diagnosing flight-assist. Triggers - "check flight-assist env", "diagnose flight-assist", "set flight-assist home base", "set home address", "configure flight-assist", "flight delay notification", "gate change notification", "cancellation notification", "boarding alert", "time to leave alert", "inbound delay notification", "baggage carousel", "arrival logistics", "day before sanity check", "flight removed upstream", "connection at risk", "tight connection alert".
 cadence: "*/2 * * * *"
+agentModel: "claude-sonnet-4-6"
 script: "precheck.py"
 ---
 
