@@ -152,7 +152,7 @@ def test_real_boarding_fires_even_after_premature_label():
     new = _snapshot(
         computed_status="boarding",
         computed_status_detail="Boarding now — gate B7",
-        computed_phase_progress=10,
+        computed_phase_progress=0.1,
     )
     events = detect_wake_events(prev, new)
     assert {"reason": "boarding_started"} in events
@@ -164,7 +164,7 @@ def test_real_boarding_detail_fires_boarding_started():
     new = _snapshot(
         computed_status="boarding",
         computed_status_detail="Boarding now",
-        computed_phase_progress=5,
+        computed_phase_progress=0.05,
     )
     events = detect_wake_events(prev, new)
     assert {"reason": "boarding_started"} in events

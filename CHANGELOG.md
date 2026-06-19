@@ -1,7 +1,5 @@
 # Changelog
 
-## Unreleased
-
 ### Fix — `boarding_started` no longer trusts byAir's premature `boarding` label (`jbaruch/nanoclaw-flight-assist#54`)
 
 byAir flips `computed_status` to `boarding` up to ~1h before boarding actually starts, while its own `computed_status_detail` still reads "Boarding starts in N min" and `computed_phase_progress` is 0 — an internally contradictory payload (DL4662 fired a false "boarding now" alert twice, 2026-06-13 and 2026-06-16, while the flight was delayed 67 min and boarding had not begun). `detect_wake_events` no longer fires on the `computed_status` label alone: a new `_is_real_boarding` helper requires the `boarding` status AND a `computed_status_detail` that is not a future-tense "Boarding starts in …" countdown. The boarding transition is now computed against this real-boarding signal on both the prior and current snapshots, so a flight byAir prematurely marked `boarding` still fires once the detail flips to genuine boarding — even though the raw `computed_status` never changes across that flip. The upstream contradiction is byAir's (operator filed a support ticket 2026-06-16); this is the skill-side guard. Four new `test_wake_rules.py` cases cover premature-label suppression, the deferred real-boarding fire, a genuine non-future-detail boarding, and first-cycle premature suppression.
