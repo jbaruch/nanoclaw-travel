@@ -61,7 +61,7 @@ Same trigger as `cancelled` but for `diverted` status.
 {"reason": "boarding_started"}
 ```
 
-Fires on transition into *actual* boarding, not on the `computed_status` label alone. byAir flips `computed_status` to `boarding` up to ~1h early while its own `computed_status_detail` still reads "Boarding starts in N min" and `computed_phase_progress` is 0 (#54); that premature label is treated as pre-boarding and does not fire. The transition is computed against the real-boarding signal on both prior and current snapshots, so a flight byAir prematurely marked `boarding` still fires once the detail flips to genuine boarding — even though the raw `computed_status` never changed across that flip. First-cycle "already boarding" does not fire — with no prior snapshot there is nothing to confirm a real-boarding transition against. (The `phase_markers.boarding_fired` flag exists in the state schema but is not read in v0.1; it is reserved for a future T-30min boarding-prep notification and does not currently gate this event.) Firing conditions live in `wake_rules.py` (`detect_wake_events`, `_is_real_boarding`).
+Fires on transition into actual boarding, gated on the real-boarding signal rather than the `computed_status` label alone — byAir labels the phase `boarding` before boarding starts. First-cycle "already boarding" does not fire. The `phase_markers.boarding_fired` flag is reserved for a future boarding-prep notification and does not gate this event in v0.1. Firing conditions and the real-boarding predicate live in `wake_rules.py` (`detect_wake_events`, `_is_real_boarding`).
 
 #### `carousel_revealed`
 
