@@ -1,5 +1,11 @@
 # Changelog
 
+### Added — per-flight `calendar_events` ledger + state schema v3 (`jbaruch/nanoclaw-flight-assist#55`)
+
+Foundation for calendar-event reconciliation (#55): flight-assist is moving from a notification-only tile to one that writes Google Calendar events (a flight-assist-created boarding block, adopted Flighty flight events, Reclaim travel-block cleanup). To update and delete those events in O(1) across the `*/2` precheck cadence — and to tear them down after a flight drops out of `active-flights.json`, where the per-flight wake loop can no longer see it — the per-flight state record needs a ledger of the event IDs flight-assist owns.
+
+`STATE_SCHEMA_VERSION` bumps `2 → 3`. Per-flight `flight-<id>.json` gains an optional `calendar_events` map keyed by event kind (`boarding`, `flight`); each entry carries `event_id`, `calendar_id`, `managed` (`created`/`adopted`), and a `synced_signature` (`<start>/<end>`) the planner diffs against to no-op when the live event already matches byAir truth. `state.py` validates the field structurally (object) only — the per-entry shape is owned and deep-validated by the reconcile planner that lands in a follow-up, the same split as `last_snapshot` ↔ `byair_client`. `_migrate` now chains its version steps (a v1 record runs v1→v2→v3 in one owner-side read), adding `calendar_events: {}` to per-flight records on the v2→v3 step and bumping config/active-flights with no shape change. New `test_state.py` cases cover the v2→v3 per-flight add, the config/active-flights version-only bump, the chained v1→v3 path, round-trip with `calendar_events` present, and structural rejection of a non-object value. No behavior change yet — the precheck and SKILL surfaces are untouched; this is the state contract the reconciler builds on.
+
 ## 0.1.29 — 2026-06-19
 
 ### Fix — `boarding_started` no longer trusts byAir's premature `boarding` label (`jbaruch/nanoclaw-flight-assist#54`)

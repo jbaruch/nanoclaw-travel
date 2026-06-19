@@ -588,6 +588,172 @@ def test_v1_config_migration_bumps_version_without_shape_change(state_root: Path
     assert loaded["home_address"] == "1 Old Loop"
 
 
+def _v2_flight_state(**overrides) -> dict:
+    """Build a raw on-disk v2 per-flight record (pre-calendar_events).
+
+    Mirrors the v2 shape: phase_markers carries connection_at_risk_fired
+    (added at v2) but there is no calendar_events map (added at v3).
+    """
+    state = {
+        "schema_version": 2,
+        "flight_id": 12345,
+        "code": "AA2414",
+        "ownership": "mine",
+        "trip_id": 678,
+        "scheduled_dep_time": "2026-05-17T09:00:00-07:00",
+        "scheduled_arr_time": "2026-05-17T11:09:00-07:00",
+        "dep_airport_id": 20,
+        "arr_airport_id": 28,
+        "last_polled_at": "2026-05-17T18:42:11Z",
+        "last_snapshot": None,
+        "phase_markers": {
+            "day_before_fired": False,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+        },
+        "last_wake_at": None,
+        "last_wake_reason": None,
+    }
+    state.update(overrides)
+    return state
+
+
+def test_v2_to_v3_migration_adds_calendar_events(state_root: Path):
+    """v2 per-flight state migrates: gains an empty calendar_events map."""
+    state_root.mkdir(parents=True)
+    (state_root / "flight-12345.json").write_text(json.dumps(_v2_flight_state()))
+
+    loaded = read_flight_state(12345)
+    assert loaded is not None
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["calendar_events"] == {}
+    # Migration rewrote the file at the current version.
+    raw = json.loads((state_root / "flight-12345.json").read_text())
+    assert raw["schema_version"] == STATE_SCHEMA_VERSION
+    assert raw["calendar_events"] == {}
+
+
+def test_v2_to_v3_migration_idempotent_when_calendar_events_present(state_root: Path):
+    """A v2 record already carrying calendar_events keeps its entries on migration."""
+    state_root.mkdir(parents=True)
+    existing = {
+        "boarding": {
+            "event_id": "abc123",
+            "calendar_id": "primary",
+            "managed": "created",
+            "synced_signature": "2026-05-17T12:24:00-07:00/2026-05-17T13:00:00-07:00",
+        }
+    }
+    (state_root / "flight-12345.json").write_text(
+        json.dumps(_v2_flight_state(calendar_events=existing))
+    )
+    loaded = read_flight_state(12345)
+    assert loaded["calendar_events"] == existing
+
+
+def test_v2_config_migration_bumps_version_without_shape_change(state_root: Path):
+    """v2 config files have no shape change at v3 — bump only, no calendar_events."""
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text(
+        json.dumps({"schema_version": 2, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
+    )
+    loaded = read_config()
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["home_address"] == "1 Old Loop"
+    assert "calendar_events" not in loaded
+
+
+def test_v2_to_v3_migration_scopes_calendar_events_by_filename(state_root: Path):
+    """A non-flight file carrying a stray flight_id key is NOT given calendar_events.
+
+    The v2→v3 step scopes by filename (flight-<id>.json), not by the
+    presence of a flight_id key, so a config/active-flights file (or any
+    future record) that happens to carry flight_id keeps its shape.
+    """
+    state_root.mkdir(parents=True)
+    (state_root / ACTIVE_FLIGHTS_FILE).write_text(
+        json.dumps({"schema_version": 2, "flight_ids": [12345], "flight_id": 999})
+    )
+    read_active_flights()  # owner-path read migrates and rewrites at v3
+    raw = json.loads((state_root / ACTIVE_FLIGHTS_FILE).read_text())
+    assert raw["schema_version"] == STATE_SCHEMA_VERSION
+    assert "calendar_events" not in raw
+
+
+def test_v1_to_v3_chained_migration_adds_both_keys(state_root: Path):
+    """A v1 per-flight record steps v1→v2→v3 in one read: both new keys appear."""
+    state_root.mkdir(parents=True)
+    v1_state = {
+        "schema_version": 1,
+        "flight_id": 12345,
+        "code": "AA2414",
+        "ownership": "mine",
+        "trip_id": 678,
+        "scheduled_dep_time": "2026-05-17T09:00:00-07:00",
+        "scheduled_arr_time": "2026-05-17T11:09:00-07:00",
+        "dep_airport_id": 20,
+        "arr_airport_id": 28,
+        "last_polled_at": "2026-05-17T18:42:11Z",
+        "last_snapshot": None,
+        "phase_markers": {
+            "day_before_fired": False,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+        },
+        "last_wake_at": None,
+        "last_wake_reason": None,
+    }
+    (state_root / "flight-12345.json").write_text(json.dumps(v1_state))
+
+    loaded = read_flight_state(12345)
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["phase_markers"]["connection_at_risk_fired"] is False
+    assert loaded["calendar_events"] == {}
+
+
+def test_write_then_read_flight_state_with_calendar_events_roundtrips(state_root: Path):
+    """calendar_events present on write survives the read round-trip unchanged."""
+    events = {
+        "boarding": {
+            "event_id": "abc123",
+            "calendar_id": "primary",
+            "managed": "created",
+            "synced_signature": "2026-05-17T12:24:00-07:00/2026-05-17T13:00:00-07:00",
+        },
+        "flight": {
+            "event_id": "ghi789",
+            "calendar_id": "c_flighty@group.calendar.google.com",
+            "managed": "adopted",
+            "synced_signature": "2026-05-17T13:00:00-07:00/2026-05-17T15:02:00-07:00",
+        },
+    }
+    write_flight_state(_make_flight_state(calendar_events=events))
+    loaded = read_flight_state(12345)
+    assert loaded["calendar_events"] == events
+
+
+def test_write_flight_state_rejects_non_dict_calendar_events(state_root: Path):
+    """calendar_events is validated structurally (object) on write."""
+    with pytest.raises(ValueError, match="calendar_events"):
+        write_flight_state(_make_flight_state(calendar_events=["not", "a", "dict"]))
+
+
+def test_read_flight_state_rejects_non_dict_calendar_events(state_root: Path):
+    """Persisted record at current schema with non-object calendar_events raises StateError."""
+    state_root.mkdir(parents=True)
+    bad = _make_flight_state(calendar_events="oops")
+    (state_root / "flight-12345.json").write_text(
+        json.dumps({**bad, "schema_version": STATE_SCHEMA_VERSION})
+    )
+    with pytest.raises(StateError, match="calendar_events"):
+        read_flight_state(12345)
+
+
 def test_string_schema_version_raises_state_error(state_root: Path):
     """A non-int schema_version (string) must raise StateError, not TypeError."""
     state_root.mkdir(parents=True)
