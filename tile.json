@@ -1,7 +1,7 @@
 {
-  "name": "jbaruch/nanoclaw-flight-assist",
+  "name": "jbaruch/nanoclaw-travel",
   "version": "0.1.30",
-  "summary": "Flight notifications via byAir: delay, gate, connection risk, inbound aircraft delay, time-to-leave, arrival logistics. NanoClaw per-chat overlay tile.",
+  "summary": "Travel assistant for NanoClaw: byAir flight notifications (delay, gate, connection risk, inbound aircraft delay, time-to-leave, arrival logistics), travel-booking gap checks, and nightly TripIt sync. Per-chat overlay tile.",
   "entrypoint": "README.md",
   "private": false,
   "keywords": [

@@ -1,5 +1,9 @@
 # Changelog
 
+### Changed — renamed tile `jbaruch/nanoclaw-flight-assist` → `jbaruch/nanoclaw-travel`
+
+The tile is broadening from flight-only notifications into a general travel assistant — ground-transit drive planning (borrowed from the `ligolnik/lombot` `drive_planner` design) lands as a sibling skill next. Repo and tessl registry identity rename to `jbaruch/nanoclaw-travel`; consumers update their `additionalTiles` entry to the new name. Historical CHANGELOG issue references keep the old `nanoclaw-flight-assist#NN` form — GitHub redirects them after the repo rename.
+
 ## 0.1.30 — 2026-06-19
 
 ### Added — per-flight `calendar_events` ledger + state schema v3 (`jbaruch/nanoclaw-flight-assist#55`)
