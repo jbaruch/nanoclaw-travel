@@ -605,8 +605,15 @@ def write_flight_state(state: dict) -> None:
         dep_airport_id (int), arr_airport_id (int),
         last_polled_at (str), phase_markers (dict)
 
-    Optional keys (no type check on this side; readers must tolerate
-    missing or null): last_snapshot, last_wake_at, last_wake_reason.
+    Optional keys, type-checked against the documented shape when
+    present (readers must tolerate them missing):
+
+        last_snapshot (object or null), last_wake_at (str or null),
+        last_wake_reason (str or null), calendar_events (object)
+
+    `calendar_events` is validated structurally (object) only; its
+    per-entry shape is owned by the calendar-reconcile planner, the
+    same split as last_snapshot ↔ byair_client.
 
     `schema_version` is overwritten by the canonical constant — any
     caller-supplied value is dropped.

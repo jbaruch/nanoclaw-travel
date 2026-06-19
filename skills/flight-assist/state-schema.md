@@ -218,7 +218,7 @@ Per-flight state: `phase_markers` gains `connection_at_risk_fired: false`. The o
 
 ### v2 → v3
 
-Per-flight state: gains the `calendar_events` map (empty `{}` on migration). The owner-side migration in `state.py:_migrate` adds the missing key on first read — keyed off the presence of the per-flight `flight_id` field — and rewrites the file at v3. Config and active-flights files have no shape change at v3 — they receive a schema_version bump only.
+Per-flight state: gains the `calendar_events` map (empty `{}` on migration). The owner-side migration in `state.py:_migrate` adds the missing key on first read — scoped by the `flight-<id>.json` filename, not by payload contents, so a config/active-flights file (or any future record that happens to carry a `flight_id` key) is never given this per-flight-only field — and rewrites the file at v3. Config and active-flights files have no shape change at v3 — they receive a schema_version bump only.
 
 ## Bump Procedure
 
