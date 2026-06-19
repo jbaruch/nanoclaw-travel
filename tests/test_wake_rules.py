@@ -121,6 +121,67 @@ def test_boarding_to_boarding_does_not_re_fire():
 
 
 # ---------------------------------------------------------------------------
+# Premature "boarding" label (#54): byAir flips computed_status to
+# "boarding" up to ~1h before boarding starts, while computed_status_detail
+# still says "Boarding starts in N min" and computed_phase_progress is 0.
+# The label alone must NOT fire a boarding alert.
+# ---------------------------------------------------------------------------
+
+
+def test_premature_boarding_label_does_not_fire_boarding_started():
+    """status=boarding but detail says boarding is still in the future → suppress."""
+    prev = _snapshot(computed_status="check_in_open")
+    new = _snapshot(
+        computed_status="boarding",
+        computed_status_detail="Boarding starts in 1h 19min",
+        computed_phase_progress=0,
+    )
+    events = detect_wake_events(prev, new)
+    assert not any(e["reason"] == "boarding_started" for e in events)
+
+
+def test_real_boarding_fires_even_after_premature_label():
+    """A flight byAir already marked 'boarding' prematurely must still fire
+    once the detail flips to actual boarding — the raw computed_status never
+    changes across that flip, so the gate keys off the real-boarding signal."""
+    prev = _snapshot(
+        computed_status="boarding",
+        computed_status_detail="Boarding starts in 1h 19min",
+        computed_phase_progress=0,
+    )
+    new = _snapshot(
+        computed_status="boarding",
+        computed_status_detail="Boarding now — gate B7",
+        computed_phase_progress=10,
+    )
+    events = detect_wake_events(prev, new)
+    assert {"reason": "boarding_started"} in events
+
+
+def test_real_boarding_detail_fires_boarding_started():
+    """status=boarding with a non-future detail is genuine boarding → fire."""
+    prev = _snapshot(computed_status="check_in_open")
+    new = _snapshot(
+        computed_status="boarding",
+        computed_status_detail="Boarding now",
+        computed_phase_progress=5,
+    )
+    events = detect_wake_events(prev, new)
+    assert {"reason": "boarding_started"} in events
+
+
+def test_first_cycle_premature_boarding_does_not_fire():
+    """No prior snapshot AND a premature label — still no boarding alert."""
+    new = _snapshot(
+        computed_status="boarding",
+        computed_status_detail="Boarding starts in 50min",
+        computed_phase_progress=0,
+    )
+    events = detect_wake_events(prev=None, new=new)
+    assert not any(e["reason"] == "boarding_started" for e in events)
+
+
+# ---------------------------------------------------------------------------
 # Gate change
 # ---------------------------------------------------------------------------
 

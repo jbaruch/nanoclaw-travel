@@ -50,9 +50,18 @@ Thresholds (constants below):
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 DELAY_THRESHOLD_MINUTES = 15
+
+# byAir sometimes sets computed_status="boarding" up to ~1h before boarding
+# actually starts (#54 — DL4662 read status "boarding" while its own
+# computed_status_detail said "Boarding starts in 1h 19min" and
+# computed_phase_progress was 0). The detail string is byAir's own
+# delay-adjusted countdown; when it announces boarding in the FUTURE, the
+# "boarding" label is premature and must not be relayed as a boarding alert.
+_FUTURE_BOARDING_DETAIL = re.compile(r"^\s*Boarding starts in", re.IGNORECASE)
 INBOUND_DELAY_THRESHOLD_MINUTES = 20
 INBOUND_DELAY_DEDUPE_MINUTES = 5
 
@@ -87,11 +96,17 @@ def detect_wake_events(
     if new_status == "diverted" and (prev is None or prev.get("computed_status") != "diverted"):
         events.append({"reason": "diverted"})
 
-    # Boarding started: transition from a non-boarding state into "boarding".
+    # Boarding started: transition into *actual* boarding. We gate on
+    # boarding having really started, not on byAir's `computed_status`
+    # label alone, which byAir flips to "boarding" up to ~1h early while
+    # its own detail still says "Boarding starts in N min" (#54). The
+    # transition is computed against the *real-boarding* signal on both
+    # sides so a flight byAir prematurely marked "boarding" still fires
+    # once the detail flips to actual boarding — even though the raw
+    # `computed_status` never changed across that flip.
     # First-cycle "already boarding" does not fire (we don't have a prior
-    # to confirm the transition; the precheck's once-per-flight
-    # `boarding_fired` marker handles this in phase_markers).
-    if prev is not None and new_status == "boarding" and prev.get("computed_status") != "boarding":
+    # to confirm the transition).
+    if prev is not None and _is_real_boarding(new) and not _is_real_boarding(prev):
         events.append({"reason": "boarding_started"})
 
     # Gate change: dep_gate or arr_gate differs from a prior non-null value.
@@ -197,6 +212,27 @@ def detect_wake_events(
             events.append({"reason": "carousel_revealed", "baggage": new_baggage})
 
     return events
+
+
+def _is_real_boarding(snapshot: dict) -> bool:
+    """True when the snapshot reflects boarding that has ACTUALLY started.
+
+    byAir's `computed_status == "boarding"` is not trustworthy on its own:
+    it labels the phase "boarding" before boarding begins while
+    `computed_status_detail` still reads "Boarding starts in N min" and
+    `computed_phase_progress` is 0 (#54). Treat that as pre-boarding.
+
+    A real boarding requires the status label AND agreement that boarding
+    is not still in the future: the detail must not be a "Boarding starts
+    in ..." countdown. A future-tense detail can never describe boarding
+    that has begun, so gating on it cannot suppress a genuine alert.
+    """
+    if snapshot.get("computed_status") != "boarding":
+        return False
+    detail = snapshot.get("computed_status_detail")
+    if isinstance(detail, str) and _FUTURE_BOARDING_DETAIL.match(detail):
+        return False
+    return True
 
 
 def _delay_delta_minutes(prev_dep_time: str | None, new_dep_time: str | None) -> int | None:
