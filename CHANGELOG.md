@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.30 — 2026-06-19
+
 ### Added — per-flight `calendar_events` ledger + state schema v3 (`jbaruch/nanoclaw-flight-assist#55`)
 
 Foundation for calendar-event reconciliation (#55): flight-assist is moving from a notification-only tile to one that writes Google Calendar events (a flight-assist-created boarding block, adopted Flighty flight events, Reclaim travel-block cleanup). To update and delete those events in O(1) across the `*/2` precheck cadence — and to tear them down after a flight drops out of `active-flights.json`, where the per-flight wake loop can no longer see it — the per-flight state record needs a ledger of the event IDs flight-assist owns.
