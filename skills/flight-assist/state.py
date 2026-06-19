@@ -198,12 +198,17 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
             phase_markers["connection_at_risk_fired"] = False
         version = 2
     if version == 2:
-        # v2 → v3: per-flight records gain an empty `calendar_events`
-        # map (flight-assist-owned/adopted Google Calendar event IDs —
-        # see state-schema.md). Keyed off the per-flight `flight_id`
-        # field; config and active-flights files have no shape change
-        # at v3 and only get a schema_version bump.
-        if "flight_id" in payload and "calendar_events" not in payload:
+        # v2 → v3: per-flight records (flight-<id>.json) gain an empty
+        # `calendar_events` map (flight-assist-owned/adopted Google
+        # Calendar event IDs — see state-schema.md). Scoped by filename,
+        # not payload contents: a config/active-flights file — or any
+        # future record that happens to carry a `flight_id` key —
+        # must never be given this per-flight-only field. Config and
+        # active-flights only get a schema_version bump at v3.
+        is_flight_file = path.name.startswith(_FLIGHT_FILE_PREFIX) and path.name.endswith(
+            _FLIGHT_FILE_SUFFIX
+        )
+        if is_flight_file and "calendar_events" not in payload:
             payload["calendar_events"] = {}
         version = 3
     if version != STATE_SCHEMA_VERSION:

@@ -666,6 +666,23 @@ def test_v2_config_migration_bumps_version_without_shape_change(state_root: Path
     assert "calendar_events" not in loaded
 
 
+def test_v2_to_v3_migration_scopes_calendar_events_by_filename(state_root: Path):
+    """A non-flight file carrying a stray flight_id key is NOT given calendar_events.
+
+    The v2→v3 step scopes by filename (flight-<id>.json), not by the
+    presence of a flight_id key, so a config/active-flights file (or any
+    future record) that happens to carry flight_id keeps its shape.
+    """
+    state_root.mkdir(parents=True)
+    (state_root / ACTIVE_FLIGHTS_FILE).write_text(
+        json.dumps({"schema_version": 2, "flight_ids": [12345], "flight_id": 999})
+    )
+    read_active_flights()  # owner-path read migrates and rewrites at v3
+    raw = json.loads((state_root / ACTIVE_FLIGHTS_FILE).read_text())
+    assert raw["schema_version"] == STATE_SCHEMA_VERSION
+    assert "calendar_events" not in raw
+
+
 def test_v1_to_v3_chained_migration_adds_both_keys(state_root: Path):
     """A v1 per-flight record steps v1→v2→v3 in one read: both new keys appear."""
     state_root.mkdir(parents=True)
