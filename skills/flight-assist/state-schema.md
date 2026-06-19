@@ -19,7 +19,7 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
   "min_transfer_minutes": 45
 }
@@ -27,7 +27,7 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 Fields:
 
-- `schema_version` (int, required) — currently `2`
+- `schema_version` (int, required) — currently `3`
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
 
@@ -37,14 +37,14 @@ Index of currently-tracked flight IDs. Refreshed daily by the sync-tripit script
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "flight_ids": [12345, 67890, 11111]
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `2`
+- `schema_version` (int, required) — currently `3`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
 ### `current-location.json`
@@ -81,7 +81,7 @@ Per-flight state record. One file per tracked flight.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "flight_id": 12345,
   "code": "AA2414",
   "ownership": "mine",
@@ -123,7 +123,21 @@ Per-flight state record. One file per tracked flight.
     "connection_at_risk_fired": false
   },
   "last_wake_at": null,
-  "last_wake_reason": null
+  "last_wake_reason": null,
+  "calendar_events": {
+    "boarding": {
+      "event_id": "abc123def456",
+      "calendar_id": "primary",
+      "managed": "created",
+      "synced_signature": "2026-05-17T12:24:00-07:00/2026-05-17T13:00:00-07:00"
+    },
+    "flight": {
+      "event_id": "ghi789jkl012",
+      "calendar_id": "c_flighty@group.calendar.google.com",
+      "managed": "adopted",
+      "synced_signature": "2026-05-17T13:00:00-07:00/2026-05-17T15:02:00-07:00"
+    }
+  }
 }
 ```
 
@@ -141,6 +155,19 @@ Top-level fields:
 - `phase_markers` (object, required) — once-per-flight fire-and-forget gates for time-based wakes
 - `last_wake_at` (RFC 3339 UTC, optional) — when the agent was last woken for this flight
 - `last_wake_reason` (string, optional) — the most recent wake reason for debug
+- `calendar_events` (object, optional) — the ledger of flight-assist-owned/adopted Google Calendar events for this flight, keyed by event kind. Absent or `{}` means none are tracked yet. Validated structurally (object) by `state.py`; the per-entry shape below is owned and deep-validated by the calendar-reconcile planner — the same split as `last_snapshot` ↔ `byair_client`. The map is the source of truth for O(1) update/delete and doubles as the teardown tombstone when a flight leaves `active-flights.json` (the reconciler still holds the event IDs after the flight is gone)
+
+`calendar_events` entries — one per kind, kind ∈ `{boarding, flight}`:
+
+- `boarding` — the flight-assist-created boarding block (boarding-start → departure). `managed` is always `"created"`; flight-assist owns its full lifecycle (create / shift / delete)
+- `flight` — the Flighty-created flight event flight-assist adopted by tagging. `managed` is always `"adopted"`; flight-assist shifts it (delta-only) and deletes it on a true switch/cancel Flighty left stale, but never casually
+
+Each entry's fields:
+
+- `event_id` (string, required) — the Google Calendar event identifier
+- `calendar_id` (string, required) — the calendar the event lives in (`"primary"`, or the Flighty calendar ID for adopted flight events)
+- `managed` (string, required) — `"created"` (flight-assist authored it) or `"adopted"` (flight-assist tagged a Flighty-authored event). Drives delete semantics: `created` is freely deletable, `adopted` is deleted only on a true switch/cancel
+- `synced_signature` (string, required) — the `<start>/<end>` instant pair flight-assist last wrote, so the planner can no-op when the live event already matches byAir truth instead of re-writing every cycle
 
 `last_snapshot` fields (mirrors the post-filter byAir slice — see `byair_client.py`'s `get_flight()` output; this dict is what `wake_rules.py` will diff against in PR #6):
 
@@ -172,7 +199,7 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Today `STATE_SCHEMA_VERSION` is `2`.
+Today `STATE_SCHEMA_VERSION` is `3`.
 
 `state.py`'s read helpers enforce these rules on `schema_version`:
 
@@ -183,9 +210,15 @@ Today `STATE_SCHEMA_VERSION` is `2`.
 
 Non-owner readers (sync-tripit, future cross-tile composition) call the dedicated snapshot entry points: `read_active_flights_snapshot()` and `read_flight_state_snapshot(flight_id)`. These mirror the owner-side functions' return shapes but treat a `schema_version` strictly LESS THAN `STATE_SCHEMA_VERSION` as "no usable prior state" (return `[]` / `None`) without invoking `_migrate`. A `schema_version` ABOVE the current still raises `StateError` from the snapshot path (forward incompatibility); so does corrupt JSON or a missing required field at the current schema. Only the owner skill (`flight-assist`, this tile, via `state.py:_migrate`) migrates.
 
+Migrations chain: `state.py:_migrate` steps a record through every intermediate version in one call (a v1 record runs v1→v2→v3 before returning), so an old file lands at the current version on its first owner-side read.
+
 ### v1 → v2
 
 Per-flight state: `phase_markers` gains `connection_at_risk_fired: false`. The owner-side migration in `state.py:_migrate` adds the missing key on first read and rewrites the file at v2. Config and active-flights files have no shape change at v2 — they receive a schema_version bump only.
+
+### v2 → v3
+
+Per-flight state: gains the `calendar_events` map (empty `{}` on migration). The owner-side migration in `state.py:_migrate` adds the missing key on first read — keyed off the presence of the per-flight `flight_id` field — and rewrites the file at v3. Config and active-flights files have no shape change at v3 — they receive a schema_version bump only.
 
 ## Bump Procedure
 

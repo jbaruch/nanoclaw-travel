@@ -5,7 +5,7 @@ deltas between byAir snapshots. State lives under
 `/workspace/state/flight-assist/` in production; tests override the
 directory via the `FLIGHT_ASSIST_STATE_DIR` environment variable.
 
-Files written (all JSON, all carry `schema_version: 2` at the top level):
+Files written (all JSON, all carry `schema_version: 3` at the top level):
 
     config.json                       — home_address, etc. (set via /setup)
     active-flights.json               — list of currently-tracked flight_ids
@@ -57,7 +57,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-STATE_SCHEMA_VERSION = 2
+STATE_SCHEMA_VERSION = 3
 
 _DEFAULT_STATE_DIR = "/workspace/state/flight-assist"
 _STATE_DIR_ENV = "FLIGHT_ASSIST_STATE_DIR"
@@ -183,28 +183,42 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
     Per `coding-policy: stateful-artifacts`, only the owner skill
     migrates; readers from other tiles get `StateError` on mismatch.
 
-    Each branch handles one version transition. Re-running a migration
-    on already-upgraded data is a no-op so the function is idempotent.
+    Each branch handles one version transition and they chain: a v1
+    record steps 1→2→3 in a single call. Re-running a migration on
+    already-upgraded data is a no-op (each branch guards on the key it
+    adds) so the function is idempotent.
     """
-    if from_version == 1:
+    version = from_version
+    if version == 1:
         # v1 → v2: add `connection_at_risk_fired: False` to per-flight
         # phase_markers. Config and active-flights files have no shape
         # change at v2 — they only get a schema_version bump.
         phase_markers = payload.get("phase_markers")
         if isinstance(phase_markers, dict) and "connection_at_risk_fired" not in phase_markers:
             phase_markers["connection_at_risk_fired"] = False
-        payload["schema_version"] = STATE_SCHEMA_VERSION
-        _atomic_write_json(path, payload)
-        return payload
-    # Unknown older version: refuse to silently pass through. The
-    # migration table above is the authoritative list of known
-    # upgrade paths; anything not listed is either corruption or a
-    # downgrade gap and needs human intervention.
-    raise StateError(
-        f"state file {path} has schema_version {from_version}, no migration "
-        f"path registered to reach {STATE_SCHEMA_VERSION} — remove the file or "
-        f"restore a known version"
-    )
+        version = 2
+    if version == 2:
+        # v2 → v3: per-flight records gain an empty `calendar_events`
+        # map (flight-assist-owned/adopted Google Calendar event IDs —
+        # see state-schema.md). Keyed off the per-flight `flight_id`
+        # field; config and active-flights files have no shape change
+        # at v3 and only get a schema_version bump.
+        if "flight_id" in payload and "calendar_events" not in payload:
+            payload["calendar_events"] = {}
+        version = 3
+    if version != STATE_SCHEMA_VERSION:
+        # Unknown older version: refuse to silently pass through. The
+        # branches above are the authoritative list of known upgrade
+        # paths; anything not reaching the current version is either
+        # corruption or a downgrade gap and needs human intervention.
+        raise StateError(
+            f"state file {path} has schema_version {from_version}, no migration "
+            f"path registered to reach {STATE_SCHEMA_VERSION} — remove the file or "
+            f"restore a known version"
+        )
+    payload["schema_version"] = STATE_SCHEMA_VERSION
+    _atomic_write_json(path, payload)
+    return payload
 
 
 def read_config() -> dict | None:
@@ -502,6 +516,12 @@ _OPTIONAL_FLIGHT_STATE_FIELDS: dict[str, tuple[type, ...]] = {
     "last_snapshot": (dict, type(None)),
     "last_wake_at": (str, type(None)),
     "last_wake_reason": (str, type(None)),
+    # calendar_events: object keyed by event kind ("boarding", "flight")
+    # → tracking entry for a flight-assist-owned/adopted Google Calendar
+    # event. Validated structurally here (dict) only; the per-entry
+    # shape is owned and deep-validated by the calendar-reconcile
+    # planner — the same split as last_snapshot ↔ byair_client.get_flight.
+    "calendar_events": (dict,),
 }
 
 
