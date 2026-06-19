@@ -2,7 +2,7 @@
 
 [![tessl](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.tessl.io%2Fv1%2Fbadges%2Fjbaruch%2Fnanoclaw-travel)](https://tessl.io/registry/jbaruch/nanoclaw-travel)
 
-Actionable flight notifications for NanoClaw. Replaces generic "21 minutes to departure" reminders with alerts that change behavior. Powered by [byAir](https://byairapp.com/mcp/) for flight data and Google Maps Distance Matrix for traffic-aware time-to-leave.
+Actionable travel assistance for NanoClaw — byAir-powered flight notifications, travel-booking gap checks, and nightly TripIt sync. Replaces generic "21 minutes to departure" reminders with alerts that change behavior. Powered by [byAir](https://byairapp.com/mcp/) for flight data and Google Maps Distance Matrix for traffic-aware time-to-leave.
 
 Per-chat overlay tile. Install via NanoClaw's `containerConfig.additionalTiles` mechanism.
 
