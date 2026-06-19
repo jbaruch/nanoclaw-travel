@@ -1,6 +1,6 @@
-# jbaruch/nanoclaw-flight-assist
+# jbaruch/nanoclaw-travel
 
-[![tessl](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.tessl.io%2Fv1%2Fbadges%2Fjbaruch%2Fnanoclaw-flight-assist)](https://tessl.io/registry/jbaruch/nanoclaw-flight-assist)
+[![tessl](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.tessl.io%2Fv1%2Fbadges%2Fjbaruch%2Fnanoclaw-travel)](https://tessl.io/registry/jbaruch/nanoclaw-travel)
 
 Actionable flight notifications for NanoClaw. Replaces generic "21 minutes to departure" reminders with alerts that change behavior. Powered by [byAir](https://byairapp.com/mcp/) for flight data and Google Maps Distance Matrix for traffic-aware time-to-leave.
 
@@ -18,13 +18,13 @@ Per-chat overlay tile. Install via NanoClaw's `containerConfig.additionalTiles` 
 ## Installation
 
 ```
-tessl install jbaruch/nanoclaw-flight-assist
+tessl install jbaruch/nanoclaw-travel
 ```
 
 Add to a chat's overlay tile list via `update_group_config`:
 
 ```
-additionalTiles: ["jbaruch/nanoclaw-flight-assist"]
+additionalTiles: ["jbaruch/nanoclaw-travel"]
 ```
 
 ## Required environment

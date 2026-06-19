@@ -90,7 +90,7 @@ def _load_flight_assist() -> tuple[ModuleType, Path]:
         raise FileNotFoundError(
             "sync-tripit precheck: cannot locate the co-shipped flight-assist skill at "
             f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev). Both skills "
-            "ship from the same tile (jbaruch/nanoclaw-flight-assist); if one is missing the "
+            "ship from the same tile (jbaruch/nanoclaw-travel); if one is missing the "
             "other can't function."
         )
     sys.path.insert(0, str(flight_assist_dir))

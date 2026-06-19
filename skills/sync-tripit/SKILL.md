@@ -36,7 +36,7 @@ rm /workspace/state/flight-assist/<bad-file>.json
 ```bash
 ls /home/node/.claude/skills/tessl__flight-assist/sync_tripit.py
 ```
-If absent, both skills must be reinstalled from the same tile (`jbaruch/nanoclaw-flight-assist`).
+If absent, both skills must be reinstalled from the same tile (`jbaruch/nanoclaw-travel`).
 
 **byAir subprocess timeout** — the precheck enforces a budget on `sync_tripit.py` (see `precheck.py`, `_SYNC_SUBPROCESS_TIMEOUT` constant). Persistent timeouts mean byAir is degraded; the next cadence cycle retries. Check the diagnostic log for the `sync_subprocess_timeout` reason:
 ```bash
