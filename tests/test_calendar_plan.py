@@ -83,9 +83,7 @@ def _event(
 
 
 def _ops_of(ops, *, op=None, kind=None):
-    return [
-        o for o in ops if (op is None or o["op"] == op) and (kind is None or o["kind"] == kind)
-    ]
+    return [o for o in ops if (op is None or o["op"] == op) and (kind is None or o["kind"] == kind)]
 
 
 # --- boarding block ----------------------------------------------------
@@ -286,18 +284,14 @@ def _reclaim_gap_event():
 
 
 def test_reclaim_deleted_in_same_airport_gap():
-    ops = plan_reconciliation(
-        _two_leg_trip(same_airport=True), [_reclaim_gap_event()], _config()
-    )
+    ops = plan_reconciliation(_two_leg_trip(same_airport=True), [_reclaim_gap_event()], _config())
     deleted = _ops_of(ops, op="delete", kind=KIND_RECLAIM_TRAVEL)
     assert len(deleted) == 1
     assert deleted[0]["event_id"] == "r1"
 
 
 def test_reclaim_kept_when_airports_differ():
-    ops = plan_reconciliation(
-        _two_leg_trip(same_airport=False), [_reclaim_gap_event()], _config()
-    )
+    ops = plan_reconciliation(_two_leg_trip(same_airport=False), [_reclaim_gap_event()], _config())
     assert _ops_of(ops, kind=KIND_RECLAIM_TRAVEL) == []
 
 

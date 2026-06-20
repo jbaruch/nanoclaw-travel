@@ -114,9 +114,7 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * radius_km * math.asin(math.sqrt(a))
 
 
-def is_transoceanic(
-    dep_lat: float, dep_lon: float, arr_lat: float, arr_lon: float
-) -> bool:
+def is_transoceanic(dep_lat: float, dep_lon: float, arr_lat: float, arr_lon: float) -> bool:
     """True when the route crosses the Atlantic or Pacific (TATL / TPAC).
 
     Transatlantic = an Americas <-> Europe/Africa block pair; transpacific
