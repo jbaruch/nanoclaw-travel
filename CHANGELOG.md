@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.31 — 2026-06-20
+
 ### Added — pure calendar reconciliation planner + boarding-lead resolver (`jbaruch/nanoclaw-flight-assist#55`)
 
 The deterministic core of calendar-event reconciliation (#55), built as two pure, network-free modules so the whole decision surface unit-tests in CI per `coding-policy: script-delegation`. The Composio I/O layer that executes the plan lands in a follow-up.
