@@ -26,7 +26,9 @@ live on (classification is by calendar ID, never summary regex):
     then shifts it delta-only and deletes it on a true cancel/switch.
     `managed == "adopted"`.
   - reclaim_travel — Reclaim CREATES this; flight-assist DELETES the
-    bogus ones in a same-airport layover gap (positional rule). Never
+    bogus ones in a same-airport layover gap (positional rule). Gated on
+    BOTH the Reclaim calendar ID and an `is_reclaim_travel` flag, since
+    Reclaim's calendar also holds habit / focus / task blocks. Never
     tracked in the ledger (we delete, we do not own).
 
 Ledger entry shape (see `state-schema.md`): per kind, a dict with
@@ -333,12 +335,18 @@ def _plan_reclaim_deletions(
     """Delete bogus Reclaim travel blocks in same-airport layover gaps.
 
     Positional rule: between leg-N and leg-(N+1) of one trip, a same
-    departure/arrival airport means no ground transfer, so any Reclaim
+    departure/arrival airport means no ground transfer, so a Reclaim
     travel block sitting in that gap is bogus. Different airports mean a
     real inter-airport transfer — keep it. Travel before the first leg
     and after the last leg is never in a gap, so it is never deleted.
-    Only events on the Reclaim calendar are candidates, so user-created
-    events in the same window are never touched.
+
+    Two guards bound every delete: the event must be on the Reclaim
+    calendar AND carry `is_reclaim_travel`. Reclaim's calendar also holds
+    habit / focus / task blocks, so calendar membership alone is not a
+    safe delete signal — `is_reclaim_travel` is set upstream by the
+    reconcile script's Reclaim classifier, and the planner refuses to
+    delete an unflagged event. User events on other calendars are never
+    candidates at all.
     """
     reclaim_cal = _require(config, "reclaim_calendar_id", where="config")
     legs = sorted(
@@ -349,13 +357,19 @@ def _plan_reclaim_deletions(
     )
     ops: list[dict] = []
     for leg_n, leg_next in zip(legs, legs[1:]):
-        if leg_n["arr_airport_id"] != leg_next["dep_airport_id"]:
+        where_n = f"flight {leg_n.get('flight_id')}"
+        where_next = f"flight {leg_next.get('flight_id')}"
+        if _require(leg_n, "arr_airport_id", where=where_n) != _require(
+            leg_next, "dep_airport_id", where=where_next
+        ):
             continue  # different airports -> legitimate transfer, keep
-        gap_start = _to_instant(leg_n["arr_time"], field="arr_time")
-        gap_end = _to_instant(leg_next["dep_time"], field="dep_time")
+        gap_start = _to_instant(_require(leg_n, "arr_time", where=where_n), field="arr_time")
+        gap_end = _to_instant(_require(leg_next, "dep_time", where=where_next), field="dep_time")
         for event in events:
             if event.get("calendar_id") != reclaim_cal:
                 continue
+            if not event.get("is_reclaim_travel"):
+                continue  # Reclaim calendar also holds habit/focus/task blocks — never delete those
             ev_start = _to_instant(
                 _require(event, "start", where=f"event {event.get('event_id')}"), field="start"
             )
@@ -367,12 +381,13 @@ def _plan_reclaim_deletions(
                     _make_op(
                         op="delete",
                         kind=KIND_RECLAIM_TRAVEL,
-                        flight_id=leg_next["flight_id"],
+                        flight_id=_require(leg_next, "flight_id", where=where_next),
                         calendar_id=reclaim_cal,
                         event_id=event["event_id"],
                         reason=(
                             f"Reclaim travel block in same-airport layover "
-                            f"({leg_n['code']} -> {leg_next['code']}); delete"
+                            f"({_require(leg_n, 'code', where=where_n)} -> "
+                            f"{_require(leg_next, 'code', where=where_next)}); delete"
                         ),
                     )
                 )

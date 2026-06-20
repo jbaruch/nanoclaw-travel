@@ -71,6 +71,7 @@ def _event(
     start="2026-07-01T10:00:00-05:00",
     end="2026-07-01T12:30:00-05:00",
     private_props=None,
+    is_reclaim_travel=False,
 ):
     return {
         "event_id": event_id,
@@ -79,6 +80,7 @@ def _event(
         "start": start,
         "end": end,
         "private_props": private_props or {},
+        "is_reclaim_travel": is_reclaim_travel,
     }
 
 
@@ -280,6 +282,7 @@ def _reclaim_gap_event():
         summary="Travel",
         start="2026-07-01T11:30:00-05:00",
         end="2026-07-01T12:00:00-05:00",
+        is_reclaim_travel=True,
     )
 
 
@@ -304,6 +307,21 @@ def test_reclaim_rule_ignores_non_reclaim_calendar():
         end="2026-07-01T12:00:00-05:00",
     )
     ops = plan_reconciliation(_two_leg_trip(same_airport=True), [user_event], _config())
+    assert _ops_of(ops, kind=KIND_RECLAIM_TRAVEL) == []
+
+
+def test_reclaim_rule_spares_non_travel_block_on_reclaim_calendar():
+    # A Reclaim focus/habit block in the gap (not is_reclaim_travel) is kept:
+    # the Reclaim calendar holds more than travel blocks.
+    focus_block = _event(
+        event_id="focus1",
+        calendar_id=RECLAIM_CAL,
+        summary="Focus Time",
+        start="2026-07-01T11:30:00-05:00",
+        end="2026-07-01T12:00:00-05:00",
+        is_reclaim_travel=False,
+    )
+    ops = plan_reconciliation(_two_leg_trip(same_airport=True), [focus_block], _config())
     assert _ops_of(ops, kind=KIND_RECLAIM_TRAVEL) == []
 
 
