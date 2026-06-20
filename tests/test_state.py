@@ -727,7 +727,7 @@ def test_write_then_read_flight_state_with_calendar_events_roundtrips(state_root
         },
         "flight": {
             "event_id": "ghi789",
-            "calendar_id": "c_flighty@group.calendar.google.com",
+            "calendar_id": "c_byair@group.calendar.google.com",
             "managed": "adopted",
             "synced_signature": "2026-05-17T13:00:00-07:00/2026-05-17T15:02:00-07:00",
         },

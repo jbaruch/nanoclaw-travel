@@ -127,13 +127,13 @@ Per-flight state record. One file per tracked flight.
   "calendar_events": {
     "boarding": {
       "event_id": "abc123def456",
-      "calendar_id": "primary",
+      "calendar_id": "<byair-calendar-id resolved at runtime>",
       "managed": "created",
       "synced_signature": "2026-05-17T12:24:00-07:00/2026-05-17T13:00:00-07:00"
     },
     "flight": {
       "event_id": "ghi789jkl012",
-      "calendar_id": "c_flighty@group.calendar.google.com",
+      "calendar_id": "<byair-calendar-id resolved at runtime>",
       "managed": "adopted",
       "synced_signature": "2026-05-17T13:00:00-07:00/2026-05-17T15:02:00-07:00"
     }
@@ -155,18 +155,18 @@ Top-level fields:
 - `phase_markers` (object, required) — once-per-flight fire-and-forget gates for time-based wakes
 - `last_wake_at` (RFC 3339 UTC, optional) — when the agent was last woken for this flight
 - `last_wake_reason` (string, optional) — the most recent wake reason for debug
-- `calendar_events` (object, optional) — the ledger of flight-assist-owned/adopted Google Calendar events for this flight, keyed by event kind. Absent or `{}` means none are tracked yet. Validated structurally (object) by `state.py`; the per-entry shape below is owned and deep-validated by the calendar-reconcile planner — the same split as `last_snapshot` ↔ `byair_client`. The map is the source of truth for O(1) update/delete and doubles as the teardown tombstone when a flight leaves `active-flights.json` (the reconciler still holds the event IDs after the flight is gone)
+- `calendar_events` (object, optional) — the ledger of flight-assist-owned/adopted Google Calendar events for this flight, keyed by event kind. Absent or `{}` means none are tracked yet. Validated structurally (object) by `state.py`; the per-entry shape below is owned and deep-validated by the calendar-reconcile planner (`calendar_plan.py`) — the same split as `last_snapshot` ↔ `byair_client`. The map is the source of truth for O(1) update/delete and doubles as the teardown tombstone when a flight leaves `active-flights.json` (the reconciler still holds the event IDs after the flight is gone)
 
 `calendar_events` entries — one per kind, kind ∈ `{boarding, flight}`:
 
 - `boarding` — the flight-assist-created boarding block (boarding-start → departure). `managed` is always `"created"`; flight-assist owns its full lifecycle (create / shift / delete)
-- `flight` — the Flighty-created flight event flight-assist adopted by tagging. `managed` is always `"adopted"`; flight-assist shifts it (delta-only) and deletes it on a true switch/cancel Flighty left stale, but never casually
+- `flight` — the byAir-created flight event flight-assist adopted by tagging. `managed` is always `"adopted"`; flight-assist shifts it (delta-only) and deletes it on a true switch/cancel byAir left stale, but never casually
 
 Each entry's fields:
 
 - `event_id` (string, required) — the Google Calendar event identifier
-- `calendar_id` (string, required) — the calendar the event lives in (`"primary"`, or the Flighty calendar ID for adopted flight events)
-- `managed` (string, required) — `"created"` (flight-assist authored it) or `"adopted"` (flight-assist tagged a Flighty-authored event). Drives delete semantics: `created` is freely deletable, `adopted` is deleted only on a true switch/cancel
+- `calendar_id` (string, required) — the calendar the event lives in (the byAir calendar for both the boarding block and adopted flight events; byAir writes the flight events there and flight-assist places the boarding block alongside them). The byAir calendar's ID is resolved at runtime via Composio from the operator's flights calendar — never hardcoded in the tile
+- `managed` (string, required) — `"created"` (flight-assist authored it) or `"adopted"` (flight-assist tagged a byAir-authored event). Drives delete semantics: `created` is freely deletable, `adopted` is deleted only on a true switch/cancel
 - `synced_signature` (string, required) — the `<start>/<end>` instant pair flight-assist last wrote, so the planner can no-op when the live event already matches byAir truth instead of re-writing every cycle
 
 `last_snapshot` fields (mirrors the post-filter byAir slice — see `byair_client.py`'s `get_flight()` output; this dict is what `wake_rules.py` will diff against in PR #6):
