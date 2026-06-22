@@ -1,5 +1,15 @@
 # Changelog
 
+### Added — calendar event normalization + Reclaim travel classifier (`jbaruch/nanoclaw-flight-assist#55`)
+
+The read-side adapter for calendar reconciliation (#55), built against the real Google Calendar event shapes. `calendar_normalize.py` flattens a Google event resource into the planner's `{event_id, calendar_id, summary, start, end, private_props, is_reclaim_travel}` shape, and classifies Reclaim-generated travel blocks.
+
+`is_reclaim_travel` is **content-based, not calendar-based**: there is no dedicated Reclaim calendar — Reclaim writes its travel blocks onto the user's primary calendar interleaved with real meetings, so the only safe delete discriminator is the event's own content. Two factors, both required: the Reclaim authorship signature (`app.reclaim.ai`) in the description AND a travel marker in the summary (`🚌 Travel`). Reclaim's habit/focus/task blocks carry the signature but a different summary → not flagged; a user's own event titled "Travel" carries no signature → not flagged. The planner further bounds every delete to a same-airport layover gap, so a genuine meeting is never a candidate. `calendar_id` comes from the fetch context (authoritative), not the event body; `private_props` is `extendedProperties.private`.
+
+### Fixed — whitespace-insensitive flight-code adopt match (`jbaruch/nanoclaw-flight-assist#55`)
+
+Real Flighty flight-event summaries render the code with a space (`✈ BNA→YYZ • UA 8018`) while byAir's `code` field may carry it unspaced (`UA8018`), so the planner's `code in summary` adopt-match missed. `_match_byair_event` now strips whitespace from both sides before comparing, matching regardless of which side carries the space.
+
 ## 0.1.33 — 2026-06-22
 
 ### Added — flight disposition resolver (`jbaruch/nanoclaw-flight-assist#55`)
