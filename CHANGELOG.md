@@ -1,5 +1,19 @@
 # Changelog
 
+### Added — calendar reconcile orchestrator (`jbaruch/nanoclaw-flight-assist#55`)
+
+The I/O layer that connects the pure planner to live Google Calendars (#55). `calendar_reconcile.py` resolves the calendar IDs, fetches + normalizes the current calendar state via Composio, builds the per-flight planner inputs (disposition via `disposition.py`, boarding lead via `boarding_lead.py`, byAir-truth dep/arr times), runs `plan_reconciliation`, executes the returned ops (`create` / `update` / `adopt` / `delete` / `forget`) through `composio_client`, and writes the owned event IDs back into each flight's `calendar_events` ledger. `scripts/reconcile.py` is the wake-cycle entry point: it emits a single-line JSON summary (`status` ∈ `ok` / `no_calendar` / `no_flights`) and collects per-op Composio failures rather than aborting the cycle — a delete that 404s is an idempotent success, a real failure defers that op to the next cycle.
+
+The flight ("Flighty Flights") calendar ID is resolved at runtime from the operator-supplied `byair_calendar_name` and cached, never hardcoded in tile code per `rules/flight-data-locality.md`; Reclaim travel blocks live on the **primary** calendar (content-classified). The exact `GOOGLECALENDAR_*` argument field names are isolated in one section for live-toolkit verification, the same treatment `composio_client.py` gives its action slugs. This slice reconciles the flights in `active-flights.json`; the tombstone sweep for switched-away flights lands next (the planner already emits teardown ops for cancelled / diverted flights still in the index, which this executes). 18 orchestration tests against a fake Composio client (resolution, create/adopt/teardown, delta no-op, 404 idempotency, Reclaim same-airport-gap delete, malformed-event skipping) plus 2 CLI-contract tests.
+
+### Added — state schema v4: cached flight-calendar id in config (`jbaruch/nanoclaw-flight-assist#55`)
+
+`config.json` gains two optional calendar-reconcile fields: `byair_calendar_name` (operator-supplied display name of the flight calendar) and `byair_calendar_id` (the id the reconcile caches after its first name match). Both are optional and absent-tolerant, so the v3→v4 owner-side migration only bumps `schema_version` — no shape change to config, active-flights, or per-flight records. See `state-schema.md`.
+
+### Fixed — precheck preserves the calendar_events ledger (`jbaruch/nanoclaw-flight-assist#55`)
+
+`precheck._build_flight_state` rebuilt the per-flight record from scratch on every poll and dropped `calendar_events`, which would have wiped the reconcile-owned ledger (and the teardown tombstone it doubles as) every ~2 minutes. It now carries the ledger forward verbatim from prior state, so the reconcile's writes survive subsequent polls.
+
 ## 0.1.34 — 2026-06-22
 
 ### Added — calendar event normalization + Reclaim travel classifier (`jbaruch/nanoclaw-flight-assist#55`)
