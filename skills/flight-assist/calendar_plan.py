@@ -231,10 +231,10 @@ def _plan_boarding(flight: dict, events_by_id: dict, config: dict) -> list[dict]
 def _strip_whitespace(value: str) -> str:
     """Collapse all whitespace out of a string for tolerant code matching.
 
-    The byAir flight calendar renders the code with a space (`UA 8018`)
-    while byAir's `code` field may carry it unspaced (`UA8018`), so a raw
-    substring match misses. Stripping all whitespace from both sides makes
-    the comparison spacing-agnostic.
+    A flight event's summary may render the code with a space (`UA 8018`)
+    while byAir's `code` field carries it unspaced (`UA8018`), or vice
+    versa, so a raw substring match misses. Stripping all whitespace from
+    both sides makes the comparison spacing-agnostic.
     """
     return "".join(value.split())
 
