@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.34 — 2026-06-22
+
 ### Added — calendar event normalization + Reclaim travel classifier (`jbaruch/nanoclaw-flight-assist#55`)
 
 The read-side adapter for calendar reconciliation (#55), built against the real Google Calendar event shapes. `calendar_normalize.py` flattens a Google event resource into the planner's `{event_id, calendar_id, summary, start, end, private_props, is_reclaim_travel}` shape, and classifies Reclaim-generated travel blocks.
