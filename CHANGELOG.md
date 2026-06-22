@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.35 — 2026-06-22
+
 ### Added — calendar reconcile orchestrator (`jbaruch/nanoclaw-flight-assist#55`)
 
 The I/O layer that connects the pure planner to live Google Calendars (#55). `calendar_reconcile.py` resolves the calendar IDs, fetches + normalizes the current calendar state via Composio, builds the per-flight planner inputs (disposition via `disposition.py`, boarding lead via `boarding_lead.py`, byAir-truth dep/arr times), runs `plan_reconciliation`, executes the returned ops (`create` / `update` / `adopt` / `delete` / `forget`) through `composio_client`, and writes the owned event IDs back into each flight's `calendar_events` ledger. `scripts/reconcile.py` is the wake-cycle entry point: it emits a single-line JSON summary (`status` ∈ `ok` / `no_calendar` / `no_flights`) and collects per-op Composio failures rather than aborting the cycle — a delete that 404s is an idempotent success, a real failure defers that op to the next cycle.
