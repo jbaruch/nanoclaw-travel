@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.36 — 2026-06-22
+
 ### Added — calendar teardown tombstone sweep + wake-cycle wiring (`jbaruch/nanoclaw-flight-assist#55`)
 
 The final reconciliation slice: switched-away flights now get their managed calendar events torn down, and the reconcile runs on the wake cycle. `calendar_reconcile.run_reconcile` gained a second pass — a tombstone sweep over on-disk flights that have dropped out of `active-flights.json` but still carry a `calendar_events` ledger. The per-flight wake loop only visits active flights, so this sweep is the only place a switched-away flight's stale events (which byAir leaves behind) get deleted. It resolves each tombstone's disposition off the retained ledger (switched_away / cancelled / diverted → teardown deletes; completed → leave the events as a historical record), executes the deletes, then **archives** (removes) the state file once teardown settles — every delete succeeded, or the flight has completed. A failed delete keeps its ledger entry, so the tombstone is retained for the next cycle's retry rather than archived with events still live. The summary gains an `archived` count. Teardown is ledger-driven, so when there are no active flights the cycle skips the calendar fetch entirely.
