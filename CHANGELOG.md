@@ -1,5 +1,11 @@
 # Changelog
 
+### Added — flight disposition resolver (`jbaruch/nanoclaw-flight-assist#55`)
+
+Next deterministic slice of calendar reconciliation (#55): `disposition.py` resolves each flight's reconciliation disposition (`active` / `cancelled` / `diverted` / `switched_away` / `completed`) that `plan_reconciliation` consumes to decide between normal reconcile, teardown, and leave-as-record. The computation needs the two inputs the pure planner deliberately stays out of — the wall clock and `active-flights.json` membership — so it lives in one isolated, tested module, the same carve-out as `boarding_lead.py` keeping volatile policy out of the planner.
+
+Precedence: byAir `computed_status` cancelled/diverted wins over membership and time; `landed` or an effective-arrival instant at/before `now` is `completed`; a flight that has dropped out of active-flights while still in the future is `switched_away` (the per-flight wake loop can no longer see it — teardown runs off the retained ledger tombstone); everything else in active-flights and not yet arrived is `active`. Effective arrival prefers byAir's actual `last_snapshot.arr_time` over `scheduled_arr_time`, so a delayed in-air flight stays `active` until it actually lands. 16 tests cover the precedence matrix, the actual-vs-scheduled arrival boundary, null/missing snapshots, and the RFC-3339 offset handling.
+
 ## 0.1.32 — 2026-06-22
 
 ### Added — Composio calendar transport client (`jbaruch/nanoclaw-flight-assist#55`)
