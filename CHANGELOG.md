@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.33 — 2026-06-22
+
 ### Added — flight disposition resolver (`jbaruch/nanoclaw-flight-assist#55`)
 
 Next deterministic slice of calendar reconciliation (#55): `disposition.py` resolves each flight's reconciliation disposition (`active` / `cancelled` / `diverted` / `switched_away` / `completed`) that `plan_reconciliation` consumes to decide between normal reconcile, teardown, and leave-as-record. The computation needs the two inputs the pure planner deliberately stays out of — the wall clock and `active-flights.json` membership — so it lives in one isolated, tested module, the same carve-out as `boarding_lead.py` keeping volatile policy out of the planner.
