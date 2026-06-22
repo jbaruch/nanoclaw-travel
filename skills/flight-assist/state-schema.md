@@ -227,4 +227,4 @@ When adding or renaming a field:
 1. Bump `STATE_SCHEMA_VERSION` in `state.py` and document the new shape in this file
 2. Add migration logic to `state.py` that reads old `schema_version` and rewrites the upgraded shape via the owner-skill code path (the precheck, the agent on wake, sync-tripit — every entry point that uses `read_flight_state` from inside `flight-assist`)
 3. Non-owner reader skills (other tiles, future cross-tile composition) call `read_active_flights_snapshot` / `read_flight_state_snapshot` instead of the owner-side helpers; the snapshot readers treat any mismatched `schema_version` as "no usable prior state" and return without rewriting. Migration happens exclusively on the owner-skill's next read
-4. CHANGELOG entry under `## Unreleased` describing the version bump and the owner-side migration path
+4. CHANGELOG entry describing the version bump and the owner-side migration path — an un-headed `### ` block at the top of `CHANGELOG.md`; the publish stamp step adds the `## <version> — <date>` heading (no `## Unreleased` section — that heading is forbidden per `coding-policy: context-artifacts` CHANGELOG Hygiene)
