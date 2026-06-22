@@ -23,12 +23,14 @@ Run the env-presence check (`scripts/check-env.py` relative to this skill; the N
 python3 /home/node/.claude/skills/tessl__flight-assist/scripts/check-env.py
 ```
 
-The script reads `BYAIR_MCP_URL` and `GOOGLE_MAPS_API_KEY`, prints single-line JSON on stdout, exits 0.
+The script reads `BYAIR_MCP_URL`, `GOOGLE_MAPS_API_KEY`, `COMPOSIO_API_KEY`, and `COMPOSIO_USER_ID`, prints single-line JSON on stdout, exits 0.
 
-Parse the JSON. Both `true`: emit `flight-assist credentials present`. Either `false`: emit one line per missing variable:
+Parse the JSON. All `true`: emit `flight-assist credentials present`. Any `false`: emit one line per missing variable:
 
 - `BYAIR_MCP_URL missing. Add personal MCP link from https://byairapp.com/mcp/ to OneCLI vault and restart container.`
 - `GOOGLE_MAPS_API_KEY missing. Create a Distance Matrix API key at https://console.cloud.google.com/apis/credentials and add to OneCLI vault.`
+- `COMPOSIO_API_KEY missing. Add the Composio project API key from https://app.composio.dev settings to OneCLI vault — calendar reconciliation is disabled without it.`
+- `COMPOSIO_USER_ID missing. Add the Composio user/entity the Google Calendar account is connected under to OneCLI vault — calendar reconciliation is disabled without it.`
 
 Finish here.
 

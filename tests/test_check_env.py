@@ -10,10 +10,27 @@ SCRIPT = (
     Path(__file__).resolve().parent.parent / "skills" / "flight-assist" / "scripts" / "check-env.py"
 )
 
+# Every credential the script reports on. Stripped from the base env before
+# each run so ambient values (a maintainer's real COMPOSIO_API_KEY) never
+# leak into the assertions — overrides then re-add only what a case sets.
+CREDS = (
+    "BYAIR_MCP_URL",
+    "GOOGLE_MAPS_API_KEY",
+    "COMPOSIO_API_KEY",
+    "COMPOSIO_USER_ID",
+)
+
+ALL_FLAGS = {
+    "byair_url_present",
+    "maps_key_present",
+    "composio_key_present",
+    "composio_user_present",
+}
+
 
 def _run(env_overrides: dict) -> dict:
-    """Run check-env.py with the given env overrides, return parsed JSON output."""
-    env = {k: v for k, v in os.environ.items() if k not in env_overrides}
+    """Run check-env.py with a clean cred env plus the given overrides."""
+    env = {k: v for k, v in os.environ.items() if k not in CREDS}
     env.update({k: v for k, v in env_overrides.items() if v is not None})
     result = subprocess.run(
         [sys.executable, str(SCRIPT)],
@@ -25,51 +42,61 @@ def _run(env_overrides: dict) -> dict:
     return json.loads(result.stdout.strip())
 
 
-def test_both_missing_returns_false_flags():
-    out = _run({"BYAIR_MCP_URL": None, "GOOGLE_MAPS_API_KEY": None})
-    assert out == {"byair_url_present": False, "maps_key_present": False}
+def test_all_missing_returns_false_flags():
+    out = _run({})
+    assert out == {flag: False for flag in ALL_FLAGS}
 
 
 def test_byair_url_present_true_when_set():
-    out = _run(
-        {
-            "BYAIR_MCP_URL": "https://api.byairapp.com/mcp?api_key=test_synthetic_value",
-            "GOOGLE_MAPS_API_KEY": None,
-        }
-    )
+    out = _run({"BYAIR_MCP_URL": "https://api.byairapp.com/mcp?api_key=test_synthetic_value"})
     assert out["byair_url_present"] is True
     assert out["maps_key_present"] is False
 
 
 def test_maps_key_present_true_when_set():
-    out = _run(
-        {
-            "BYAIR_MCP_URL": None,
-            "GOOGLE_MAPS_API_KEY": "AIzaSy_synthetic_test_value",
-        }
-    )
-    assert out["byair_url_present"] is False
+    out = _run({"GOOGLE_MAPS_API_KEY": "AIzaSy_synthetic_test_value"})
     assert out["maps_key_present"] is True
+    assert out["byair_url_present"] is False
 
 
-def test_both_present_returns_true_flags():
+def test_composio_key_present_true_when_set():
+    out = _run({"COMPOSIO_API_KEY": "comp_synthetic_test_value"})
+    assert out["composio_key_present"] is True
+    assert out["composio_user_present"] is False
+
+
+def test_composio_user_present_true_when_set():
+    out = _run({"COMPOSIO_USER_ID": "user_synthetic_test_value"})
+    assert out["composio_user_present"] is True
+    assert out["composio_key_present"] is False
+
+
+def test_all_present_returns_true_flags():
     out = _run(
         {
             "BYAIR_MCP_URL": "https://api.byairapp.com/mcp?api_key=test_synthetic_value",
             "GOOGLE_MAPS_API_KEY": "AIzaSy_synthetic_test_value",
+            "COMPOSIO_API_KEY": "comp_synthetic_test_value",
+            "COMPOSIO_USER_ID": "user_synthetic_test_value",
         }
     )
-    assert out == {"byair_url_present": True, "maps_key_present": True}
+    assert out == {flag: True for flag in ALL_FLAGS}
 
 
 def test_empty_string_is_treated_as_missing():
-    out = _run({"BYAIR_MCP_URL": "", "GOOGLE_MAPS_API_KEY": ""})
-    assert out == {"byair_url_present": False, "maps_key_present": False}
+    out = _run(
+        {
+            "BYAIR_MCP_URL": "",
+            "GOOGLE_MAPS_API_KEY": "",
+            "COMPOSIO_API_KEY": "",
+            "COMPOSIO_USER_ID": "",
+        }
+    )
+    assert out == {flag: False for flag in ALL_FLAGS}
 
 
 def test_exit_code_always_zero_even_when_missing():
-    creds = ("BYAIR_MCP_URL", "GOOGLE_MAPS_API_KEY")
-    env = {k: v for k, v in os.environ.items() if k not in creds}
+    env = {k: v for k, v in os.environ.items() if k not in CREDS}
     result = subprocess.run(
         [sys.executable, str(SCRIPT)],
         env=env,
@@ -80,8 +107,7 @@ def test_exit_code_always_zero_even_when_missing():
 
 
 def test_output_is_single_line_json():
-    creds = ("BYAIR_MCP_URL", "GOOGLE_MAPS_API_KEY")
-    env = {k: v for k, v in os.environ.items() if k not in creds}
+    env = {k: v for k, v in os.environ.items() if k not in CREDS}
     out_raw = subprocess.run(
         [sys.executable, str(SCRIPT)],
         env=env,
@@ -93,4 +119,4 @@ def test_output_is_single_line_json():
     payload = out_raw.rstrip("\n")
     assert "\n" not in payload
     parsed = json.loads(payload)
-    assert set(parsed.keys()) == {"byair_url_present", "maps_key_present"}
+    assert set(parsed.keys()) == ALL_FLAGS

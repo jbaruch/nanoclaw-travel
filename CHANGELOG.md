@@ -1,5 +1,13 @@
 # Changelog
 
+### Added — Composio calendar transport client (`jbaruch/nanoclaw-flight-assist#55`)
+
+The I/O layer the pure planner (#55, 0.1.31) needs to execute its op list. `composio_client.py` is a thin stdlib-`urllib` REST client over Composio's v3 `tools/execute/{action}` endpoint, mirroring `byair_client.py` / `maps_client.py` (HTTP-mockable in CI, one client per process). It injects `x-api-key` auth + `COMPOSIO_USER_ID` scoping, names the `GOOGLECALENDAR_*` action slug, and passes a Composio-shaped `arguments` dict through — the planner-op → arguments mapping (and the version-specific per-action argument schemas) stays with the reconcile executor that lands next, where it is verified against the live toolkit.
+
+The Composio envelope returns HTTP 200 even on a tool-level failure (`successful: false`), so the client raises `ComposioError` on that and surfaces the upstream provider status in `.status_code` — a delete that 404s (event already gone) is distinguishable from a real failure, letting the executor treat it as an idempotent no-op. HTTP-level failures (bad key, 5xx) propagate as `urllib.error.HTTPError`; a body-read timeout normalizes to `URLError` (mirrors byair, #28). 15 HTTP-mocked tests cover request shaping, the success/failure envelope, status-code surfacing, and transport-error normalization.
+
+`check-env.py` now also reports `composio_key_present` / `composio_user_present` (SKILL.md Step 1 + tests updated to match), and `.env.example` documents `COMPOSIO_API_KEY` / `COMPOSIO_USER_ID` (plus the optional `COMPOSIO_BASE_URL` override). No wake-cycle wiring yet — the reconcile script that fetches events, runs the planner, and writes the ledger back lands in the follow-up.
+
 ## 0.1.31 — 2026-06-20
 
 ### Added — pure calendar reconciliation planner + boarding-lead resolver (`jbaruch/nanoclaw-flight-assist#55`)
