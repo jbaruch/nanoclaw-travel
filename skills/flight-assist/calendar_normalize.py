@@ -111,13 +111,17 @@ def normalize_event(raw_event: dict, *, calendar_id: str, classify_reclaim: bool
             f"event is missing required 'id' field — keys present: {sorted(raw_event.keys())}"
         )
     extended = raw_event.get("extendedProperties") or {}
-    private_props = extended.get("private") if isinstance(extended, dict) else None
+    private = extended.get("private") if isinstance(extended, dict) else None
+    # Force a dict: the planner calls `.get()` on private_props, so a
+    # malformed non-mapping value (list/string from an API or client bug)
+    # must normalize to {} rather than crash downstream.
+    private_props = private if isinstance(private, dict) else {}
     return {
         "event_id": event_id,
         "calendar_id": calendar_id,
         "summary": raw_event.get("summary") or "",
         "start": _extract_instant(raw_event.get("start")),
         "end": _extract_instant(raw_event.get("end")),
-        "private_props": private_props or {},
+        "private_props": private_props,
         "is_reclaim_travel": is_reclaim_travel(raw_event) if classify_reclaim else False,
     }

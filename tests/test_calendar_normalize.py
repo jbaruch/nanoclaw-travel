@@ -135,6 +135,19 @@ def test_normalize_extracts_private_props():
     assert norm["private_props"] == {"faFlightId": "100", "faKind": "boarding"}
 
 
+def test_normalize_malformed_private_props_becomes_empty_dict():
+    # A non-mapping extendedProperties.private (API/client bug) must
+    # normalize to {} so the planner's .get() never crashes.
+    raw = {
+        "id": "e1",
+        "summary": "x",
+        "extendedProperties": {"private": ["not", "a", "dict"]},
+        **_timed("2026-07-01T10:00:00-05:00", "2026-07-01T11:00:00-05:00"),
+    }
+    norm = normalize_event(raw, calendar_id=FLIGHTY_CAL)
+    assert norm["private_props"] == {}
+
+
 def test_normalize_with_classify_reclaim_sets_travel_flag():
     norm = normalize_event(_reclaim_travel_event(), calendar_id=PRIMARY_CAL, classify_reclaim=True)
     assert norm["is_reclaim_travel"] is True
