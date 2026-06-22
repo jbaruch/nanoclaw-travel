@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.32 — 2026-06-22
+
 ### Added — Composio calendar transport client (`jbaruch/nanoclaw-flight-assist#55`)
 
 The I/O layer the pure planner (#55, 0.1.31) needs to execute its op list. `composio_client.py` is a thin stdlib-`urllib` REST client over Composio's v3 `tools/execute/{action}` endpoint, mirroring `byair_client.py` / `maps_client.py` (HTTP-mockable in CI, one client per process). It injects `x-api-key` auth + `COMPOSIO_USER_ID` scoping, names the `GOOGLECALENDAR_*` action slug, and passes a Composio-shaped `arguments` dict through — the planner-op → arguments mapping (and the version-specific per-action argument schemas) stays with the reconcile executor that lands next, where it is verified against the live toolkit.
