@@ -32,6 +32,7 @@ Public API:
         read_config, write_config,
         read_active_flights, write_active_flights,
         read_flight_state, write_flight_state, delete_flight_state,
+        list_flight_state_ids,
         # Non-owner reader entry points (snapshot semantics — never
         # invoke _migrate, so calling tiles do not rewrite owner state):
         read_active_flights_snapshot,
@@ -747,3 +748,35 @@ def delete_flight_state(flight_id: int) -> bool:
         return False
     path.unlink()
     return True
+
+
+def list_flight_state_ids() -> list[int]:
+    """Return the flight_ids of every `flight-<id>.json` on disk, sorted.
+
+    Enumerates the per-flight state files regardless of active-flights
+    membership. The calendar-teardown sweep
+    (`calendar_reconcile.run_reconcile`) needs to see flights that have
+    dropped out of `active-flights.json` but still carry a `calendar_events`
+    tombstone — the per-flight wake loop only visits active flights, so
+    enumerating the index would miss exactly the switched-away flights the
+    sweep exists to clean up. Returns `[]` when the state directory does not
+    exist yet (first run, before any write).
+
+    Non-`flight-<id>.json` files (`config.json`, `active-flights.json`,
+    `current-location.json`) and any `flight-*.json` whose middle segment is
+    not a plain integer are skipped.
+    """
+    directory = state_dir()
+    if not directory.is_dir():
+        return []
+    ids: list[int] = []
+    for path in directory.iterdir():
+        name = path.name
+        if not (name.startswith(_FLIGHT_FILE_PREFIX) and name.endswith(_FLIGHT_FILE_SUFFIX)):
+            continue
+        middle = name[len(_FLIGHT_FILE_PREFIX) : -len(_FLIGHT_FILE_SUFFIX)]
+        try:
+            ids.append(int(middle))
+        except ValueError:
+            continue
+    return sorted(ids)

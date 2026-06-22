@@ -1,5 +1,13 @@
 # Changelog
 
+### Added — calendar teardown tombstone sweep + wake-cycle wiring (`jbaruch/nanoclaw-flight-assist#55`)
+
+The final reconciliation slice: switched-away flights now get their managed calendar events torn down, and the reconcile runs on the wake cycle. `calendar_reconcile.run_reconcile` gained a second pass — a tombstone sweep over on-disk flights that have dropped out of `active-flights.json` but still carry a `calendar_events` ledger. The per-flight wake loop only visits active flights, so this sweep is the only place a switched-away flight's stale events (which byAir leaves behind) get deleted. It resolves each tombstone's disposition off the retained ledger (switched_away / cancelled / diverted → teardown deletes; completed → leave the events as a historical record), executes the deletes, then **archives** (removes) the state file once teardown settles — every delete succeeded, or the flight has completed. A failed delete keeps its ledger entry, so the tombstone is retained for the next cycle's retry rather than archived with events still live. The summary gains an `archived` count. Teardown is ledger-driven, so when there are no active flights the cycle skips the calendar fetch entirely.
+
+For the tombstone to survive, `sync_tripit._reconcile_active_flights` now retains `flight-<id>.json` (instead of deleting it on upstream removal) when the record still holds a non-empty `calendar_events` ledger; a removed flight with nothing to tear down is still deleted immediately. `state.py` gained `list_flight_state_ids()` to enumerate on-disk per-flight files regardless of active-flights membership — the sweep needs to see exactly the flights the index no longer lists.
+
+`SKILL.md` Step 3 became "Handle the precheck wake cycle": it runs `scripts/reconcile.py` first (idempotent, delta-only, safe alongside byAir's own delay-shifts), then composes the notification. `no_calendar` / `no_flights` / missing-Composio-credentials all mean reconciliation is inactive this cycle and are handled silently — calendar reconciliation stays optional. 11 new tests (sweep teardown + archival, completed-leaves-events, failed-delete retention, empty-ledger non-tombstone, active+tombstone in one cycle, `list_flight_state_ids`, sync_tripit tombstone retention vs immediate delete).
+
 ## 0.1.35 — 2026-06-22
 
 ### Added — calendar reconcile orchestrator (`jbaruch/nanoclaw-flight-assist#55`)

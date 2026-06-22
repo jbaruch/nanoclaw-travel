@@ -19,6 +19,7 @@ from state import (  # noqa: E402
     read_active_flights,
     read_flight_state,
     write_active_flights,
+    write_flight_state,
 )
 
 
@@ -118,6 +119,61 @@ def test_sync_removes_expired_flights(state_root: Path):
     assert read_active_flights() == [100]
     assert read_flight_state(200) is None
     assert read_flight_state(100) is not None
+
+
+def _ledger_entry() -> dict:
+    return {
+        "boarding": {
+            "event_id": "evt_boarding",
+            "calendar_id": "c_byair@group.calendar.google.com",
+            "managed": "created",
+            "synced_signature": "s",
+        }
+    }
+
+
+def test_sync_retains_removed_flight_with_calendar_ledger_as_tombstone(state_root: Path):
+    """#55: a flight that drops from upstream but still has managed calendar
+    events is kept on disk as a teardown tombstone, NOT deleted — the
+    reconcile sweep needs the ledger to delete those events. It still leaves
+    active-flights and still surfaces in the removed-event payload."""
+    write_active_flights([100, 200])
+    fake_now = datetime(2026, 5, 18, 4, 0, 0, tzinfo=timezone.utc)
+    sync_tripit.initialize_flight_from_byair(flight=_flight(100), now_utc=fake_now)
+    sync_tripit.initialize_flight_from_byair(flight=_flight(200), now_utc=fake_now)
+    # Flight 200 has carried a calendar ledger forward.
+    state_200 = read_flight_state(200)
+    state_200["calendar_events"] = _ledger_entry()
+    write_flight_state(state_200)
+
+    payload = _trips_payload([_flight(100)])
+    with patch("sync_tripit.ByAirClient.from_env") as mock_byair:
+        mock_byair.return_value.list_trips.return_value = payload
+        diff = sync_tripit._run_sync(now_utc=fake_now)
+
+    assert [e["flight_id"] for e in diff["removed"]] == [200]
+    assert read_active_flights() == [100]
+    # Retained as a tombstone — the ledger survives for the reconcile sweep.
+    retained = read_flight_state(200)
+    assert retained is not None
+    assert retained["calendar_events"] == _ledger_entry()
+
+
+def test_sync_deletes_removed_flight_without_ledger(state_root: Path):
+    """#55: the tombstone retention is scoped to flights with a non-empty
+    ledger. A removed flight with nothing to tear down is deleted immediately,
+    preserving the prior behavior."""
+    write_active_flights([100, 200])
+    fake_now = datetime(2026, 5, 18, 4, 0, 0, tzinfo=timezone.utc)
+    sync_tripit.initialize_flight_from_byair(flight=_flight(100), now_utc=fake_now)
+    sync_tripit.initialize_flight_from_byair(flight=_flight(200), now_utc=fake_now)
+
+    payload = _trips_payload([_flight(100)])
+    with patch("sync_tripit.ByAirClient.from_env") as mock_byair:
+        mock_byair.return_value.list_trips.return_value = payload
+        sync_tripit._run_sync(now_utc=fake_now)
+
+    assert read_flight_state(200) is None
 
 
 def test_sync_adds_and_removes_in_one_pass(state_root: Path):

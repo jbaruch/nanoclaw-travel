@@ -143,6 +143,17 @@ def _extract_flights(trips_payload: dict) -> list[dict]:
     return flights
 
 
+def _has_calendar_ledger(state: dict | None) -> bool:
+    """True when a state record still carries a non-empty `calendar_events` map.
+
+    A non-empty ledger means flight-assist has managed calendar events
+    (boarding block and/or adopted byAir flight event) that the reconcile
+    sweep must tear down before the state file can be dropped. Absent, `{}`,
+    or a missing record all read as "nothing to tear down".
+    """
+    return bool(state and state.get("calendar_events"))
+
+
 def _reconcile_active_flights(upstream_flights: list[dict], *, now_utc: datetime) -> dict:
     """Diff the upstream list against the on-disk active-flights index.
 
@@ -150,7 +161,9 @@ def _reconcile_active_flights(upstream_flights: list[dict], *, now_utc: datetime
 
     For each `added` flight, writes an initial per-flight state record
     so the next precheck cycle has scheduled times to work with.
-    For each `removed` flight, deletes its state file.
+    For each `removed` flight, deletes its state file — UNLESS the record
+    still carries a `calendar_events` ledger, in which case the file is
+    retained as a teardown tombstone (see `_has_calendar_ledger`).
     """
     upstream_ids = {
         flight["id"] for flight in upstream_flights if isinstance(flight.get("id"), int)
@@ -192,6 +205,15 @@ def _reconcile_active_flights(upstream_flights: list[dict], *, now_utc: datetime
                 "scheduled_arr_time": prior.get("scheduled_arr_time") if prior else None,
             }
         )
+        # Retain the state file as a teardown tombstone when it still holds a
+        # `calendar_events` ledger (#55). Deleting it here would orphan those
+        # managed calendar events forever: byAir won't remove them, and the
+        # per-flight wake loop can't see a flight that has left active-flights.
+        # The reconcile sweep (calendar_reconcile.run_reconcile) tears the
+        # events down off the retained ledger, then archives the file. Drop it
+        # immediately only when there is nothing to tear down.
+        if _has_calendar_ledger(prior):
+            continue
         delete_flight_state(flight_id)
 
     # Persist the new active-flights index. read_active_flights returns

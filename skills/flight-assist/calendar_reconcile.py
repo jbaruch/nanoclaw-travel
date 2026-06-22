@@ -27,11 +27,19 @@ Calendar grounding (settled in #55):
     They are content-classified (`calendar_normalize.is_reclaim_travel`) and
     the planner deletes one only inside a same-airport layover gap.
 
-Scope of this slice (PR 3b): reconcile the flights currently in
-`active-flights.json`. The tombstone sweep for flights that have dropped
-out of active-flights (switched-away teardown + state archival) lands in
-the next slice — the planner already emits teardown ops for cancelled /
-diverted flights that are still in the index, which this module executes.
+Two passes per cycle:
+
+  - Active pass: reconcile the flights currently in `active-flights.json`
+    (boarding block, adopt-by-tag + delta-shift the byAir flight event,
+    Reclaim same-airport-gap deletions).
+  - Tombstone sweep: flights that have dropped out of `active-flights.json`
+    but still carry a `calendar_events` ledger. The per-flight wake loop is
+    structurally blind to these (it only visits active flights), so this is
+    the one place a switched-away flight's managed events get torn down. The
+    planner resolves their disposition (switched_away / cancelled / diverted
+    → teardown deletes; completed → leave as a record) off the retained
+    ledger, this module executes the deletes, then archives the state file
+    once teardown settles (see `_archive_settled_tombstones`).
 
 The exact `GOOGLECALENDAR_*` *argument* field names are Composio-version-
 specific. They are isolated in the "Composio argument adapters" section
@@ -50,6 +58,7 @@ from datetime import datetime, timedelta, timezone
 from boarding_lead import resolve_boarding_lead_minutes
 from calendar_normalize import NormalizeError, normalize_event
 from calendar_plan import (
+    DISPOSITION_COMPLETED,
     MANAGED_ADOPTED,
     MANAGED_CREATED,
     plan_reconciliation,
@@ -57,6 +66,8 @@ from calendar_plan import (
 from composio_client import ComposioError
 from disposition import resolve_disposition
 from state import (
+    delete_flight_state,
+    list_flight_state_ids,
     read_active_flights,
     read_config,
     read_flight_state,
@@ -456,12 +467,60 @@ def _apply_op_to_ledger(op: dict, ledger: dict, client) -> bool:
 # --- Top-level orchestration -------------------------------------------------
 
 
-def run_reconcile(client, *, now: datetime) -> dict:
-    """Run one calendar reconciliation cycle over the active flights.
+def _gather_tombstones(
+    active_set: set[int], *, now: datetime
+) -> tuple[dict[int, dict], list[dict]]:
+    """Read on-disk flights that left active-flights but still hold a ledger.
 
-    Returns a summary dict: the resolved calendar id, the op counts, and any
-    per-op failures (collected, not raised — a single failed Composio call
-    defers that op to the next cycle without aborting the rest).
+    These are the switched-away / cancelled / completed flights the per-flight
+    wake loop can no longer see. A state file with an empty (or absent)
+    `calendar_events` ledger has nothing to tear down and is ignored — it is
+    not a tombstone. Returns `(states_by_id, planner_flights)`, the flights
+    built with `in_active_flights=False` so the disposition resolver routes
+    them to teardown / record rather than active reconciliation.
+    """
+    states_by_id: dict[int, dict] = {}
+    flights: list[dict] = []
+    for flight_id in list_flight_state_ids():
+        if flight_id in active_set:
+            continue
+        state = read_flight_state(flight_id)
+        if state is None or not state.get("calendar_events"):
+            continue
+        states_by_id[flight_id] = state
+        flights.append(build_planner_flight(state, in_active_flights=False, now=now))
+    return states_by_id, flights
+
+
+def _settled_tombstone_ids(
+    tombstone_flights: list[dict], states_by_id: dict[int, dict]
+) -> set[int]:
+    """Return the tombstone flight_ids whose teardown has settled — safe to archive.
+
+    A switched_away / cancelled / diverted tombstone settles when its ledger
+    is empty: every teardown delete succeeded (a failed delete keeps its
+    ledger entry, so the file is retained for the next cycle's retry — never
+    archived with events still live). A completed tombstone settles
+    immediately: the planner emits no ops (its managed events stay as a
+    historical record), and the state file no longer needs to track a flight
+    that is done and out of active-flights.
+    """
+    settled: set[int] = set()
+    for flight in tombstone_flights:
+        flight_id = flight["flight_id"]
+        ledger = states_by_id[flight_id].get("calendar_events") or {}
+        if flight["disposition"] == DISPOSITION_COMPLETED or not ledger:
+            settled.add(flight_id)
+    return settled
+
+
+def run_reconcile(client, *, now: datetime) -> dict:
+    """Run one calendar reconciliation cycle: active pass + tombstone sweep.
+
+    Returns a summary dict: the resolved calendar id, the op counts, the
+    number of teardown tombstones archived, and any per-op failures
+    (collected, not raised — a single failed Composio call defers that op to
+    the next cycle without aborting the rest).
     """
     config = read_config() or {}
     byair_calendar_id = resolve_byair_calendar_id(client, config)
@@ -469,22 +528,31 @@ def run_reconcile(client, *, now: datetime) -> dict:
         return {"status": "no_calendar", "planned": 0, "executed": 0, "failed": []}
 
     active_ids = read_active_flights()
+    active_set = set(active_ids)
     states_by_id: dict[int, dict] = {}
-    flights: list[dict] = []
+    active_flights: list[dict] = []
     for flight_id in active_ids:
         state = read_flight_state(flight_id)
         if state is None:
             continue
         states_by_id[flight_id] = state
-        flights.append(build_planner_flight(state, in_active_flights=True, now=now))
+        active_flights.append(build_planner_flight(state, in_active_flights=True, now=now))
 
-    if not flights:
+    # Tombstone sweep — flights gone from active-flights that still hold a
+    # ledger. The per-flight wake loop never visits these, so the reconcile is
+    # the only place their managed events get torn down (#55).
+    tombstone_states, tombstone_flights = _gather_tombstones(active_set, now=now)
+    states_by_id.update(tombstone_states)
+
+    planner_flights = active_flights + tombstone_flights
+    if not planner_flights:
         return {
             "status": "no_flights",
             "byair_calendar_id": byair_calendar_id,
             "planned": 0,
             "executed": 0,
             "failed": [],
+            "archived": 0,
         }
 
     config_ids = {
@@ -492,12 +560,18 @@ def run_reconcile(client, *, now: datetime) -> dict:
         "boarding_calendar_id": byair_calendar_id,
         "reclaim_calendar_id": PRIMARY_CALENDAR_ID,
     }
-    time_min, time_max = _fetch_window(flights)
-    events = collect_events(
-        client, byair_calendar_id=byair_calendar_id, time_min=time_min, time_max=time_max
-    )
+    # Only the active pass consults live calendar events (boarding match,
+    # adopt-by-tag, Reclaim same-airport-gap). Teardown ops come purely off the
+    # ledger, so a tombstone needs no fetch — and may sit far outside the
+    # active window. Skip the fetch entirely when nothing is active.
+    events: list[dict] = []
+    if active_flights:
+        time_min, time_max = _fetch_window(active_flights)
+        events = collect_events(
+            client, byair_calendar_id=byair_calendar_id, time_min=time_min, time_max=time_max
+        )
 
-    ops = plan_reconciliation(flights, events, config_ids)
+    ops = plan_reconciliation(planner_flights, events, config_ids)
 
     executed = 0
     failed: list[dict] = []
@@ -525,8 +599,15 @@ def run_reconcile(client, *, now: datetime) -> dict:
         if changed:
             dirty.add(flight_id)
 
-    for flight_id in dirty:
+    # Archive tombstones whose teardown settled this cycle; persist the rest of
+    # the dirty set. A settled tombstone is deleted, not written back — its
+    # ledger is empty (or intentionally-retained completed record), so writing
+    # it just to delete it is wasted I/O.
+    archived_ids = _settled_tombstone_ids(tombstone_flights, states_by_id)
+    for flight_id in dirty - archived_ids:
         write_flight_state(states_by_id[flight_id])
+    for flight_id in archived_ids:
+        delete_flight_state(flight_id)
 
     return {
         "status": "ok",
@@ -534,4 +615,5 @@ def run_reconcile(client, *, now: datetime) -> dict:
         "planned": len(ops),
         "executed": executed,
         "failed": failed,
+        "archived": len(archived_ids),
     }
