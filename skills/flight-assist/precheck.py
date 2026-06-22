@@ -691,7 +691,7 @@ def _build_flight_state(
         trip_id = raw_flight.get("trip_id") or raw_flight.get("tripId") or 0
         dep_airport_id = raw_flight.get("depAirport", {}).get("id", 0)
         arr_airport_id = raw_flight.get("arrAirport", {}).get("id", 0)
-    return {
+    new_state = {
         "flight_id": flight_id,
         "code": raw_flight.get("code", ""),
         "ownership": ownership,
@@ -706,6 +706,14 @@ def _build_flight_state(
         "last_wake_at": prior_state["last_wake_at"] if prior_state else None,
         "last_wake_reason": prior_state["last_wake_reason"] if prior_state else None,
     }
+    # Carry the calendar-reconcile ledger forward. The reconcile script
+    # (calendar_reconcile.py) owns `calendar_events`, writing it on the wake
+    # cycle; the precheck must not drop it when it rewrites state on each
+    # poll, or the ledger — and the teardown tombstone it doubles as — would
+    # be wiped every ~2 minutes. Preserve it verbatim when present.
+    if prior_state is not None and "calendar_events" in prior_state:
+        new_state["calendar_events"] = prior_state["calendar_events"]
+    return new_state
 
 
 def _initial_phase_markers() -> dict:
