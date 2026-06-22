@@ -476,6 +476,123 @@ def test_delta_only_noop_when_already_synced(state_root: Path):
     assert client.calls_named("delete_event") == []
 
 
+# --- tombstone sweep + archival ----------------------------------------------
+
+
+def _ledger(*, boarding: bool = False, flight: bool = False) -> dict:
+    led: dict = {}
+    if boarding:
+        led["boarding"] = {
+            "event_id": "evt_b",
+            "calendar_id": BYAIR_CAL,
+            "managed": "created",
+            "synced_signature": "s",
+        }
+    if flight:
+        led["flight"] = {
+            "event_id": "evt_f",
+            "calendar_id": BYAIR_CAL,
+            "managed": "adopted",
+            "synced_signature": "s",
+        }
+    return led
+
+
+def test_tombstone_sweep_tears_down_switched_away_flight(state_root: Path):
+    """A flight gone from active-flights but still future (switched away) and
+    still carrying a ledger has its managed events deleted and its state file
+    archived — even though it is not in the active index. With no active
+    flights, no calendar fetch is needed (teardown is ledger-driven)."""
+    write_config({"byair_calendar_id": BYAIR_CAL})
+    _write_flight(flight_id=1, calendar_events=_ledger(boarding=True, flight=True))
+    write_active_flights([])  # flight 1 dropped from the index
+    client = FakeComposio()
+
+    summary = cr.run_reconcile(client, now=FIXED_NOW)
+
+    deleted = {a["event_id"] for a in client.calls_named("delete_event")}
+    assert deleted == {"evt_b", "evt_f"}
+    assert client.calls_named("find_events") == []  # no active flights → no fetch
+    assert cr.read_flight_state(1) is None  # archived once teardown settled
+    assert summary["status"] == "ok"
+    assert summary["archived"] == 1
+    assert summary["failed"] == []
+
+
+def test_tombstone_sweep_archives_completed_flight_without_touching_calendar(state_root: Path):
+    """A completed flight out of active-flights leaves its managed events as a
+    historical record (no deletes), but the state file is archived — we stop
+    tracking a flight that is done and gone from the index."""
+    write_config({"byair_calendar_id": BYAIR_CAL})
+    _write_flight(
+        flight_id=1,
+        scheduled_dep="2026-07-01T06:00:00-05:00",
+        scheduled_arr="2026-07-01T07:00:00-05:00",  # 12:00Z, before FIXED_NOW → completed
+        calendar_events=_ledger(boarding=True),
+    )
+    write_active_flights([])
+    client = FakeComposio()
+
+    summary = cr.run_reconcile(client, now=FIXED_NOW)
+
+    assert client.calls_named("delete_event") == []  # events kept as a record
+    assert cr.read_flight_state(1) is None  # but the tombstone is archived
+    assert summary["archived"] == 1
+
+
+def test_tombstone_retained_when_teardown_delete_fails(state_root: Path):
+    """A failed teardown delete keeps the ledger entry AND the state file — the
+    sweep retries next cycle rather than archiving with events still live."""
+    write_config({"byair_calendar_id": BYAIR_CAL})
+    entry = dict(_ledger(boarding=True)["boarding"])
+    _write_flight(flight_id=1, calendar_events={"boarding": dict(entry)})
+    write_active_flights([])
+    client = FakeComposio(delete_error=ComposioError("server error", status_code=500))
+
+    summary = cr.run_reconcile(client, now=FIXED_NOW)
+
+    assert len(summary["failed"]) == 1
+    assert summary["archived"] == 0
+    retained = cr.read_flight_state(1)
+    assert retained is not None
+    assert retained["calendar_events"]["boarding"] == entry
+
+
+def test_non_active_flight_without_ledger_is_not_a_tombstone(state_root: Path):
+    """An on-disk flight out of active-flights with no ledger has nothing to
+    tear down — it is not swept, archived, or otherwise touched."""
+    write_config({"byair_calendar_id": BYAIR_CAL})
+    _write_flight(flight_id=2)  # on disk, not active, no calendar_events
+    write_active_flights([])
+    client = FakeComposio()
+
+    summary = cr.run_reconcile(client, now=FIXED_NOW)
+
+    assert summary["status"] == "no_flights"
+    assert cr.read_flight_state(2) is not None  # untouched
+    assert client.calls_named("delete_event") == []
+
+
+def test_active_and_tombstone_reconciled_in_one_cycle(state_root: Path):
+    """The active pass (fetch + reconcile) and the tombstone sweep (ledger
+    teardown + archive) both run in a single cycle. The fetch window is built
+    from active flights only, so a far-off tombstone never widens it."""
+    write_config({"byair_calendar_id": BYAIR_CAL})
+    _write_flight(flight_id=1)  # active, needs a boarding block created
+    _write_flight(flight_id=2, calendar_events=_ledger(boarding=True))  # switched-away tombstone
+    write_active_flights([1])
+    client = FakeComposio()
+
+    summary = cr.run_reconcile(client, now=FIXED_NOW)
+
+    assert client.calls_named("find_events")  # active pass fetched live events
+    deleted = {a["event_id"] for a in client.calls_named("delete_event")}
+    assert "evt_b" in deleted  # tombstone torn down
+    assert cr.read_flight_state(2) is None  # tombstone archived
+    assert cr.read_flight_state(1) is not None  # active flight retained
+    assert summary["archived"] == 1
+
+
 # --- helper-level coverage ---------------------------------------------------
 
 

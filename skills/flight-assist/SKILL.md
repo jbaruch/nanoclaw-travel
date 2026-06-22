@@ -1,6 +1,6 @@
 ---
 name: flight-assist
-description: Composes a user-facing flight notification — delay, gate change, cancellation, boarding, connection risk, inbound-delay, time-to-leave, baggage carousel, day-before check, or arrival logistics — from a byAir precheck wake event, and configures the tile (verify credentials, set home base). Use when a tracked-flight wake event needs a notification, or when setting up or diagnosing flight-assist. Triggers - "check flight-assist env", "diagnose flight-assist", "set flight-assist home base", "set home address", "configure flight-assist", "flight delay notification", "gate change notification", "cancellation notification", "boarding alert", "time to leave alert", "inbound delay notification", "baggage carousel", "arrival logistics", "day before sanity check", "flight removed upstream", "connection at risk", "tight connection alert".
+description: On a byAir precheck wake event, reconciles the operator's managed calendar events (boarding block, adopted byAir flight event, Reclaim travel-block cleanup, switched-away teardown) and composes a user-facing flight notification — delay, gate change, cancellation, boarding, connection risk, inbound-delay, time-to-leave, baggage carousel, day-before check, or arrival logistics. Also configures the tile (verify credentials, set home base). Use when a tracked-flight wake event needs a notification, or when setting up or diagnosing flight-assist. Triggers - "check flight-assist env", "diagnose flight-assist", "set flight-assist home base", "set home address", "configure flight-assist", "flight delay notification", "gate change notification", "cancellation notification", "boarding alert", "time to leave alert", "inbound delay notification", "baggage carousel", "arrival logistics", "day before sanity check", "flight removed upstream", "connection at risk", "tight connection alert", "reconcile calendar".
 cadence: "*/2 * * * *"
 agentModel: "claude-sonnet-4-6"
 script: "precheck.py"
@@ -13,7 +13,7 @@ This skill is an action router — pick the step that matches the user's intent 
 Available actions:
 - Diagnose env (verify byAir + Google Maps credentials)
 - Set home base (record the user's home address for time-to-leave)
-- Compose a user-facing notification from a precheck wake event
+- Handle a precheck wake cycle (reconcile managed calendar events, then compose a user-facing notification)
 
 ## Step 1 — Diagnose env
 
@@ -46,9 +46,21 @@ The script writes the address to `/workspace/state/flight-assist/config.json` (a
 
 Emit one confirmation line to the user: `Home base set: <address>`. Finish here.
 
-## Step 3 — Compose wake event notification
+## Step 3 — Handle the precheck wake cycle
 
-This step fires when the precheck script wakes the agent with a `data.events` payload. Each event is `{"flight_id": int, "event": {"reason": "...", ...}}`. Compose one human-readable notification per event.
+This step fires when the precheck script wakes the agent with a `data.events` payload. The wake cycle does two things in order: first reconcile the managed calendar events (deterministic glue, no LLM), then compose one human-readable notification per event.
+
+First, run the calendar reconcile once per wake cycle, before composing notifications:
+
+```bash
+python3 /home/node/.claude/skills/tessl__flight-assist/scripts/reconcile.py
+```
+
+It converges the calendar to byAir truth — creates/shifts the boarding block, adopts and delta-shifts the byAir flight event, removes Reclaim travel blocks inside a same-airport layover gap, and tears down events for switched-away / cancelled flights that dropped out of the active-flights index. Every write is idempotent and a no-op when the calendar already matches, so it is safe to run on every wake cycle and alongside byAir's own delay-shifts.
+
+It prints single-line JSON: `{"status": "...", "planned": N, "executed": N, "archived": N, "failed": [...]}`. `status: "ok"` means a cycle ran. `no_calendar` (no flight calendar resolved from config), `no_flights` (nothing tracked), or `{"status": "error", "error": "credentials"}` (Composio not configured — see Step 1) all mean reconciliation is inactive this cycle. Treat any of those, and a non-empty `failed` list (those ops retry next cycle), as expected: proceed to the notification below. Reconcile output is calendar bookkeeping, never a user-facing message — do not surface it; proceed silently regardless of its result.
+
+Then compose the notification. Each event is `{"flight_id": int, "event": {"reason": "...", ...}}`. Compose one human-readable notification per event.
 
 The full event-shape contract is in `references/event-payloads.md`; consult it when an event's `reason` is unfamiliar.
 

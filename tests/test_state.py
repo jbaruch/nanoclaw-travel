@@ -24,6 +24,7 @@ from state import (  # noqa: E402
     STATE_SCHEMA_VERSION,
     StateError,
     delete_flight_state,
+    list_flight_state_ids,
     read_active_flights,
     read_active_flights_snapshot,
     read_config,
@@ -1006,3 +1007,31 @@ def test_read_flight_state_snapshot_rejects_non_int_flight_id(state_root: Path):
     """Same flight_id validation as the owner-side reader."""
     with pytest.raises(ValueError):
         read_flight_state_snapshot("12345")
+
+
+def test_list_flight_state_ids_returns_empty_when_dir_missing(state_root: Path):
+    """No state directory yet (first run) → empty list, never an error."""
+    assert list_flight_state_ids() == []
+
+
+def test_list_flight_state_ids_enumerates_sorted(state_root: Path):
+    """Every flight-<id>.json on disk is enumerated, regardless of the
+    active-flights index, sorted ascending — the tombstone sweep needs to
+    see switched-away flights the index no longer lists."""
+    write_flight_state(_make_flight_state(flight_id=12))
+    write_flight_state(_make_flight_state(flight_id=3))
+    write_flight_state(_make_flight_state(flight_id=200))
+    assert list_flight_state_ids() == [3, 12, 200]
+
+
+def test_list_flight_state_ids_skips_non_flight_files(state_root: Path):
+    """config.json / active-flights.json / current-location.json and any
+    flight-*.json whose middle segment is not an integer are skipped."""
+    write_flight_state(_make_flight_state(flight_id=7))
+    write_config({"home_address": "1 Infinite Loop"})
+    write_active_flights([7])
+    state_root.mkdir(parents=True, exist_ok=True)
+    (state_root / CURRENT_LOCATION_FILE).write_text("{}")
+    (state_root / "flight-notanint.json").write_text("{}")
+    (state_root / "flight-.json").write_text("{}")
+    assert list_flight_state_ids() == [7]
