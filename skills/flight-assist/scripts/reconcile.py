@@ -40,25 +40,32 @@ from state import StateError  # noqa: E402
 
 
 def main() -> int:
+    # Scope the credential catch to construction ONLY. run_reconcile raises
+    # ValueError subclasses of its own (PlanError, DispositionError,
+    # NormalizeError) and from state writes; folding those into this handler
+    # would mislabel a data/validation bug as a credentials failure and point
+    # the operator at the wrong fix. Keep the two failure surfaces separate.
     try:
         client = ComposioClient.from_env()
-        summary = run_reconcile(client, now=datetime.now(timezone.utc))
     except ValueError as exc:
-        # Missing / empty Composio credentials (ComposioClient.from_env) — a
-        # setup failure, not a per-op failure. Actionable message to stderr,
-        # safe-shape JSON to stdout, non-zero exit so the agent can report it.
+        # Missing / empty Composio credentials — a setup failure. Actionable
+        # message to stderr, safe-shape JSON to stdout, non-zero exit.
         print(f"flight-assist reconcile: {exc}", file=sys.stderr)
         print(json.dumps({"status": "error", "error": "credentials"}, separators=(",", ":")))
         return 1
+
+    try:
+        summary = run_reconcile(client, now=datetime.now(timezone.utc))
     except StateError as exc:
         # On-disk state is corrupt / unreadable — reconciliation cannot run
         # this cycle. Surface it; do not pretend a clean no-op.
         print(f"flight-assist reconcile: {exc}", file=sys.stderr)
         print(json.dumps({"status": "error", "error": "state"}, separators=(",", ":")))
         return 1
-    # Any genuinely unexpected exception propagates: a non-zero exit with a
-    # traceback on stderr is visible failure, per `coding-policy:
-    # error-handling` (let unexpected exceptions propagate).
+    # Any other exception (incl. a ValueError from the reconcile itself)
+    # propagates: a non-zero exit with a traceback on stderr is visible
+    # failure under its real cause, per `coding-policy: error-handling`
+    # (catch specific types; let unexpected exceptions propagate).
     print(json.dumps(summary, separators=(",", ":")))
     return 0
 

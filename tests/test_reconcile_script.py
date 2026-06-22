@@ -44,3 +44,27 @@ def test_missing_user_id_alone_exits_nonzero():
     assert result.returncode == 1
     payload = json.loads(result.stdout.strip())
     assert payload["status"] == "error"
+
+
+def test_state_failure_is_not_mislabeled_as_credentials(tmp_path):
+    """With credentials present, a corrupt-state failure surfaces as `state`.
+
+    The credential catch is scoped to ComposioClient construction only — a
+    StateError (or any other failure) raised inside the reconcile run must
+    surface under its real cause, not be mislabeled a credentials problem.
+    """
+    state_dir = tmp_path / "state" / "flight-assist"
+    state_dir.mkdir(parents=True)
+    # schema_version above the module's current → read_config raises StateError
+    # (forward incompatibility), exercised through the reconcile run.
+    (state_dir / "config.json").write_text('{"schema_version": 999}')
+    result = _run(
+        {
+            "COMPOSIO_API_KEY": "synthetic_key_value",
+            "COMPOSIO_USER_ID": "synthetic_user_value",
+            "FLIGHT_ASSIST_STATE_DIR": str(state_dir),
+        }
+    )
+    assert result.returncode == 1
+    payload = json.loads(result.stdout.strip())
+    assert payload == {"status": "error", "error": "state"}
