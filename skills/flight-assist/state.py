@@ -5,7 +5,7 @@ deltas between byAir snapshots. State lives under
 `/workspace/state/flight-assist/` in production; tests override the
 directory via the `FLIGHT_ASSIST_STATE_DIR` environment variable.
 
-Files written (all JSON, all carry `schema_version: 3` at the top level):
+Files written (all JSON, all carry `schema_version: 4` at the top level):
 
     config.json                       — home_address, etc. (set via /setup)
     active-flights.json               — list of currently-tracked flight_ids
@@ -57,7 +57,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-STATE_SCHEMA_VERSION = 3
+STATE_SCHEMA_VERSION = 4
 
 _DEFAULT_STATE_DIR = "/workspace/state/flight-assist"
 _STATE_DIR_ENV = "FLIGHT_ASSIST_STATE_DIR"
@@ -99,7 +99,7 @@ def _validate_flight_id(flight_id: object, *, fn_name: str) -> None:
     """
     if not isinstance(flight_id, int) or isinstance(flight_id, bool):
         raise ValueError(
-            f"{fn_name}: flight_id must be int, got " f"{type(flight_id).__name__} {flight_id!r}"
+            f"{fn_name}: flight_id must be int, got {type(flight_id).__name__} {flight_id!r}"
         )
 
 
@@ -211,6 +211,13 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
         if is_flight_file and "calendar_events" not in payload:
             payload["calendar_events"] = {}
         version = 3
+    if version == 3:
+        # v3 → v4: config.json gains two optional calendar-reconcile fields
+        # (`byair_calendar_name`, `byair_calendar_id` — see state-schema.md).
+        # Both are optional and absent-tolerant, so there is no shape change
+        # to apply on migration — config, active-flights, and per-flight
+        # records only get a schema_version bump at v4.
+        version = 4
     if version != STATE_SCHEMA_VERSION:
         # Unknown older version: refuse to silently pass through. The
         # branches above are the authoritative list of known upgrade
@@ -312,6 +319,17 @@ def read_current_location() -> dict | None:
 _CONFIG_OPTIONAL_FIELDS: dict[str, type] = {
     "home_address": str,
     "min_transfer_minutes": int,
+    # Calendar reconciliation (#55). The flight ("Flighty Flights") calendar
+    # the reconcile script reads/writes is resolved at runtime — never
+    # hardcoded in the tile per `rules/flight-data-locality.md`. The operator
+    # supplies its display name in `byair_calendar_name` (operator data, not
+    # tile code); the reconcile lists calendars, matches that name once, and
+    # caches the resolved id in `byair_calendar_id` so later cycles skip the
+    # lookup. The Reclaim travel blocks live on the primary calendar
+    # (content-classified — there is no dedicated Reclaim calendar), so no
+    # config field is needed for it.
+    "byair_calendar_name": str,
+    "byair_calendar_id": str,
 }
 
 
@@ -357,8 +375,7 @@ def write_config(config: dict) -> None:
         # reject at the write surface.
         if key == "min_transfer_minutes" and value < 0:
             raise ValueError(
-                f"write_config: field 'min_transfer_minutes' is {value}, "
-                f"expected non-negative int"
+                f"write_config: field 'min_transfer_minutes' is {value}, expected non-negative int"
             )
     payload = {**config, "schema_version": STATE_SCHEMA_VERSION}
     _atomic_write_json(state_dir() / CONFIG_FILE, payload)
@@ -452,7 +469,7 @@ def write_active_flights(flight_ids: list[int]) -> None:
     """
     if not isinstance(flight_ids, list):
         raise ValueError(
-            "write_active_flights: flight_ids must be a list — " f"got {type(flight_ids).__name__}"
+            f"write_active_flights: flight_ids must be a list — got {type(flight_ids).__name__}"
         )
     for index, fid in enumerate(flight_ids):
         if not isinstance(fid, int) or isinstance(fid, bool):
@@ -562,7 +579,7 @@ def _validate_flight_state_payload(payload: dict, *, source: Path) -> None:
         _validate_phase_markers(payload["phase_markers"])
     except ValueError as marker_err:
         raise StateError(
-            f"flight state file {source}: {marker_err} — " "remove or restore the file"
+            f"flight state file {source}: {marker_err} — remove or restore the file"
         ) from marker_err
 
     # Optional fields: when present, type-check against the documented shape.

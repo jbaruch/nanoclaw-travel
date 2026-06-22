@@ -666,6 +666,48 @@ def test_v2_config_migration_bumps_version_without_shape_change(state_root: Path
     assert "calendar_events" not in loaded
 
 
+def test_v3_to_v4_config_migration_bumps_version_without_shape_change(state_root: Path):
+    """v3 config files have no shape change at v4 — schema_version bump only.
+
+    The v4 calendar-reconcile fields (byair_calendar_name / byair_calendar_id)
+    are optional and absent-tolerant, so an old config without them migrates
+    cleanly and gains no keys.
+    """
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text(
+        json.dumps({"schema_version": 3, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
+    )
+    loaded = read_config()
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["home_address"] == "1 Old Loop"
+    assert loaded["min_transfer_minutes"] == 60
+    assert "byair_calendar_name" not in loaded
+    assert "byair_calendar_id" not in loaded
+
+
+def test_config_round_trips_byair_calendar_fields(state_root: Path):
+    """The v4 calendar-reconcile config fields write and read back unchanged."""
+    state_root.mkdir(parents=True)
+    write_config(
+        {
+            "home_address": "1 Infinite Loop, Cupertino, CA",
+            "byair_calendar_name": "Flighty Flights",
+            "byair_calendar_id": "c_abc123@group.calendar.google.com",
+        }
+    )
+    loaded = read_config()
+    assert loaded["byair_calendar_name"] == "Flighty Flights"
+    assert loaded["byair_calendar_id"] == "c_abc123@group.calendar.google.com"
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+
+
+def test_write_config_rejects_non_string_byair_calendar_id(state_root: Path):
+    """byair_calendar_id is a string field — a non-string is rejected at the writer."""
+    state_root.mkdir(parents=True)
+    with pytest.raises(ValueError, match="byair_calendar_id"):
+        write_config({"byair_calendar_id": 12345})
+
+
 def test_v2_to_v3_migration_scopes_calendar_events_by_filename(state_root: Path):
     """A non-flight file carrying a stray flight_id key is NOT given calendar_events.
 

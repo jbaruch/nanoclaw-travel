@@ -19,17 +19,21 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
-  "min_transfer_minutes": 45
+  "min_transfer_minutes": 45,
+  "byair_calendar_name": "Flighty Flights",
+  "byair_calendar_id": "c_abc123@group.calendar.google.com"
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `3`
+- `schema_version` (int, required) — currently `4`
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
+- `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in tile terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in tile code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)
+- `byair_calendar_id` (string, optional) — the resolved Google Calendar ID for the flight calendar, cached by `reconcile` after its first name match so later cycles skip the lookup. When present it is used directly and `byair_calendar_name` is not consulted. The Reclaim travel blocks live on the **primary** calendar (content-classified — there is no dedicated Reclaim calendar), so no config field tracks it
 
 ### `active-flights.json`
 
@@ -37,14 +41,14 @@ Index of currently-tracked flight IDs. Refreshed daily by the sync-tripit script
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "flight_ids": [12345, 67890, 11111]
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `3`
+- `schema_version` (int, required) — currently `4`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
 ### `current-location.json`
@@ -81,7 +85,7 @@ Per-flight state record. One file per tracked flight.
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "flight_id": 12345,
   "code": "AA2414",
   "ownership": "mine",
@@ -143,7 +147,7 @@ Per-flight state record. One file per tracked flight.
 
 Top-level fields:
 
-- `schema_version` (int, required) — `3`
+- `schema_version` (int, required) — `4`
 - `flight_id` (int, required) — byAir's flight identifier
 - `code` (string, required) — flight number like `"AA2414"`
 - `ownership` (string, required) — `"mine"` or `"friend"`
@@ -183,6 +187,8 @@ Each entry's fields:
 - `baggage` (string, optional) — baggage carousel claim once revealed
 - `inbound` (object, optional) — Find My Plane data: `aircraft_model`, `registration`, `flew`, `predicted_delay_minutes`
 - `position_lat`, `position_lon` (float, optional) — last known aircraft position
+- `aircraft_model` (string, optional) — byAir's top-level aircraft model. Consumed by the calendar `reconcile` boarding-lead resolver (`boarding_lead.py`), which falls back to `inbound.aircraft_model` when this is absent or empty
+- `dep_lat`, `dep_lon`, `arr_lat`, `arr_lon` (float, optional) — departure/arrival **airport** coordinates (distinct from `position_lat`/`position_lon`, which track the aircraft). The boarding-lead resolver uses them for the transoceanic (TATL/TPAC) check; when any is absent it skips that check and falls back to aircraft size. Populated once the byAir field names for top-level model and airport coordinates are confirmed (#55 runtime facts); until then the resolver runs on `inbound.aircraft_model` and the narrowbody default
 
 `phase_markers` booleans — `true` means the corresponding time-based wake event has already fired and won't fire again for this flight:
 
@@ -199,7 +205,7 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Today `STATE_SCHEMA_VERSION` is `3`.
+Today `STATE_SCHEMA_VERSION` is `4`.
 
 `state.py`'s read helpers enforce these rules on `schema_version`:
 
@@ -219,6 +225,10 @@ Per-flight state: `phase_markers` gains `connection_at_risk_fired: false`. The o
 ### v2 → v3
 
 Per-flight state: gains the `calendar_events` map (empty `{}` on migration). The owner-side migration in `state.py:_migrate` adds the missing key on first read — scoped by the `flight-<id>.json` filename, not by payload contents, so a config/active-flights file (or any future record that happens to carry a `flight_id` key) is never given this per-flight-only field — and rewrites the file at v3. Config and active-flights files have no shape change at v3 — they receive a schema_version bump only.
+
+### v3 → v4
+
+Config: gains two optional calendar-reconcile fields, `byair_calendar_name` and `byair_calendar_id` (see `config.json` above). Both are optional and absent-tolerant, so there is no shape to add on migration — the owner-side `state.py:_migrate` only bumps the `schema_version`. Per-flight and active-flights files likewise have no shape change at v4 — schema_version bump only.
 
 ## Bump Procedure
 
