@@ -104,7 +104,12 @@ def normalize_event(raw_event: dict, *, calendar_id: str, classify_reclaim: bool
     """
     event_id = raw_event.get("id")
     if not event_id:
-        raise NormalizeError(f"event has no id: {raw_event!r}")
+        # Name only the keys present, never the values — the event body
+        # carries summary / description / attendees we must not leak into
+        # logs (per `coding-policy: no-secrets` and error-handling).
+        raise NormalizeError(
+            f"event is missing required 'id' field — keys present: {sorted(raw_event.keys())}"
+        )
     extended = raw_event.get("extendedProperties") or {}
     private_props = extended.get("private") if isinstance(extended, dict) else None
     return {

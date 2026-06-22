@@ -174,8 +174,22 @@ def test_normalize_all_day_event_uses_date():
 
 
 def test_normalize_missing_id_raises():
-    with pytest.raises(NormalizeError, match="no id"):
+    with pytest.raises(NormalizeError, match="missing required 'id'"):
         normalize_event({"summary": "x"}, calendar_id=FLIGHTY_CAL)
+
+
+def test_normalize_missing_id_error_does_not_leak_values():
+    # The error names the keys present but never their values, so calendar
+    # content (summary/description/attendees) can't leak into logs.
+    with pytest.raises(NormalizeError) as exc_info:
+        normalize_event(
+            {"summary": "Secret offsite location", "description": "private notes"},
+            calendar_id=FLIGHTY_CAL,
+        )
+    message = str(exc_info.value)
+    assert "Secret offsite location" not in message
+    assert "private notes" not in message
+    assert "summary" in message  # the key name is fine to surface
 
 
 def test_normalize_missing_start_end_yields_none():
