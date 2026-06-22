@@ -84,10 +84,13 @@ def _effective_arrival(flight_state: dict) -> datetime:
     """Actual arrival when byAir has published one, else scheduled arrival."""
     snapshot = flight_state.get("last_snapshot") or {}
     actual_arr = snapshot.get("arr_time") if isinstance(snapshot, dict) else None
-    if actual_arr:
+    # `is not None`, not truthiness: a present-but-empty arr_time is
+    # malformed and must fail loudly via the parse error below, not
+    # silently fall back to scheduled (matches `calendar_plan._to_instant`).
+    if actual_arr is not None:
         return _to_instant(actual_arr, field="last_snapshot.arr_time")
     scheduled = flight_state.get("scheduled_arr_time")
-    if not scheduled:
+    if scheduled is None:
         raise DispositionError(
             "flight state has neither last_snapshot.arr_time nor scheduled_arr_time — "
             "cannot determine whether the flight has completed"

@@ -142,6 +142,20 @@ def test_naive_arrival_string_raises():
         resolve_disposition(state, in_active_flights=True, now=NOW)
 
 
+def test_empty_actual_arrival_fails_loudly_not_silent_fallback():
+    # A present-but-empty last_snapshot.arr_time is malformed; it must
+    # raise the parse error, not silently fall back to scheduled.
+    state = _state(scheduled_arr=FUTURE_ARR, snapshot={"arr_time": ""})
+    with pytest.raises(DispositionError, match="last_snapshot.arr_time"):
+        resolve_disposition(state, in_active_flights=True, now=NOW)
+
+
+def test_empty_scheduled_arrival_fails_loudly():
+    state = _state(scheduled_arr="")
+    with pytest.raises(DispositionError, match="scheduled_arr_time"):
+        resolve_disposition(state, in_active_flights=True, now=NOW)
+
+
 def test_non_utc_offset_arrival_normalized_correctly():
     # -07:00 arrival at 15:00 == 22:00 UTC, still future relative to NOW.
     state = _state(scheduled_arr="2026-05-17T15:00:00-07:00")
