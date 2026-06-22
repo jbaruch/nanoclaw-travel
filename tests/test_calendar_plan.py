@@ -183,6 +183,27 @@ def test_flight_event_adopted_by_match():
     assert adopt[0]["body"]["private_props"][TAG_FLIGHT_ID] == "1"
 
 
+def test_flight_event_adopted_despite_spaced_code_in_summary():
+    # Real Flighty summaries render the code with a space ("UA 8018") while
+    # byAir's code field carries it unspaced ("UA8018"); the match is
+    # whitespace-insensitive so adoption still fires. Summary uses the real
+    # Flighty format including the zero-width spaces around the arrow.
+    byair_event = _event(event_id="f1", summary="✈ BNA​→​YYZ • UA 8018")
+    flight = _flight(code="UA8018")
+    ops = plan_reconciliation([flight], [byair_event], _config())
+    adopt = _ops_of(ops, op="adopt", kind=KIND_FLIGHT)
+    assert len(adopt) == 1
+    assert adopt[0]["event_id"] == "f1"
+
+
+def test_flight_event_adopted_when_code_itself_has_space():
+    # byAir's code field may itself carry the space; still matches.
+    byair_event = _event(event_id="f1", summary="✈ BNA→YYZ • UA8018")
+    flight = _flight(code="UA 8018")
+    ops = plan_reconciliation([flight], [byair_event], _config())
+    assert len(_ops_of(ops, op="adopt", kind=KIND_FLIGHT)) == 1
+
+
 def test_flight_event_not_adopted_when_already_tagged():
     tagged = _event(event_id="f1", private_props={TAG_FLIGHT_ID: "1"})
     ops = plan_reconciliation([_flight()], [tagged], _config())

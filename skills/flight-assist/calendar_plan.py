@@ -228,27 +228,38 @@ def _plan_boarding(flight: dict, events_by_id: dict, config: dict) -> list[dict]
     ]
 
 
+def _strip_whitespace(value: str) -> str:
+    """Collapse all whitespace out of a string for tolerant code matching.
+
+    The byAir flight calendar renders the code with a space (`UA 8018`)
+    while byAir's `code` field may carry it unspaced (`UA8018`), so a raw
+    substring match misses. Stripping all whitespace from both sides makes
+    the comparison spacing-agnostic.
+    """
+    return "".join(value.split())
+
+
 def _match_byair_event(flight: dict, events: list[dict], config: dict) -> dict | None:
     """Find the byAir-authored flight event for this leg, to adopt it.
 
     Candidates: events on the byAir calendar whose summary contains the
-    flight code and whose start is within ADOPT_MATCH_TOLERANCE_MINUTES of
-    the flight's departure. The closest by start wins, so two legs sharing
-    a code on different days do not cross-match. Already-tagged events are
-    skipped — adoption keys off the ledger after the first match, never by
-    re-matching a moved event.
+    flight code (whitespace-insensitively) and whose start is within
+    ADOPT_MATCH_TOLERANCE_MINUTES of the flight's departure. The closest by
+    start wins, so two legs sharing a code on different days do not
+    cross-match. Already-tagged events are skipped — adoption keys off the
+    ledger after the first match, never by re-matching a moved event.
     """
     byair_cal = _require(config, "byair_calendar_id", where="config")
     dep = _to_instant(
         _require(flight, "dep_time", where=f"flight {flight['flight_id']}"), field="dep_time"
     )
-    code = flight["code"]
+    code = _strip_whitespace(flight["code"])
     best = None
     best_delta = None
     for event in events:
         if event.get("calendar_id") != byair_cal:
             continue
-        if code not in (event.get("summary") or ""):
+        if code not in _strip_whitespace(event.get("summary") or ""):
             continue
         if (event.get("private_props") or {}).get(TAG_FLIGHT_ID):
             continue  # already tagged/owned — not an adoption candidate
