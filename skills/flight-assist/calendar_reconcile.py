@@ -103,15 +103,17 @@ def _list_calendar_items(client) -> list[dict]:
 def _find_events_args(*, calendar_id: str, time_min: str, time_max: str) -> dict:
     """Arguments for GOOGLECALENDAR_FIND_EVENT over a calendar + time window.
 
-    `single_events` expands recurring events into instances so each carries
-    a concrete start/end the planner can compare (a recurring master would
-    not). Verify the field names against the live toolkit.
+    `singleEvents` expands recurring events into instances so each carries a
+    concrete start/end the planner can compare; without it a recurring master
+    comes back with no concrete instance time and `_is_timed` would mishandle
+    it. The name is Google Calendar's documented camelCase API parameter (the
+    response is Google-native too) — verify against the live toolkit.
     """
     return {
         "calendar_id": calendar_id,
         "timeMin": time_min,
         "timeMax": time_max,
-        "single_events": True,
+        "singleEvents": True,
     }
 
 
