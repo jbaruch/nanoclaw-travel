@@ -1,5 +1,9 @@
 # Changelog
 
+### Added — TomTom backup routing in `maps_client` (`jbaruch/nanoclaw-travel#59`)
+
+`maps_client` gained a Google-primary → TomTom-backup chain behind the unchanged `travel_time() → TravelTime` interface, the first piece of the drive-planner epic (#59) and a hardening of the existing flight `time_to_leave`. Google Distance Matrix stays primary; on any Google `MapsError` or transport (`URLError`) failure, the client falls back to TomTom when `TOMTOM_API_KEY` is configured. TomTom routing is coordinates-only, so the new `TomTomClient` does geocode-origin → geocode-destination → route-with-`traffic=true`, mapping `noTrafficTravelTimeInSeconds` / `travelTimeInSeconds` onto the same free-flow / in-traffic split Google returns. `TravelTime` gained a `source` field (`"google"` / `"tomtom"`) so callers can tell which provider answered. There is deliberately no no-traffic fallback (e.g. OSRM) — a duration without a live-traffic model is false confidence for a leave-by deadline; when both providers fail the client raises `MapsError("ALL_PROVIDERS_FAILED", …)` naming what each reported. `MapsClient.from_env` wires the backup only when `TOMTOM_API_KEY` is set, so a Google-only deploy is unchanged. The caller in `precheck.py` already catches `MapsError` + `URLError`, so the fallback integrates with no caller change. 16 new tests (TomTom geocode+route success, no-baseline traffic split, geocode/route zero-results, full Google→TomTom fallback on both `MapsError` and `URLError`, combined-failure error, Google-success-skips-TomTom, `from_env` wiring with/without the key); `.env.example` documents the optional key.
+
 ## 0.1.36 — 2026-06-22
 
 ### Added — calendar teardown tombstone sweep + wake-cycle wiring (`jbaruch/nanoclaw-flight-assist#55`)
