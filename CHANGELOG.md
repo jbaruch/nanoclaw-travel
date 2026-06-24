@@ -1,5 +1,9 @@
 # Changelog
 
+### Fixed — drive-planner calendar fetch action slug (`jbaruch/nanoclaw-travel#59`)
+
+Live NAS verification surfaced the action-slug caveat `fetch_events.py` flagged: the sweep's calendar fetch used `GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS`, which does not exist in the live Composio v3 toolkit and 404s. Corrected to `GOOGLECALENDAR_EVENTS_LIST` with the schema-required camelCase `calendarId: "primary"` + `singleEvents: true` arguments (verified against `GET /api/v3/tools/GOOGLECALENDAR_EVENTS_LIST` and matching the proven `nanoclaw-admin` `composio-fetch` precheck). Scope adjusts from the epic's aspirational "all calendars" to the **primary** calendar — the all-calendars slug isn't real, and primary is where in-person meetings live; multi-calendar fan-out (list calendars → fetch each) is a future enhancement. The `data.items` container is the Google-native events.list shape; the response-key candidates now check `items` first. Probed live against the operator's calendar (HTTP 200, 44 events with summary/location). Test asserts the slug + the `calendarId`/`singleEvents` args.
+
 ## 0.1.44 — 2026-06-24
 
 ### Added — drive-planner sweep + recheck poll, wired into the tile (`jbaruch/nanoclaw-travel#59`)
