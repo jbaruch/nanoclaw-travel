@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
-REPO_ROOT = __import__("pathlib").Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-planner"))
 
 from block_props import (  # noqa: E402
@@ -192,6 +193,21 @@ def test_parse_rejects_newer_schema_version():
         origin="A",
         destination="B",
     ).replace('"v":1', '"v":2')
+    assert parse_block(_event(description=blob)) is None
+
+
+def test_parse_rejects_non_int_version():
+    # A present-but-non-int version (corrupt or future-shaped record) must read
+    # as no-usable-prior-state, not slip through as a missing version.
+    blob = build_description(
+        summary="x",
+        meeting_id="evt_42",
+        direction="outbound",
+        baseline_seconds=10,
+        arrive_by=ARRIVE,
+        origin="A",
+        destination="B",
+    ).replace('"v":1', '"v":"2"')
     assert parse_block(_event(description=blob)) is None
 
 

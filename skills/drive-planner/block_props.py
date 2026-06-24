@@ -394,13 +394,18 @@ def parse_block(event: object) -> BlockState | None:
     if state is None:
         return None
 
+    # A missing version is treated as v1 (back-compat). A present version that
+    # is newer than this tile supports — OR not a plain int at all (a corrupt
+    # or future-shaped record, e.g. "2") — reads as no-usable-prior-state so the
+    # poll skips it, the safe non-disruptive fallback.
     version = state.get(_STATE_KEY_VERSION)
-    if (
-        isinstance(version, int)
-        and not isinstance(version, bool)
-        and version > BLOCK_SCHEMA_VERSION
-    ):
-        return None
+    if version is not None:
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or version > BLOCK_SCHEMA_VERSION
+        ):
+            return None
 
     marker = _MARKER_RE.search(description) if isinstance(description, str) else None
     if marker is None:
