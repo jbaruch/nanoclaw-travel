@@ -141,7 +141,7 @@ class CalendarFetcher:
         base_url = os.environ.get(base_url_var) or _DEFAULT_BASE_URL
         return cls(api_key, user_id, base_url=base_url, timeout=timeout)
 
-    def fetch_window(self, *, time_min: datetime, time_max: datetime) -> list[dict]:
+    def fetch_window(self, *, time_min: datetime, time_max: datetime) -> list:
         """Fetch all-calendar events in [time_min, time_max] as scan-shaped dicts.
 
         Args:
@@ -150,7 +150,9 @@ class CalendarFetcher:
 
         Returns:
             A list of raw event dicts carrying the fields scan.py reads.
-            Empty when the window genuinely has no events.
+            Empty when the window genuinely has no events. Any non-dict entry
+            in the upstream list is passed through verbatim for scan.py to
+            classify as `filtered` — fetch never silently drops one.
 
         Raises:
             ValueError: on a naive datetime or time_max <= time_min.
@@ -201,13 +203,17 @@ class CalendarFetcher:
         return body.get("data") or {}
 
 
-def _extract_events(data: dict) -> list[dict]:
+def _extract_events(data: dict) -> list:
     """Pull the event list out of the Composio `data` envelope.
 
     Tries each `_EVENT_CONTAINER_KEYS` in order and returns the first that is
-    a list. A `data` with none of the keys raises FetchError — a successful
-    response we cannot read is a shape regression to surface, not a silent
-    empty fetch that would stop the sweep planning.
+    a list — verbatim, including any non-dict entries. A `data` with none of
+    the keys raises FetchError: a successful response we cannot read is a
+    shape regression to surface, not a silent empty fetch that would stop the
+    sweep planning. Individual malformed entries are NOT filtered here —
+    `scan.py` classifies a non-dict event as `filtered` (it never crashes and
+    never silently drops one), so preserving them keeps a partial shape
+    regression visible in the sweep's audit rather than hidden.
     """
     if not isinstance(data, dict):
         raise FetchError(
@@ -216,13 +222,20 @@ def _extract_events(data: dict) -> list[dict]:
     for key in _EVENT_CONTAINER_KEYS:
         value = data.get(key)
         if isinstance(value, list):
-            return [event for event in value if isinstance(event, dict)]
+            return value
     raise FetchError(
         "calendar fetch succeeded but no event list found under "
         f"{_EVENT_CONTAINER_KEYS} — verify the action's response shape against the live toolkit"
     )
 
 
-def _project_event(event: dict) -> dict:
-    """Keep only the fields scan.py reads, dropping the rest of the GCal resource."""
+def _project_event(event: object) -> object:
+    """Keep only the fields scan.py reads, dropping the rest of the GCal resource.
+
+    A non-dict entry is passed through untouched for `scan.py` to classify as
+    `filtered` — fetch must not silently drop it (that would turn a shape
+    regression into an invisible empty sweep).
+    """
+    if not isinstance(event, dict):
+        return event
     return {field: event[field] for field in _EVENT_FIELDS if field in event}

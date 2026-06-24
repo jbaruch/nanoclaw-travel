@@ -126,11 +126,19 @@ def test_empty_window_returns_empty_list():
         assert _fetcher().fetch_window(time_min=NOW, time_max=LATER) == []
 
 
-def test_non_dict_events_in_list_are_skipped():
+def test_non_dict_events_are_preserved_for_scan_not_silently_dropped():
+    # A malformed (non-dict) entry must survive the fetch so scan() can
+    # surface it as `filtered` — dropping it here would hide a partial
+    # response-shape regression as an invisible empty sweep.
     payload = {"events": [_event("a"), "garbage", 123]}
     with patch("urllib.request.urlopen", lambda r, timeout=None: _ok(payload)):
         events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
-    assert [e["id"] for e in events] == ["a"]
+    assert len(events) == 3
+    assert events[1] == "garbage" and events[2] == 123
+    # and scan classifies them without crashing
+    results = scan(events, now=NOW, home_address="Home")
+    buckets = sorted(r.bucket for r in results)
+    assert buckets == ["filtered", "filtered", "needs_decision"]
 
 
 # --- failure modes --------------------------------------------------------
