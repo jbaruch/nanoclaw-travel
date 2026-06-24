@@ -146,7 +146,7 @@ def _detect_for_trip(
 ) -> list[tuple[int, dict]]:
     """Walk one trip's sorted legs, emit events for tight connections."""
     events: list[tuple[int, dict]] = []
-    for leg1, leg2 in zip(trip_group, trip_group[1:]):
+    for leg1, leg2 in zip(trip_group, trip_group[1:], strict=False):
         event = _evaluate_pair(
             leg1=leg1,
             leg2=leg2,

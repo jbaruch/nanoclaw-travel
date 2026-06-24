@@ -367,7 +367,7 @@ def _plan_reclaim_deletions(
         ),
     )
     ops: list[dict] = []
-    for leg_n, leg_next in zip(legs, legs[1:]):
+    for leg_n, leg_next in zip(legs, legs[1:], strict=False):
         where_n = f"flight {leg_n.get('flight_id')}"
         where_next = f"flight {leg_next.get('flight_id')}"
         if _require(leg_n, "arr_airport_id", where=where_n) != _require(

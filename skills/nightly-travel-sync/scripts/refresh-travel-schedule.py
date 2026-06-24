@@ -246,9 +246,9 @@ def main():
     with open(tmp_path) as f:
         verified = json.load(f)
     assert isinstance(verified, list), "travel-schedule.json is not a JSON array"
-    assert all(
-        "summary" in e and "start" in e and "end" in e and "type" in e for e in verified
-    ), "travel-schedule.json contains events missing required fields"
+    assert all("summary" in e and "start" in e and "end" in e and "type" in e for e in verified), (
+        "travel-schedule.json contains events missing required fields"
+    )
 
     os.replace(tmp_path, OUTPUT_PATH)
 

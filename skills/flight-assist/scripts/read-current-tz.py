@@ -39,7 +39,6 @@ Exit code:
 import json
 import sqlite3
 import sys
-
 import zoneinfo
 
 DB_PATH = "/workspace/store/messages.db"
