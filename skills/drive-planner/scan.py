@@ -384,6 +384,11 @@ def scan(
         )
     if not isinstance(events, list):
         raise ScanError(f"scan: `events` must be a list, got {type(events).__name__}")
+    if skip_state is not None and not isinstance(skip_state, dict):
+        raise ScanError(
+            "scan: `skip_state` must be a mapping of meeting_id → ISO-8601 expiry, "
+            f"got {type(skip_state).__name__}"
+        )
 
     skip_state = skip_state or {}
     parsed = [_parse_event(raw) for raw in events]

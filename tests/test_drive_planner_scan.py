@@ -459,6 +459,11 @@ def test_events_must_be_a_list():
         scan({"id": "m1"}, now=NOW, home_address=HOME)  # type: ignore[arg-type]
 
 
+def test_non_dict_skip_state_raises_scan_error():
+    with pytest.raises(ScanError, match="skip_state"):
+        scan([], now=NOW, home_address=HOME, skip_state=["evt_1"])  # type: ignore[arg-type]
+
+
 def test_malformed_event_elements_are_filtered_not_crash():
     # A non-dict element, and dict events with non-string location/description,
     # must classify (filtered) without raising, and must NOT abort the good
@@ -574,6 +579,16 @@ def test_cli_malformed_events_do_not_traceback(monkeypatch, capsys):
     results = json.loads(out)["results"]
     assert results[0]["bucket"] == "filtered"
     assert results[1]["meeting_id"] == "good"
+
+
+def test_cli_malformed_skip_state_exits_nonzero(monkeypatch, capsys):
+    code, _out, err = _run_cli(
+        monkeypatch,
+        capsys,
+        {"now": NOW.isoformat(), "home_address": HOME, "events": [], "skip_state": ["evt_1"]},
+    )
+    assert code == 1
+    assert "skip_state" in json.loads(err)["error"]
 
 
 @pytest.mark.parametrize("bad", ["nope", -5, 0, True, 1.5])
