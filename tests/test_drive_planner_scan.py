@@ -459,6 +459,28 @@ def test_events_must_be_a_list():
         scan({"id": "m1"}, now=NOW, home_address=HOME)  # type: ignore[arg-type]
 
 
+def test_malformed_event_elements_are_filtered_not_crash():
+    # A non-dict element, and dict events with non-string location/description,
+    # must classify (filtered) without raising, and must NOT abort the good
+    # event that follows them in the same batch.
+    start = NOW + timedelta(hours=3)
+    good = _meeting("good", start=start, end=start + timedelta(hours=1))
+    events = [
+        "not-an-event",  # non-dict element
+        123,  # non-dict element
+        {"id": "m1", "summary": "x", "location": ["a", "b"], **_timed(start, start)},
+        {"id": "m2", "summary": "x", "description": {"nested": 1}, **_timed(start, start)},
+        good,
+    ]
+    results = scan(events, now=NOW, home_address=HOME)  # type: ignore[arg-type]
+    assert len(results) == len(events)  # nothing dropped
+    assert results[0].bucket == "filtered"
+    assert results[1].bucket == "filtered"
+    # the good event still classifies normally
+    assert results[-1].meeting_id == "good"
+    assert results[-1].bucket == "needs_decision"
+
+
 def test_default_threshold_constant_is_ninety_minutes():
     assert DEFAULT_TIGHT_GAP_SECONDS == 90 * 60
 
@@ -535,6 +557,23 @@ def test_cli_empty_home_address_exits_nonzero(monkeypatch, capsys):
     )
     assert code == 1
     assert "home_address" in json.loads(err)["error"]
+
+
+def test_cli_malformed_events_do_not_traceback(monkeypatch, capsys):
+    # A non-dict event element must be classified (filtered), exit 0 — never
+    # escape the script boundary as a Python traceback.
+    start = NOW + timedelta(hours=3)
+    request = {
+        "now": NOW.isoformat(),
+        "home_address": HOME,
+        "events": ["garbage", _meeting("good", start=start, end=start + timedelta(hours=1))],
+    }
+    code, out, err = _run_cli(monkeypatch, capsys, request)
+    assert code == 0
+    assert err == ""
+    results = json.loads(out)["results"]
+    assert results[0]["bucket"] == "filtered"
+    assert results[1]["meeting_id"] == "good"
 
 
 @pytest.mark.parametrize("bad", ["nope", -5, 0, True, 1.5])

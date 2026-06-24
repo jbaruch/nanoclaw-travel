@@ -199,14 +199,15 @@ class _Event:
     marker: tuple[str, str] | None  # (served_meeting_id, direction) if a block
 
 
-def _normalize_location(location: str | None) -> str | None:
+def _normalize_location(location: object) -> str | None:
     """Collapse all whitespace runs to single spaces and strip (lombot #37).
 
     A multi-line `location` (venue name `\\n` street address) crashed
     LoMBot's geocoder; normalizing here means every downstream router sees
-    one clean line. Returns None for an empty / whitespace-only location.
+    one clean line. Returns None for an empty / whitespace-only location or
+    any non-string value (a malformed JSON event must not raise here).
     """
-    if not location:
+    if not isinstance(location, str) or not location:
         return None
     collapsed = re.sub(r"\s+", " ", location).strip()
     return collapsed or None
@@ -258,15 +259,34 @@ def _parse_iso(raw: object) -> datetime | None:
     return parsed
 
 
-def _parse_event(raw: dict) -> _Event:
-    """Adapt a raw Google Calendar event dict into an `_Event`."""
+def _parse_event(raw: object) -> _Event:
+    """Adapt a raw Google Calendar event into an `_Event`, total over any JSON.
+
+    A non-dict element (or one with non-string fields) must never raise —
+    one malformed event in a wide-window fetch can't be allowed to abort the
+    whole sweep. A non-dict becomes an empty `_Event` with no times, which
+    the classifier then surfaces as `filtered` (reason "missing or
+    unparseable time"), never silently dropped.
+    """
+    if not isinstance(raw, dict):
+        return _Event(
+            raw_id="",
+            summary="",
+            location=None,
+            start=None,
+            end=None,
+            all_day=False,
+            marker=None,
+        )
+
     raw_id = str(raw.get("id") or "")
     summary = str(raw.get("summary") or "")
     location = _normalize_location(raw.get("location"))
     start, start_all_day = _parse_dt(raw.get("start"))
     end, end_all_day = _parse_dt(raw.get("end"))
 
-    marker_match = _MARKER_RE.search(raw.get("description") or "")
+    description = raw.get("description")
+    marker_match = _MARKER_RE.search(description) if isinstance(description, str) else None
     marker = (marker_match["id"], marker_match["dir"]) if marker_match else None
 
     return _Event(
