@@ -113,8 +113,9 @@ def _items(data: object) -> list:
 def existing_directions(fetched_events: list, meeting_id: str) -> set:
     """The set of leg directions already blocked for `meeting_id` (lombot #50).
 
-    Parses each fetched event as a potential drive block and collects the
-    directions whose marker serves `meeting_id`. "Handled" = ANY marker, so a
+    Parses each fetched event with `parse_block` (recognition is by the block's
+    `extendedProperties.private`, not the description marker) and collects the
+    directions of blocks that serve `meeting_id`. "Handled" = ANY block, so a
     create for a (meeting, direction) already in this set is skipped.
     """
     directions = set()
@@ -245,7 +246,11 @@ def _remove_mode(request: dict, client) -> dict:
     # meeting_end is optional — the user reply that triggers a skip carries only
     # the meeting id. When absent it is derived below from the deleted blocks.
     meeting_end = _parse_iso(request.get("meeting_end"))
-    calendar_id = request.get("calendar_id", "primary")
+    calendar_id = request.get("calendar_id")
+    # Default a missing / non-string / empty calendar_id rather than forwarding
+    # an invalid value into find/delete.
+    if not isinstance(calendar_id, str) or not calendar_id:
+        calendar_id = "primary"
 
     # Search a generous window: the blocks sit near the meeting, which (when no
     # meeting_end is given) we don't yet know — bound the search by the skip

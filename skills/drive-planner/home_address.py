@@ -42,9 +42,31 @@ from pathlib import Path
 _DEFAULT_PROFILE_PATH = "/workspace/trusted/user_profile.md"
 _PROFILE_PATH_ENV = "USER_PROFILE_PATH"
 
+# The `## Addresses` section heading. `current_home` is read ONLY from inside
+# this canonical block — a `current_home:` mention elsewhere in the profile
+# (prose, an example, a stale note) must never set the drive origin.
+_ADDRESSES_HEADING_RE = re.compile(r"^[ \t]*##[ \t]+Addresses[ \t]*$", re.MULTILINE)
+# The next `## ` heading that closes the Addresses section.
+_NEXT_H2_RE = re.compile(r"^[ \t]*##[ \t]+\S", re.MULTILINE)
 # The canonical drive-origin key inside the `## Addresses` block. Matched as a
 # `- current_home: <value>` list item, tolerant of surrounding whitespace.
 _CURRENT_HOME_RE = re.compile(r"^\s*-\s*current_home\s*:\s*(?P<value>\S.*?)\s*$", re.MULTILINE)
+
+
+def _addresses_section(text: str) -> str | None:
+    """The body of the `## Addresses` block, or None when the heading is absent.
+
+    Runs from just after the `## Addresses` heading to the next `## ` heading
+    (or end of file). Scoping the `current_home` read to this block is what
+    keeps a stale or example `current_home:` elsewhere in the profile from
+    silently becoming the drive origin.
+    """
+    heading = _ADDRESSES_HEADING_RE.search(text)
+    if heading is None:
+        return None
+    body = text[heading.end() :]
+    nxt = _NEXT_H2_RE.search(body)
+    return body[: nxt.start()] if nxt else body
 
 
 class HomeAddressError(Exception):
@@ -71,9 +93,11 @@ def read_current_home(*, path: Path | None = None) -> str:
         The `current_home` value, whitespace-trimmed.
 
     Raises:
-        HomeAddressError: when the profile file is missing, or carries no
-            non-empty `current_home:` entry — each with a message pointing at
-            the `nanoclaw-admin` trusted-memory Addresses block to fix.
+        HomeAddressError: when the profile file is missing, carries no
+            `## Addresses` block, or that block carries no non-empty
+            `current_home:` entry — each with a message pointing at the
+            `nanoclaw-admin` trusted-memory Addresses block to fix. A
+            `current_home:` outside the block is deliberately not read.
     """
     target = path if path is not None else profile_path()
     try:
@@ -87,7 +111,14 @@ def read_current_home(*, path: Path | None = None) -> str:
     except OSError as exc:
         raise HomeAddressError(f"owner profile at {target} is unreadable ({exc})") from exc
 
-    match = _CURRENT_HOME_RE.search(text)
+    section = _addresses_section(text)
+    if section is None:
+        raise HomeAddressError(
+            f"no `## Addresses` block in {target} — the canonical home address lives in that "
+            "block of user_profile.md (nanoclaw-admin trusted-memory); add it with a "
+            "`- current_home: <address>` line and redeploy"
+        )
+    match = _CURRENT_HOME_RE.search(section)
     if match is None:
         raise HomeAddressError(
             f"no `current_home:` entry in the `## Addresses` block of {target} — add "

@@ -71,6 +71,34 @@ def test_missing_current_home_entry_raises(tmp_path):
         read_current_home(path=profile)
 
 
+def test_missing_addresses_block_raises(tmp_path):
+    profile = _write_profile(tmp_path, "# Owner Profile\n\nSome prose, no Addresses block.\n")
+    with pytest.raises(HomeAddressError, match="no `## Addresses` block"):
+        read_current_home(path=profile)
+
+
+def test_current_home_outside_addresses_block_is_ignored(tmp_path):
+    # A `current_home:` in prose or a later section must NOT set the origin —
+    # only the value inside the canonical `## Addresses` block counts.
+    text = (
+        "# Owner Profile\n\n"
+        "- current_home: 999 Stale Prose Rd, Oldtown\n\n"
+        "## Addresses\n"
+        "- current_home: 1040 Pine Creek Dr, Arrington, TN 37014\n\n"
+        "## Notes\n"
+        "- current_home: 1 Decoy Ln, Faketown\n"
+    )
+    profile = _write_profile(tmp_path, text)
+    assert read_current_home(path=profile) == "1040 Pine Creek Dr, Arrington, TN 37014"
+
+
+def test_addresses_block_without_current_home_raises_even_if_prose_has_it(tmp_path):
+    text = "- current_home: 999 Stale Rd\n\n## Addresses\n- home_airport: BNA\n"
+    profile = _write_profile(tmp_path, text)
+    with pytest.raises(HomeAddressError, match="no `current_home:` entry"):
+        read_current_home(path=profile)
+
+
 def test_empty_current_home_value_raises(tmp_path):
     profile = _write_profile(tmp_path, "## Addresses\n- current_home:   \n")
     with pytest.raises(HomeAddressError, match="no `current_home:` entry"):

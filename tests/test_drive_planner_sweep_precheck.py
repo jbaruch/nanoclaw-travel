@@ -82,10 +82,10 @@ def test_no_actionable_meetings_yields_empty():
 
 
 def test_back_to_back_meeting_with_no_legs_does_not_wake():
-    # Three same-venue meetings 30 min apart: the MIDDLE one is back_to_back
-    # with no transit legs (stay put both sides). It must not surface — waking
-    # the agent with nothing to do violates the "wake only when actionable"
-    # contract.
+    # Three same-venue zero-duration meetings one hour apart (a tight gap, well
+    # under the 90-min threshold): the MIDDLE one is back_to_back with no
+    # transit legs (stay put both sides). It must not surface — waking the agent
+    # with nothing to do violates the "wake only when actionable" contract.
     venue = "100 Broadway, Nashville, TN"
     events = [
         _meeting("a", 14, end_h=14, location=venue),
