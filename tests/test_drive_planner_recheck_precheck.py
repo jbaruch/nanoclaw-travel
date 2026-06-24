@@ -26,8 +26,8 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))  # maps_client f
 from block_props import (  # noqa: E402
     ALERT_GROWTH,
     ALERT_LEAVE_NOW,
-    KEY_ALERTED,
-    build_block_args,
+    build_description,
+    parse_alerted,
 )
 from route_error import RouteError  # noqa: E402
 
@@ -58,27 +58,18 @@ def _block_event(
 ):
     """A fetched drive-block event with arrive_by = NOW + arrive_offset_min."""
     arrive = NOW + timedelta(minutes=arrive_offset_min)
-    leg_start = arrive - timedelta(seconds=BASELINE + BUFFER)
-    args = build_block_args(
-        calendar_id="primary",
+    summary = f"Drive: {meeting_id}"
+    description = build_description(
+        summary=summary,
         meeting_id=meeting_id,
         direction=direction,
-        summary=f"Drive: {meeting_id}",
-        leg_start=leg_start,
-        arrive_by=arrive,
         baseline_seconds=BASELINE,
+        arrive_by=arrive,
         origin="Home",
         destination="100 Broadway, Nashville, TN",
+        alerted=parse_alerted(alerted) if alerted is not None else frozenset(),
     )
-    private = dict(args["extendedProperties"]["private"])
-    if alerted is not None:
-        private[KEY_ALERTED] = alerted
-    return {
-        "id": event_id,
-        "summary": args["summary"],
-        "description": args["description"],
-        "extendedProperties": {"private": private},
-    }
+    return {"id": event_id, "summary": summary, "description": description}
 
 
 def _route(seconds):
@@ -98,12 +89,12 @@ def test_growth_past_threshold_alerts_once():
     # display-ready minutes the SKILL.md consumes verbatim (no ÷60 in prose)
     assert result["alerts"][0]["current_minutes"] == round((BASELINE + 720) / 60)
     assert result["alerts"][0]["delta_minutes"] == round(720 / 60)
-    # The patch carries the FULL private map (not a single key) so PATCH does
-    # not wipe the block's machine state; only the alert record is updated.
+    # The patch carries the full rebuilt description (state lives there); the
+    # alert record is updated and the rest of the state preserved.
     patch = result["patches"][0]
-    assert patch["private"][KEY_ALERTED] == ALERT_GROWTH
-    assert patch["private"]["drive_planner_meeting"] == "evt_42"
-    assert patch["private"]["drive_planner_baseline_seconds"] == str(BASELINE)
+    assert f'"al":"{ALERT_GROWTH}"' in patch["description"]
+    assert "[drive-planner:meeting=evt_42:dir=outbound]" in patch["description"]
+    assert f'"b":{BASELINE}' in patch["description"]
     assert result["route_errors"] == []
 
 
@@ -137,8 +128,8 @@ def test_leave_now_fires_even_after_prior_growth_alert():
     result = poll.evaluate_blocks([event], now=NOW, route=_route(BASELINE))
     assert result["alerts"][0]["kinds"] == [ALERT_LEAVE_NOW]
     # both prior growth and the new leave_now are in the carried-forward record
-    assert ALERT_LEAVE_NOW in result["patches"][0]["private"][KEY_ALERTED]
-    assert ALERT_GROWTH in result["patches"][0]["private"][KEY_ALERTED]
+    desc = result["patches"][0]["description"]
+    assert ALERT_GROWTH in desc and ALERT_LEAVE_NOW in desc
 
 
 # --- skips ---------------------------------------------------------------

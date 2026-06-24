@@ -6,9 +6,10 @@ tool-execution call against `GOOGLECALENDAR_EVENTS_LIST` (calendarId
 "primary", singleEvents) over a time window, returning the raw Google
 Calendar event dicts in the exact
 shape `scan(events=...)` consumes (`id`, `summary`, `location`, `start`,
-`end`, `description`), plus `extendedProperties` — the drive-planner block's
-own machine-readable state that the recheck poll reads back off its marked
-blocks (Epic #59 §4). drive-planner owns its own fetch rather than sharing
+`end`, `description`). The recheck poll reads the drive-planner block's machine
+state back out of the same `description` field (Epic #59 §4 — the live v3
+toolkit has no writable extendedProperties). drive-planner owns its own fetch
+rather than sharing
 flight-assist's per-calendar `composio_client` — a different action, a
 different skill bundle — but mirrors that module's transport faithfully:
 stdlib-only `urllib`, HTTP-mockable in CI, the Composio success/failure
@@ -74,11 +75,11 @@ _BASE_ARGS = {"calendarId": "primary", "singleEvents": True}
 _EVENT_CONTAINER_KEYS = ("items", "events")
 
 # Event fields carried through verbatim from the raw event. `scan.py` reads
-# id/summary/location/start/end/description; `extendedProperties` is the
-# drive-planner block's machine-readable state (baseline drive seconds,
-# arrive-by, routed endpoints, the alert-suppression record) the recheck poll
-# reads back off its own marked blocks (Epic #59 §4 — calendar event IS the
-# state, fetched by API). scan.py ignores the field it does not read.
+# id/summary/location/start/end/description; the recheck poll also reads
+# `description` — that's where the drive-planner block's machine state lives
+# (the live v3 toolkit has no writable extendedProperties), so `description`
+# alone carries it back (Epic #59 §4 — calendar event IS the state, fetched by
+# API).
 _EVENT_FIELDS = (
     "id",
     "summary",
@@ -86,7 +87,8 @@ _EVENT_FIELDS = (
     "start",
     "end",
     "description",
-    "extendedProperties",
+    "attendees",  # scan.py reads the operator's RSVP to skip declined meetings
+    "status",  # scan.py skips cancelled events
 )
 
 
