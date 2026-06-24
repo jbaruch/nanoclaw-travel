@@ -243,8 +243,10 @@ def _remove_mode(request: dict, client) -> dict:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2 or argv[1] not in ("create", "remove"):
-        print(json.dumps({"error": "usage: apply.py <create|remove> (request JSON on stdin)"}),
-              file=sys.stderr)
+        print(
+            json.dumps({"error": "usage: apply.py <create|remove> (request JSON on stdin)"}),
+            file=sys.stderr,
+        )
         return 2
     try:
         request = json.load(sys.stdin)

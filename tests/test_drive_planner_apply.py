@@ -71,8 +71,11 @@ def _create_args(meeting_id="evt_42", direction="outbound"):
 
 
 def _fetched_block(args, event_id="block_1"):
-    return {"id": event_id, "description": args["description"],
-            "extendedProperties": args["extendedProperties"]}
+    return {
+        "id": event_id,
+        "description": args["description"],
+        "extendedProperties": args["extendedProperties"],
+    }
 
 
 # --- create: idempotency (lombot #50) ------------------------------------

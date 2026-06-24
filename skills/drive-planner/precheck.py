@@ -180,7 +180,8 @@ def plan_meetings(
                 baseline = route(leg.origin or home_address, leg.destination or home_address)
                 create_args.append(
                     _leg_create_args(
-                        meeting, leg,
+                        meeting,
+                        leg,
                         home_address=home_address,
                         baseline_seconds=baseline,
                         calendar_id=calendar_id,
@@ -189,8 +190,12 @@ def plan_meetings(
                 )
             except Exception as exc:  # noqa: BLE001 — record, don't drop (no silent miss)
                 route_errors.append(
-                    {"direction": leg.direction, "origin": leg.origin,
-                     "destination": leg.destination, "error": str(exc)}
+                    {
+                        "direction": leg.direction,
+                        "origin": leg.origin,
+                        "destination": leg.destination,
+                        "error": str(exc),
+                    }
                 )
         meetings.append(
             {

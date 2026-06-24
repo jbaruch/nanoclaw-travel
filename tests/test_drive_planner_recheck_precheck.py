@@ -43,7 +43,7 @@ poll = _load("drive_planner_recheck_precheck", RECHECK / "precheck.py")
 UTC = timezone.utc
 NOW = datetime(2026, 7, 2, 16, 0, tzinfo=UTC)
 BASELINE = 1500  # 25 min
-BUFFER = 300     # 5 min default folded into leave-by
+BUFFER = 300  # 5 min default folded into leave-by
 
 
 def _block_event(

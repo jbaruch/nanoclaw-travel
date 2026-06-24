@@ -116,8 +116,11 @@ def evaluate_blocks(events: list, *, now: datetime, route) -> dict:
             current_seconds = route(state.origin, state.destination)
         except Exception as exc:  # noqa: BLE001 — record, don't silently miss
             route_errors.append(
-                {"meeting_id": state.meeting_id, "destination": state.destination,
-                 "error": str(exc)}
+                {
+                    "meeting_id": state.meeting_id,
+                    "destination": state.destination,
+                    "error": str(exc),
+                }
             )
             continue
 
