@@ -233,6 +233,24 @@ def test_cli_alert_sets_wake_agent_true(monkeypatch, capsys):
     assert payload["data"]["new_leave_by"].startswith("2026-07-01")
 
 
+def test_cli_payload_is_the_single_last_line(monkeypatch, capsys):
+    # The scheduler precheck contract reads the LAST LINE as JSON; the payload
+    # must be emitted on one line, not pretty-printed across many.
+    request = {
+        "baseline_seconds": BASELINE,
+        "current_seconds": BASELINE + 15 * 60,
+        "arrive_by": ARRIVE_BY.isoformat(),
+        "now": NOW.isoformat(),
+    }
+    code, out, _err = _run_cli(monkeypatch, capsys, request)
+    assert code == 0
+    lines = [line for line in out.splitlines() if line.strip()]
+    assert len(lines) == 1  # single-line payload
+    last = json.loads(lines[-1])
+    assert last["wake_agent"] is True
+    assert "data" in last
+
+
 def test_cli_no_alert_sets_wake_agent_false(monkeypatch, capsys):
     request = {
         "baseline_seconds": BASELINE,

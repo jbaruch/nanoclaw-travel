@@ -270,8 +270,12 @@ def main() -> int:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
         return 1
 
+    # Single-line (no indent) so the whole object is the LAST LINE of stdout —
+    # the scheduler precheck contract reads the last-line JSON payload (per
+    # `coding-policy: script-delegation` Precheck Gating). A pretty-printed
+    # payload would leave a bare `}` as the last line and break that parse.
     payload = {"wake_agent": decision.alert, "data": _decision_to_dict(decision)}
-    print(json.dumps(payload, indent=2))
+    print(json.dumps(payload))
     return 0
 
 
