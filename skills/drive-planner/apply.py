@@ -53,6 +53,11 @@ from skip_state import add_skip  # noqa: E402
 # create and the idempotency find never hides an existing block.
 _FIND_PAD = timedelta(hours=1)
 
+# Fallback skip horizon when a remove request carries no meeting_end and no
+# blocks are found to derive one from — bounds the search window and the skip
+# expiry so a future recurrence is still suppressed without pinning forever.
+_DEFAULT_SKIP_HORIZON = timedelta(days=30)
+
 
 def _load_composio():
     """Import and construct the in-tile ComposioClient from env, cross-bundle."""
@@ -191,31 +196,48 @@ def _remove_mode(request: dict, client) -> dict:
     if not isinstance(meeting_id, str) or not meeting_id:
         raise ValueError("remove: `meeting_id` is required")
     now = _parse_iso(request.get("now"))
+    if now is None:
+        raise ValueError("remove: `now` must be a timezone-aware ISO-8601 string")
+    # meeting_end is optional — the user reply that triggers a skip carries only
+    # the meeting id. When absent it is derived below from the deleted blocks.
     meeting_end = _parse_iso(request.get("meeting_end"))
-    if now is None or meeting_end is None:
-        raise ValueError("remove: `now` and `meeting_end` must be timezone-aware ISO-8601")
     calendar_id = request.get("calendar_id", "primary")
 
+    # Search a generous window: the blocks sit near the meeting, which (when no
+    # meeting_end is given) we don't yet know — bound the search by the skip
+    # store's furthest reasonable horizon ahead of now.
+    horizon = meeting_end + _FIND_PAD if meeting_end is not None else now + _DEFAULT_SKIP_HORIZON
     fetched = _items(
         client.find_events(
             {
                 "calendar_id": calendar_id,
                 "timeMin": (now - _FIND_PAD).isoformat(),
-                "timeMax": (meeting_end + _FIND_PAD).isoformat(),
+                "timeMax": horizon.isoformat(),
             }
         )
     )
     removed = []
+    block_arrivals = []
     for event in fetched:
         state = parse_block(event)
         if state is None or state.meeting_id != meeting_id:
             continue
         client.delete_event({"calendar_id": calendar_id, "event_id": state.event_id})
         removed.append({"event_id": state.event_id, "direction": state.direction})
+        block_arrivals.append(state.arrive_by)
 
     # Record the skip so the next sweep does not recreate the block. Expiry is
-    # the meeting's end — a skip is meaningless once the meeting is over.
-    add_skip(meeting_id, expires=meeting_end, now=now)
+    # the meeting's end when given; otherwise the latest block arrive-by (a skip
+    # is meaningless once the meeting is over, and scan filters it as `past`
+    # after its start anyway). With no meeting_end and no blocks found, fall
+    # back to a bounded horizon so a future recurrence is still suppressed.
+    if meeting_end is not None:
+        expires = meeting_end
+    elif block_arrivals:
+        expires = max(block_arrivals)
+    else:
+        expires = now + _DEFAULT_SKIP_HORIZON
+    add_skip(meeting_id, expires=expires, now=now)
     return {"removed": removed, "skip_recorded": True}
 
 

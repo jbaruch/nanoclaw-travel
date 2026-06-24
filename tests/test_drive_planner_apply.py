@@ -157,3 +157,17 @@ def test_remove_only_touches_the_named_meeting():
 def test_remove_requires_meeting_id():
     with pytest.raises(ValueError, match="meeting_id"):
         apply._remove_mode({"now": "x", "meeting_end": "y"}, FakeComposio())
+
+
+def test_remove_derives_skip_expiry_from_block_when_no_meeting_end():
+    # The skip-reply path carries only the meeting id + now; expiry is derived
+    # from the deleted block's arrive-by (the meeting start).
+    args = _create_args()
+    client = FakeComposio(existing=[_fetched_block(args, "block_x")])
+    now = datetime(2026, 7, 2, 9, 0, tzinfo=CT)
+    result = apply._remove_mode({"meeting_id": "evt_42", "now": now.isoformat()}, client)
+    assert result["skip_recorded"] is True
+    assert client.deleted == ["block_x"]
+    assert "evt_42" in skip_state.load_active_skips(now)
+    # Skip stays active right up to the meeting start, then expires.
+    assert "evt_42" not in skip_state.load_active_skips(ARRIVE + timedelta(minutes=1))
