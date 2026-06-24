@@ -39,7 +39,7 @@ ARRIVAL_LOGISTICS_LEAD_MINUTES = 15
 
 def check_day_before(
     *,
-    scheduled_dep_time: str,
+    scheduled_dep_time: str | None,
     phase_markers: dict,
     now_utc: datetime,
 ) -> tuple[bool, dict | None]:
@@ -69,7 +69,7 @@ def check_day_before(
 
 def check_time_to_leave(
     *,
-    scheduled_dep_time: str,
+    scheduled_dep_time: str | None,
     travel_time_seconds: int | None,
     phase_markers: dict,
     now_utc: datetime,
@@ -113,7 +113,7 @@ def check_time_to_leave(
 
 def check_arrival_logistics(
     *,
-    scheduled_arr_time: str,
+    scheduled_arr_time: str | None,
     phase_markers: dict,
     now_utc: datetime,
 ) -> tuple[bool, dict | None]:
