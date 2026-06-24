@@ -10,7 +10,7 @@ there is a drive/skip decision to put to the user, handing the prepared blocks
 across in `data` so the agent never routes or shapes a block itself (routing is
 deterministic, so it lives here per `coding-policy: script-delegation`).
 
-    {"wake_agent": <bool>, "data": {"meetings": [...], "skipped_routes": [...]}}
+    {"wake_agent": <bool>, "data": {"meetings": [...]}}
 
 Each `meetings` entry is one actionable meeting with its summary, bucket, and
 the per-leg `create_args` ready to pass to `GOOGLECALENDAR_CREATE_EVENT`. A leg
@@ -213,6 +213,13 @@ def plan_meetings(
                     buffer_seconds=buffer_seconds,
                 )
             )
+        # A meeting with no legs produced nothing to do — a `back_to_back`
+        # meeting stays put (legs == ()), so it has no block and no route to
+        # price. Skip it so the gate never wakes the agent with an empty
+        # meeting (the "wake only when actionable" contract). A meeting that
+        # had legs but they all failed to price still surfaces via route_errors.
+        if not create_args and not route_errors:
+            continue
         meetings.append(
             {
                 "meeting_id": meeting.meeting_id,

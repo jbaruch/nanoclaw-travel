@@ -30,7 +30,7 @@ It is idempotent — a meeting whose block already exists is skipped, never dupl
 
 Then compose ONE Telegram notification via `mcp__nanoclaw__send_message` summarizing what changed:
 
-- For each meeting with a created **outbound** block: "Added drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip <meeting_id>` if you're not driving." Read `<leave_by>` from the outbound `create_args` `start.dateTime` and `<drive_minutes>` from its `drive_planner_baseline_seconds` (÷ 60). Phrase relative-date words per `rules/operator-local-tz-phrasing.md`.
+- For each meeting that got ANY created block (`created` lists `outbound` / `bridge` / `return` legs): "Added drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip <meeting_id>` if you're not driving." Read `<leave_by>` and `<drive_minutes>` from the arrival-anchored leg's `create_args` (the `outbound` or `bridge` arg — its `start.dateTime` and `drive_planner_baseline_seconds` ÷ 60); a meeting whose only created leg is a `return` has no leave-by, so phrase it "Added a return drive block for `<summary>`." Phrase relative-date words per `rules/operator-local-tz-phrasing.md`.
 - If a meeting carries `route_errors`, add a line: "Couldn't compute drive time for `<summary>` (`<error>`) — no block created; will retry next sweep."
 - If `apply` reported `failed` legs, add a line naming the meeting and the error.
 
@@ -45,6 +45,6 @@ echo '{"meeting_id": "<meeting_id>", "now": "<current ISO-8601, tz-aware>"}' \
   | python3 /home/node/.claude/skills/tessl__drive-planner/apply.py remove
 ```
 
-`now` is the current time as a timezone-aware ISO-8601 string. The script deletes the meeting's drive blocks, records a skip (expiring at the meeting start, so it is never re-asked while still relevant), and prints `{"removed": [...], "skip_recorded": true}`.
+`now` is the current time as a timezone-aware ISO-8601 string. With no `meeting_end` in the request, the script derives the skip's expiry from the deleted block's arrive-by (the meeting start), so the skip lapses once the meeting is in the past and is never re-asked while still relevant. It deletes the meeting's drive blocks and prints `{"removed": [...], "skip_recorded": true}`.
 
 Confirm to the user via `mcp__nanoclaw__send_message`: "Removed the drive block for `<meeting_id>` — won't plan it again." If `removed` is empty (the block was already gone), still confirm the skip was recorded so a later sweep won't recreate it. Finish here.

@@ -125,9 +125,12 @@ def existing_directions(fetched_events: list, meeting_id: str) -> set:
     return directions
 
 
-def _arg_direction(create_arg: dict) -> str | None:
-    private = create_arg.get("extendedProperties", {}).get("private", {})
-    value = private.get("drive_planner_dir")
+def _arg_direction(create_arg: object) -> str | None:
+    if not isinstance(create_arg, dict):
+        return None
+    ext = create_arg.get("extendedProperties")
+    private = ext.get("private") if isinstance(ext, dict) else None
+    value = private.get("drive_planner_dir") if isinstance(private, dict) else None
     return value if isinstance(value, str) else None
 
 
@@ -154,6 +157,8 @@ def _find_window(create_args: list) -> tuple[datetime | None, datetime | None]:
     """The padded [min start, max end] across a meeting's create_args."""
     starts, ends = [], []
     for arg in create_args:
+        if not isinstance(arg, dict):
+            continue
         start = _parse_iso(arg.get("start", {}).get("dateTime"))
         end = _parse_iso(arg.get("end", {}).get("dateTime"))
         if start:

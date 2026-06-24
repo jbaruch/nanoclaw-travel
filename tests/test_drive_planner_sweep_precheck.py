@@ -81,6 +81,22 @@ def test_no_actionable_meetings_yields_empty():
     assert payload["meetings"] == []
 
 
+def test_back_to_back_meeting_with_no_legs_does_not_wake():
+    # Three same-venue meetings 30 min apart: the MIDDLE one is back_to_back
+    # with no transit legs (stay put both sides). It must not surface — waking
+    # the agent with nothing to do violates the "wake only when actionable"
+    # contract.
+    venue = "100 Broadway, Nashville, TN"
+    events = [
+        _meeting("a", 14, end_h=14, location=venue),
+        _meeting("b", 15, end_h=15, location=venue),
+        _meeting("c", 16, end_h=16, location=venue),
+    ]
+    payload = precheck.plan_meetings(_scan(events), route=_fixed_router(1500), home_address=HOME)
+    surfaced = {m["meeting_id"] for m in payload["meetings"]}
+    assert "b" not in surfaced  # middle, no legs → skipped
+
+
 def test_standalone_meeting_is_actionable_with_two_legs():
     events = [_meeting("m1", 14, location="100 Broadway, Nashville, TN")]
     payload = precheck.plan_meetings(_scan(events), route=_fixed_router(1500), home_address=HOME)

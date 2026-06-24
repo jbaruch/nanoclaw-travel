@@ -33,7 +33,7 @@ Fields:
 
 Writer / reader contract:
 
-- **Writer** — the sweep calls `add_skip(meeting_id, expires=, now=)` when the user answers "skip" (expiry is the meeting's end), `clear_skip(meeting_id, now=)` to undo, and `prune(now)` to reclaim disk.
+- **Writer** — the skip-reply path calls `apply.py remove`, which derives the expiry: the request's `meeting_end` when present, otherwise the deleted block's arrive-by (the meeting start) — both lapse the skip once the meeting is past. `add_skip(meeting_id, expires=, now=)` records it; `clear_skip(meeting_id, now=)` undoes it; `prune(now)` reclaims disk.
 - **Reader** — the sweep calls `load_active_skips(now)` and passes the result to `scan(skip_state=...)`. `scan.py` consumes the returned `{meeting_id: expiry}` mapping; it never touches the file.
 
 Tolerance:
@@ -58,6 +58,7 @@ Two surfaces per block:
 
 | key | meaning |
 |-----|---------|
+| `drive_planner_schema_version` | record schema version (currently `"1"`) |
 | `drive_planner_meeting` | served meeting's event id |
 | `drive_planner_dir` | leg direction — `outbound` / `return` / `bridge` |
 | `drive_planner_baseline_seconds` | routed drive seconds captured at creation (recheck baseline) |
@@ -67,8 +68,12 @@ Two surfaces per block:
 
 Writer / reader contract:
 
-- **Writer** — the sweep creates blocks via `apply.py create` (idempotent: finds existing markers first, never double-books). The recheck poll patches only `drive_planner_alerted` when an alert fires.
+- **Writer** — the sweep creates blocks via `apply.py create` (idempotent: finds existing markers first, never double-books). When an alert fires, the recheck poll emits a patch and the recheck SKILL.md applies it via `apply.py suppress` AFTER the send; the patch carries the FULL private map with only `drive_planner_alerted` updated (Google Calendar's PATCH replaces the whole private map, so a single-key patch would wipe the record).
 - **Reader** — the recheck poll calls `parse_block(event)`; a non-block or malformed event yields `None` (never raises), so one bad event can't abort the poll. Only arrival-anchored legs (`outbound` / `bridge`) are rechecked; a `return` leg is created for visibility but not watched.
+
+Migration (per `coding-policy: stateful-artifacts`):
+
+- `drive_planner_schema_version` `1` is the initial version; bump on any shape change to the private-props map and add the owner-side upgrade in `parse_block`. A record stamped NEWER than this tile supports parses to `None` (no-usable-prior-state — the poll skips it, the safe non-disruptive fallback). A missing version is treated as v1 for back-compat.
 
 Tolerance:
 

@@ -61,6 +61,13 @@ from datetime import datetime, timedelta
 # `scan._MARKER_RE`; `test_block_props.py` asserts the two agree.
 _MARKER_TEMPLATE = "[drive-planner:meeting={meeting_id}:dir={direction}]"
 
+# Schema version of the calendar-as-state block record (per `coding-policy:
+# stateful-artifacts` — every persisted record carries a version so migrations
+# are auditable). Bump on any shape change to the private-props map and add the
+# owner-side upgrade in `parse_block`. v1 is the first and only version.
+BLOCK_SCHEMA_VERSION = 1
+KEY_SCHEMA_VERSION = "drive_planner_schema_version"
+
 # extendedProperties.private keys. Namespaced `drive_planner_*` so they never
 # collide with another tool's private props on the same event.
 KEY_MEETING = "drive_planner_meeting"
@@ -167,6 +174,7 @@ def build_block_args(
     marker = build_marker(meeting_id, direction)
     description = f"{summary}\n{marker}"
     private = {
+        KEY_SCHEMA_VERSION: str(BLOCK_SCHEMA_VERSION),
         KEY_MEETING: meeting_id,
         KEY_DIRECTION: direction,
         KEY_BASELINE: str(baseline_seconds),
@@ -288,7 +296,7 @@ def parse_alerted(raw: object) -> frozenset:
     """
     if not isinstance(raw, str):
         return frozenset()
-    return frozenset(token for token in raw.split(",") if token in _ALERT_VALUES)
+    return frozenset(token.strip() for token in raw.split(",") if token.strip() in _ALERT_VALUES)
 
 
 def serialize_alerted(alerted: frozenset | set) -> str:
@@ -347,10 +355,21 @@ def parse_block(event: object) -> BlockState | None:
     or malformed — the recheck poll treats None as "not a block I recheck" and
     moves on. The poll only rechecks arrival-anchored legs, so a block whose
     private props carry no usable `arrive_by`/`baseline`/endpoints is dropped.
+
+    Schema version (per `coding-policy: stateful-artifacts`): a record stamped
+    with a `drive_planner_schema_version` NEWER than this tile supports reads as
+    None — no-usable-prior-state, the safe non-disruptive fallback (the poll
+    skips it rather than mis-parsing a future shape). A missing version is
+    treated as v1 for back-compat; v1 is the only version today.
     """
     if not isinstance(event, dict):
         return None
     private = _private_props(event)
+
+    version = _parse_int(private.get(KEY_SCHEMA_VERSION))
+    if version is not None and version > BLOCK_SCHEMA_VERSION:
+        return None
+
     meeting_id = private.get(KEY_MEETING)
     if not isinstance(meeting_id, str) or not meeting_id:
         return None

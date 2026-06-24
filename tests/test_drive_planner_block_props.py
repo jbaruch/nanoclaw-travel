@@ -110,6 +110,27 @@ def test_private_props_carry_machine_state():
     assert private[block_props.KEY_DIRECTION] == "outbound"
 
 
+def test_private_props_carry_schema_version():
+    private = _build_args()["extendedProperties"]["private"]
+    assert private[block_props.KEY_SCHEMA_VERSION] == str(block_props.BLOCK_SCHEMA_VERSION)
+
+
+def test_parse_block_rejects_newer_schema_version():
+    # A record from a future tile parses to None — no-usable-prior-state, the
+    # poll skips it rather than mis-parsing a shape it doesn't understand.
+    args = _build_args()
+    args["extendedProperties"]["private"][block_props.KEY_SCHEMA_VERSION] = "2"
+    assert parse_block(_event_from_args(args)) is None
+
+
+def test_parse_block_accepts_missing_schema_version():
+    # Back-compat: a record without the version key is treated as v1.
+    args = _build_args()
+    del args["extendedProperties"]["private"][block_props.KEY_SCHEMA_VERSION]
+    state = parse_block(_event_from_args(args))
+    assert state is not None and state.meeting_id == "evt_42"
+
+
 def test_leg_end_defaults_to_arrive_by():
     assert _build_args()["end"]["dateTime"] == ARRIVE.isoformat()
 
@@ -214,6 +235,10 @@ def test_alerted_drops_unknown_tokens():
 
 def test_alerted_non_string_is_empty():
     assert parse_alerted(None) == frozenset()
+
+
+def test_alerted_strips_whitespace_around_tokens():
+    assert parse_alerted(" growth , leave_now ") == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
 
 
 def test_parsed_state_exposes_alerted():
