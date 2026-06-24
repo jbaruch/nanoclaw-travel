@@ -60,11 +60,21 @@ Public API:
     for r in results:
         if r.bucket == "needs_decision":
             ...  # ask drive/skip, route r.legs
+
+CLI (the deterministic-operation-as-script contract, per `coding-policy:
+script-delegation` / `file-hygiene`):
+
+    echo '{"now": "...", "home_address": "...", "events": [...]}' \\
+        | python scan.py
+    # stdout: {"results": [<MeetingClass dict>, ...]}; exit 0
+    # stderr: {"error": "..."} + non-zero exit on bad input
 """
 
 from __future__ import annotations
 
+import json
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -583,3 +593,88 @@ def actionable(results: list[MeetingClass]) -> list[MeetingClass]:
     """
     actionable_buckets = {"needs_decision", "bridge", "back_to_back"}
     return [r for r in results if r.bucket in actionable_buckets]
+
+
+def _leg_to_dict(leg: TransitLeg) -> dict:
+    """JSON-serializable view of a TransitLeg (datetimes → ISO-8601)."""
+    return {
+        "direction": leg.direction,
+        "origin": leg.origin,
+        "destination": leg.destination,
+        "arrive_by": leg.arrive_by.isoformat() if leg.arrive_by else None,
+        "depart_after": leg.depart_after.isoformat() if leg.depart_after else None,
+        "gap_seconds": leg.gap_seconds,
+    }
+
+
+def _class_to_dict(result: MeetingClass) -> dict:
+    """JSON-serializable view of a MeetingClass (datetimes → ISO-8601)."""
+    return {
+        "meeting_id": result.meeting_id,
+        "summary": result.summary,
+        "bucket": result.bucket,
+        "reason": result.reason,
+        "location": result.location,
+        "start": result.start.isoformat() if result.start else None,
+        "end": result.end.isoformat() if result.end else None,
+        "legs": [_leg_to_dict(leg) for leg in result.legs],
+        "present_directions": list(result.present_directions),
+    }
+
+
+def main() -> int:
+    """CLI wrapper around the pure `scan()` — the script process contract.
+
+    stdin: a JSON object
+        {"events": [<gcal event>, ...], "now": "<tz-aware ISO-8601>",
+         "home_address": "...", "skip_state": {<id>: "<ISO expiry>"},
+         "tight_gap_seconds": <int, optional>}
+    stdout: {"results": [<MeetingClass dict>, ...]} (exit 0)
+    stderr: {"error": "..."} with a non-zero exit on invalid JSON, a missing
+        or timezone-naive `now`, an empty `home_address`, or any ScanError.
+
+    The pure `scan()` stays importable for unit tests; this is the
+    deterministic-operation-as-script surface per `coding-policy:
+    script-delegation` / `file-hygiene`.
+    """
+    try:
+        request = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"error": f"invalid JSON on stdin: {exc}"}), file=sys.stderr)
+        return 1
+    if not isinstance(request, dict):
+        print(json.dumps({"error": "stdin must be a JSON object"}), file=sys.stderr)
+        return 1
+
+    now = _parse_iso(request.get("now"))
+    if now is None:
+        print(
+            json.dumps(
+                {
+                    "error": "`now` must be a timezone-aware ISO-8601 string "
+                    f"(got {request.get('now')!r})"
+                }
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+    tight_gap = request.get("tight_gap_seconds")
+    try:
+        results = scan(
+            request.get("events", []),
+            now=now,
+            home_address=request.get("home_address", ""),
+            skip_state=request.get("skip_state"),
+            tight_gap_seconds=tight_gap if tight_gap is not None else DEFAULT_TIGHT_GAP_SECONDS,
+        )
+    except ScanError as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+
+    print(json.dumps({"results": [_class_to_dict(result) for result in results]}, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

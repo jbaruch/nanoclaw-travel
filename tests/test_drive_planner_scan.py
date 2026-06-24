@@ -10,6 +10,7 @@ synthetic ids and venues — no live calendar, no real user data.
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,7 @@ from scan import (  # noqa: E402
     ScanError,
     TransitLeg,
     actionable,
+    main,
     scan,
 )
 
@@ -465,3 +467,71 @@ def test_transit_leg_is_frozen():
     leg = TransitLeg(direction="outbound", origin=HOME, destination="X")
     with pytest.raises(FrozenInstanceError):
         leg.direction = "return"  # type: ignore[misc]
+
+
+# --- CLI process contract (script-delegation / file-hygiene) -------------
+
+
+class _FakeStdin:
+    def __init__(self, text: str):
+        self._text = text
+
+    def read(self) -> str:
+        return self._text
+
+
+def _run_cli(monkeypatch, capsys, request) -> tuple[int, str, str]:
+    stdin_text = request if isinstance(request, str) else json.dumps(request)
+    monkeypatch.setattr("sys.stdin", _FakeStdin(stdin_text))
+    monkeypatch.setattr("sys.argv", ["scan.py"])
+    code = main()
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def test_cli_happy_path_emits_results_json(monkeypatch, capsys):
+    start = NOW + timedelta(hours=3)
+    request = {
+        "now": NOW.isoformat(),
+        "home_address": HOME,
+        "events": [_meeting("m1", start=start, end=start + timedelta(hours=1))],
+    }
+    code, out, err = _run_cli(monkeypatch, capsys, request)
+
+    assert code == 0
+    assert err == ""
+    payload = json.loads(out)
+    [result] = payload["results"]
+    assert result["bucket"] == "needs_decision"
+    assert [leg["direction"] for leg in result["legs"]] == ["outbound", "return"]
+    # datetimes round-trip as ISO-8601 strings
+    assert result["legs"][0]["arrive_by"] == start.isoformat()
+
+
+def test_cli_invalid_json_exits_nonzero_with_stderr(monkeypatch, capsys):
+    code, out, err = _run_cli(monkeypatch, capsys, "{not json")
+    assert code == 1
+    assert out == ""
+    assert json.loads(err)["error"].startswith("invalid JSON")
+
+
+def test_cli_non_object_root_exits_nonzero(monkeypatch, capsys):
+    code, _out, err = _run_cli(monkeypatch, capsys, [1, 2, 3])
+    assert code == 1
+    assert "JSON object" in json.loads(err)["error"]
+
+
+def test_cli_naive_now_exits_nonzero(monkeypatch, capsys):
+    code, _out, err = _run_cli(
+        monkeypatch, capsys, {"now": "2026-07-01T08:00:00", "home_address": HOME, "events": []}
+    )
+    assert code == 1
+    assert "timezone-aware" in json.loads(err)["error"]
+
+
+def test_cli_empty_home_address_exits_nonzero(monkeypatch, capsys):
+    code, _out, err = _run_cli(
+        monkeypatch, capsys, {"now": NOW.isoformat(), "home_address": "", "events": []}
+    )
+    assert code == 1
+    assert "home_address" in json.loads(err)["error"]
