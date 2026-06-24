@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.44 — 2026-06-24
+
 ### Added — drive-planner sweep + recheck poll, wired into the tile (`jbaruch/nanoclaw-travel#59`)
 
 The two drive-planner skills that turn the deterministic core (scan / fetch / recheck-gate / skip-store, shipped over #59) into a live, registered capability (Epic #59 §3, §4, the confirmed create-first interaction model and the poll-based recheck model).
