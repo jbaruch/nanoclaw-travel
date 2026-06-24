@@ -33,7 +33,7 @@ Fields:
 
 Writer / reader contract:
 
-- **Writer** — the skip-reply path calls `apply.py remove`, which derives the expiry: the request's `meeting_end` when present, otherwise the deleted block's arrive-by (the meeting start) — both lapse the skip once the meeting is past. `add_skip(meeting_id, expires=, now=)` records it; `clear_skip(meeting_id, now=)` undoes it; `prune(now)` reclaims disk.
+- **Writer** — the skip-reply path calls `apply.py remove`, which derives the expiry: the request's `meeting_end` when present, otherwise the latest of the deleted blocks' arrive-by values — both lapse the skip once the meeting is past. `add_skip(meeting_id, expires=, now=)` records it; `clear_skip(meeting_id, now=)` undoes it; `prune(now)` reclaims disk.
 - **Reader** — the sweep calls `load_active_skips(now)` and passes the result to `scan(skip_state=...)`. `scan.py` consumes the returned `{meeting_id: expiry}` mapping; it never touches the file.
 
 Tolerance:

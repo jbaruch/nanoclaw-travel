@@ -134,6 +134,18 @@ def _arg_direction(create_arg: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _calendar_id_of(create_args: list) -> str:
+    """The calendar id from the first dict create-arg, defaulting to "primary".
+
+    Tolerant of non-dict entries (the create loop already skips malformed args)
+    so a bad first element never raises on the idempotency find.
+    """
+    for arg in create_args:
+        if isinstance(arg, dict) and isinstance(arg.get("calendar_id"), str):
+            return arg["calendar_id"]
+    return "primary"
+
+
 def plan_creates(meeting: dict, fetched_events: list) -> tuple[list, list]:
     """Split a meeting's create_args into (to_create, skipped_existing). Pure.
 
@@ -198,7 +210,7 @@ def _create_mode(request: dict, client) -> dict:
         time_min, time_max = _find_window(args)
         fetched = []
         if time_min and time_max and args:
-            calendar_id = args[0].get("calendar_id", "primary")
+            calendar_id = _calendar_id_of(args)
             fetched = _items(
                 client.find_events(
                     {

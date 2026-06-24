@@ -171,6 +171,11 @@ def test_remove_requires_meeting_id():
         apply._remove_mode({"now": "x", "meeting_end": "y"}, FakeComposio())
 
 
+def test_calendar_id_tolerates_non_dict_first_arg():
+    assert apply._calendar_id_of([None, {"calendar_id": "work"}]) == "work"
+    assert apply._calendar_id_of(["junk"]) == "primary"
+
+
 def test_create_skips_malformed_meeting_without_crashing():
     # A meeting entry with no usable id is recorded as failed, not a KeyError.
     client = FakeComposio(existing=[])

@@ -197,8 +197,8 @@ def plan_meetings(
                 route_errors.append(
                     {
                         "direction": leg.direction,
-                        "origin": leg.origin,
-                        "destination": leg.destination,
+                        "origin": origin,
+                        "destination": destination,
                         "error": str(exc),
                     }
                 )
