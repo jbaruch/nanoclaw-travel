@@ -39,9 +39,10 @@ Writer / reader contract:
 Tolerance:
 
 - A **missing** file is not an error — it is indistinguishable from "no skips yet" and reads as an empty map.
-- A **present but corrupt** file (unparseable JSON, non-object root, missing/invalid `schema_version`, or a `schema_version` newer than this tile) raises `SkipStateError` rather than being silently treated as "no skips" — silently resetting would resurrect every skipped meeting as a nag.
+- A **present but corrupt** file (unparseable JSON, non-object root, missing/invalid `schema_version`, or a `schema_version` below the current floor) raises `SkipStateError` rather than being silently treated as "no skips" — silently resetting would resurrect every skipped meeting as a nag.
+- A `schema_version` **newer** than this tile reads as **"no usable prior state"** (an empty map), per `coding-policy: stateful-artifacts` — the reader is lagging, not awaiting migration, and an empty map is the safe, non-disruptive fallback (worst case the sweep re-asks; it never escalates work). The fix is to update the tile to accept the new version.
 - Malformed individual entries (non-string id or expiry, unparseable/naive expiry) are dropped, not fatal.
 
 Migration:
 
-- `schema_version` `1` is the initial version; no migration exists yet. A future shape change bumps the version and adds the owner-side upgrade-on-read per `coding-policy: stateful-artifacts`.
+- `schema_version` `1` is the initial version; no migration exists yet. A future shape change bumps the version and adds the owner-side upgrade-on-read per `coding-policy: stateful-artifacts`. A version below the current floor has no migration path (v1 is first) and is refused; a version above is treated as no-usable-prior-state until the tile is updated to accept it.

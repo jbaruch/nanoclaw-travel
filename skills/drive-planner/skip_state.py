@@ -105,11 +105,20 @@ def _read_skips() -> dict[str, str]:
     """Read the skip map from disk, validating the schema.
 
     Returns the raw `{meeting_id: expiry}` mapping (no pruning). A missing
-    file returns an empty map. A present file that is unparseable, not an
-    object, missing/invalid `schema_version`, or carrying a `schema_version`
-    above this module's raises SkipStateError — a corrupt skip file must not
-    be silently treated as "no skips" (that would resurrect every skipped
-    meeting as a nag).
+    file returns an empty map. A *corrupt* file — unparseable, not an object,
+    or missing/invalid `schema_version` — raises SkipStateError; a corrupt
+    skip file must not be silently treated as "no skips" (that would
+    resurrect every skipped meeting as a nag).
+
+    Schema version handling (per `coding-policy: stateful-artifacts`):
+      - newer than this tile → "no usable prior state": return an empty map.
+        The reader is lagging, not awaiting migration; an empty map is the
+        safe, non-disruptive fallback (worst case the sweep re-asks — it
+        never escalates work). Update this tile to accept the new version.
+      - below the current floor → owner-side migration point. v1 is the
+        first and only version, so any lower value is corrupt, not an older
+        record to migrate — refuse explicitly. A future bump adds the
+        v(N-1)→vN upgrade-and-rewrite here instead of refusing.
     """
     path = _skip_path()
     if not path.exists():
@@ -129,16 +138,8 @@ def _read_skips() -> dict[str, str]:
     if not isinstance(version, int) or isinstance(version, bool):
         raise SkipStateError(f"skip-state file {path} is missing a valid integer schema_version")
     if version > SKIP_SCHEMA_VERSION:
-        raise SkipStateError(
-            f"skip-state file {path} has schema_version {version}, newer than this "
-            f"tile supports ({SKIP_SCHEMA_VERSION}) — upgrade the drive-planner tile"
-        )
+        return {}
     if version < SKIP_SCHEMA_VERSION:
-        # Owner-side migration point (per `coding-policy: stateful-artifacts`):
-        # a future bump adds the v(N-1)→vN upgrade-and-rewrite here. v1 is the
-        # first and only version, so any value below it is not an older record
-        # to migrate but a corrupt one — refuse explicitly rather than fall
-        # through and treat it as current.
         raise SkipStateError(
             f"skip-state file {path} has schema_version {version}, below the current "
             f"floor ({SKIP_SCHEMA_VERSION}) with no migration path — repair or delete it"

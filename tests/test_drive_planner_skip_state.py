@@ -146,11 +146,19 @@ def test_missing_schema_version_raises(skip_env):
         load_active_skips(NOW)
 
 
-def test_newer_schema_version_raises(skip_env):
+def test_newer_schema_version_reads_as_no_prior_state(skip_env):
+    # Per stateful-artifacts, a newer record is "no usable prior state" for a
+    # lagging reader — an empty map, NOT an error (safe, non-disruptive).
     skip_env.parent.mkdir(parents=True, exist_ok=True)
-    skip_env.write_text(json.dumps({"schema_version": SKIP_SCHEMA_VERSION + 1, "skips": {}}))
-    with pytest.raises(SkipStateError, match="newer"):
-        load_active_skips(NOW)
+    skip_env.write_text(
+        json.dumps(
+            {
+                "schema_version": SKIP_SCHEMA_VERSION + 1,
+                "skips": {"evt_1": LATER.isoformat()},
+            }
+        )
+    )
+    assert load_active_skips(NOW) == {}
 
 
 def test_older_schema_version_is_refused_not_passed_through(skip_env):
