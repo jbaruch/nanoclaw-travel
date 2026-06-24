@@ -1,9 +1,10 @@
-"""Wide-window "all calendars" event fetch for the drive-planner sweep.
+"""Wide-window primary-calendar event fetch for the drive-planner sweep.
 
-The sweep needs every upcoming calendar event in one shot so `scan.py` can
+The sweep needs the upcoming calendar events in one shot so `scan.py` can
 classify them (Epic #59 §4). This module is that fetch: a single Composio
-tool-execution call against `GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS` over
-a time window, returning the raw Google Calendar event dicts in the exact
+tool-execution call against `GOOGLECALENDAR_EVENTS_LIST` (calendarId
+"primary", singleEvents) over a time window, returning the raw Google
+Calendar event dicts in the exact
 shape `scan(events=...)` consumes (`id`, `summary`, `location`, `start`,
 `end`, `description`), plus `extendedProperties` — the drive-planner block's
 own machine-readable state that the recheck poll reads back off its marked
@@ -17,7 +18,8 @@ Composio executes the action with a single POST keyed by the slug:
 
     POST {base}/tools/execute/{action}
     headers: x-api-key: <key>, Content-Type: application/json
-    body:    {"user_id": "<id>", "arguments": {"timeMin": "...", "timeMax": "..."}}
+    body:    {"user_id": "<id>", "arguments": {"calendarId": "primary",
+             "singleEvents": true, "timeMin": "...", "timeMax": "..."}}
     -> 200   {"data": {...events...}, "successful": true,  "error": null}
     -> 200   {"data": {...}, "successful": false, "error": "..."}
 
@@ -52,15 +54,24 @@ from datetime import datetime
 
 _DEFAULT_BASE_URL = "https://backend.composio.dev/api/v3"
 
-# GoogleCalendar action slug. Isolated here so a slug rename in the live
-# Composio toolkit is a one-line fix; verify against the live toolkit.
-ACTION_LIST_ALL_EVENTS = "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS"
+# GoogleCalendar action slug — verified against the live v3 toolkit
+# (`GET /api/v3/tools/GOOGLECALENDAR_EVENTS_LIST`), matching the proven
+# nanoclaw-admin `composio-fetch` precheck. The earlier
+# `GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS` slug does not exist and 404s.
+ACTION_LIST_EVENTS = "GOOGLECALENDAR_EVENTS_LIST"
 
-# Candidate keys under the Composio `data` envelope that hold the event
-# list. The live toolkit's exact shape is version-specific; these cover the
-# observed Google-style (`items`) and Composio-wrapped (`events`) shapes.
-# Checked in order; the first present list wins.
-_EVENT_CONTAINER_KEYS = ("events", "items")
+# The action's required/contract arguments (camelCase). `calendarId` is
+# required by the v3 schema; "primary" is the operator's main calendar (where
+# meetings live). `singleEvents` expands recurring events into instances so a
+# weekly standup surfaces as datable occurrences `scan.py` can classify. The
+# wide `[timeMin, timeMax]` window is added per-call in `fetch_window`.
+_BASE_ARGS = {"calendarId": "primary", "singleEvents": True}
+
+# Candidate keys under the Composio `data` envelope that hold the event list.
+# The live v3 response is the Google-native events.list resource, whose list is
+# under `items`; `events` and the `response_data` nesting are tolerated for
+# other toolkit shapes. Checked in order; the first present list wins.
+_EVENT_CONTAINER_KEYS = ("items", "events")
 
 # Event fields carried through verbatim from the raw event. `scan.py` reads
 # id/summary/location/start/end/description; `extendedProperties` is the
@@ -97,7 +108,7 @@ class FetchError(Exception):
 
 
 class CalendarFetcher:
-    """Thin Composio client for the wide-window all-calendars event fetch.
+    """Thin Composio client for the wide-window primary-calendar event fetch.
 
     Auth (`x-api-key`) and user scoping (`user_id`) are fixed per instance.
     Not thread-safe — one instance per process, matching `composio_client`.
@@ -157,7 +168,7 @@ class CalendarFetcher:
         return cls(api_key, user_id, base_url=base_url, timeout=timeout)
 
     def fetch_window(self, *, time_min: datetime, time_max: datetime) -> list:
-        """Fetch all-calendar events in [time_min, time_max] as scan-shaped dicts.
+        """Fetch primary-calendar events in [time_min, time_max] as scan-shaped dicts.
 
         Args:
             time_min: window start (tz-aware).
@@ -181,8 +192,8 @@ class CalendarFetcher:
             raise ValueError("fetch_window: time_max must be after time_min")
 
         data = self._execute(
-            ACTION_LIST_ALL_EVENTS,
-            {"timeMin": time_min.isoformat(), "timeMax": time_max.isoformat()},
+            ACTION_LIST_EVENTS,
+            {**_BASE_ARGS, "timeMin": time_min.isoformat(), "timeMax": time_max.isoformat()},
         )
         return [_project_event(event) for event in _extract_events(data)]
 
@@ -234,13 +245,20 @@ def _extract_events(data: dict) -> list:
         raise FetchError(
             f"calendar fetch returned a non-object data payload: {type(data).__name__}"
         )
-    for key in _EVENT_CONTAINER_KEYS:
-        value = data.get(key)
-        if isinstance(value, list):
-            return value
+    # Look in the top-level `data` and, for toolkit shapes that wrap the
+    # Google payload one level down, in `data.response_data` (the same nesting
+    # flight-assist's reconcile `_items` tolerates).
+    nested = data.get("response_data")
+    containers = [data, nested] if isinstance(nested, dict) else [data]
+    for container in containers:
+        for key in _EVENT_CONTAINER_KEYS:
+            value = container.get(key)
+            if isinstance(value, list):
+                return value
     raise FetchError(
         "calendar fetch succeeded but no event list found under "
-        f"{_EVENT_CONTAINER_KEYS} — verify the action's response shape against the live toolkit"
+        f"{_EVENT_CONTAINER_KEYS} (top-level or response_data) — verify the action's "
+        "response shape against the live toolkit"
     )
 
 

@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-planner"))
 
 from fetch_events import (  # noqa: E402
-    ACTION_LIST_ALL_EVENTS,
+    ACTION_LIST_EVENTS,
     CalendarFetcher,
     FetchError,
 )
@@ -92,10 +92,15 @@ def test_fetch_posts_action_with_window_args():
     with patch("urllib.request.urlopen", fake_urlopen):
         _fetcher().fetch_window(time_min=NOW, time_max=LATER)
 
-    assert captured["url"] == f"{SYNTH_BASE}/tools/execute/{ACTION_LIST_ALL_EVENTS}"
+    assert captured["url"] == f"{SYNTH_BASE}/tools/execute/{ACTION_LIST_EVENTS}"
+    assert ACTION_LIST_EVENTS == "GOOGLECALENDAR_EVENTS_LIST"
     assert captured["body"]["user_id"] == SYNTH_USER
-    assert captured["body"]["arguments"]["timeMin"] == NOW.isoformat()
-    assert captured["body"]["arguments"]["timeMax"] == LATER.isoformat()
+    args = captured["body"]["arguments"]
+    # the v3 schema requires calendarId; singleEvents expands recurrences
+    assert args["calendarId"] == "primary"
+    assert args["singleEvents"] is True
+    assert args["timeMin"] == NOW.isoformat()
+    assert args["timeMax"] == LATER.isoformat()
     assert captured["headers"]["x-api-key"] == SYNTH_KEY
 
 
@@ -136,6 +141,15 @@ def test_projection_carries_extended_properties_for_recheck_poll():
     with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": [raw]})):
         [event] = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
     assert event["extendedProperties"]["private"]["drive_planner_baseline_seconds"] == "1500"
+
+
+def test_extracts_events_nested_under_response_data():
+    # Some toolkit shapes wrap the Google payload one level under
+    # `response_data`; the fetch must still find the list, not raise.
+    payload = {"response_data": {"items": [_event("n")]}}
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok(payload)):
+        events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert [e["id"] for e in events] == ["n"]
 
 
 def test_empty_window_returns_empty_list():
