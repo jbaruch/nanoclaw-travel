@@ -535,3 +535,21 @@ def test_cli_empty_home_address_exits_nonzero(monkeypatch, capsys):
     )
     assert code == 1
     assert "home_address" in json.loads(err)["error"]
+
+
+@pytest.mark.parametrize("bad", ["nope", -5, 0, True, 1.5])
+def test_cli_malformed_tight_gap_exits_nonzero(monkeypatch, capsys, bad):
+    # A malformed tight_gap_seconds must be rejected at the boundary with the
+    # JSON stderr contract, never escape as a TypeError traceback.
+    code, _out, err = _run_cli(
+        monkeypatch,
+        capsys,
+        {
+            "now": NOW.isoformat(),
+            "home_address": HOME,
+            "events": [],
+            "tight_gap_seconds": bad,
+        },
+    )
+    assert code == 1
+    assert "tight_gap_seconds" in json.loads(err)["error"]

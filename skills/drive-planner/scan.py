@@ -659,14 +659,24 @@ def main() -> int:
         )
         return 1
 
-    tight_gap = request.get("tight_gap_seconds")
+    tight_gap = request.get("tight_gap_seconds", DEFAULT_TIGHT_GAP_SECONDS)
+    # bool is an int subclass — exclude it so `true`/`false` is not a "gap".
+    if not isinstance(tight_gap, int) or isinstance(tight_gap, bool) or tight_gap <= 0:
+        print(
+            json.dumps(
+                {"error": f"`tight_gap_seconds` must be a positive integer (got {tight_gap!r})"}
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         results = scan(
             request.get("events", []),
             now=now,
             home_address=request.get("home_address", ""),
             skip_state=request.get("skip_state"),
-            tight_gap_seconds=tight_gap if tight_gap is not None else DEFAULT_TIGHT_GAP_SECONDS,
+            tight_gap_seconds=tight_gap,
         )
     except ScanError as exc:
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
