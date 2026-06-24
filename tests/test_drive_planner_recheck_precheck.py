@@ -157,6 +157,14 @@ def test_block_not_yet_due_is_skipped():
     assert result["alerts"] == []
 
 
+def test_alert_summary_falls_back_to_meeting_id():
+    # A fetched block without a `summary` must not produce "Leave now for None".
+    event = _block_event(arrive_offset_min=20)
+    del event["summary"]
+    result = poll.evaluate_blocks([event], now=NOW, route=_route(BASELINE))
+    assert result["alerts"][0]["summary"] == "evt_42"
+
+
 def test_non_block_event_ignored():
     plain = {"id": "m", "summary": "Customer sync", "description": "no marker"}
     result = poll.evaluate_blocks([plain], now=NOW, route=_route(BASELINE + 720))

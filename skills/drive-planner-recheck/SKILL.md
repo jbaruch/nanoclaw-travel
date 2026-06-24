@@ -14,7 +14,7 @@ When the recheck precheck wakes this skill, push the alerting blocks to the user
 
 ## Step 1 — Push the leave-earlier / leave-now alert
 
-The precheck woke with a `data.alerts` payload. Each entry is one drive block whose traffic grew past the threshold or whose leave-by has arrived, carrying `summary`, `kinds` (`growth` and/or `leave_now`), display-ready `current_minutes` and `delta_minutes`, and `new_leave_by`.
+The precheck woke with a `data.alerts` payload. Each entry is one drive block the precheck has already decided must alert, carrying `summary`, `kinds` (`growth` and/or `leave_now`), display-ready `current_minutes` and `delta_minutes`, and `new_leave_by`.
 
 Compose ONE Telegram notification via `mcp__nanoclaw__send_message`, one line per alert, using the payload's fields verbatim:
 

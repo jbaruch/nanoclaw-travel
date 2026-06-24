@@ -156,6 +156,26 @@ def test_remove_deletes_blocks_and_records_skip():
     assert "evt_42" in skip_state.load_active_skips(now)
 
 
+def test_remove_with_past_meeting_end_keeps_find_window_valid():
+    # A late skip/remove (meeting_end already past) must not invert the find
+    # window (timeMax < timeMin), which could fail the whole remove.
+    class CapturingComposio(FakeComposio):
+        def find_events(self, arguments):
+            self.find_args = arguments
+            return {"items": list(self.events)}
+
+    args = _create_args()
+    client = CapturingComposio(existing=[_fetched_block(args, "block_x")])
+    now = datetime(2026, 7, 10, 9, 0, tzinfo=CT)  # well after ARRIVE (2026-07-02)
+    past_end = datetime(2026, 7, 2, 13, 0, tzinfo=CT)
+    result = apply._remove_mode(
+        {"meeting_id": "evt_42", "now": now.isoformat(), "meeting_end": past_end.isoformat()},
+        client,
+    )
+    assert result["skip_recorded"] is True
+    assert client.find_args["timeMax"] >= client.find_args["timeMin"]
+
+
 def test_remove_treats_delete_404_as_idempotent_success():
     # A concurrent delete (event already gone) surfaces as ComposioError(404);
     # remove must treat it as success, not abort.

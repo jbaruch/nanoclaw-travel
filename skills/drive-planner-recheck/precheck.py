@@ -148,7 +148,10 @@ def evaluate_blocks(events: list, *, now: datetime, route) -> dict:
         if not fire:
             continue
 
-        summary = event.get("summary") if isinstance(event, dict) else None
+        # Fall back to the meeting id when the fetched block has no summary, so
+        # the alert never reads "Leave now for None".
+        raw_summary = event.get("summary") if isinstance(event, dict) else None
+        summary = raw_summary if isinstance(raw_summary, str) and raw_summary else state.meeting_id
         alerts.append(
             {
                 "meeting_id": state.meeting_id,

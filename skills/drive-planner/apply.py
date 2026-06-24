@@ -258,7 +258,12 @@ def _remove_mode(request: dict, client) -> dict:
     # Search a generous window: the blocks sit near the meeting, which (when no
     # meeting_end is given) we don't yet know — bound the search by the skip
     # store's furthest reasonable horizon ahead of now.
-    horizon = meeting_end + _FIND_PAD if meeting_end is not None else now + _DEFAULT_SKIP_HORIZON
+    # Clamp the upper bound to at least now + _FIND_PAD so a past meeting_end
+    # (a late skip/remove) never inverts the window (timeMax < timeMin).
+    if meeting_end is not None:
+        horizon = max(meeting_end + _FIND_PAD, now + _FIND_PAD)
+    else:
+        horizon = now + _DEFAULT_SKIP_HORIZON
     fetched = _items(
         client.find_events(
             {

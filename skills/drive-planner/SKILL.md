@@ -45,6 +45,6 @@ echo '{"meeting_id": "<meeting_id>", "now": "<current ISO-8601, tz-aware>"}' \
   | python3 /home/node/.claude/skills/tessl__drive-planner/apply.py remove
 ```
 
-`now` is the current time as a timezone-aware ISO-8601 string. With no `meeting_end` in the request, the script derives the skip's expiry from the latest of the deleted blocks' arrive-by values (so it lapses once the meeting and its return drive are past, and is never re-asked while still relevant). It deletes the meeting's drive blocks and prints `{"removed": [...], "skip_recorded": true}`.
+`now` is the current time as a timezone-aware ISO-8601 string. The script deletes the meeting's drive blocks and records a skip (it computes the skip's expiry itself — see `apply.py` / `state-schema.md`) so the next sweep won't recreate them, then prints `{"removed": [...], "skip_recorded": true}`.
 
 Confirm to the user via `mcp__nanoclaw__send_message`: "Removed the drive block for `<meeting_id>` — won't plan it again." If `removed` is empty (the block was already gone), still confirm the skip was recorded so a later sweep won't recreate it. Finish here.
