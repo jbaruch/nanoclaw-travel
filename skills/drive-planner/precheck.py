@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Drive-planner sweep precheck — the scheduler-invoked sweep gate.
 
-The cadence-registry runs this every ~2.5h (the `cadence:` in SKILL.md). It is
+The cadence-registry runs this every ~2h (the `cadence:` in SKILL.md). It is
 the deterministic spine of the sweep (Epic #59 §3): fetch every upcoming
 calendar event over a wide window, classify them with `scan.py`, and — for the
 meetings that need a drive decision — pre-route each leg with live traffic and
@@ -30,7 +30,7 @@ own use of `maps_client` is untouched.
 The script is the OUTER PROCESS BOUNDARY of the scheduled-task contract — the
 scheduler reads non-zero exit OR malformed stdout as "don't wake this cycle".
 The sole catch-all sits in `main()` and fails CLOSED (no wake) on an internal
-error: a transient calendar/route outage skips one sweep, and the next ~2.5h
+error: a transient calendar/route outage skips one sweep, and the next ~2h
 cron fire recovers — far better than waking the agent with nothing to do. Per
 `coding-policy: error-handling` outer-boundary-process-contract carve-out.
 
@@ -232,7 +232,7 @@ def main() -> int:
     # malformed stdout as wake_agent=false. Every unexpected exception flows
     # into a safe-shape no-wake payload + exit 0. This handler fails CLOSED
     # (no wake): a transient calendar/route outage skips one sweep and the next
-    # ~2.5h cron fire recovers — waking the agent with nothing actionable would
+    # ~2h cron fire recovers — waking the agent with nothing actionable would
     # be noise. See `coding-policy: error-handling`. Sole catch-all in the file.
     try:
         now = datetime.now(timezone.utc)

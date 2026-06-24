@@ -94,7 +94,12 @@ def test_growth_past_threshold_alerts_once():
     result = poll.evaluate_blocks([event], now=NOW, route=_route(BASELINE + 720))
     assert len(result["alerts"]) == 1
     assert result["alerts"][0]["kinds"] == [ALERT_GROWTH]
-    assert result["patches"][0]["alerted"] == ALERT_GROWTH
+    # The patch carries the FULL private map (not a single key) so PATCH does
+    # not wipe the block's machine state; only the alert record is updated.
+    patch = result["patches"][0]
+    assert patch["private"][KEY_ALERTED] == ALERT_GROWTH
+    assert patch["private"]["drive_planner_meeting"] == "evt_42"
+    assert patch["private"]["drive_planner_baseline_seconds"] == str(BASELINE)
     assert result["route_errors"] == []
 
 
@@ -127,7 +132,9 @@ def test_leave_now_fires_even_after_prior_growth_alert():
     event = _block_event(arrive_offset_min=20, alerted=ALERT_GROWTH)
     result = poll.evaluate_blocks([event], now=NOW, route=_route(BASELINE))
     assert result["alerts"][0]["kinds"] == [ALERT_LEAVE_NOW]
-    assert ALERT_LEAVE_NOW in result["patches"][0]["alerted"]
+    # both prior growth and the new leave_now are in the carried-forward record
+    assert ALERT_LEAVE_NOW in result["patches"][0]["private"][KEY_ALERTED]
+    assert ALERT_GROWTH in result["patches"][0]["private"][KEY_ALERTED]
 
 
 # --- skips ---------------------------------------------------------------

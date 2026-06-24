@@ -10,7 +10,7 @@ script: "precheck.py"
 
 Process steps in order. Do not skip ahead.
 
-This skill has one job: when the recheck precheck wakes it, turn the alerting blocks into a user-facing push. All the routing and the keep-quiet/alert decision happen in the precheck (`precheck.py`); the precheck only wakes the agent when at least one block must alert, and it has already recorded the suppression so the same condition is not re-pushed. The agent composes the message — nothing more.
+When the recheck precheck wakes this skill, push the alerting blocks to the user, then record the suppression so the same condition is not re-pushed. All routing and the keep-quiet/alert decision happen in the precheck (`precheck.py`); it only wakes the agent when at least one block must alert. The suppression is recorded AFTER the send (Step 2), never before — a record written before a failed send would permanently drop a leave-earlier / leave-now alert.
 
 ## Step 1 — Push the leave-earlier / leave-now alert
 
@@ -23,4 +23,14 @@ Compose ONE Telegram notification via `mcp__nanoclaw__send_message`, one line pe
 
 Phrase any relative-date words per `rules/operator-local-tz-phrasing.md`; displayed clock times stay as-is. If `data.route_errors` is non-empty, append one line: "Couldn't check traffic for `<destination>` (`<error>`) — will retry next poll."
 
-If `data.alerts` is empty (the precheck would not normally wake without one), send nothing. Finish here.
+If `data.alerts` is empty (the precheck would not normally wake without one), send nothing and finish here. Otherwise, once the send has gone out, proceed to Step 2.
+
+## Step 2 — Record the suppression (only after the send)
+
+Only after Step 1's `mcp__nanoclaw__send_message` has delivered the alert, persist the suppression so the next poll does not re-push the same condition. Pass the precheck's `data` (it carries the `patches` array) to the apply script in `suppress` mode:
+
+```bash
+echo '<data JSON>' | python3 /home/node/.claude/skills/tessl__drive-planner/apply.py suppress
+```
+
+Each patch carries the block's full `extendedProperties.private` map with the alert record updated; the script PATCHes it back. It prints `{"patched": [...]}`. If the send in Step 1 failed, do NOT run this step — leaving the block unsuppressed re-pings next poll, which is the safe direction. Finish here.

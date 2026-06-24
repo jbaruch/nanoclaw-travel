@@ -4,7 +4,7 @@
 This is the second cadence skill the poll model needs (Epic #59 §3, confirmed):
 it fires every ~15 min and asks, for every drive block currently in its recheck
 window, "did traffic grow enough since the block was created that the user must
-leave earlier — or is it already time to go?" The sweep (the ~2.5h skill)
+leave earlier — or is it already time to go?" The sweep (the ~2h skill)
 creates blocks; this poll watches them. There are no per-block one-off
 scheduled rows to forget (lombot #48): the poll re-derives the work from the
 blocks themselves every cycle, so a block can never silently lose its rechecks.
@@ -18,14 +18,19 @@ are rechecked — a return leg home has no deadline to miss in Phase 1.
 
 For a due block the poll re-routes the leg with live traffic, runs the
 `recheck.evaluate_recheck` gate, and fires each alert condition at most once via
-`block_props.next_alerts`. When an alert fires it patches the block's
-suppression record so a later poll does not re-ping the same thing. The two
-conditions are tracked independently, so a lost "traffic grew" ping never
-suppresses the safety-critical "leave now" ping that follows.
+`block_props.next_alerts`. For a firing block it emits a `patch` carrying the
+block's FULL `extendedProperties.private` map with only the alert record
+updated (Google Calendar's PATCH replaces the whole private map — sending a
+single key would wipe the meeting id / baseline / endpoints and the block would
+stop parsing next poll). The poll does NOT patch the calendar itself: the
+suppression write is deferred to the SKILL.md, which calls `apply.py suppress`
+ONLY after the ping is confirmed sent — a patch landing before a failed send
+would permanently suppress a leave-earlier / leave-now alert, whereas a
+forgotten patch merely re-pings next poll (the safe direction).
 
 Cross-bundle: `fetch_events` / `block_props` / `recheck` ship in the co-located
-drive-planner skill; `maps_client` / `composio_client` in flight-assist. All
-imported read-only via the runtime-mount-with-dev-fallback pattern.
+drive-planner skill; `maps_client` in flight-assist. All imported read-only via
+the runtime-mount-with-dev-fallback pattern.
 
 Outer-boundary precheck: the scheduler reads non-zero exit OR malformed stdout
 as wake_agent=false. The sole catch-all in `main()` fails CLOSED (no wake) on
@@ -70,7 +75,7 @@ def _resolve(runtime: Path, dev: Path, what: str) -> Path:
 # before importing them by bare name (same cross-bundle pattern as sync-tripit).
 sys.path.insert(0, str(_resolve(_DRIVE_PLANNER_RUNTIME, _DRIVE_PLANNER_DEV, "drive-planner")))
 
-from block_props import next_alerts, parse_block, serialize_alerted  # noqa: E402
+from block_props import KEY_ALERTED, next_alerts, parse_block, serialize_alerted  # noqa: E402
 from fetch_events import CalendarFetcher  # noqa: E402
 from recheck import evaluate_recheck  # noqa: E402
 from route_error import RouteError  # noqa: E402
@@ -157,11 +162,26 @@ def evaluate_blocks(events: list, *, now: datetime, route) -> dict:
                 "reason": decision.reason,
             }
         )
+        # Carry the FULL existing private map forward with only the alert
+        # record updated. Google Calendar's PATCH replaces the whole
+        # `extendedProperties.private` map (no deep-merge), so patching a
+        # single key would wipe the meeting id / baseline / endpoints and the
+        # block would stop parsing on the next poll. The suppression patch is
+        # applied AFTER the agent confirms the ping was sent (the SKILL.md
+        # calls `apply.py suppress`), never here — a patch that landed before a
+        # failed send would permanently suppress the alert.
+        ext = event.get("extendedProperties") if isinstance(event, dict) else None
+        private = (
+            dict(ext["private"])
+            if isinstance(ext, dict) and isinstance(ext.get("private"), dict)
+            else {}
+        )
+        private[KEY_ALERTED] = serialize_alerted(new_alerted)
         patches.append(
             {
                 "event_id": state.event_id,
                 "calendar_id": state.calendar_id,
-                "alerted": serialize_alerted(new_alerted),
+                "private": private,
             }
         )
 
@@ -174,14 +194,6 @@ def _load_maps_client():
     from maps_client import MapsClient
 
     return MapsClient.from_env()
-
-
-def _load_composio():
-    flight_assist_dir = _resolve(_FLIGHT_ASSIST_RUNTIME, _FLIGHT_ASSIST_DEV, "flight-assist")
-    sys.path.insert(0, str(flight_assist_dir))
-    from composio_client import ComposioClient
-
-    return ComposioClient.from_env()
 
 
 def _route_seconds(client, origin: str, destination: str) -> int:
@@ -199,22 +211,6 @@ def _route_seconds(client, origin: str, destination: str) -> int:
     return result.duration_seconds
 
 
-def _apply_suppression_patches(composio, patches: list) -> None:
-    """Persist each fired block's new alert record so a later poll won't re-ping.
-
-    Patched in the precheck (not left to the agent) so suppression is reliable
-    — the safety-critical "leave now" condition is tracked separately, so a
-    patch that lands without its ping never suppresses the leave-by alert.
-    """
-    for patch in patches:
-        args = {
-            "calendar_id": patch.get("calendar_id") or "primary",
-            "event_id": patch["event_id"],
-            "extendedProperties": {"private": {"drive_planner_alerted": patch["alerted"]}},
-        }
-        composio.patch_event(args)
-
-
 def main() -> int:
     # outer-boundary-process-contract: the scheduler reads non-zero exit OR
     # malformed stdout as wake_agent=false. Fails CLOSED on internal error —
@@ -229,8 +225,11 @@ def main() -> int:
         )
         maps = _load_maps_client()
         result = evaluate_blocks(events, now=now, route=lambda o, d: _route_seconds(maps, o, d))
-        if result["patches"]:
-            _apply_suppression_patches(_load_composio(), result["patches"])
+        # The suppression patches ride along in `data`; the SKILL.md applies
+        # them via `apply.py suppress` ONLY after the ping is confirmed sent, so
+        # a failed send never permanently suppresses a leave-earlier / leave-now
+        # alert (a forgotten patch merely re-pings next poll — the safe
+        # direction). The precheck never patches the calendar itself.
         payload = {"wake_agent": bool(result["alerts"]), "data": result}
     except Exception:  # noqa: BLE001 — outer-boundary-process-contract
         traceback.print_exc(file=sys.stderr)

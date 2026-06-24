@@ -44,6 +44,7 @@ class FakeComposio:
         self.events = list(existing or [])
         self.created = []
         self.deleted = []
+        self.patched = []
 
     def find_events(self, arguments):
         # Ignore the window; tests pass exactly the events they want found.
@@ -58,6 +59,10 @@ class FakeComposio:
         self.deleted.append(arguments["event_id"])
         self.events = [e for e in self.events if e.get("id") != arguments["event_id"]]
         return {}
+
+    def patch_event(self, arguments):
+        self.patched.append(arguments)
+        return {"id": arguments["event_id"]}
 
 
 def _create_args(meeting_id="evt_42", direction="outbound"):
@@ -164,6 +169,43 @@ def test_remove_only_touches_the_named_meeting():
 def test_remove_requires_meeting_id():
     with pytest.raises(ValueError, match="meeting_id"):
         apply._remove_mode({"now": "x", "meeting_end": "y"}, FakeComposio())
+
+
+def test_create_skips_malformed_meeting_without_crashing():
+    # A meeting entry with no usable id is recorded as failed, not a KeyError.
+    client = FakeComposio(existing=[])
+    request = {"meetings": [{"create_args": [_create_args()]}, None]}
+    result = apply._create_mode(request, client)
+    assert client.created == []
+    assert len(result["failed"]) == 2
+    assert all(f["error"] == "missing meeting_id" for f in result["failed"])
+
+
+# --- suppress: patch the full private map AFTER the send ------------------
+
+
+def test_suppress_patches_full_private_map():
+    client = FakeComposio()
+    private = {
+        "drive_planner_meeting": "evt_42",
+        "drive_planner_baseline_seconds": "1500",
+        "drive_planner_alerted": "growth",
+    }
+    request = {"patches": [{"event_id": "block_x", "calendar_id": "primary", "private": private}]}
+    result = apply._suppress_mode(request, client)
+    assert result["patched"] == ["block_x"]
+    # The PATCH carries the FULL private map (not a single key) so the block's
+    # machine state survives — Google's PATCH replaces the whole private map.
+    assert client.patched[0]["extendedProperties"]["private"] == private
+    assert client.patched[0]["event_id"] == "block_x"
+
+
+def test_suppress_skips_malformed_patch():
+    client = FakeComposio()
+    request = {"patches": [{"event_id": "", "private": {}}, {"event_id": "ok", "private": "nope"}]}
+    result = apply._suppress_mode(request, client)
+    assert result["patched"] == []
+    assert client.patched == []
 
 
 def test_remove_derives_skip_expiry_from_block_when_no_meeting_end():

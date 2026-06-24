@@ -142,8 +142,8 @@ def build_block_args(
         description, extendedProperties.private, transparency).
 
     Raises:
-        ValueError: on a naive datetime, an empty endpoint, a non-positive
-            baseline, or an unknown direction.
+        ValueError: on a naive datetime, an empty endpoint, a negative or
+            non-int baseline, or an unknown direction.
     """
     for label, value in (("leg_start", leg_start), ("arrive_by", arrive_by)):
         if value.tzinfo is None:
@@ -340,11 +340,13 @@ def _private_props(event: dict) -> dict:
 def parse_block(event: object) -> BlockState | None:
     """Parse a fetched calendar event into a `BlockState`, or None.
 
-    Returns None when the event is not a drive-planner block (no marker /
-    private props) or when a required machine field is missing or malformed —
-    the recheck poll treats None as "not a block I rechek" and moves on. The
-    poll only rechecks arrival-anchored legs, so a block whose private props
-    carry no usable `arrive_by`/`baseline`/endpoints is not returned.
+    Recognition is by `extendedProperties.private` (the machine state), not the
+    description marker — the marker is for `scan.py`'s idempotency check, this
+    parser's contract is the private props. Returns None when the event carries
+    no drive-planner private props or when a required machine field is missing
+    or malformed — the recheck poll treats None as "not a block I recheck" and
+    moves on. The poll only rechecks arrival-anchored legs, so a block whose
+    private props carry no usable `arrive_by`/`baseline`/endpoints is dropped.
     """
     if not isinstance(event, dict):
         return None

@@ -26,6 +26,11 @@ Modes (subcommand on argv[1]):
     remove   stdin {"meeting_id": "...", "meeting_end": "<ISO>", "now": "<ISO>",
                     "calendar_id": "primary"}
              stdout {"removed": [...], "skip_recorded": true}
+    suppress stdin {"patches": [{"event_id": "...", "calendar_id": "...",
+                    "private": {<full extendedProperties.private map>}}]}
+             stdout {"patched": ["<event_id>", ...]}
+             Invoked by the recheck SKILL.md AFTER the alert is sent, so a
+             failed send never permanently suppresses an alert.
 
 This script is NOT a scheduler precheck — it is invoked by the agent and its
 exit code is read directly: exit 0 on success, non-zero with a `{"error": ...}`
@@ -133,7 +138,7 @@ def plan_creates(meeting: dict, fetched_events: list) -> tuple[list, list]:
     existing marker block; `skipped_existing` are the directions already
     present (idempotent no-op, lombot #50).
     """
-    present = existing_directions(fetched_events, meeting["meeting_id"])
+    present = existing_directions(fetched_events, meeting.get("meeting_id", ""))
     to_create: list = []
     skipped: list = []
     for arg in meeting.get("create_args", []):
@@ -176,7 +181,14 @@ def _parse_iso(raw: object) -> datetime | None:
 def _create_mode(request: dict, client) -> dict:
     created, skipped_existing, failed = [], [], []
     for meeting in request.get("meetings", []):
-        meeting_id = meeting.get("meeting_id")
+        meeting_id = meeting.get("meeting_id") if isinstance(meeting, dict) else None
+        if not isinstance(meeting_id, str) or not meeting_id:
+            # A malformed entry (no usable meeting id) is recorded, not crashed
+            # — one bad item in the request must not abort the whole batch.
+            failed.append(
+                {"meeting_id": meeting_id, "direction": None, "error": "missing meeting_id"}
+            )
+            continue
         args = meeting.get("create_args", [])
         time_min, time_max = _find_window(args)
         fetched = []
@@ -256,10 +268,40 @@ def _remove_mode(request: dict, client) -> dict:
     return {"removed": removed, "skip_recorded": True}
 
 
+def _suppress_mode(request: dict, client) -> dict:
+    """Persist the recheck poll's alert-suppression records — AFTER the ping.
+
+    The recheck SKILL.md calls this only once `mcp__nanoclaw__send_message` has
+    delivered the leave-earlier / leave-now alert, so a failed send never
+    permanently suppresses an alert. Each patch carries the block's FULL
+    `extendedProperties.private` map (the poll built it by carrying the
+    existing props forward with only `drive_planner_alerted` updated) — Google
+    Calendar's PATCH replaces the whole private map, so a partial map would wipe
+    the block's machine state.
+    """
+    patched = []
+    for patch in request.get("patches", []):
+        event_id = patch.get("event_id")
+        private = patch.get("private")
+        if not isinstance(event_id, str) or not event_id or not isinstance(private, dict):
+            continue
+        client.patch_event(
+            {
+                "calendar_id": patch.get("calendar_id") or "primary",
+                "event_id": event_id,
+                "extendedProperties": {"private": private},
+            }
+        )
+        patched.append(event_id)
+    return {"patched": patched}
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in ("create", "remove"):
+    if len(argv) < 2 or argv[1] not in ("create", "remove", "suppress"):
         print(
-            json.dumps({"error": "usage: apply.py <create|remove> (request JSON on stdin)"}),
+            json.dumps(
+                {"error": "usage: apply.py <create|remove|suppress> (request JSON on stdin)"}
+            ),
             file=sys.stderr,
         )
         return 2
@@ -276,8 +318,10 @@ def main(argv: list[str]) -> int:
         client = _load_composio()
         if argv[1] == "create":
             result = _create_mode(request, client)
-        else:
+        elif argv[1] == "remove":
             result = _remove_mode(request, client)
+        else:
+            result = _suppress_mode(request, client)
     except ValueError as exc:
         # Config / usage error — missing COMPOSIO_* env, or a bad remove request.
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
