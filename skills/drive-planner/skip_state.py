@@ -133,6 +133,16 @@ def _read_skips() -> dict[str, str]:
             f"skip-state file {path} has schema_version {version}, newer than this "
             f"tile supports ({SKIP_SCHEMA_VERSION}) — upgrade the drive-planner tile"
         )
+    if version < SKIP_SCHEMA_VERSION:
+        # Owner-side migration point (per `coding-policy: stateful-artifacts`):
+        # a future bump adds the v(N-1)→vN upgrade-and-rewrite here. v1 is the
+        # first and only version, so any value below it is not an older record
+        # to migrate but a corrupt one — refuse explicitly rather than fall
+        # through and treat it as current.
+        raise SkipStateError(
+            f"skip-state file {path} has schema_version {version}, below the current "
+            f"floor ({SKIP_SCHEMA_VERSION}) with no migration path — repair or delete it"
+        )
 
     skips = payload.get("skips")
     if not isinstance(skips, dict):

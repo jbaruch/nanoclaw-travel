@@ -153,6 +153,15 @@ def test_newer_schema_version_raises(skip_env):
         load_active_skips(NOW)
 
 
+def test_older_schema_version_is_refused_not_passed_through(skip_env):
+    # A below-floor version must be detected explicitly, not silently treated
+    # as current (per stateful-artifacts owner-migration handling).
+    skip_env.parent.mkdir(parents=True, exist_ok=True)
+    skip_env.write_text(json.dumps({"schema_version": SKIP_SCHEMA_VERSION - 1, "skips": {}}))
+    with pytest.raises(SkipStateError, match="below the current"):
+        load_active_skips(NOW)
+
+
 def test_malformed_entries_are_dropped(skip_env):
     skip_env.parent.mkdir(parents=True, exist_ok=True)
     skip_env.write_text(
