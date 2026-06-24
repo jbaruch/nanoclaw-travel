@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -72,6 +73,7 @@ sys.path.insert(0, str(_resolve(_DRIVE_PLANNER_RUNTIME, _DRIVE_PLANNER_DEV, "dri
 from block_props import next_alerts, parse_block, serialize_alerted  # noqa: E402
 from fetch_events import CalendarFetcher  # noqa: E402
 from recheck import evaluate_recheck  # noqa: E402
+from route_error import RouteError  # noqa: E402
 
 # How far back / ahead the poll fetches to catch every block whose recheck
 # window is open now. The window opens 45 min before a block's leave-by and
@@ -114,7 +116,10 @@ def evaluate_blocks(events: list, *, now: datetime, route) -> dict:
 
         try:
             current_seconds = route(state.origin, state.destination)
-        except Exception as exc:  # noqa: BLE001 — record, don't silently miss
+        except RouteError as exc:
+            # A leg the router can't price this poll is recorded, not silently
+            # missed (§5); the next ~15-min poll retries. A non-routing bug is
+            # not a RouteError and propagates.
             route_errors.append(
                 {
                     "meeting_id": state.meeting_id,
@@ -180,7 +185,15 @@ def _load_composio():
 
 
 def _route_seconds(client, origin: str, destination: str) -> int:
-    result = client.travel_time(origin=origin, destination=destination)
+    # Translate the provider's MapsError / transport failure into a RouteError
+    # so evaluate_blocks catches one specific type (per `coding-policy:
+    # error-handling`). maps_client is on sys.path — _load_maps_client ran first.
+    from maps_client import MapsError
+
+    try:
+        result = client.travel_time(origin=origin, destination=destination)
+    except (MapsError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+        raise RouteError(str(exc)) from exc
     if result.in_traffic_seconds is not None:
         return result.in_traffic_seconds
     return result.duration_seconds

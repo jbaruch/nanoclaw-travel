@@ -28,6 +28,7 @@ from block_props import (  # noqa: E402
     KEY_ALERTED,
     build_block_args,
 )
+from route_error import RouteError  # noqa: E402
 
 
 def _load(name: str, path: Path):
@@ -156,7 +157,7 @@ def test_non_block_event_ignored():
 
 def test_route_failure_recorded_not_alerted():
     def boom(origin, destination):
-        raise RuntimeError("ALL_PROVIDERS_FAILED")
+        raise RouteError("ALL_PROVIDERS_FAILED")
 
     event = _block_event(arrive_offset_min=60)
     result = poll.evaluate_blocks([event], now=NOW, route=boom)

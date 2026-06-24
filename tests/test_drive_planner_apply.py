@@ -23,6 +23,10 @@ import apply  # noqa: E402
 import skip_state  # noqa: E402
 from block_props import build_block_args  # noqa: E402
 
+# apply.py adds the flight-assist bundle to sys.path on import (for ComposioError);
+# that makes composio_client importable here too.
+from composio_client import ComposioError  # noqa: E402
+
 CT = timezone(timedelta(hours=-5))
 ARRIVE = datetime(2026, 7, 2, 13, 0, tzinfo=CT)
 LEG_START = datetime(2026, 7, 2, 12, 30, tzinfo=CT)
@@ -116,7 +120,7 @@ def test_create_adds_only_missing_direction():
 def test_create_records_per_leg_failure_without_aborting():
     class FlakyComposio(FakeComposio):
         def create_event(self, arguments):
-            raise RuntimeError("composio 500")
+            raise ComposioError("composio 500")
 
     client = FlakyComposio(existing=[])
     request = {"meetings": [{"meeting_id": "evt_42", "create_args": [_create_args()]}]}

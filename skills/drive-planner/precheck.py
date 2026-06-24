@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -58,6 +59,7 @@ _FLIGHT_ASSIST_DEV = _BUNDLE_DIR.parent / "flight-assist"
 from block_props import DEFAULT_ARRIVAL_BUFFER_SECONDS, build_block_args  # noqa: E402
 from fetch_events import CalendarFetcher  # noqa: E402
 from home_address import read_current_home  # noqa: E402
+from route_error import RouteError  # noqa: E402
 from scan import MeetingClass, TransitLeg, actionable, scan  # noqa: E402
 from skip_state import load_active_skips  # noqa: E402
 
@@ -99,10 +101,18 @@ def _load_maps_client():
 def _route_seconds(client, origin: str, destination: str) -> int:
     """Live drive seconds for one leg, preferring the in-traffic estimate.
 
-    Raises MapsError / urllib errors from the client; the caller records the
-    leg as un-priced rather than dropping the meeting.
+    Translates the provider's `MapsError` / `urllib` transport failure into a
+    `RouteError` so the pure planner catches one specific type (per
+    `coding-policy: error-handling`) and records the leg as un-priced rather
+    than dropping the meeting. `maps_client` is already on `sys.path` here —
+    `_load_maps_client` inserted the flight-assist bundle before this runs.
     """
-    result = client.travel_time(origin=origin, destination=destination)
+    from maps_client import MapsError
+
+    try:
+        result = client.travel_time(origin=origin, destination=destination)
+    except (MapsError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+        raise RouteError(str(exc)) from exc
     if result.in_traffic_seconds is not None:
         return result.in_traffic_seconds
     return result.duration_seconds
@@ -176,19 +186,14 @@ def plan_meetings(
         create_args: list[dict] = []
         route_errors: list[dict] = []
         for leg in meeting.legs:
+            origin = leg.origin or home_address
+            destination = leg.destination or home_address
             try:
-                baseline = route(leg.origin or home_address, leg.destination or home_address)
-                create_args.append(
-                    _leg_create_args(
-                        meeting,
-                        leg,
-                        home_address=home_address,
-                        baseline_seconds=baseline,
-                        calendar_id=calendar_id,
-                        buffer_seconds=buffer_seconds,
-                    )
-                )
-            except Exception as exc:  # noqa: BLE001 — record, don't drop (no silent miss)
+                baseline = route(origin, destination)
+            except RouteError as exc:
+                # A leg the router can't price is recorded, not dropped (no
+                # silent miss, §5). A non-routing failure (e.g. a leg with no
+                # anchor) is not a RouteError and propagates as a real bug.
                 route_errors.append(
                     {
                         "direction": leg.direction,
@@ -197,6 +202,17 @@ def plan_meetings(
                         "error": str(exc),
                     }
                 )
+                continue
+            create_args.append(
+                _leg_create_args(
+                    meeting,
+                    leg,
+                    home_address=home_address,
+                    baseline_seconds=baseline,
+                    calendar_id=calendar_id,
+                    buffer_seconds=buffer_seconds,
+                )
+            )
         meetings.append(
             {
                 "meeting_id": meeting.meeting_id,

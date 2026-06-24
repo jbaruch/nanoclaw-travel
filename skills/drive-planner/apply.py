@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import sys
+import urllib.error
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -46,8 +47,33 @@ sys.path.insert(0, str(_BUNDLE_DIR))
 _FLIGHT_ASSIST_RUNTIME = Path("/home/node/.claude/skills/tessl__flight-assist")
 _FLIGHT_ASSIST_DEV = _BUNDLE_DIR.parent / "flight-assist"
 
+
+def _flight_assist_dir() -> Path:
+    if _FLIGHT_ASSIST_RUNTIME.is_dir():
+        return _FLIGHT_ASSIST_RUNTIME
+    if _FLIGHT_ASSIST_DEV.is_dir():
+        return _FLIGHT_ASSIST_DEV
+    raise FileNotFoundError(
+        "drive-planner apply: cannot locate the co-shipped flight-assist skill at "
+        f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev) — composio_client "
+        "ships there; both skills are part of jbaruch/nanoclaw-travel"
+    )
+
+
+# Composio's find/create/delete surface ships in the co-located flight-assist
+# bundle; add it to the path and import its client + error type (the same
+# cross-bundle import reconcile.py does in-bundle), so the calendar-write
+# failures can be caught by their specific type per `coding-policy:
+# error-handling` rather than a bare catch-all.
+sys.path.insert(0, str(_flight_assist_dir()))
+
 from block_props import parse_block  # noqa: E402
+from composio_client import ComposioClient, ComposioError  # noqa: E402
 from skip_state import add_skip  # noqa: E402
+
+# Calendar-write failures worth catching per-op: a Composio tool error or a
+# transport error. A non-write bug is not in this set and propagates.
+_WRITE_ERRORS = (ComposioError, urllib.error.URLError, urllib.error.HTTPError, OSError)
 
 # Pad the find window around a block so a small clock/timezone skew between
 # create and the idempotency find never hides an existing block.
@@ -60,20 +86,7 @@ _DEFAULT_SKIP_HORIZON = timedelta(days=30)
 
 
 def _load_composio():
-    """Import and construct the in-tile ComposioClient from env, cross-bundle."""
-    if _FLIGHT_ASSIST_RUNTIME.is_dir():
-        flight_assist_dir = _FLIGHT_ASSIST_RUNTIME
-    elif _FLIGHT_ASSIST_DEV.is_dir():
-        flight_assist_dir = _FLIGHT_ASSIST_DEV
-    else:
-        raise FileNotFoundError(
-            "drive-planner apply: cannot locate the co-shipped flight-assist skill at "
-            f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev) — composio_client "
-            "ships there; both skills are part of jbaruch/nanoclaw-travel"
-        )
-    sys.path.insert(0, str(flight_assist_dir))
-    from composio_client import ComposioClient
-
+    """Construct the in-tile ComposioClient from env (cross-bundle path set above)."""
     return ComposioClient.from_env()
 
 
@@ -184,7 +197,9 @@ def _create_mode(request: dict, client) -> dict:
             try:
                 client.create_event(arg)
                 created.append({"meeting_id": meeting_id, "direction": _arg_direction(arg)})
-            except Exception as exc:  # noqa: BLE001 — report per-leg, keep going
+            except _WRITE_ERRORS as exc:
+                # One leg's create failing must not abort the batch — record it
+                # and keep going. The next sweep retries idempotently.
                 failed.append(
                     {"meeting_id": meeting_id, "direction": _arg_direction(arg), "error": str(exc)}
                 )
@@ -264,9 +279,12 @@ def main(argv: list[str]) -> int:
         else:
             result = _remove_mode(request, client)
     except ValueError as exc:
+        # Config / usage error — missing COMPOSIO_* env, or a bad remove request.
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
         return 2
-    except Exception as exc:  # noqa: BLE001 — surface an unrecovered failure to the agent
+    except _WRITE_ERRORS as exc:
+        # An unrecovered Composio / transport failure during find/delete —
+        # surface it to the agent. A non-write bug propagates as a traceback.
         print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), file=sys.stderr)
         return 1
 

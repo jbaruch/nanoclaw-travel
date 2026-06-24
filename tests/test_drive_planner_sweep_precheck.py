@@ -20,6 +20,7 @@ DRIVE = REPO_ROOT / "skills" / "drive-planner"
 sys.path.insert(0, str(DRIVE))
 
 from block_props import parse_block  # noqa: E402
+from route_error import RouteError  # noqa: E402
 from scan import scan  # noqa: E402
 
 
@@ -141,7 +142,7 @@ def test_built_outbound_block_round_trips_to_blockstate():
 
 def test_route_failure_is_recorded_not_dropped():
     def boom(origin, destination):
-        raise RuntimeError("ALL_PROVIDERS_FAILED")
+        raise RouteError("ALL_PROVIDERS_FAILED")
 
     events = [_meeting("m1", 14, location="100 Broadway, Nashville, TN")]
     payload = precheck.plan_meetings(_scan(events), route=boom, home_address=HOME)
