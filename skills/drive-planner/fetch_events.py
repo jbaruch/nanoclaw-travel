@@ -231,7 +231,7 @@ class CalendarFetcher:
         return body.get("data") or {}
 
 
-def _extract_events(data: dict) -> list:
+def _extract_events(data: object) -> list:
     """Pull the event list out of the Composio `data` envelope.
 
     Tries each `_EVENT_CONTAINER_KEYS` in order and returns the first that is

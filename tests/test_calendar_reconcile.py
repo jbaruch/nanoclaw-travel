@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
 import calendar_reconcile as cr  # noqa: E402
 from calendar_plan import _signature as _sig  # noqa: E402
+from calendar_tags import encode_tags  # noqa: E402
 from composio_client import ComposioError  # noqa: E402
 from state import (  # noqa: E402
     read_config,
@@ -63,11 +64,14 @@ class FakeComposio:
 
     def list_calendars(self, arguments: dict | None = None) -> dict:
         self.calls.append(("list_calendars", arguments))
-        return {"items": self.calendars}
+        # Live v3 LIST_CALENDARS returns the list under `calendars`.
+        return {"calendars": self.calendars}
 
     def find_events(self, arguments: dict) -> dict:
         self.calls.append(("find_events", arguments))
-        return {"items": self.events_by_calendar.get(arguments["calendar_id"], [])}
+        # Live v3 FIND_EVENT double-nests at data.event_data.event_data.
+        events = self.events_by_calendar.get(arguments["calendar_id"], [])
+        return {"event_data": {"event_data": events}}
 
     def create_event(self, arguments: dict) -> dict:
         self.calls.append(("create_event", arguments))
@@ -138,17 +142,80 @@ def _raw_event(
     description: str = "",
     private: dict | None = None,
 ) -> dict:
-    """A Google-native raw event resource (normalize_event input shape)."""
+    """A Google-native raw event resource (normalize_event input shape).
+
+    A managed event's tags ride in the description's <!--fa:{...}--> comment
+    (the live v3 toolkit has no writable extendedProperties), so `private`
+    encodes into the description exactly as the reconcile writes it.
+    """
     raw: dict = {
         "id": event_id,
         "summary": summary,
-        "description": description,
+        "description": encode_tags(description, private) if private else description,
         "start": {"dateTime": start},
         "end": {"dateTime": end},
     }
-    if private is not None:
-        raw["extendedProperties"] = {"private": private}
     return raw
+
+
+# --- write-arg shapes (the live v3 contract — regression guards) -------------
+
+
+def test_create_event_args_are_flat_with_tags_in_description():
+    # The original nested start.dateTime + extendedProperties shape silently
+    # failed every live create; pin the flat contract so it can't regress.
+    op = {
+        "calendar_id": BYAIR_CAL,
+        "body": {
+            "summary": "Boarding AA100",
+            "start": "2026-07-01T09:30:00-05:00",
+            "end": "2026-07-01T10:00:00-05:00",
+            "private_props": {"faFlightId": "1", "faKind": "boarding"},
+        },
+    }
+    args = cr._create_event_args(op)
+    assert args["start_datetime"] == "2026-07-01T09:30:00-05:00"
+    assert args["event_duration_hour"] == 0
+    assert args["event_duration_minutes"] == 30
+    assert "start" not in args and "end" not in args
+    assert "extendedProperties" not in args
+    # tags ride in the description
+    assert '"faFlightId":"1"' in args["description"]
+
+
+def test_patch_event_args_delta_shift_uses_flat_times():
+    op = {
+        "calendar_id": BYAIR_CAL,
+        "event_id": "e1",
+        "body": {"start": "2026-07-01T10:15:00-05:00", "end": "2026-07-01T12:45:00-05:00"},
+    }
+    args = cr._patch_event_args(op)
+    assert args["start_time"] == "2026-07-01T10:15:00-05:00"
+    assert args["end_time"] == "2026-07-01T12:45:00-05:00"
+    assert "start" not in args and "extendedProperties" not in args
+
+
+def test_patch_event_args_adopt_appends_tags_to_existing_description():
+    op = {
+        "calendar_id": BYAIR_CAL,
+        "event_id": "e1",
+        "body": {
+            "description": "✈ BNA→YYZ • UA 8018",
+            "private_props": {"faFlightId": "1", "faKind": "flight", "faManaged": "adopted"},
+        },
+    }
+    args = cr._patch_event_args(op)
+    # byAir's description is preserved, tags appended — not clobbered.
+    assert args["description"].startswith("✈ BNA→YYZ • UA 8018")
+    assert '"faManaged":"adopted"' in args["description"]
+    assert "start_time" not in args
+
+
+def test_items_reads_calendars_and_double_nested_find():
+    assert cr._items({"calendars": [{"id": "c1"}]}) == [{"id": "c1"}]
+    assert cr._items({"event_data": {"event_data": [{"id": "e1"}]}}) == [{"id": "e1"}]
+    assert cr._items({"items": [{"id": "x"}]}) == [{"id": "x"}]
+    assert cr._items("not a dict") == []
 
 
 # --- calendar-ID resolution --------------------------------------------------

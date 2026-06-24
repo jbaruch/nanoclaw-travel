@@ -119,29 +119,34 @@ def test_normalize_flight_event_shape():
         "summary": "✈ BNA→YYZ • UA 8018",
         "start": "2026-06-26T10:05:00-05:00",
         "end": "2026-06-26T12:03:00-05:00",
+        "description": "",
         "private_props": {},
         "is_reclaim_travel": False,
     }
 
 
-def test_normalize_extracts_private_props():
+def test_normalize_extracts_private_props_from_description_tag():
+    # Tags ride in the description's <!--fa:{...}--> comment (the live v3
+    # toolkit has no writable extendedProperties); normalize decodes them and
+    # exposes the human description with the comment stripped.
     raw = {
         "id": "boarding-1",
         "summary": "Boarding UA8018",
-        "extendedProperties": {"private": {"faFlightId": "100", "faKind": "boarding"}},
+        "description": 'Gate B12\n<!--fa:{"faFlightId":"100","faKind":"boarding"}-->',
         **_timed("2026-06-26T09:35:00-05:00", "2026-06-26T10:05:00-05:00"),
     }
     norm = normalize_event(raw, calendar_id=FLIGHTY_CAL)
     assert norm["private_props"] == {"faFlightId": "100", "faKind": "boarding"}
+    assert norm["description"] == "Gate B12"
 
 
-def test_normalize_malformed_private_props_becomes_empty_dict():
-    # A non-mapping extendedProperties.private (API/client bug) must
-    # normalize to {} so the planner's .get() never crashes.
+def test_normalize_malformed_tag_becomes_empty_dict():
+    # A malformed tag comment (API/client bug) must normalize to {} so the
+    # planner's .get() never crashes.
     raw = {
         "id": "e1",
         "summary": "x",
-        "extendedProperties": {"private": ["not", "a", "dict"]},
+        "description": "<!--fa:{not json}-->",
         **_timed("2026-07-01T10:00:00-05:00", "2026-07-01T11:00:00-05:00"),
     }
     norm = normalize_event(raw, calendar_id=FLIGHTY_CAL)

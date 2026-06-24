@@ -33,6 +33,8 @@ stdlib-only per `coding-policy: dependency-management`.
 
 from __future__ import annotations
 
+from calendar_tags import decode_tags, strip_tags
+
 # Distinctive substring of the authorship link Reclaim stamps into every
 # event description. Two-factor with the travel marker below so a user
 # event is never misread as a Reclaim travel block.
@@ -97,8 +99,11 @@ def normalize_event(raw_event: dict, *, calendar_id: str, classify_reclaim: bool
             primary); False for the byAir flight calendar.
 
     Returns the flat shape `plan_reconciliation` consumes. `private_props`
-    is `extendedProperties.private` (the tags flight-assist stamps), `{}`
-    when absent.
+    is flight-assist's managed-event tags, decoded from the description's
+    `<!--fa:{...}-->` comment (the live v3 toolkit has no writable
+    extendedProperties), `{}` when absent. `description` is the human content
+    with that comment stripped — the adopt path re-appends the tags so they
+    never accumulate.
 
     Raises NormalizeError when the event has no `id`.
     """
@@ -110,18 +115,14 @@ def normalize_event(raw_event: dict, *, calendar_id: str, classify_reclaim: bool
         raise NormalizeError(
             f"event is missing required 'id' field — keys present: {sorted(raw_event.keys())}"
         )
-    extended = raw_event.get("extendedProperties") or {}
-    private = extended.get("private") if isinstance(extended, dict) else None
-    # Force a dict: the planner calls `.get()` on private_props, so a
-    # malformed non-mapping value (list/string from an API or client bug)
-    # must normalize to {} rather than crash downstream.
-    private_props = private if isinstance(private, dict) else {}
+    raw_description = raw_event.get("description")
     return {
         "event_id": event_id,
         "calendar_id": calendar_id,
         "summary": raw_event.get("summary") or "",
         "start": _extract_instant(raw_event.get("start")),
         "end": _extract_instant(raw_event.get("end")),
-        "private_props": private_props,
+        "description": strip_tags(raw_description),
+        "private_props": decode_tags(raw_description),
         "is_reclaim_travel": is_reclaim_travel(raw_event) if classify_reclaim else False,
     }
