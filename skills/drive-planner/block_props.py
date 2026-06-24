@@ -296,6 +296,38 @@ def serialize_alerted(alerted: frozenset | set) -> str:
     return ",".join(value for value in _ALERT_VALUES if value in alerted)
 
 
+def next_alerts(
+    alerted: frozenset | set, *, grew: bool, leave_now: bool
+) -> tuple[tuple[str, ...], frozenset]:
+    """Decide which alerts fire now and the suppression record after.
+
+    The recheck gate (`recheck.evaluate_recheck`) reports two conditions —
+    `grew` (traffic grew past the threshold) and `leave_now` (the recomputed
+    leave-by has arrived). Each fires AT MOST ONCE per block: re-pinging
+    "traffic grew" on every poll while it stays grown is the trust-eroding
+    nag (Epic #59 §5 #49 in spirit). Given the alerts already sent, return
+    `(kinds_to_fire, new_alerted)` — `kinds_to_fire` is empty when both
+    conditions were already alerted (the poll then stays silent for this
+    block and patches nothing).
+
+    Args:
+        alerted: the alerts already sent for this block.
+        grew: the gate's `grew_past_threshold`.
+        leave_now: the gate's `leave_by_passed`.
+
+    Returns:
+        (kinds_to_fire, new_alerted). `new_alerted` is `alerted` unchanged
+        when nothing new fires, so the caller can skip the suppression patch.
+    """
+    fire: list[str] = []
+    if grew and ALERT_GROWTH not in alerted:
+        fire.append(ALERT_GROWTH)
+    if leave_now and ALERT_LEAVE_NOW not in alerted:
+        fire.append(ALERT_LEAVE_NOW)
+    new_alerted = frozenset(alerted) | frozenset(fire)
+    return tuple(fire), new_alerted
+
+
 def _private_props(event: dict) -> dict:
     """Pull `extendedProperties.private` out of a fetched event, defensively."""
     ext = event.get("extendedProperties")

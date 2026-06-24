@@ -31,6 +31,7 @@ from block_props import (  # noqa: E402
     BlockState,
     build_block_args,
     build_marker,
+    next_alerts,
     parse_alerted,
     parse_block,
     serialize_alerted,
@@ -221,3 +222,37 @@ def test_parsed_state_exposes_alerted():
     assert state is not None
     assert state.already_alerted(ALERT_GROWTH) is True
     assert state.already_alerted(ALERT_LEAVE_NOW) is False
+
+
+# --- alert-suppression decision (next_alerts) ----------------------------
+
+
+def test_next_alerts_fires_growth_once():
+    fire, new = next_alerts(frozenset(), grew=True, leave_now=False)
+    assert fire == (ALERT_GROWTH,)
+    assert new == frozenset({ALERT_GROWTH})
+
+
+def test_next_alerts_suppresses_repeat_growth():
+    fire, new = next_alerts(frozenset({ALERT_GROWTH}), grew=True, leave_now=False)
+    assert fire == ()
+    assert new == frozenset({ALERT_GROWTH})
+
+
+def test_next_alerts_fires_leave_now_after_prior_growth():
+    fire, new = next_alerts(frozenset({ALERT_GROWTH}), grew=True, leave_now=True)
+    assert fire == (ALERT_LEAVE_NOW,)
+    assert new == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
+
+
+def test_next_alerts_fires_both_from_clean_state():
+    fire, new = next_alerts(frozenset(), grew=True, leave_now=True)
+    assert set(fire) == {ALERT_GROWTH, ALERT_LEAVE_NOW}
+    assert new == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
+
+
+def test_next_alerts_silent_when_nothing_new():
+    fire, new = next_alerts(frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW}), grew=True, leave_now=True)
+    assert fire == ()
+    # unchanged record so the caller skips the suppression patch
+    assert new == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
