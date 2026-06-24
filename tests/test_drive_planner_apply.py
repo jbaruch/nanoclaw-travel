@@ -178,6 +178,18 @@ def test_remove_with_past_meeting_end_keeps_find_window_valid():
     assert client.find_args["timeMin"] <= past_end.isoformat()
 
 
+def test_create_tolerates_non_list_meetings():
+    client = FakeComposio(existing=[])
+    result = apply._create_mode({"meetings": "not-a-list"}, client)  # must not raise
+    assert result == {"created": [], "skipped_existing": [], "failed": []}
+
+
+def test_suppress_tolerates_non_list_patches():
+    client = FakeComposio()
+    result = apply._suppress_mode({"patches": {"bad": "shape"}}, client)  # must not raise
+    assert result == {"patched": []}
+
+
 def test_create_tolerates_non_dict_start_in_arg():
     # A create-arg whose start/end is present but not a dict must not crash the
     # idempotency-find window math.

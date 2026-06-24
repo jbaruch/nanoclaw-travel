@@ -201,7 +201,8 @@ def _parse_iso(raw: object) -> datetime | None:
 
 def _create_mode(request: dict, client) -> dict:
     created, skipped_existing, failed = [], [], []
-    for meeting in request.get("meetings", []):
+    meetings = request.get("meetings")
+    for meeting in meetings if isinstance(meetings, list) else []:
         meeting_id = meeting.get("meeting_id") if isinstance(meeting, dict) else None
         if not isinstance(meeting_id, str) or not meeting_id:
             # A malformed entry (no usable meeting id) is recorded, not crashed
@@ -323,7 +324,8 @@ def _suppress_mode(request: dict, client) -> dict:
     the block's machine state.
     """
     patched = []
-    for patch in request.get("patches", []):
+    patches = request.get("patches")
+    for patch in patches if isinstance(patches, list) else []:
         if not isinstance(patch, dict):
             continue
         event_id = patch.get("event_id")
