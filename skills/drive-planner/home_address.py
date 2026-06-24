@@ -11,9 +11,9 @@ The block the admin tile writes (Epic #59 §4):
 
     ## Addresses
     <!-- canonical, machine-read by travel tile -->
-    - current_home: 1040 Pine Creek Dr, Arrington, TN 37014
+    - current_home: 12 Example St, Sampleton, TN 37000
     - home_airport: BNA
-    - new_home_wip: 1835 Burke Hollow Rd, Nolensville, TN 37135
+    - new_home_wip: 99 Placeholder Rd, Testburg, TN 37100
 
 `current_home` is the drive origin. `new_home_wip` (a house under
 construction) is deliberately NOT read — switching origins is a later,
@@ -30,7 +30,7 @@ stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 Public API:
     from home_address import read_current_home, HomeAddressError
 
-    home = read_current_home()   # "1040 Pine Creek Dr, Arrington, TN 37014"
+    home = read_current_home()   # "12 Example St, Sampleton, TN 37000"
 """
 
 from __future__ import annotations

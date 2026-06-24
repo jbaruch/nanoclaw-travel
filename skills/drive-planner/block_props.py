@@ -41,7 +41,7 @@ Public API:
         leg_start=depart_dt,        # block start (when you leave)
         arrive_by=meeting_start,    # the hard arrival deadline
         baseline_seconds=1500,      # routed drive time at creation
-        origin="1040 Pine Creek Dr, Arrington, TN 37014",
+        origin="12 Example St, Sampleton, TN 37000",
         destination="100 Broadway, Nashville, TN",
     )
     # ... create_event(args) ...
@@ -136,8 +136,9 @@ def build_block_args(
         leg_start: when the block starts (departure time).
         arrive_by: the hard arrival deadline (meeting start). For a return
             leg with no arrival deadline, pass the leg end here too — the
-            poll only rechecks arrival-anchored legs and skips a block whose
-            arrive_by is at/after its own start.
+            recheck poll skips return legs by their `direction` (it only
+            rechecks `outbound` / `bridge`), so a return's arrive_by is just
+            recorded, never used as a deadline.
         baseline_seconds: routed drive seconds captured at creation.
         origin / destination: the routed leg endpoints (the poll re-routes
             exactly this pair).

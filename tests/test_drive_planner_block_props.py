@@ -52,7 +52,7 @@ def _build_args(**overrides):
         "leg_start": LEG_START,
         "arrive_by": ARRIVE,
         "baseline_seconds": 1500,
-        "origin": "1040 Pine Creek Dr, Arrington, TN 37014",
+        "origin": "12 Example St, Sampleton, TN 37000",
         "destination": "100 Broadway, Nashville, TN",
     }
     args.update(overrides)
@@ -171,7 +171,7 @@ def test_round_trip_parse():
     assert state.direction == "outbound"
     assert state.baseline_seconds == 1500
     assert state.arrive_by == ARRIVE
-    assert state.origin.startswith("1040 Pine Creek")
+    assert state.origin.startswith("12 Example St")
     assert state.destination == "100 Broadway, Nashville, TN"
 
 

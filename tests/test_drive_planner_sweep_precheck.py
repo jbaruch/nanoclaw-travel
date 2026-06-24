@@ -40,7 +40,7 @@ precheck = _load("drive_planner_sweep_precheck", DRIVE / "precheck.py")
 
 CT = timezone(timedelta(hours=-5))
 NOW = datetime(2026, 7, 1, 8, 0, tzinfo=CT)
-HOME = "1040 Pine Creek Dr, Arrington, TN 37014"
+HOME = "12 Example St, Sampleton, TN 37000"
 
 
 def _meeting(eid: str, start_h: int, *, location: str, end_h: int | None = None) -> dict:

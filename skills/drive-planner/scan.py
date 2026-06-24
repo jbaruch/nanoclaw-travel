@@ -54,7 +54,7 @@ Public API:
     results = scan(
         events,                      # list of Google Calendar event dicts
         now=datetime.now(tz=...),    # tz-aware "current" time
-        home_address="1040 Pine Creek Dr, Arrington, TN 37014",
+        home_address="12 Example St, Sampleton, TN 37000",
         skip_state={"evt_3": "2026-07-01T00:00:00+00:00"},  # id -> expiry
     )
     for r in results:

@@ -25,9 +25,9 @@ Some prose about the operator.
 
 ## Addresses
 <!-- canonical, machine-read by travel tile -->
-- current_home: 1040 Pine Creek Dr, Arrington, TN 37014
+- current_home: 12 Example St, Sampleton, TN 37000
 - home_airport: BNA
-- new_home_wip: 1835 Burke Hollow Rd, Nolensville, TN 37135
+- new_home_wip: 99 Placeholder Rd, Testburg, TN 37100
 """
 
 
@@ -39,14 +39,14 @@ def _write_profile(tmp_path: Path, text: str) -> Path:
 
 def test_reads_current_home(tmp_path):
     profile = _write_profile(tmp_path, CANONICAL_BLOCK)
-    assert read_current_home(path=profile) == "1040 Pine Creek Dr, Arrington, TN 37014"
+    assert read_current_home(path=profile) == "12 Example St, Sampleton, TN 37000"
 
 
 def test_does_not_read_new_home_wip(tmp_path):
     # new_home_wip must never be picked up automatically — origin switches
     # are an explicit later change, not whichever address parses first.
     profile = _write_profile(tmp_path, CANONICAL_BLOCK)
-    assert "Nolensville" not in read_current_home(path=profile)
+    assert "Testburg" not in read_current_home(path=profile)
 
 
 def test_tolerates_whitespace_variants(tmp_path):
@@ -57,7 +57,7 @@ def test_tolerates_whitespace_variants(tmp_path):
 def test_env_override(tmp_path, monkeypatch):
     profile = _write_profile(tmp_path, CANONICAL_BLOCK)
     monkeypatch.setenv("USER_PROFILE_PATH", str(profile))
-    assert read_current_home() == "1040 Pine Creek Dr, Arrington, TN 37014"
+    assert read_current_home() == "12 Example St, Sampleton, TN 37000"
 
 
 def test_missing_file_raises_actionable(tmp_path):
@@ -84,12 +84,12 @@ def test_current_home_outside_addresses_block_is_ignored(tmp_path):
         "# Owner Profile\n\n"
         "- current_home: 999 Stale Prose Rd, Oldtown\n\n"
         "## Addresses\n"
-        "- current_home: 1040 Pine Creek Dr, Arrington, TN 37014\n\n"
+        "- current_home: 12 Example St, Sampleton, TN 37000\n\n"
         "## Notes\n"
         "- current_home: 1 Decoy Ln, Faketown\n"
     )
     profile = _write_profile(tmp_path, text)
-    assert read_current_home(path=profile) == "1040 Pine Creek Dr, Arrington, TN 37014"
+    assert read_current_home(path=profile) == "12 Example St, Sampleton, TN 37000"
 
 
 def test_addresses_block_without_current_home_raises_even_if_prose_has_it(tmp_path):
