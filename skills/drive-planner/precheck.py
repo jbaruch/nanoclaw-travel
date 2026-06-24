@@ -111,7 +111,10 @@ def _route_seconds(client, origin: str, destination: str) -> int:
 
     try:
         result = client.travel_time(origin=origin, destination=destination)
-    except (MapsError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+    except (MapsError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        # maps_client does a raw response.read() without normalizing a read
+        # timeout to URLError (unlike composio_client), so catch TimeoutError
+        # too and translate the whole set to RouteError.
         raise RouteError(str(exc)) from exc
     if result.in_traffic_seconds is not None:
         return result.in_traffic_seconds

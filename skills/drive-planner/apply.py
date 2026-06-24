@@ -157,7 +157,8 @@ def plan_creates(meeting: dict, fetched_events: list) -> tuple[list, list]:
     present = existing_directions(fetched_events, meeting.get("meeting_id", ""))
     to_create: list = []
     skipped: list = []
-    for arg in meeting.get("create_args", []):
+    create_args = meeting.get("create_args")
+    for arg in create_args if isinstance(create_args, list) else []:
         direction = _arg_direction(arg)
         if direction in present:
             skipped.append(direction)
@@ -207,7 +208,9 @@ def _create_mode(request: dict, client) -> dict:
                 {"meeting_id": meeting_id, "direction": None, "error": "missing meeting_id"}
             )
             continue
-        args = meeting.get("create_args", [])
+        args = meeting.get("create_args")
+        if not isinstance(args, list):
+            args = []
         time_min, time_max = _find_window(args)
         fetched = []
         if time_min and time_max and args:
@@ -271,7 +274,14 @@ def _remove_mode(request: dict, client) -> dict:
         state = parse_block(event)
         if state is None or state.meeting_id != meeting_id:
             continue
-        client.delete_event({"calendar_id": calendar_id, "event_id": state.event_id})
+        try:
+            client.delete_event({"calendar_id": calendar_id, "event_id": state.event_id})
+        except ComposioError as exc:
+            # A 404 means the event is already gone (a concurrent delete) — an
+            # idempotent success, not a failure (matches reconcile.py). Any
+            # other Composio error propagates to main's handler.
+            if exc.status_code != 404:
+                raise
         removed.append({"event_id": state.event_id, "direction": state.direction})
         block_arrivals.append(state.arrive_by)
 

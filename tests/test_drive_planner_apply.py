@@ -156,6 +156,39 @@ def test_remove_deletes_blocks_and_records_skip():
     assert "evt_42" in skip_state.load_active_skips(now)
 
 
+def test_remove_treats_delete_404_as_idempotent_success():
+    # A concurrent delete (event already gone) surfaces as ComposioError(404);
+    # remove must treat it as success, not abort.
+    class Gone404(FakeComposio):
+        def delete_event(self, arguments):
+            raise ComposioError("not found", status_code=404)
+
+    args = _create_args()
+    client = Gone404(existing=[_fetched_block(args, "block_x")])
+    now = datetime(2026, 7, 2, 9, 0, tzinfo=CT)
+    result = apply._remove_mode({"meeting_id": "evt_42", "now": now.isoformat()}, client)
+    assert result["skip_recorded"] is True
+    assert result["removed"][0]["event_id"] == "block_x"
+
+
+def test_remove_propagates_non_404_delete_error():
+    class Boom(FakeComposio):
+        def delete_event(self, arguments):
+            raise ComposioError("server error", status_code=500)
+
+    client = Boom(existing=[_fetched_block(_create_args(), "block_x")])
+    now = datetime(2026, 7, 2, 9, 0, tzinfo=CT)
+    with pytest.raises(ComposioError):
+        apply._remove_mode({"meeting_id": "evt_42", "now": now.isoformat()}, client)
+
+
+def test_create_tolerates_non_list_create_args():
+    client = FakeComposio(existing=[])
+    request = {"meetings": [{"meeting_id": "evt_42", "create_args": None}]}
+    result = apply._create_mode(request, client)  # must not raise
+    assert result["created"] == []
+
+
 def test_remove_only_touches_the_named_meeting():
     keep = _fetched_block(_create_args(meeting_id="evt_OTHER"), "keep")
     drop = _fetched_block(_create_args(meeting_id="evt_42"), "drop")

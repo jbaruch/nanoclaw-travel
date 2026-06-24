@@ -204,7 +204,11 @@ def _route_seconds(client, origin: str, destination: str) -> int:
 
     try:
         result = client.travel_time(origin=origin, destination=destination)
-    except (MapsError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+    except (MapsError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+        # maps_client does a raw response.read() without normalizing a read
+        # timeout to URLError, so catch TimeoutError too — otherwise it would
+        # escape RouteError into the outer-boundary catch-all and silently drop
+        # the whole poll.
         raise RouteError(str(exc)) from exc
     if result.in_traffic_seconds is not None:
         return result.in_traffic_seconds

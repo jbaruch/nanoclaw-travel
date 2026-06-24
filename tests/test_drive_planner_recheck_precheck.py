@@ -21,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVE = REPO_ROOT / "skills" / "drive-planner"
 RECHECK = REPO_ROOT / "skills" / "drive-planner-recheck"
 sys.path.insert(0, str(DRIVE))
+sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))  # maps_client for _route_seconds
 
 from block_props import (  # noqa: E402
     ALERT_GROWTH,
@@ -160,6 +161,17 @@ def test_non_block_event_ignored():
 
 
 # --- no silent miss ------------------------------------------------------
+
+
+def test_route_seconds_translates_read_timeout_to_route_error():
+    class TimingOutMaps:
+        def travel_time(self, *, origin, destination):
+            raise TimeoutError("read timed out")
+
+    import pytest
+
+    with pytest.raises(RouteError):
+        poll._route_seconds(TimingOutMaps(), "a", "b")
 
 
 def test_route_failure_recorded_not_alerted():

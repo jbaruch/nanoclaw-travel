@@ -18,6 +18,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVE = REPO_ROOT / "skills" / "drive-planner"
 sys.path.insert(0, str(DRIVE))
+sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))  # maps_client for _route_seconds
 
 from block_props import parse_block  # noqa: E402
 from route_error import RouteError  # noqa: E402
@@ -154,6 +155,19 @@ def test_built_outbound_block_round_trips_to_blockstate():
 
 
 # --- no silent miss: unpriced legs are reported --------------------------
+
+
+def test_route_seconds_translates_read_timeout_to_route_error():
+    # maps_client doesn't normalize a raw response.read() TimeoutError, so
+    # _route_seconds must catch it and raise RouteError (not let it escape).
+    class TimingOutMaps:
+        def travel_time(self, *, origin, destination):
+            raise TimeoutError("read timed out")
+
+    import pytest
+
+    with pytest.raises(RouteError):
+        precheck._route_seconds(TimingOutMaps(), "a", "b")
 
 
 def test_route_failure_is_recorded_not_dropped():
