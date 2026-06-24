@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.41 — 2026-06-24
+
 ### Added — drive-planner recheck gate (`jbaruch/nanoclaw-travel#59`)
 
 The deterministic gate the scheduled T-45 / T-30 / T-15 rechecks use (Epic #59 §3, §5 #48): `skills/drive-planner/recheck.py`, a pure function `evaluate_recheck(baseline_seconds, current_seconds, arrive_by, now, …)` → `RecheckDecision`. Most rechecks are no-ops; pinging on every couple-minute fluctuation erodes trust, so the gate alerts only when the drive grew at least `threshold_seconds` over the baseline (default 10 min) OR the recomputed leave-by (`arrive_by − current − buffer`, default 5-min buffer) is at/before `now` — you must leave now regardless of growth. It does not route — `current_seconds` comes from live traffic (`maps_client`) upstream, the gate's caller's job — so the function stays pure and fully testable. The CLI follows the precheck-gating contract (`coding-policy: script-delegation` Precheck Gating): stdin JSON request → stdout `{"wake_agent": <alert>, "data": {<decision>}}`, so a scheduler runs it and only wakes the agent on an alert, with `data` carrying the delta and recomputed leave-by for the ping. All boundary inputs are validated (non-negative integer durations, tz-aware datetimes with `Z`-normalization and naive rejection) with `RecheckError` → JSON stderr + non-zero exit, matching the scan classifier's hardening. 36 tests (alert triggers, silence cases, leave-by math, input guards, CLI contract); no live routing. Not yet wired into `tile.json` — the SKILL.md that schedules and consumes rechecks lands with the sweep.
