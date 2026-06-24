@@ -33,7 +33,7 @@ Fields:
 
 Writer / reader contract:
 
-- **Writer** — the sweep calls `add_skip(meeting_id, expires=, now=)` when the user answers "skip" (expiry is the meeting's end, since a skip is meaningless once the meeting is over), `clear_skip(meeting_id, now=)` to undo, and `prune(now)` to reclaim disk.
+- **Writer** — the sweep calls `add_skip(meeting_id, expires=, now=)` when the user answers "skip" (expiry is the meeting's end), `clear_skip(meeting_id, now=)` to undo, and `prune(now)` to reclaim disk.
 - **Reader** — the sweep calls `load_active_skips(now)` and passes the result to `scan(skip_state=...)`. `scan.py` consumes the returned `{meeting_id: expiry}` mapping; it never touches the file.
 
 Tolerance:
