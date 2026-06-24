@@ -126,21 +126,27 @@ def test_projection_drops_extra_fields():
     assert set(event) == {"id", "summary", "location", "start", "end", "description"}
 
 
-def test_projection_carries_extended_properties_for_recheck_poll():
-    # The recheck poll reads baseline drive seconds / arrive-by / fired
-    # offsets back off its own marked blocks via `extendedProperties.private`
-    # (Epic #59 §4). The fetch must carry that field through; dropping it
-    # would blind the poll to its own state and silently stop rechecking.
+def test_projection_carries_attendees_and_status_for_decline_filter():
+    # scan.py reads the operator's RSVP (attendees) + event status to skip
+    # declined / cancelled meetings; the fetch must carry both through.
     raw = _event("a")
-    raw["extendedProperties"] = {
-        "private": {
-            "drive_planner_meeting": "evt_1",
-            "drive_planner_baseline_seconds": "1500",
-        }
-    }
+    raw["attendees"] = [{"self": True, "responseStatus": "declined"}]
+    raw["status"] = "confirmed"
     with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": [raw]})):
         [event] = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
-    assert event["extendedProperties"]["private"]["drive_planner_baseline_seconds"] == "1500"
+    assert event["attendees"][0]["responseStatus"] == "declined"
+    assert event["status"] == "confirmed"
+
+
+def test_projection_carries_description_for_recheck_poll():
+    # The recheck poll reads the block's machine state back out of the
+    # `description` (the live v3 toolkit has no writable extendedProperties), so
+    # the fetch must carry `description` through verbatim.
+    raw = _event("a")
+    raw["description"] = 'Drive: X\n[drive-planner:meeting=evt_1:dir=outbound]\n<!--dp:{"v":1}-->'
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": [raw]})):
+        [event] = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert event["description"] == raw["description"]
 
 
 def test_extracts_events_nested_under_response_data():
