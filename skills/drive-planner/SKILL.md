@@ -18,7 +18,7 @@ Skill bundle scripts run from the runtime mount `/home/node/.claude/skills/tessl
 
 ## Step 1 — Handle a sweep wake cycle
 
-This step fires when the precheck wakes the agent with a `data.meetings` payload. Each entry is one in-person meeting that needs a drive block, carrying `meeting_id`, `summary`, `start`, `location`, the prepared `create_args` (one per leg), and `route_errors`. The blocks are create-first: create them, then tell the user they can skip.
+This step fires when the precheck wakes the agent with a `data.meetings` payload. Each entry is one in-person meeting that needs a drive block, carrying `meeting_id`, `summary`, `start`, `location`, display-ready `leave_by` and `drive_minutes`, the prepared `create_args` (one per leg), and `route_errors`. The blocks are create-first: create them, then tell the user they can skip.
 
 First create the blocks. Pass the whole `data` object (it already has the `meetings` array) to the apply script in `create` mode:
 
@@ -30,7 +30,7 @@ It is idempotent — a meeting whose block already exists is skipped, never dupl
 
 Then compose ONE Telegram notification via `mcp__nanoclaw__send_message` summarizing what changed:
 
-- For each meeting that got ANY created block (`created` lists `outbound` / `bridge` / `return` legs): "Added drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip <meeting_id>` if you're not driving." Read `<leave_by>` and `<drive_minutes>` from the arrival-anchored leg's `create_args` (the `outbound` or `bridge` arg — its `start.dateTime` and `drive_planner_baseline_seconds` ÷ 60); a meeting whose only created leg is a `return` has no leave-by, so phrase it "Added a return drive block for `<summary>`." Phrase relative-date words per `rules/operator-local-tz-phrasing.md`.
+- For each meeting that got ANY created block (`created` lists `outbound` / `bridge` / `return` legs): "Added drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip <meeting_id>` if you're not driving." Use the meeting's `leave_by` and `drive_minutes` fields verbatim; when both are null (the only created leg is a `return`), phrase it "Added a return drive block for `<summary>`." Phrase relative-date words per `rules/operator-local-tz-phrasing.md`.
 - If a meeting carries `route_errors`, add a line: "Couldn't compute drive time for `<summary>` (`<error>`) — no block created; will retry next sweep."
 - If `apply` reported `failed` legs, add a line naming the meeting and the error.
 

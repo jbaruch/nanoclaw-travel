@@ -157,6 +157,10 @@ def evaluate_blocks(events: list, *, now: datetime, route) -> dict:
                 "destination": state.destination,
                 "current_seconds": decision.current_seconds,
                 "delta_seconds": decision.delta_seconds,
+                # Display-ready minutes so the SKILL.md carries no ÷60 formula
+                # (per `coding-policy: script-as-black-box`).
+                "current_minutes": round(decision.current_seconds / 60),
+                "delta_minutes": round(decision.delta_seconds / 60),
                 "new_leave_by": decision.new_leave_by.isoformat(),
                 "seconds_until_leave_by": decision.seconds_until_leave_by,
                 "reason": decision.reason,

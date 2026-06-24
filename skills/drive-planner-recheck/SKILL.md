@@ -14,12 +14,12 @@ When the recheck precheck wakes this skill, push the alerting blocks to the user
 
 ## Step 1 — Push the leave-earlier / leave-now alert
 
-The precheck woke with a `data.alerts` payload. Each entry is one drive block whose traffic grew past the threshold or whose leave-by has arrived, carrying `summary`, `kinds` (`growth` and/or `leave_now`), `current_seconds`, `delta_seconds`, `new_leave_by`, and `seconds_until_leave_by`.
+The precheck woke with a `data.alerts` payload. Each entry is one drive block whose traffic grew past the threshold or whose leave-by has arrived, carrying `summary`, `kinds` (`growth` and/or `leave_now`), display-ready `current_minutes` and `delta_minutes`, and `new_leave_by`.
 
-Compose ONE Telegram notification via `mcp__nanoclaw__send_message`, one line per alert:
+Compose ONE Telegram notification via `mcp__nanoclaw__send_message`, one line per alert, using the payload's fields verbatim:
 
-- When `kinds` contains `leave_now`: "Leave now for `<summary>` — `<current_minutes>`-min drive in current traffic, you're at the leave-by." (`<current_minutes>` = `current_seconds` ÷ 60.)
-- Otherwise (`growth` only): "Traffic building for `<summary>` — drive now `<current_minutes>` min (up `<delta_minutes>`). Leave by `<new_leave_by>` to stay on time." (`<delta_minutes>` = `delta_seconds` ÷ 60.)
+- When `kinds` contains `leave_now`: "Leave now for `<summary>` — `<current_minutes>`-min drive in current traffic, you're at the leave-by."
+- Otherwise (`growth` only): "Traffic building for `<summary>` — drive now `<current_minutes>` min (up `<delta_minutes>`). Leave by `<new_leave_by>` to stay on time."
 
 Phrase any relative-date words per `rules/operator-local-tz-phrasing.md`; displayed clock times stay as-is. If `data.route_errors` is non-empty, append one line: "Couldn't check traffic for `<destination>` (`<error>`) — will retry next poll."
 

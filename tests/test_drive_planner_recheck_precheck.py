@@ -95,6 +95,9 @@ def test_growth_past_threshold_alerts_once():
     result = poll.evaluate_blocks([event], now=NOW, route=_route(BASELINE + 720))
     assert len(result["alerts"]) == 1
     assert result["alerts"][0]["kinds"] == [ALERT_GROWTH]
+    # display-ready minutes the SKILL.md consumes verbatim (no ÷60 in prose)
+    assert result["alerts"][0]["current_minutes"] == round((BASELINE + 720) / 60)
+    assert result["alerts"][0]["delta_minutes"] == round(720 / 60)
     # The patch carries the FULL private map (not a single key) so PATCH does
     # not wipe the block's machine state; only the alert record is updated.
     patch = result["patches"][0]

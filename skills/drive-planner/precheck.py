@@ -12,11 +12,13 @@ deterministic, so it lives here per `coding-policy: script-delegation`).
 
     {"wake_agent": <bool>, "data": {"meetings": [...]}}
 
-Each `meetings` entry is one actionable meeting with its summary, bucket, and
-the per-leg `create_args` ready to pass to `GOOGLECALENDAR_CREATE_EVENT`. A leg
-the router could not price is reported (with its error) rather than dropped —
-the agent surfaces "couldn't compute drive time" instead of the planner going
-silently blind (the meta-lesson of Epic #59 §5: no silent miss).
+Each `meetings` entry is one actionable meeting with its summary, bucket,
+display-ready `leave_by` / `drive_minutes` (so the SKILL.md carries no
+arithmetic, per `coding-policy: script-as-black-box`), and the per-leg
+`create_args` ready to pass to `GOOGLECALENDAR_CREATE_EVENT`. A leg the router
+could not price is reported (with its error) rather than dropped — the agent
+surfaces "couldn't compute drive time" instead of the planner going silently
+blind (the meta-lesson of Epic #59 §5: no silent miss).
 
 Already-handled meetings (`has_block`), live skips (`skipped`), past, and
 filtered events never wake the agent — `scan.actionable()` keeps the gate to
@@ -166,6 +168,27 @@ def _leg_create_args(
     )
 
 
+def _display_fields(create_args: list[dict]) -> dict:
+    """Display-ready notification fields for a meeting's created blocks.
+
+    Keeps the formula out of the SKILL.md (per `coding-policy:
+    script-as-black-box`): the skill reads `leave_by` / `drive_minutes`
+    verbatim instead of computing them. Reads the arrival-anchored leg
+    (`outbound` / `bridge`) — the one with a leave-by; a return-only creation
+    has no leave-by, so both fields are None.
+    """
+    for arg in create_args:
+        private = arg.get("extendedProperties", {}).get("private", {})
+        if private.get("drive_planner_dir") in ("outbound", "bridge"):
+            baseline = private.get("drive_planner_baseline_seconds")
+            drive_minutes = round(int(baseline) / 60) if baseline is not None else None
+            return {
+                "leave_by": arg.get("start", {}).get("dateTime"),
+                "drive_minutes": drive_minutes,
+            }
+    return {"leave_by": None, "drive_minutes": None}
+
+
 def plan_meetings(
     results: list[MeetingClass],
     *,
@@ -223,6 +246,7 @@ def plan_meetings(
         # had legs but they all failed to price still surfaces via route_errors.
         if not create_args and not route_errors:
             continue
+        display = _display_fields(create_args)
         meetings.append(
             {
                 "meeting_id": meeting.meeting_id,
@@ -230,6 +254,8 @@ def plan_meetings(
                 "bucket": meeting.bucket,
                 "location": meeting.location,
                 "start": meeting.start.isoformat() if meeting.start else None,
+                "leave_by": display["leave_by"],
+                "drive_minutes": display["drive_minutes"],
                 "create_args": create_args,
                 "route_errors": route_errors,
             }

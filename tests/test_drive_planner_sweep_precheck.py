@@ -121,6 +121,9 @@ def test_outbound_block_starts_baseline_plus_buffer_before_meeting():
     assert outbound["start"]["dateTime"] == datetime(2026, 7, 1, 13, 30, tzinfo=CT).isoformat()
     assert outbound["end"]["dateTime"] == datetime(2026, 7, 1, 14, 0, tzinfo=CT).isoformat()
     assert outbound["extendedProperties"]["private"]["drive_planner_baseline_seconds"] == "1500"
+    # display-ready fields the SKILL.md consumes verbatim (no arithmetic there)
+    assert m["leave_by"] == datetime(2026, 7, 1, 13, 30, tzinfo=CT).isoformat()
+    assert m["drive_minutes"] == 25  # 1500s / 60
 
 
 def test_return_block_starts_at_meeting_end():
