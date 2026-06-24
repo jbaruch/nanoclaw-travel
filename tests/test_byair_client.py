@@ -141,7 +141,7 @@ def test_accept_header_advertises_both_json_and_event_stream(client):
     assert len(captured_accept_headers) == 3
     for accept in captured_accept_headers:
         assert "application/json" in accept, (
-            f"Accept header must contain 'application/json' on every request. " f"Got: {accept!r}"
+            f"Accept header must contain 'application/json' on every request. Got: {accept!r}"
         )
         assert "text/event-stream" in accept, (
             f"Accept header must contain 'text/event-stream' on every request "
