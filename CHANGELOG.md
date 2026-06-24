@@ -1,5 +1,9 @@
 # Changelog
 
+### Added — drive-planner wide-window calendar fetch (`jbaruch/nanoclaw-travel#59`)
+
+The live calendar read that feeds the sweep (Epic #59 §4): `skills/drive-planner/fetch_events.py`, a self-contained Composio client that makes one wide-window `GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS` call over a `[time_min, time_max]` window and returns the raw Google Calendar event dicts in the exact shape `scan(events=...)` consumes (`id`, `summary`, `location`, `start`, `end`, `description`). drive-planner owns its own fetch rather than importing flight-assist's per-calendar `composio_client` (a different action, a separately-loadable skill bundle), but mirrors that module's transport faithfully: stdlib-only `urllib`, HTTP-mockable in CI, the Composio `successful`/`error` envelope, read-timeout normalized to `URLError`, one client per process. The action slug and the candidate `data` event-container keys (`events` / `items`) are isolated at the top of the file for one-line correction against the live toolkit; a `successful: true` body carrying no recognizable event list raises `FetchError` rather than silently returning zero events (which would make the sweep a no-op and quietly stop planning). Window inputs are guarded (tz-aware, `time_max > time_min`); a tool-level failure raises `FetchError` with the upstream `status_code`. 18 mocked-HTTP tests incl. an integration check that the fetched events feed `scan`. Like `maps_client`/`composio_client` it is a transport library with no CLI; the sweep precheck that composes fetch → scan lands with the SKILL.md. Composio is mid-retirement (nanoclaw#638) — this is the one piece that re-points later.
+
 ## 0.1.42 — 2026-06-24
 
 ### Added — drive-planner skip store (`jbaruch/nanoclaw-travel#59`)
