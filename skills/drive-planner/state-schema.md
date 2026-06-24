@@ -46,3 +46,31 @@ Tolerance:
 Migration:
 
 - `schema_version` `1` is the initial version; no migration exists yet. A future shape change bumps the version and adds the owner-side upgrade-on-read per `coding-policy: stateful-artifacts`. A version below the current floor has no migration path (v1 is first) and is refused; a version above is treated as no-usable-prior-state until the tile is updated to accept it.
+
+## Calendar-as-State: Drive Blocks
+
+A created drive block has no local record — the calendar event itself IS the state (Epic #59 §4). The recheck poll re-fetches the near-term window by a direct API call and reads each of its own blocks back off the event. There is no `blocks.json`; the only local state file is `skip-state.json` above. Owned by `block_props.py` (`build_block_args` writes, `parse_block` reads).
+
+Two surfaces per block:
+
+- **`description`** carries the human line plus the self-marker `[drive-planner:meeting=<id>:dir=<dir>]`. `scan.py` reads the marker to recognize the planner's own blocks (idempotency, lombot #50); the marker `build_block_args` emits is pinned against `scan._MARKER_RE` by a test.
+- **`extendedProperties.private`** carries the machine state, string→string (Google Calendar's private-props are string-valued):
+
+| key | meaning |
+|-----|---------|
+| `drive_planner_meeting` | served meeting's event id |
+| `drive_planner_dir` | leg direction — `outbound` / `return` / `bridge` |
+| `drive_planner_baseline_seconds` | routed drive seconds captured at creation (recheck baseline) |
+| `drive_planner_arrive_by` | hard arrival deadline, ISO-8601 |
+| `drive_planner_origin` / `drive_planner_destination` | the routed leg endpoints (the poll re-routes exactly this pair) |
+| `drive_planner_alerted` | comma-joined record of alerts already pushed — `growth` and/or `leave_now` — so a later poll never re-pings the same condition |
+
+Writer / reader contract:
+
+- **Writer** — the sweep creates blocks via `apply.py create` (idempotent: finds existing markers first, never double-books). The recheck poll patches only `drive_planner_alerted` when an alert fires.
+- **Reader** — the recheck poll calls `parse_block(event)`; a non-block or malformed event yields `None` (never raises), so one bad event can't abort the poll. Only arrival-anchored legs (`outbound` / `bridge`) are rechecked; a `return` leg is created for visibility but not watched.
+
+Tolerance:
+
+- A block whose private props are missing or malformed (no `drive_planner_meeting`, unparseable baseline / arrive-by, empty endpoints, unknown direction) parses to `None` and is treated as "not a block I recheck" — never raised on.
+- Composio is mid-retirement (nanoclaw#638 → OneCLI workspace MCP); the API fetch + patch are the pieces that re-point later, same as `composio-fetch` and `fetch_events.py`.
