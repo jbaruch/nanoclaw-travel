@@ -173,8 +173,10 @@ def _find_window(create_args: list) -> tuple[datetime | None, datetime | None]:
     for arg in create_args:
         if not isinstance(arg, dict):
             continue
-        start = _parse_iso(arg.get("start", {}).get("dateTime"))
-        end = _parse_iso(arg.get("end", {}).get("dateTime"))
+        start_block = arg.get("start")
+        end_block = arg.get("end")
+        start = _parse_iso(start_block.get("dateTime")) if isinstance(start_block, dict) else None
+        end = _parse_iso(end_block.get("dateTime")) if isinstance(end_block, dict) else None
         if start:
             starts.append(start)
         if end:
@@ -258,18 +260,22 @@ def _remove_mode(request: dict, client) -> dict:
     # Search a generous window: the blocks sit near the meeting, which (when no
     # meeting_end is given) we don't yet know — bound the search by the skip
     # store's furthest reasonable horizon ahead of now.
-    # Clamp the upper bound to at least now + _FIND_PAD so a past meeting_end
-    # (a late skip/remove) never inverts the window (timeMax < timeMin).
+    # Span the window across now AND meeting_end so a late skip/remove (the
+    # meeting already finished, blocks in the past) still finds the blocks, and
+    # a past meeting_end never inverts the window (timeMax < timeMin). With no
+    # meeting_end, look ahead a bounded horizon for the future blocks.
     if meeting_end is not None:
-        horizon = max(meeting_end + _FIND_PAD, now + _FIND_PAD)
+        time_min = min(now, meeting_end) - _FIND_PAD
+        time_max = max(now, meeting_end) + _FIND_PAD
     else:
-        horizon = now + _DEFAULT_SKIP_HORIZON
+        time_min = now - _FIND_PAD
+        time_max = now + _DEFAULT_SKIP_HORIZON
     fetched = _items(
         client.find_events(
             {
                 "calendar_id": calendar_id,
-                "timeMin": (now - _FIND_PAD).isoformat(),
-                "timeMax": horizon.isoformat(),
+                "timeMin": time_min.isoformat(),
+                "timeMax": time_max.isoformat(),
             }
         )
     )

@@ -194,3 +194,12 @@ def test_route_failure_recorded_not_alerted():
     assert result["alerts"] == []
     assert len(result["route_errors"]) == 1
     assert "ALL_PROVIDERS_FAILED" in result["route_errors"][0]["error"]
+    # A route error with no alert must still wake the agent so the outage is
+    # surfaced (not silently dropped).
+    assert poll.should_wake(result) is True
+
+
+def test_should_wake_only_when_alerts_or_route_errors():
+    assert poll.should_wake({"alerts": [], "route_errors": []}) is False
+    assert poll.should_wake({"alerts": [{"x": 1}], "route_errors": []}) is True
+    assert poll.should_wake({"alerts": [], "route_errors": [{"e": 1}]}) is True

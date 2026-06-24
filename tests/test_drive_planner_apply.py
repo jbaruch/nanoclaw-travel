@@ -174,6 +174,19 @@ def test_remove_with_past_meeting_end_keeps_find_window_valid():
     )
     assert result["skip_recorded"] is True
     assert client.find_args["timeMax"] >= client.find_args["timeMin"]
+    # The window must reach back to the past meeting so its blocks are found.
+    assert client.find_args["timeMin"] <= past_end.isoformat()
+
+
+def test_create_tolerates_non_dict_start_in_arg():
+    # A create-arg whose start/end is present but not a dict must not crash the
+    # idempotency-find window math.
+    bad = _create_args()
+    bad["start"] = None
+    client = FakeComposio(existing=[])
+    request = {"meetings": [{"meeting_id": "evt_42", "create_args": [bad]}]}
+    result = apply._create_mode(request, client)  # must not raise
+    assert "evt_42" in {c["meeting_id"] for c in result["created"]} or result["failed"]
 
 
 def test_remove_treats_delete_404_as_idempotent_success():

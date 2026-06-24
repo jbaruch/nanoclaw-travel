@@ -195,6 +195,17 @@ def evaluate_blocks(events: list, *, now: datetime, route) -> dict:
     return {"alerts": alerts, "patches": patches, "route_errors": route_errors}
 
 
+def should_wake(result: dict) -> bool:
+    """Wake the agent on alerts OR route errors.
+
+    A due block the router couldn't price is a traffic blind-spot worth
+    surfacing — recording it in `data` without waking would make a routing
+    outage invisible for that poll (per `coding-policy: script-delegation`
+    precheck gating).
+    """
+    return bool(result.get("alerts")) or bool(result.get("route_errors"))
+
+
 def _load_maps_client():
     flight_assist_dir = _resolve(_FLIGHT_ASSIST_RUNTIME, _FLIGHT_ASSIST_DEV, "flight-assist")
     sys.path.insert(0, str(flight_assist_dir))
@@ -241,7 +252,11 @@ def main() -> int:
         # a failed send never permanently suppresses a leave-earlier / leave-now
         # alert (a forgotten patch merely re-pings next poll — the safe
         # direction). The precheck never patches the calendar itself.
-        payload = {"wake_agent": bool(result["alerts"]), "data": result}
+        # Wake on alerts OR route_errors: a due block the router couldn't price
+        # is a traffic blind-spot worth surfacing — recording it in `data`
+        # without waking would make a routing outage invisible for that poll
+        # (per `coding-policy: script-delegation` precheck gating).
+        payload = {"wake_agent": should_wake(result), "data": result}
     except Exception:  # noqa: BLE001 — outer-boundary-process-contract
         traceback.print_exc(file=sys.stderr)
         payload = {"wake_agent": False, "data": {"reason": "recheck_precheck_internal_error"}}

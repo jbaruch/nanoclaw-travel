@@ -21,9 +21,9 @@ Compose ONE Telegram notification via `mcp__nanoclaw__send_message`, one line pe
 - When `kinds` contains `leave_now`: "Leave now for `<summary>` — `<current_minutes>`-min drive in current traffic, you're at the leave-by."
 - Otherwise (`growth` only): "Traffic building for `<summary>` — drive now `<current_minutes>` min (up `<delta_minutes>`). Leave by `<new_leave_by>` to stay on time."
 
-Phrase any relative-date words per `rules/operator-local-tz-phrasing.md`; displayed clock times stay as-is. If `data.route_errors` is non-empty, append one line: "Couldn't check traffic for `<destination>` (`<error>`) — will retry next poll."
+Phrase any relative-date words per `rules/operator-local-tz-phrasing.md`; displayed clock times stay as-is. The precheck also wakes when `data.route_errors` is non-empty (a due block whose traffic it couldn't check) — for each, append one line: "Couldn't check traffic for `<destination>` (`<error>`) — will retry next poll."
 
-If `data.alerts` is empty (the precheck would not normally wake without one), send nothing and finish here. Otherwise, once the send has gone out, proceed to Step 2.
+If both `data.alerts` and `data.route_errors` are empty, send nothing and finish here. If there were `alerts`, once the send has gone out proceed to Step 2; a route-errors-only wake has no suppression to record, so finish here.
 
 ## Step 2 — Record the suppression (only after the send)
 
