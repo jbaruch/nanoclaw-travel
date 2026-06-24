@@ -313,13 +313,18 @@ def _suppress_mode(request: dict, client) -> dict:
     """
     patched = []
     for patch in request.get("patches", []):
+        if not isinstance(patch, dict):
+            continue
         event_id = patch.get("event_id")
         private = patch.get("private")
         if not isinstance(event_id, str) or not event_id or not isinstance(private, dict):
             continue
+        calendar_id = patch.get("calendar_id")
+        if not isinstance(calendar_id, str) or not calendar_id:
+            calendar_id = "primary"
         client.patch_event(
             {
-                "calendar_id": patch.get("calendar_id") or "primary",
+                "calendar_id": calendar_id,
                 "event_id": event_id,
                 "extendedProperties": {"private": private},
             }
