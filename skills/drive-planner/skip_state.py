@@ -101,7 +101,7 @@ def _atomic_write(path: Path, payload: dict) -> None:
             os.unlink(tmp)
 
 
-def _read_skips() -> dict[str, str]:
+def _read_skips(*, for_write: bool) -> dict[str, str]:
     """Read the skip map from disk, validating the schema.
 
     Returns the raw `{meeting_id: expiry}` mapping (no pruning). A missing
@@ -111,10 +111,14 @@ def _read_skips() -> dict[str, str]:
     resurrect every skipped meeting as a nag).
 
     Schema version handling (per `coding-policy: stateful-artifacts`):
-      - newer than this tile → "no usable prior state": return an empty map.
-        The reader is lagging, not awaiting migration; an empty map is the
-        safe, non-disruptive fallback (worst case the sweep re-asks — it
-        never escalates work). Update this tile to accept the new version.
+      - newer than this tile, `for_write=False` (read-only) → "no usable
+        prior state": return an empty map. The reader is lagging, not
+        awaiting migration; an empty map is the safe, non-disruptive
+        fallback (worst case the sweep re-asks — it never escalates work).
+      - newer than this tile, `for_write=True` → raise. The no-prior-state
+        fallback is read-only; a write that proceeded would rewrite the
+        future-version file as v1 and clobber a newer writer's state. The
+        write path refuses instead of downgrading.
       - below the current floor → owner-side migration point. v1 is the
         first and only version, so any lower value is corrupt, not an older
         record to migrate — refuse explicitly. A future bump adds the
@@ -138,6 +142,12 @@ def _read_skips() -> dict[str, str]:
     if not isinstance(version, int) or isinstance(version, bool):
         raise SkipStateError(f"skip-state file {path} is missing a valid integer schema_version")
     if version > SKIP_SCHEMA_VERSION:
+        if for_write:
+            raise SkipStateError(
+                f"skip-state file {path} has schema_version {version}, newer than this "
+                f"tile supports ({SKIP_SCHEMA_VERSION}) — refusing to overwrite it; "
+                "upgrade the drive-planner tile before writing"
+            )
         return {}
     if version < SKIP_SCHEMA_VERSION:
         raise SkipStateError(
@@ -193,7 +203,7 @@ def add_skip(meeting_id: str, *, expires: datetime, now: datetime) -> None:
     expires = _require_aware(expires, "expires")
     now = _require_aware(now, "now")
 
-    skips = {mid: exp for mid, exp in _read_skips().items() if _is_active(exp, now)}
+    skips = {mid: exp for mid, exp in _read_skips(for_write=True).items() if _is_active(exp, now)}
     skips[meeting_id] = expires.isoformat()
     _write_skips(skips)
 
@@ -209,7 +219,7 @@ def load_active_skips(now: datetime) -> dict[str, str]:
         SkipStateError: on a naive `now` or a corrupt skip file.
     """
     now = _require_aware(now, "now")
-    return {mid: exp for mid, exp in _read_skips().items() if _is_active(exp, now)}
+    return {mid: exp for mid, exp in _read_skips(for_write=False).items() if _is_active(exp, now)}
 
 
 def clear_skip(meeting_id: str, *, now: datetime) -> bool:
@@ -224,7 +234,7 @@ def clear_skip(meeting_id: str, *, now: datetime) -> bool:
     meeting_id = _require_meeting_id(meeting_id)
     now = _require_aware(now, "now")
 
-    current = _read_skips()
+    current = _read_skips(for_write=True)
     if meeting_id not in current:
         return False
     survivors = {
@@ -243,7 +253,7 @@ def prune(now: datetime) -> int:
         SkipStateError: on a naive `now` or a corrupt skip file.
     """
     now = _require_aware(now, "now")
-    current = _read_skips()
+    current = _read_skips(for_write=True)
     survivors = {mid: exp for mid, exp in current.items() if _is_active(exp, now)}
     removed = len(current) - len(survivors)
     if removed:

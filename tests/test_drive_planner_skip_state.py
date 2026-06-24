@@ -161,6 +161,25 @@ def test_newer_schema_version_reads_as_no_prior_state(skip_env):
     assert load_active_skips(NOW) == {}
 
 
+def test_writers_refuse_to_clobber_a_newer_version_file(skip_env):
+    # The no-prior-state fallback is read-only. A write must NOT downgrade a
+    # future-version file to v1 — add/clear/prune refuse instead.
+    skip_env.parent.mkdir(parents=True, exist_ok=True)
+    newer = json.dumps(
+        {"schema_version": SKIP_SCHEMA_VERSION + 1, "skips": {"evt_x": LATER.isoformat()}}
+    )
+    skip_env.write_text(newer)
+
+    with pytest.raises(SkipStateError, match="refusing to overwrite"):
+        add_skip("evt_1", expires=LATER, now=NOW)
+    with pytest.raises(SkipStateError, match="refusing to overwrite"):
+        clear_skip("evt_x", now=NOW)
+    with pytest.raises(SkipStateError, match="refusing to overwrite"):
+        prune(NOW)
+    # the newer file is untouched
+    assert json.loads(skip_env.read_text())["schema_version"] == SKIP_SCHEMA_VERSION + 1
+
+
 def test_older_schema_version_is_refused_not_passed_through(skip_env):
     # A below-floor version must be detected explicitly, not silently treated
     # as current (per stateful-artifacts owner-migration handling).
