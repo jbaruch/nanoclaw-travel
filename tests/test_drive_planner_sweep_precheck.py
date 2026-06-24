@@ -10,6 +10,7 @@ router can't price is reported, never silently dropped — Epic #59 §5).
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,9 +19,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVE = REPO_ROOT / "skills" / "drive-planner"
 sys.path.insert(0, str(DRIVE))
 
-import precheck  # noqa: E402
 from block_props import parse_block  # noqa: E402
 from scan import scan  # noqa: E402
+
+
+def _load(name: str, path: Path):
+    # drive-planner's precheck.py shares the bare module name `precheck` with
+    # flight-assist's; load it under a unique name so the two never shadow each
+    # other in sys.modules (the convention conftest._load / the other precheck
+    # tests use).
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+precheck = _load("drive_planner_sweep_precheck", DRIVE / "precheck.py")
 
 CT = timezone(timedelta(hours=-5))
 NOW = datetime(2026, 7, 1, 8, 0, tzinfo=CT)
