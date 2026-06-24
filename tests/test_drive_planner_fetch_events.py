@@ -143,6 +143,15 @@ def test_projection_carries_extended_properties_for_recheck_poll():
     assert event["extendedProperties"]["private"]["drive_planner_baseline_seconds"] == "1500"
 
 
+def test_extracts_events_nested_under_response_data():
+    # Some toolkit shapes wrap the Google payload one level under
+    # `response_data`; the fetch must still find the list, not raise.
+    payload = {"response_data": {"items": [_event("n")]}}
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok(payload)):
+        events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert [e["id"] for e in events] == ["n"]
+
+
 def test_empty_window_returns_empty_list():
     with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": []})):
         assert _fetcher().fetch_window(time_min=NOW, time_max=LATER) == []

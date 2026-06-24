@@ -18,7 +18,8 @@ Composio executes the action with a single POST keyed by the slug:
 
     POST {base}/tools/execute/{action}
     headers: x-api-key: <key>, Content-Type: application/json
-    body:    {"user_id": "<id>", "arguments": {"timeMin": "...", "timeMax": "..."}}
+    body:    {"user_id": "<id>", "arguments": {"calendarId": "primary",
+             "singleEvents": true, "timeMin": "...", "timeMax": "..."}}
     -> 200   {"data": {...events...}, "successful": true,  "error": null}
     -> 200   {"data": {...}, "successful": false, "error": "..."}
 
@@ -244,13 +245,20 @@ def _extract_events(data: dict) -> list:
         raise FetchError(
             f"calendar fetch returned a non-object data payload: {type(data).__name__}"
         )
-    for key in _EVENT_CONTAINER_KEYS:
-        value = data.get(key)
-        if isinstance(value, list):
-            return value
+    # Look in the top-level `data` and, for toolkit shapes that wrap the
+    # Google payload one level down, in `data.response_data` (the same nesting
+    # flight-assist's reconcile `_items` tolerates).
+    nested = data.get("response_data")
+    containers = [data, nested] if isinstance(nested, dict) else [data]
+    for container in containers:
+        for key in _EVENT_CONTAINER_KEYS:
+            value = container.get(key)
+            if isinstance(value, list):
+                return value
     raise FetchError(
         "calendar fetch succeeded but no event list found under "
-        f"{_EVENT_CONTAINER_KEYS} — verify the action's response shape against the live toolkit"
+        f"{_EVENT_CONTAINER_KEYS} (top-level or response_data) — verify the action's "
+        "response shape against the live toolkit"
     )
 
 
