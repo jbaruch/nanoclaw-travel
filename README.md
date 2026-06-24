@@ -51,6 +51,8 @@ Store both in OneCLI vault. Never commit. See [.env.example](.env.example) for t
 | [sync-tripit](skills/sync-tripit/SKILL.md) | Adaptive scheduler that fires the byAir → `active-flights.json` refresh on a precheck-gated 5-min cadence — responsive on flight days, idle between travel windows. Diagnostic-only LLM surface (the gate + sync happen in the precheck script) |
 | [check-travel-bookings](skills/check-travel-bookings/SKILL.md) | Checks upcoming trips for missing bookings (flights, hotels, accommodation) by reading the nightly-built `travel-db.json`. Reports gaps for all upcoming trips — no date limit. Supports snooze state. Silent when all bookings are complete or snoozed. Use when the user asks about upcoming travel plans, itinerary completeness, missing reservations, or TripIt trip status. |
 | [nightly-travel-sync](skills/nightly-travel-sync/SKILL.md) | Daily travel-data refresh bundle: TripIt → Reclaim timezone sync, refresh `travel-schedule.json` from the TripIt iCal feed with a two-tier Gmail freshness probe, rebuild `travel-db.json`, then run `check-travel-bookings`. Precheck-gated on `travel-db.json` freshness; surfaces failures and relies on the daily cron + freshness probe to recover. Self-contained writer of the data `check-travel-bookings` reads. |
+| [drive-planner](skills/drive-planner/SKILL.md) | Action router for ground-transit drive planning. On a ~2h precheck sweep it classifies upcoming in-person meetings (`scan.py`), pre-routes each leg with live traffic, and creates a Free home → venue → home drive block for any that lacks one (create-first, idempotent per lombot #50), then notifies. A "skip `<id>`" reply removes the block and records a skip so it's never re-asked. The block IS the state — no local block store. |
+| [drive-planner-recheck](skills/drive-planner-recheck/SKILL.md) | Traffic-growth watcher. On a ~15-min precheck poll it re-fetches its own drive blocks by API, re-routes each in-window arrival-anchored leg, and pushes a leave-earlier / leave-now alert when traffic grew past the threshold or the leave-by arrived. Each condition fires once (suppression patched onto the event). Re-derives its work from the blocks every poll, so a recheck can never be silently lost (lombot #48). |
 
 ## Skill scripts
 
@@ -68,6 +70,9 @@ Plus scheduler-invoked scripts (not user-facing):
 - `flight-assist/sync_tripit.py` — the byAir → state reconciliation invoked by the sync-tripit scheduler
 - `nightly-travel-sync/precheck.py` — runs daily, gates the travel-data refresh on `travel-db.json` freshness (see the `nightly-travel-sync` skill + `precheck.py` for the cadence predicate)
 - `nightly-travel-sync/scripts/refresh-travel-schedule.py`, `check-travel-freshness.py`, `filter-tripit-bookings.py` — the travel-source writers + freshness probe the bundle drives
+- `drive-planner/precheck.py` — runs every ~2h, fetches the wide calendar window, classifies meetings, pre-routes legs, and wakes the agent only when a meeting needs a drive block; `apply.py` is the agent-invoked idempotent create / skip-remove
+- `drive-planner/scan.py`, `fetch_events.py`, `block_props.py`, `recheck.py`, `skip_state.py`, `home_address.py` — the deterministic core (classifier, API calendar fetch, block codec, recheck gate, skip store, canonical-home reader)
+- `drive-planner-recheck/precheck.py` — runs every ~15 min, re-fetches its own drive blocks, re-routes in-window legs, and wakes the agent only when a leave-earlier / leave-now alert must go out
 
 ## Status
 

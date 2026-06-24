@@ -1,7 +1,7 @@
 {
   "name": "jbaruch/nanoclaw-travel",
   "version": "0.1.43",
-  "summary": "Travel assistant for NanoClaw: byAir flight notifications (delay, gate, connection risk, inbound aircraft delay, time-to-leave, arrival logistics), travel-booking gap checks, and nightly TripIt sync. Per-chat overlay tile.",
+  "summary": "Travel assistant for NanoClaw: byAir flight notifications (delay, gate, connection risk, inbound aircraft delay, time-to-leave, arrival logistics), traffic-aware drive planning for in-person meetings (auto drive blocks + leave-by traffic rechecks), travel-booking gap checks, and nightly TripIt sync. Per-chat overlay tile.",
   "entrypoint": "README.md",
   "private": false,
   "keywords": [
@@ -23,6 +23,12 @@
     },
     "nightly-travel-sync": {
       "path": "skills/nightly-travel-sync/SKILL.md"
+    },
+    "drive-planner": {
+      "path": "skills/drive-planner/SKILL.md"
+    },
+    "drive-planner-recheck": {
+      "path": "skills/drive-planner-recheck/SKILL.md"
     }
   },
   "steering": {

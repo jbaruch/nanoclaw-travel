@@ -35,7 +35,7 @@ from scan import (  # noqa: E402
 # tzdata dependency; the scan only needs tz-aware datetimes, not a named zone.
 CT = timezone(timedelta(hours=-5))
 NOW = datetime(2026, 7, 1, 8, 0, tzinfo=CT)
-HOME = "1040 Pine Creek Dr, Arrington, TN 37014"
+HOME = "12 Example St, Sampleton, TN 37000"
 
 
 def _timed(start: datetime, end: datetime) -> dict:
