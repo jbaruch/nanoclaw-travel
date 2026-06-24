@@ -1,5 +1,9 @@
 # Changelog
 
+### Added — drive-planner scan classifier (`jbaruch/nanoclaw-travel#59`)
+
+The deterministic brain of the new `drive-planner` skill (Epic #59 §3, §5): `skills/drive-planner/scan.py`, a pure events-JSON → buckets classifier with no I/O. Given the wide-window calendar events plus `now`, the home address, and the skip-state, it returns one `MeetingClass` per event in one of the buckets `needs_decision` / `bridge` / `back_to_back` / `has_block` / `skipped` / `past` / `filtered`, plus the concrete `TransitLeg`s each routable meeting needs (outbound / return / bridge with deadlines). It does not route — drive time needs live traffic (`maps_client`) downstream — so bridge legs expose `gap_seconds` for the router's drive-time > gap warning. Every scar from LoMBot's 16 closed `drive_planner` issues is baked in: handled = ANY marker, not both directions (#50); skips persist with expiry and virtual locations are filtered, never asked (#49); past guard everywhere (#28); neighbour-aware same-venue-tight = back_to_back vs different-venue-tight = bridge (#14/#7); whitespace-normalized location before routing (#37); return and bridge first-class (#2/#40). Nothing is silently dropped — filtered/past events come back with a reason so the sweep can audit. 29 fixture tests (no live calendar), each neighbour/idempotency/skip/past case named after the lombot issue it encodes. The skill is not yet registered in `tile.json` (no `SKILL.md` until the fetch + recheck pieces land); this is the classifier slice only.
+
 ## 0.1.37 — 2026-06-23
 
 ### Added — TomTom backup routing in `maps_client` (`jbaruch/nanoclaw-travel#59`)
