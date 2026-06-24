@@ -1,5 +1,9 @@
 # Changelog
 
+### Added — drive-planner skip store (`jbaruch/nanoclaw-travel#59`)
+
+The on-disk store of "skip this meeting" decisions that feeds `scan()`'s `skip_state` (Epic #59 §3, §5 #49): `skills/drive-planner/skip_state.py`, owning `<state_dir>/skip-state.json` (`{"schema_version": 1, "skips": {<id>: "<ISO expiry>"}}`). Re-asking about a meeting the user already skipped is the trust-eroding nag LoMBot hit, so a skip sticks — but with auto-expiry: the writer sets each skip's expiry to the meeting's end, and `load_active_skips(now)` drops anything expired so a stale skip never suppresses a meeting forever. API: `add_skip(id, expires=, now=)`, `load_active_skips(now)` (the `{id: expiry}` mapping `scan` consumes, read-only), `clear_skip(id, now=)`, `prune(now)`. Writes are atomic (temp-file + rename, temp cleaned in `finally`). Per `coding-policy: stateful-artifacts`: drive-planner is the sole owner, the state dir is overridable via `DRIVE_PLANNER_STATE_DIR`, and `state-schema.md` documents the schema, the writer/reader contract, and the tolerance rules — a missing file reads as "no skips", a present-but-corrupt file (bad JSON, non-object root, missing/newer `schema_version`) raises `SkipStateError` rather than silently resurrecting every skip, and malformed individual entries are dropped. 28 tests incl. an integration check that the loaded mapping drives `scan` to the `skipped` bucket. Not yet wired into `tile.json` — the SKILL.md sweep that writes and reads it lands next.
+
 ## 0.1.41 — 2026-06-24
 
 ### Added — drive-planner recheck gate (`jbaruch/nanoclaw-travel#59`)
