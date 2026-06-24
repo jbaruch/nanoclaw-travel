@@ -62,7 +62,7 @@ Two surfaces per block:
 | `drive_planner_meeting` | served meeting's event id |
 | `drive_planner_dir` | leg direction — `outbound` / `return` / `bridge` |
 | `drive_planner_baseline_seconds` | routed drive seconds captured at creation (recheck baseline) |
-| `drive_planner_arrive_by` | hard arrival deadline, ISO-8601 |
+| `drive_planner_arrive_by` | arrival-anchor timestamp, ISO-8601 — the hard arrival deadline for `outbound` / `bridge`; for a `return` leg it is the leg end (informational, the poll never rechecks returns) |
 | `drive_planner_origin` / `drive_planner_destination` | the routed leg endpoints (the poll re-routes exactly this pair) |
 | `drive_planner_alerted` | comma-joined record of alerts already pushed — `growth` and/or `leave_now` — so a later poll never re-pings the same condition |
 

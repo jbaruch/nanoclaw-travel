@@ -65,9 +65,9 @@ _EVENT_CONTAINER_KEYS = ("events", "items")
 # Event fields carried through verbatim from the raw event. `scan.py` reads
 # id/summary/location/start/end/description; `extendedProperties` is the
 # drive-planner block's machine-readable state (baseline drive seconds,
-# arrive-by, fired recheck offsets) the recheck poll reads back off its own
-# marked blocks (Epic #59 §4 — calendar event IS the state, fetched by API).
-# scan.py ignores the field it does not read.
+# arrive-by, routed endpoints, the alert-suppression record) the recheck poll
+# reads back off its own marked blocks (Epic #59 §4 — calendar event IS the
+# state, fetched by API). scan.py ignores the field it does not read.
 _EVENT_FIELDS = (
     "id",
     "summary",
