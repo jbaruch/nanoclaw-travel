@@ -215,20 +215,37 @@ def _parse_dt(block: dict | None) -> tuple[datetime | None, bool]:
 
     Returns (datetime, all_day). A timed event carries `dateTime`
     (ISO-8601 with offset); an all-day event carries `date` (no time) and
-    is never a drive target. Returns (None, False) for a missing/malformed
-    block so the caller can filter it as unparseable.
+    is never a drive target. Returns (None, False) for a missing / malformed
+    / timezone-naive block so the caller can filter it as unparseable — a
+    naive datetime can't be compared to the tz-aware `now` without raising.
     """
-    if not block:
+    if not isinstance(block, dict):
         return None, False
     if "date" in block and "dateTime" not in block:
         return None, True
-    raw = block.get("dateTime")
+    return _parse_iso(block.get("dateTime")), False
+
+
+def _parse_iso(raw: object) -> datetime | None:
+    """Parse an ISO-8601 / RFC3339 string into a tz-aware datetime, or None.
+
+    Normalizes a trailing `Z` to `+00:00` (RFC3339 UTC, which some sources
+    emit) and rejects a timezone-naive result: a naive datetime compared to
+    the tz-aware `now` raises TypeError, so it is "unparseable" for our
+    purposes, not a usable time.
+    """
     if not isinstance(raw, str):
-        return None, False
+        return None
+    text = raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(raw), False
+        parsed = datetime.fromisoformat(text)
     except ValueError:
-        return None, False
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def _parse_event(raw: dict) -> _Event:
@@ -259,14 +276,35 @@ def _skip_active(skip_state: dict[str, str], meeting_id: str, now: datetime) -> 
     A malformed or expired expiry is treated as "no skip" — the meeting
     re-enters needs_decision rather than being silently suppressed forever.
     """
-    expiry_raw = skip_state.get(meeting_id)
-    if not expiry_raw:
-        return False
-    try:
-        expiry = datetime.fromisoformat(expiry_raw)
-    except (ValueError, TypeError):
+    expiry = _parse_iso(skip_state.get(meeting_id))
+    if expiry is None:
         return False
     return expiry > now
+
+
+def _is_past(event: _Event, now: datetime) -> bool:
+    """True when the event has already started (lombot #28), with a grace window."""
+    return event.start is not None and event.start <= now - PAST_TOLERANCE
+
+
+def _is_routable_candidate(event: _Event, now: datetime) -> bool:
+    """True when the event can act as a real-meeting neighbour for §5 #14/#7.
+
+    A routable candidate is a future, timed, in-person, non-block meeting
+    with a usable location. Excluding past meetings here is the fix for the
+    cross of lombot #28 and #14/#7: a stale same-venue meeting must not turn
+    a future meeting into back_to_back and strip its outbound-from-home leg.
+    `end` is required too, so a half-parsed event never skews a gap.
+    """
+    return (
+        event.marker is None
+        and not event.all_day
+        and event.start is not None
+        and event.end is not None
+        and event.location is not None
+        and not _is_virtual(event.location)
+        and not _is_past(event, now)
+    )
 
 
 def scan(
@@ -330,18 +368,12 @@ def scan(
             handled_directions.setdefault(served_id, []).append(direction)
 
     # Pass 2: order the genuine ground meetings by start so each can read its
-    # neighbours (lombot #14/#7). Only timed, non-virtual, non-block,
-    # future-or-now meetings with a location are routable candidates; the
-    # rest still get classified, just not neighbour-linked.
-    candidates = [
-        event
-        for event in parsed
-        if event.marker is None
-        and not event.all_day
-        and event.start is not None
-        and event.location is not None
-        and not _is_virtual(event.location)
-    ]
+    # neighbours (lombot #14/#7). Only routable candidates are linked — and
+    # crucially that EXCLUDES past meetings (lombot #28): an already-past
+    # same-venue meeting must never make a future meeting back_to_back and
+    # strip its outbound-from-home leg. A non-candidate still gets classified,
+    # it just can't act as a neighbour.
+    candidates = [event for event in parsed if _is_routable_candidate(event, now)]
     candidates.sort(key=lambda e: e.start)  # type: ignore[arg-type,return-value]
     order = {id(event): index for index, event in enumerate(candidates)}
 
@@ -416,7 +448,7 @@ def _classify(
         return _make_class(event, "filtered", "virtual location")
 
     # 5. Past guard (lombot #28) — never plan into the past.
-    if event.start <= now - PAST_TOLERANCE:
+    if _is_past(event, now):
         return _make_class(event, "past", "meeting already started")
 
     # 6. Already handled — ANY marker counts (lombot #50). Wins over

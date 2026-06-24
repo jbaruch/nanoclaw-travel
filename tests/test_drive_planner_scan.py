@@ -249,7 +249,80 @@ def test_lombot28_just_started_within_tolerance_is_not_past():
     assert result.bucket == "needs_decision"
 
 
+def test_lombot28_past_neighbour_does_not_suppress_future_outbound():
+    # The OpenAI reviewer's repro for PR #73: a past same-venue meeting must
+    # not pull a future meeting into back_to_back and strip its outbound leg.
+    venue = "100 Broadway, Nashville, TN"
+    past_start = NOW - timedelta(minutes=135)
+    past_end = NOW - timedelta(minutes=75)  # ends 75 min before now
+    future_start = NOW + timedelta(minutes=10)  # 85-min gap → "tight", same venue
+    future_end = future_start + timedelta(hours=1)
+    events = [
+        _meeting("past", start=past_start, end=past_end, location=venue),
+        _meeting("future", start=future_start, end=future_end, location=venue),
+    ]
+    by_id = _by_id(scan(events, now=NOW, home_address=HOME))
+
+    assert by_id["past"].bucket == "past"
+    # The future meeting is standalone — the past neighbour is NOT linked.
+    assert by_id["future"].bucket == "needs_decision"
+    assert [leg.direction for leg in by_id["future"].legs] == ["outbound", "return"]
+
+
 # --- lombot #37: multiline location normalized ---------------------------
+
+
+def test_z_suffix_datetime_is_parsed_not_filtered():
+    # RFC3339 UTC `Z` must parse (some sources emit it), not fall through to
+    # "unparseable" and silently drop the meeting.
+    event = {
+        "id": "m1",
+        "summary": "Customer sync",
+        "location": "100 Broadway, Nashville, TN",
+        "start": {"dateTime": "2026-07-01T14:00:00Z"},
+        "end": {"dateTime": "2026-07-01T15:00:00Z"},
+    }
+    result = scan([event], now=NOW, home_address=HOME)[0]
+    assert result.bucket == "needs_decision"
+    assert result.start is not None and result.start.tzinfo is not None
+
+
+def test_naive_datetime_event_is_filtered_not_crash():
+    # A timezone-naive dateTime can't be compared to the tz-aware `now`;
+    # it must be filtered as unparseable, never raise TypeError.
+    event = {
+        "id": "m1",
+        "summary": "Customer sync",
+        "location": "100 Broadway, Nashville, TN",
+        "start": {"dateTime": "2026-07-01T14:00:00"},  # no offset
+        "end": {"dateTime": "2026-07-01T15:00:00"},
+    }
+    result = scan([event], now=NOW, home_address=HOME)[0]
+    assert result.bucket == "filtered"
+    assert result.reason == "missing or unparseable time"
+
+
+def test_naive_skip_expiry_is_ignored_not_crash():
+    start = NOW + timedelta(hours=3)
+    result = scan(
+        [_meeting("m1", start=start, end=start + timedelta(hours=1))],
+        now=NOW,
+        home_address=HOME,
+        skip_state={"m1": "2026-07-03T00:00:00"},  # naive → unusable → re-ask
+    )[0]
+    assert result.bucket == "needs_decision"
+
+
+def test_non_dict_time_block_is_filtered_not_crash():
+    event = {
+        "id": "m1",
+        "summary": "Customer sync",
+        "location": "100 Broadway, Nashville, TN",
+        "start": "2026-07-01T14:00:00-05:00",  # a string, not a {dateTime} block
+        "end": "2026-07-01T15:00:00-05:00",
+    }
+    result = scan([event], now=NOW, home_address=HOME)[0]
+    assert result.bucket == "filtered"
 
 
 def test_lombot37_multiline_location_is_whitespace_normalized():
