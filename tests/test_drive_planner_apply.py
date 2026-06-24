@@ -271,6 +271,38 @@ def test_suppress_patches_full_private_map():
     assert client.patched[0]["event_id"] == "block_x"
 
 
+def test_suppress_treats_patch_404_as_idempotent_skip():
+    # A concurrently-deleted block 404s on patch; that must not fail
+    # suppression for the other alerts.
+    class Patch404(FakeComposio):
+        def patch_event(self, arguments):
+            if arguments["event_id"] == "gone":
+                raise ComposioError("not found", status_code=404)
+            self.patched.append(arguments)
+            return {}
+
+    client = Patch404()
+    request = {
+        "patches": [
+            {"event_id": "gone", "private": {"drive_planner_alerted": "growth"}},
+            {"event_id": "live", "private": {"drive_planner_alerted": "growth"}},
+        ]
+    }
+    result = apply._suppress_mode(request, client)
+    assert result["patched"] == ["live"]
+
+
+def test_suppress_propagates_non_404_patch_error():
+    class Boom(FakeComposio):
+        def patch_event(self, arguments):
+            raise ComposioError("server error", status_code=500)
+
+    client = Boom()
+    request = {"patches": [{"event_id": "x", "private": {"a": "b"}}]}
+    with pytest.raises(ComposioError):
+        apply._suppress_mode(request, client)
+
+
 def test_suppress_skips_malformed_patch():
     client = FakeComposio()
     request = {"patches": [{"event_id": "", "private": {}}, {"event_id": "ok", "private": "nope"}]}

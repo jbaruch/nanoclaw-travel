@@ -333,13 +333,21 @@ def _suppress_mode(request: dict, client) -> dict:
         calendar_id = patch.get("calendar_id")
         if not isinstance(calendar_id, str) or not calendar_id:
             calendar_id = "primary"
-        client.patch_event(
-            {
-                "calendar_id": calendar_id,
-                "event_id": event_id,
-                "extendedProperties": {"private": private},
-            }
-        )
+        try:
+            client.patch_event(
+                {
+                    "calendar_id": calendar_id,
+                    "event_id": event_id,
+                    "extendedProperties": {"private": private},
+                }
+            )
+        except ComposioError as exc:
+            # A 404 means the block was deleted concurrently — nothing to
+            # suppress, an idempotent skip. One block's 404 must not fail
+            # suppression for the others; any other status propagates.
+            if exc.status_code != 404:
+                raise
+            continue
         patched.append(event_id)
     return {"patched": patched}
 
