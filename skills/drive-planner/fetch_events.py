@@ -5,7 +5,9 @@ classify them (Epic #59 §4). This module is that fetch: a single Composio
 tool-execution call against `GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS` over
 a time window, returning the raw Google Calendar event dicts in the exact
 shape `scan(events=...)` consumes (`id`, `summary`, `location`, `start`,
-`end`, `description`). drive-planner owns its own fetch rather than sharing
+`end`, `description`), plus `extendedProperties` — the drive-planner block's
+own machine-readable state that the recheck poll reads back off its marked
+blocks (Epic #59 §4). drive-planner owns its own fetch rather than sharing
 flight-assist's per-calendar `composio_client` — a different action, a
 different skill bundle — but mirrors that module's transport faithfully:
 stdlib-only `urllib`, HTTP-mockable in CI, the Composio success/failure
@@ -60,8 +62,21 @@ ACTION_LIST_ALL_EVENTS = "GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS"
 # Checked in order; the first present list wins.
 _EVENT_CONTAINER_KEYS = ("events", "items")
 
-# Event fields scan.py reads; carried through verbatim from the raw event.
-_EVENT_FIELDS = ("id", "summary", "location", "start", "end", "description")
+# Event fields carried through verbatim from the raw event. `scan.py` reads
+# id/summary/location/start/end/description; `extendedProperties` is the
+# drive-planner block's machine-readable state (baseline drive seconds,
+# arrive-by, fired recheck offsets) the recheck poll reads back off its own
+# marked blocks (Epic #59 §4 — calendar event IS the state, fetched by API).
+# scan.py ignores the field it does not read.
+_EVENT_FIELDS = (
+    "id",
+    "summary",
+    "location",
+    "start",
+    "end",
+    "description",
+    "extendedProperties",
+)
 
 
 class FetchError(Exception):

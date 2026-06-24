@@ -121,6 +121,23 @@ def test_projection_drops_extra_fields():
     assert set(event) == {"id", "summary", "location", "start", "end", "description"}
 
 
+def test_projection_carries_extended_properties_for_recheck_poll():
+    # The recheck poll reads baseline drive seconds / arrive-by / fired
+    # offsets back off its own marked blocks via `extendedProperties.private`
+    # (Epic #59 §4). The fetch must carry that field through; dropping it
+    # would blind the poll to its own state and silently stop rechecking.
+    raw = _event("a")
+    raw["extendedProperties"] = {
+        "private": {
+            "drive_planner_meeting": "evt_1",
+            "drive_planner_baseline_seconds": "1500",
+        }
+    }
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": [raw]})):
+        [event] = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert event["extendedProperties"]["private"]["drive_planner_baseline_seconds"] == "1500"
+
+
 def test_empty_window_returns_empty_list():
     with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": []})):
         assert _fetcher().fetch_window(time_min=NOW, time_max=LATER) == []
