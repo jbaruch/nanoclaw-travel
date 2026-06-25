@@ -81,6 +81,15 @@ def test_airport_context_drops_empty_strings():
     assert ctx == AirportContext()
 
 
+def test_airport_context_drops_whitespace_only_and_strips_surrounding():
+    # A whitespace-only tz is "missing" — it must not survive into the CREATE
+    # args and reach the calendar API. Surrounding whitespace is trimmed.
+    ctx = airport_context(
+        {"countryFlag": "  ", "timezone": "   ", "code": "  BNA  ", "delay": {"index": " "}}
+    )
+    assert ctx == AirportContext(code="BNA")
+
+
 # --- summaries (the #90 §10 literals) -----------------------------------------
 
 

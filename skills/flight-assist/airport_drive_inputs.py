@@ -90,7 +90,16 @@ class AirportContext:
 
 
 def _as_str(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
+    """A non-empty string, stripped of surrounding whitespace, or None.
+
+    Whitespace-only counts as missing: a `timezone` of `"   "` is truthy but
+    would survive into the CREATE args and be rejected by the calendar API, so
+    it must read as absent (the block then omits the tz) rather than propagate.
+    """
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def _as_int(value: object) -> int | None:
