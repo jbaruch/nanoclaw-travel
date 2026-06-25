@@ -53,7 +53,7 @@ def _build_args(**overrides):
         "calendar_id": "primary",
         "meeting_id": "evt_42",
         "direction": "outbound",
-        "summary": "Drive to Customer sync",
+        "summary": "Drive: Customer sync",
         "leg_start": LEG_START,
         "arrive_by": ARRIVE,
         "baseline_seconds": 1500,
@@ -64,7 +64,7 @@ def _build_args(**overrides):
     return build_block_args(**args)
 
 
-def _event(*, description: str, event_id: str = "block_1", summary: str = "Drive to Customer sync"):
+def _event(*, description: str, event_id: str = "block_1", summary: str = "Drive: Customer sync"):
     """A fetched event carrying a drive-planner description."""
     return {"id": event_id, "summary": summary, "description": description}
 
@@ -137,7 +137,7 @@ def test_description_state_round_trips_via_parse_block():
     assert state.arrive_by == ARRIVE
     assert state.origin.startswith("12 Example St")
     assert state.destination == "100 Broadway, Nashville, TN"
-    assert state.summary == "Drive to Customer sync"
+    assert state.summary == "Drive: Customer sync"
     assert state.alerted == frozenset()
 
 

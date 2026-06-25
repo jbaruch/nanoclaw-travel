@@ -407,7 +407,13 @@ def _resolve_candidates(fetched: list, summary: str) -> list[tuple[str, str | No
             event_id = event.get("id")
             if isinstance(event_id, str) and event_id and event_id not in found:
                 start = event.get("start")
-                found[event_id] = start.get("dateTime") if isinstance(start, dict) else None
+                # Prefer the timed `dateTime`; fall back to an all-day `date` so
+                # the candidate still carries a sortable when.
+                found[event_id] = (
+                    (start.get("dateTime") or start.get("date"))
+                    if isinstance(start, dict)
+                    else None
+                )
     return sorted(found.items(), key=lambda item: item[1] or "")
 
 

@@ -71,7 +71,7 @@ def _create_args(meeting_id="evt_42", direction="outbound"):
         calendar_id="primary",
         meeting_id=meeting_id,
         direction=direction,
-        summary="Drive to Customer sync",
+        summary="Drive: Customer sync",
         leg_start=LEG_START,
         arrive_by=ARRIVE,
         baseline_seconds=1500,

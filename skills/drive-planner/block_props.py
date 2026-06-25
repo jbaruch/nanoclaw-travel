@@ -36,7 +36,7 @@ Public API:
 
     args = build_block_args(
         calendar_id="primary", meeting_id="evt_42", direction="outbound",
-        summary="Drive to Customer sync", leg_start=depart_dt,
+        summary="Drive: Customer sync", leg_start=depart_dt,
         arrive_by=meeting_start, baseline_seconds=1500,
         origin="12 Example St, Sampleton, TN 37000",
         destination="100 Broadway, Nashville, TN",
