@@ -12,6 +12,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
+# E402 suppressed: the sys.path.insert above must execute before this import
+# so the skill module resolves by bare name — its bundle dir is only on
+# sys.path at runtime, matching nanoclaw-core's import convention.
 from airport_lead import (  # noqa: E402
     ARRIVAL_DOMESTIC,
     ARRIVAL_INTL_ABROAD,
