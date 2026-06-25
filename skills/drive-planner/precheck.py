@@ -236,14 +236,18 @@ def plan_meetings(
             # certainly flew. Surface it (no silent miss, §5) instead of
             # creating a nonsensical block.
             reason = None
+            # A bridge must clear the drive AND the arrival buffer (the same
+            # buffer `_leg_create_args` subtracts) within the gap, or it can't
+            # physically happen — a 58-min drive + 5-min buffer overruns a
+            # 60-min gap even though the drive alone fits.
             if (
                 leg.direction == "bridge"
                 and leg.gap_seconds is not None
-                and baseline > leg.gap_seconds
+                and baseline + buffer_seconds > leg.gap_seconds
             ):
                 reason = (
-                    f"{round(baseline / 60)}-min drive does not fit the "
-                    f"{round(leg.gap_seconds / 60)}-min gap between meetings"
+                    f"{round(baseline / 60)}-min drive (plus arrival buffer) does not fit "
+                    f"the {round(leg.gap_seconds / 60)}-min gap between meetings"
                 )
             elif baseline > MAX_REASONABLE_DRIVE_SECONDS:
                 reason = (

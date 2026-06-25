@@ -231,3 +231,17 @@ def test_bridge_drive_exceeding_gap_is_unplannable():
     bridge_unplannable = [u for u in by_id["b"]["unplannable"] if u["direction"] == "bridge"]
     assert len(bridge_unplannable) == 1
     assert "does not fit" in bridge_unplannable[0]["reason"]
+
+
+def test_bridge_gate_includes_arrival_buffer():
+    # A 58-min drive fits a 60-min gap on its own, but not once the 5-min
+    # arrival buffer (which _leg_create_args subtracts) is added → gated.
+    venue_x = "100 Broadway, Nashville, TN"
+    venue_y = "1 Riverfront, Memphis, TN"
+    events = [
+        _meeting("a", 13, end_h=14, location=venue_x),  # 13:00–14:00
+        _meeting("b", 15, end_h=16, location=venue_y),  # 15:00–16:00, 60-min gap
+    ]
+    payload = precheck.plan_meetings(_scan(events), route=_fixed_router(58 * 60), home_address=HOME)
+    by_id = {m["meeting_id"]: m for m in payload["meetings"]}
+    assert any(u["direction"] == "bridge" for u in by_id["b"]["unplannable"])

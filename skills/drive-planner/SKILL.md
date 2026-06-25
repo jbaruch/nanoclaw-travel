@@ -32,7 +32,7 @@ Then compose ONE Telegram notification via `mcp__nanoclaw__send_message` summari
 
 - For each meeting that got ANY created block (`created` lists `outbound` / `bridge` / `return` legs): "Added drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip <meeting_id>` if you're not driving." Use the meeting's `leave_by` and `drive_minutes` fields verbatim; when both are null (the only created leg is a `return`), phrase it "Added a return drive block for `<summary>`." Phrase relative-date words per `rules/operator-local-tz-phrasing.md`.
 - If a meeting carries `route_errors`, add a line: "Couldn't compute drive time for `<summary>` (`<error>`) — no block created; will retry next sweep."
-- If a meeting carries `unplannable` legs, add a line: "No drive block for `<summary>` — `<reason>` (you're likely flying). Reply `skip <meeting_id>` to stop seeing it." Use the leg's `reason` verbatim.
+- If a meeting carries `unplannable` legs, add a line: "No drive block for `<summary>` — `<reason>`. Reply `skip <meeting_id>` to stop seeing it." Use the leg's `reason` verbatim (it already explains why — too far, or doesn't fit the gap); don't add your own cause.
 - If `apply` reported `failed` legs, add a line naming the meeting and the error.
 
 Silence rule: if `created`, `route_errors`, `unplannable`, and `failed` are all empty (every surfaced meeting was already handled), send nothing — proceed silently. Finish here.
