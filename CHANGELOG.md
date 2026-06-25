@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.48 — 2026-06-25
+
 ### Fixed — drive-planner no longer plans impossible cross-city ground drives (`jbaruch/nanoclaw-travel#85`)
 
 The sweep bridged any two consecutive in-person meetings within the tight-gap window by clock gap alone — so a St. Louis conference talk (flown to) chained to a Brentwood TN swimming practice produced a 309-min "drive" inside a 45-min gap, and the flown-to talk itself drew a ~4.5h ground drive. `plan_meetings` now applies two sanity gates after routing: a bridge whose routed drive overruns the gap between the meetings, or any leg whose drive exceeds `MAX_REASONABLE_DRIVE_SECONDS` (3h — the operator almost certainly flew), is recorded under a new per-meeting `unplannable` list with a human reason instead of becoming a block. The leg is surfaced, never silently dropped (§5): the SKILL.md tells the operator "no drive block for X — likely flying". Flight/TripIt awareness (knowing where the operator physically is) stays a future enhancement; this gate catches the nonsensical output regardless.
