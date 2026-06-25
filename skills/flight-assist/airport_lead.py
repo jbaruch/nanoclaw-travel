@@ -82,16 +82,19 @@ _RI_LAST = 0x1F1FF
 def flag_to_iso(flag: str | None) -> str | None:
     """Decode a regional-indicator flag emoji to its ISO 3166-1 alpha-2 code.
 
-    `"🇨🇿"` -> `"CZ"`. Returns None when the string is not exactly two
-    regional-indicator symbols (territories occasionally use tag sequences,
-    e.g. the England/Scotland flags, which this intentionally rejects).
+    `"🇨🇿"` -> `"CZ"`. Returns None unless the string is *exactly* two
+    regional-indicator symbols and nothing else — surrounding whitespace,
+    stray characters, a lone indicator, or tag-sequence flags (the
+    England/Scotland subdivision flags) all reject. Strictness is the safe
+    direction: a malformed flag yields None and the caller over-buffers
+    (international), rather than silently decoding to a domestic country.
     """
-    if not flag:
+    if not flag or len(flag) != 2:
         return None
-    indicators = [ord(ch) for ch in flag if _RI_BASE <= ord(ch) <= _RI_LAST]
-    if len(indicators) != 2:
+    codepoints = [ord(ch) for ch in flag]
+    if not all(_RI_BASE <= cp <= _RI_LAST for cp in codepoints):
         return None
-    return "".join(chr(cp - _RI_BASE + ord("A")) for cp in indicators)
+    return "".join(chr(cp - _RI_BASE + ord("A")) for cp in codepoints)
 
 
 def departure_class(dep_iso: str | None, arr_iso: str | None) -> str:

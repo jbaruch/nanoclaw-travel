@@ -65,6 +65,13 @@ def test_flag_non_regional_indicator_returns_none():
     assert flag_to_iso("🇺") is None
 
 
+def test_flag_rejects_extra_characters():
+    # Strict: exactly two regional indicators and nothing else. A valid flag
+    # with surrounding junk must reject, not silently decode to the country.
+    assert flag_to_iso("🇺🇸 ") is None  # trailing whitespace
+    assert flag_to_iso("x🇺🇸y") is None  # surrounding characters
+
+
 # --- departure_class ---------------------------------------------------
 
 
