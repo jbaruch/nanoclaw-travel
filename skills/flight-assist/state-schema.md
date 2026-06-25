@@ -152,7 +152,7 @@ Per-flight state record. One file per tracked flight.
 
 Top-level fields:
 
-- `schema_version` (int, required) — `4`
+- `schema_version` (int, required) — `5`
 - `flight_id` (int, required) — byAir's flight identifier
 - `code` (string, required) — flight number like `"AA2414"`
 - `ownership` (string, required) — `"mine"` or `"friend"`
