@@ -76,6 +76,15 @@ SWEEP_WINDOW = timedelta(days=14)
 # Google Calendar.
 DEFAULT_CALENDAR_ID = "primary"
 
+# Drives longer than this are implausible as a "drive to a meeting" — the
+# operator almost certainly flew (the sweep has no flight awareness yet, #85),
+# so a routed leg over this cap is surfaced as unplannable instead of becoming a
+# nonsensical block (the St. Louis talk the operator flew to drew a ~4.5h ground
+# drive; the talk→Brentwood bridge a 5h "drive" inside a 45-min gap). Generous
+# enough that a genuinely long drive is still surfaced (never silently dropped),
+# letting the operator override.
+MAX_REASONABLE_DRIVE_SECONDS = 3 * 60 * 60
+
 
 def _load_maps_client():
     """Import and construct the in-tile MapsClient from env, cross-bundle.
@@ -181,16 +190,21 @@ def plan_meetings(
 
     `route(origin, destination)` returns live drive seconds or raises on a
     routing failure. Every actionable meeting is included; a leg the router
-    could not price is recorded under `route_errors` on that meeting (with the
-    leg + message) instead of silently dropping it.
+    could not price is recorded under `route_errors`, and a leg whose routed
+    drive can't be a real drive — a bridge overrunning the gap, or any leg over
+    `MAX_REASONABLE_DRIVE_SECONDS` (the operator flew, #85) — is recorded under
+    `unplannable` instead of becoming a nonsensical block. Neither is silently
+    dropped.
 
     Returns `{"meetings": [...]}` where each meeting carries `meeting_id`,
-    `summary`, `bucket`, `create_args` (one per priced leg), and `route_errors`.
+    `summary`, `bucket`, `create_args` (one per priced leg), `route_errors`, and
+    `unplannable` (gated legs with a human reason).
     """
     meetings: list[dict] = []
     for meeting in actionable(results):
         create_args: list[dict] = []
         route_errors: list[dict] = []
+        unplannable: list[dict] = []
         # Display-ready notification fields (per `coding-policy:
         # script-as-black-box` — the SKILL.md reads these verbatim, no math).
         # Captured from the arrival-anchored leg (outbound / bridge), which is
@@ -215,6 +229,42 @@ def plan_meetings(
                     }
                 )
                 continue
+            # Sanity gates (#85): a routed drive that can't be a real drive must
+            # not become a block. A bridge whose drive overruns the gap between
+            # the two meetings is impossible (different cities); any leg whose
+            # drive exceeds the plausibility cap means the operator almost
+            # certainly flew. Surface it (no silent miss, §5) instead of
+            # creating a nonsensical block.
+            reason = None
+            # A bridge must clear the drive AND the arrival buffer (the same
+            # buffer `_leg_create_args` subtracts) within the gap, or it can't
+            # physically happen — a 58-min drive + 5-min buffer overruns a
+            # 60-min gap even though the drive alone fits.
+            if (
+                leg.direction == "bridge"
+                and leg.gap_seconds is not None
+                and baseline + buffer_seconds > leg.gap_seconds
+            ):
+                reason = (
+                    f"{round(baseline / 60)}-min drive (plus arrival buffer) does not fit "
+                    f"the {round(leg.gap_seconds / 60)}-min gap between meetings"
+                )
+            elif baseline > MAX_REASONABLE_DRIVE_SECONDS:
+                reason = (
+                    f"{round(baseline / 3600, 1)}h drive is too far to be a drive — "
+                    "the operator likely flew"
+                )
+            if reason is not None:
+                unplannable.append(
+                    {
+                        "direction": leg.direction,
+                        "origin": origin,
+                        "destination": destination,
+                        "drive_minutes": round(baseline / 60),
+                        "reason": reason,
+                    }
+                )
+                continue
             arg = _leg_create_args(
                 meeting,
                 leg,
@@ -231,8 +281,10 @@ def plan_meetings(
         # meeting stays put (legs == ()), so it has no block and no route to
         # price. Skip it so the gate never wakes the agent with an empty
         # meeting (the "wake only when actionable" contract). A meeting that
-        # had legs but they all failed to price still surfaces via route_errors.
-        if not create_args and not route_errors:
+        # had legs but they all failed to price still surfaces via route_errors,
+        # and one whose legs were all gated as implausible surfaces via
+        # unplannable so the agent can tell the operator instead of going quiet.
+        if not create_args and not route_errors and not unplannable:
             continue
         meetings.append(
             {
@@ -245,6 +297,7 @@ def plan_meetings(
                 "drive_minutes": drive_minutes,
                 "create_args": create_args,
                 "route_errors": route_errors,
+                "unplannable": unplannable,
             }
         )
     return {"meetings": meetings}

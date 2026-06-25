@@ -18,7 +18,7 @@ Skill bundle scripts run from the runtime mount `/home/node/.claude/skills/tessl
 
 ## Step 1 — Handle a sweep wake cycle
 
-This step fires when the precheck wakes the agent with a `data.meetings` payload. Each entry is one in-person meeting that needs a drive block, carrying `meeting_id`, `summary`, `start`, `location`, display-ready `leave_by` and `drive_minutes`, the prepared `create_args` (one per leg), and `route_errors`. The blocks are create-first: create them, then tell the user they can skip.
+This step fires when the precheck wakes the agent with a `data.meetings` payload. Each entry is one in-person meeting that needs a drive block, carrying `meeting_id`, `summary`, `start`, `location`, display-ready `leave_by` and `drive_minutes`, the prepared `create_args` (one per leg), `route_errors`, and `unplannable` (legs the precheck would not block, each carrying a `direction`, `drive_minutes`, and a display-ready `reason`). The blocks are create-first: create them, then tell the user they can skip.
 
 First create the blocks. Pass the whole `data` object (it already has the `meetings` array) to the apply script in `create` mode:
 
@@ -32,9 +32,10 @@ Then compose ONE Telegram notification via `mcp__nanoclaw__send_message` summari
 
 - For each meeting that got ANY created block (`created` lists `outbound` / `bridge` / `return` legs): "Added drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip <meeting_id>` if you're not driving." Use the meeting's `leave_by` and `drive_minutes` fields verbatim; when both are null (the only created leg is a `return`), phrase it "Added a return drive block for `<summary>`." Phrase relative-date words per `rules/operator-local-tz-phrasing.md`.
 - If a meeting carries `route_errors`, add a line: "Couldn't compute drive time for `<summary>` (`<error>`) — no block created; will retry next sweep."
+- If a meeting carries `unplannable` legs, add one line per leg, in the order listed, naming the leg's `direction` (so it stays accurate when another leg of the same meeting still got a block): "No `<direction>` drive block for `<summary>` — `<reason>`." Use each leg's `reason` verbatim; don't add your own cause. Then add one "Reply `skip <meeting_id>` to stop seeing it." for the meeting.
 - If `apply` reported `failed` legs, add a line naming the meeting and the error.
 
-Silence rule: if `created`, `route_errors`, and `failed` are all empty (every surfaced meeting was already handled), send nothing — proceed silently. Finish here.
+Silence rule: if `created`, `route_errors`, `unplannable`, and `failed` are all empty (every surfaced meeting was already handled), send nothing — proceed silently. Finish here.
 
 ## Step 2 — Handle a skip reply
 
@@ -47,4 +48,4 @@ echo '{"meeting_id": "<meeting_id>", "now": "<current ISO-8601, tz-aware>"}' \
 
 `now` is the current time as a timezone-aware ISO-8601 string. The script deletes the meeting's drive blocks and records a skip (it computes the skip's expiry itself — see `apply.py` / `state-schema.md`) so the next sweep won't recreate them, then prints `{"removed": [...], "skip_recorded": true}`.
 
-Confirm to the user via `mcp__nanoclaw__send_message`: "Removed the drive block for `<meeting_id>` — won't plan it again." If `removed` is empty (the block was already gone), still confirm the skip was recorded so a later sweep won't recreate it. Finish here.
+Confirm to the user via `mcp__nanoclaw__send_message`. When `removed` lists blocks: "Removed the drive block for `<meeting_id>` — won't plan it again." When `removed` is empty (nothing was created — e.g. the meeting was unplannable — or the block was already gone): "Won't plan a drive to `<meeting_id>`." The skip is recorded either way, so a later sweep won't recreate it. Finish here.
