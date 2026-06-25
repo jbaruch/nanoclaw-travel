@@ -336,6 +336,32 @@ def test_bad_baseline_seconds_rejected():
         )
 
 
+def test_empty_endpoints_rejected_at_the_seam():
+    # An empty origin/destination would otherwise only blow up later inside
+    # build_block_args; the builder fails fast so the error points at the call.
+    with pytest.raises(ValueError, match="`origin` and `destination`"):
+        departure_block(
+            flight_code="DL123",
+            dep_code="BNA",
+            dep_ctx=US,
+            arr_ctx=US_LGA,
+            dep_instant=DEP,
+            origin="",
+            destination="BNA",
+            baseline_seconds=900,
+        )
+    with pytest.raises(ValueError, match="`origin` and `destination`"):
+        arrival_block(
+            arr_code="LGA",
+            dep_ctx=US,
+            arr_ctx=US_LGA,
+            arr_instant=ARR,
+            origin="LGA",
+            destination="",
+            baseline_seconds=900,
+        )
+
+
 # --- the seam: built blocks survive the codec the planner calls ----------------
 
 

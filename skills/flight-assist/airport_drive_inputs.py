@@ -194,6 +194,14 @@ def _require_seconds(baseline_seconds: int) -> None:
         raise ValueError("airport_drive_inputs: `baseline_seconds` must be non-negative")
 
 
+def _require_endpoints(origin: str, destination: str) -> None:
+    # The seam fails fast here on an empty leg endpoint rather than deferring to
+    # `airport_block.build_block_args` (which the planner calls downstream and
+    # which rejects empty endpoints), so the error points at the builder call.
+    if not origin or not destination:
+        raise ValueError("airport_drive_inputs: `origin` and `destination` must be non-empty")
+
+
 def departure_block(
     *,
     flight_code: str,
@@ -227,10 +235,12 @@ def departure_block(
         config: optional `config.json` dict for the clearance overrides.
 
     Raises:
-        ValueError: on a naive `dep_instant` or a bad `baseline_seconds`.
+        ValueError: on a naive `dep_instant`, a bad `baseline_seconds`, or an
+            empty `origin` / `destination`.
     """
     _require_aware("dep_instant", dep_instant)
     _require_seconds(baseline_seconds)
+    _require_endpoints(origin, destination)
     anchor = dep_instant - timedelta(minutes=_clearance_minutes(dep_ctx, arr_ctx, config))
     leg_start = anchor - timedelta(seconds=baseline_seconds)
     return DesiredDriveBlock(
@@ -277,10 +287,12 @@ def arrival_block(
         config: optional `config.json` dict for the post-arrival overrides.
 
     Raises:
-        ValueError: on a naive `arr_instant` or a bad `baseline_seconds`.
+        ValueError: on a naive `arr_instant`, a bad `baseline_seconds`, or an
+            empty `origin` / `destination`.
     """
     _require_aware("arr_instant", arr_instant)
     _require_seconds(baseline_seconds)
+    _require_endpoints(origin, destination)
     anchor = arr_instant + timedelta(minutes=_post_arrival_minutes(dep_ctx, arr_ctx, config))
     leg_end = anchor + timedelta(seconds=baseline_seconds)
     return DesiredDriveBlock(
