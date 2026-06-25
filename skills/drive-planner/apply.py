@@ -356,8 +356,13 @@ def _remove_mode(request: dict, client) -> dict:
     # Record the skip so the next sweep does not recreate the block. Expiry is
     # the meeting's end when given; otherwise the latest block arrive-by (a skip
     # is meaningless once the meeting is over, and scan filters it as `past`
-    # after its start anyway). With no meeting_end and no blocks found, fall
-    # back to a bounded horizon so a future recurrence is still suppressed.
+    # after its start anyway). For a no-block (unplannable) skip resolved from a
+    # meeting event, anchor to that event's end rather than the bounded fallback,
+    # so the persisted expiry matches the documented contract (state-schema.md)
+    # and never over-suppresses a later recurrence. The fallback horizon applies
+    # only when nothing time-anchored is available.
+    if meeting_end is None and not block_arrivals:
+        meeting_end = _meeting_event_end(fetched, meeting_id)
     if meeting_end is not None:
         expires = meeting_end
     elif block_arrivals:
@@ -373,6 +378,37 @@ def _remove_mode(request: dict, client) -> dict:
 _DRIVE_SUMMARY_PREFIX = "Drive: "
 
 
+def _block_start(state) -> datetime:
+    """The block's actual start (the leave-by the operator saw) for any direction.
+
+    `baseline_leave_by` is the leave-by only for arrival-anchored legs
+    (outbound / bridge start `baseline + buffer` before arrival). A return
+    block's stored `arrive_by` is its synthetic leg END, so it starts `baseline`
+    before that — at the meeting end. Deriving per direction keeps `list` /
+    resolve reporting the real block start for every leg, not a return leg's
+    buffer-shifted value.
+    """
+    if state.direction == "return":
+        return state.arrive_by - timedelta(seconds=state.baseline_seconds)
+    return state.baseline_leave_by
+
+
+def _meeting_event_end(fetched: list, meeting_id: str) -> datetime | None:
+    """The end (or start) of a fetched meeting event, for a no-block skip expiry."""
+    for event in fetched:
+        if not isinstance(event, dict) or event.get("id") != meeting_id:
+            continue
+        if parse_block(event) is not None:
+            continue
+        for key in ("end", "start"):
+            block = event.get(key)
+            if isinstance(block, dict):
+                when = _parse_iso(block.get("dateTime"))
+                if when is not None:
+                    return when
+    return None
+
+
 def _resolve_candidates(fetched: list, summary: str) -> list[tuple[str, str | None]]:
     """Meetings matching `summary` as `(meeting_id, leave_by_iso)`, position-immune.
 
@@ -386,14 +422,14 @@ def _resolve_candidates(fetched: list, summary: str) -> list[tuple[str, str | No
     target = f"{_DRIVE_SUMMARY_PREFIX}{summary}"
     found: dict[str, str | None] = {}
     # Blocks first. A meeting has several leg blocks (outbound / return) with
-    # different leave-bys; keep the EARLIEST per meeting so the value matches
-    # what `list` and the notification showed (the outbound leave-by), since the
+    # different starts; keep the EARLIEST per meeting so the value matches what
+    # `list` and the notification showed (the outbound leave-by), since the
     # caller disambiguates by exactly that.
     for event in fetched:
         state = parse_block(event)
         if state is None or state.summary != target:
             continue
-        leave_by = state.baseline_leave_by.isoformat()
+        leave_by = _block_start(state).isoformat()
         current = found.get(state.meeting_id)
         if current is None or leave_by < current:
             found[state.meeting_id] = leave_by
@@ -414,7 +450,8 @@ def _resolve_candidates(fetched: list, summary: str) -> list[tuple[str, str | No
                     if isinstance(start, dict)
                     else None
                 )
-    return sorted(found.items(), key=lambda item: item[1] or "")
+    # Order by when; a candidate with no parseable when sorts LAST, not first.
+    return sorted(found.items(), key=lambda item: (item[1] is None, item[1] or ""))
 
 
 def _list_mode(request: dict, client) -> dict:
@@ -447,7 +484,7 @@ def _list_mode(request: dict, client) -> dict:
         state = parse_block(event)
         if state is None:
             continue
-        leave_by = state.baseline_leave_by
+        leave_by = _block_start(state)
         summary = state.summary
         if summary.startswith(_DRIVE_SUMMARY_PREFIX):
             summary = summary[len(_DRIVE_SUMMARY_PREFIX) :]

@@ -218,17 +218,48 @@ def test_remove_by_summary_skips_unplannable_meeting_with_no_block():
     # An unplannable meeting has no drive block, so resolution falls back to the
     # meeting event itself — the skip still records, giving it a working cancel
     # path without exposing an id (#86 / the OpenAI unplannable-skip concern).
+    # The skip expiry anchors to the meeting's END, not the 30-day fallback,
+    # matching the documented contract (stateful-artifacts / state-schema.md).
+    meeting_end = datetime(2026, 7, 2, 15, 0, tzinfo=CT)
     meeting_event = {
         "id": "evt_flight",
         "summary": "St. Louis talk",
         "description": "",
+        "start": {"dateTime": datetime(2026, 7, 2, 14, 0, tzinfo=CT).isoformat()},
+        "end": {"dateTime": meeting_end.isoformat()},
     }
     client = FakeComposio(existing=[meeting_event])
     now = datetime(2026, 7, 2, 8, 0, tzinfo=CT)
     result = apply._remove_mode({"summary": "St. Louis talk", "now": now.isoformat()}, client)
     assert result["removed"] == []  # no block to delete
     assert result["skip_recorded"] is True
-    assert "evt_flight" in skip_state.load_active_skips(now)
+    skips = skip_state.load_active_skips(now)
+    assert "evt_flight" in skips
+    # expiry is the meeting end, not now + 30-day fallback
+    assert skips["evt_flight"] == meeting_end.isoformat()
+
+
+def test_resolve_candidates_reports_return_block_actual_start():
+    # A return block's stored arrive_by is its leg END; its real start is the
+    # meeting end, not the buffer-shifted baseline_leave_by (Copilot return-leg
+    # concern). The candidate must carry the real start so disambiguation lines
+    # up with the calendar.
+    meeting_end = datetime(2026, 7, 2, 15, 0, tzinfo=CT)
+    ret_args = build_block_args(
+        calendar_id="primary",
+        meeting_id="evt_ret",
+        direction="return",
+        summary="Drive: Solo meeting",
+        leg_start=meeting_end,
+        arrive_by=meeting_end + timedelta(seconds=1500),
+        baseline_seconds=1500,
+        origin="venue",
+        destination="Home",
+    )
+    ret = _fetched_block(ret_args, "b_ret")
+    assert apply._resolve_candidates([ret], "Solo meeting") == [
+        ("evt_ret", meeting_end.isoformat())
+    ]
 
 
 def test_remove_by_unmatched_summary_reports_no_match():
