@@ -5,7 +5,7 @@ deltas between byAir snapshots. State lives under
 `/workspace/state/flight-assist/` in production; tests override the
 directory via the `FLIGHT_ASSIST_STATE_DIR` environment variable.
 
-Files written (all JSON, all carry `schema_version: 4` at the top level):
+Files written (all JSON, all carry `schema_version: 5` at the top level):
 
     config.json                       — home_address, etc. (set via /setup)
     active-flights.json               — list of currently-tracked flight_ids
@@ -58,7 +58,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-STATE_SCHEMA_VERSION = 4
+STATE_SCHEMA_VERSION = 5
 
 _DEFAULT_STATE_DIR = "/workspace/state/flight-assist"
 _STATE_DIR_ENV = "FLIGHT_ASSIST_STATE_DIR"
@@ -232,6 +232,13 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
         # to apply on migration — config, active-flights, and per-flight
         # records only get a schema_version bump at v4.
         version = 4
+    if version == 4:
+        # v4 → v5: config.json gains five optional airport-clearance fields
+        # (`airport_clearance_*`, `airport_post_arrival_*` — see
+        # state-schema.md). All optional and absent-tolerant, so there is no
+        # shape change to apply on migration — config, active-flights, and
+        # per-flight records only get a schema_version bump at v5.
+        version = 5
     if version != STATE_SCHEMA_VERSION:
         # Unknown older version: refuse to silently pass through. The
         # branches above are the authoritative list of known upgrade
@@ -344,7 +351,35 @@ _CONFIG_OPTIONAL_FIELDS: dict[str, type] = {
     # config field is needed for it.
     "byair_calendar_name": str,
     "byair_calendar_id": str,
+    # Airport drive block clearance policy (#90). Operator risk-tolerance knobs
+    # that override `airport_lead.py`'s defaults: how early to be at the airport
+    # before departure (domestic / international), and how long after landing
+    # before the drive home can start (domestic / international into the US /
+    # international abroad). All minutes, all non-negative. Absent → the
+    # `airport_lead` defaults apply. The byAir delay-index nudge (low/med/high)
+    # stays an `airport_lead` constant — it is keyed on byAir's `delay.index`
+    # and does not fit this flat int-field shape; make it configurable later if
+    # needed.
+    "airport_clearance_domestic_minutes": int,
+    "airport_clearance_international_minutes": int,
+    "airport_post_arrival_domestic_minutes": int,
+    "airport_post_arrival_intl_us_minutes": int,
+    "airport_post_arrival_intl_abroad_minutes": int,
 }
+
+# Optional int config fields that must be non-negative. A negative value
+# persisted here would surface as a fallback / ValueError downstream, so it is
+# rejected louder at the write surface (see `write_config`).
+_CONFIG_NON_NEGATIVE_INT_FIELDS = frozenset(
+    {
+        "min_transfer_minutes",
+        "airport_clearance_domestic_minutes",
+        "airport_clearance_international_minutes",
+        "airport_post_arrival_domestic_minutes",
+        "airport_post_arrival_intl_us_minutes",
+        "airport_post_arrival_intl_abroad_minutes",
+    }
+)
 
 
 def write_config(config: dict) -> None:
@@ -387,10 +422,8 @@ def write_config(config: dict) -> None:
         # negatives. A negative value silently persisted here would
         # surface as a fallback / ValueError downstream — louder to
         # reject at the write surface.
-        if key == "min_transfer_minutes" and value < 0:
-            raise ValueError(
-                f"write_config: field 'min_transfer_minutes' is {value}, expected non-negative int"
-            )
+        if key in _CONFIG_NON_NEGATIVE_INT_FIELDS and value < 0:
+            raise ValueError(f"write_config: field '{key}' is {value}, expected non-negative int")
     payload = {**config, "schema_version": STATE_SCHEMA_VERSION}
     _atomic_write_json(state_dir() / CONFIG_FILE, payload)
 
