@@ -61,7 +61,7 @@ echo '{"summary": "<meeting name>", "leave_by": "<ISO from the notification/list
 The script resolves the name to that meeting's id itself — by exact name, independent of calendar order — deletes its drive blocks, and records a skip (it computes the expiry itself — see `apply.py` / `state-schema.md`) so the next sweep won't recreate them. A meeting with no block (an `unplannable` one) still records the skip via its calendar event. It prints one of:
 
 - `{"removed": [...], "skip_recorded": true}` — done.
-- `{"skip_recorded": false, "unmatched_summary": "..."}` — nothing matched.
-- `{"skip_recorded": false, "ambiguous_summary": "...", "candidates": [{"summary": "...", "leave_by": "<ISO>"}]}` — several meetings share the name; ask the user which `leave_by` they mean, then re-run with that `leave_by`.
+- `{"removed": [], "skip_recorded": false, "unmatched_summary": "..."}` — nothing matched.
+- `{"removed": [], "skip_recorded": false, "ambiguous_summary": "...", "candidates": [{"summary": "...", "leave_by": "<ISO>"}]}` — several meetings share the name; ask the user which `leave_by` they mean, then re-run with that `leave_by`.
 
 Confirm to the user via `mcp__nanoclaw__send_message` by meeting name, never id. When `removed` lists blocks: "Removed the drive block for `<summary>` — won't plan it again." When `removed` is empty but `skip_recorded` is true: "Won't plan a drive to `<summary>`." On `unmatched_summary`, say you couldn't find that meeting and ask which they mean (names + leave-by from `apply.py list`). Finish here.

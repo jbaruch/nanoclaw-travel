@@ -29,17 +29,18 @@ Modes (subcommand on argv[1]):
              drive block, ordered by leave_by. Lets the cancel UX map a user's
              ordinal / natural-language reference to the internal `meeting_id`
              without that id ever appearing in a user-facing message (#86).
-    remove   stdin {"meeting_id" OR "summary": "...", "leave_by": "<ISO>",
-                    "meeting_end": "<ISO>", "now": "<ISO>", "calendar_id": "..."}
+    remove   stdin {"meeting_id" OR "summary": "...", "now": "<ISO>",
+                    optional: "leave_by", "meeting_end", "calendar_id"}
              stdout {"removed": [...], "skip_recorded": true}
              `summary` resolves to the meeting_id server-side (by exact meeting
              name, position-immune) so the cancel UX never needs a raw id (#86);
              an unplannable meeting with no block resolves via the meeting event
-             itself. Pass `leave_by` to pin the exact instance when meetings
-             share a summary (a daily "Standup"). Non-match / still-ambiguous
-             return, respectively, {"skip_recorded": false, "unmatched_summary":
-             "..."} and {"skip_recorded": false, "ambiguous_summary": "...",
-             "candidates": [{"summary","leave_by"}]} — never an id.
+             itself. Pass optional `leave_by` to pin the exact instance when
+             meetings share a summary (a daily "Standup"). Non-match /
+             still-ambiguous return, respectively,
+             {"removed": [], "skip_recorded": false, "unmatched_summary": "..."}
+             and {"removed": [], "skip_recorded": false, "ambiguous_summary":
+             "...", "candidates": [{"summary","leave_by"}]} — never an id.
     suppress stdin {"patches": [{"event_id": "...", "calendar_id": "...",
                     "description": "<full rebuilt block description>"}]}
              stdout {"patched": ["<event_id>", ...]}
