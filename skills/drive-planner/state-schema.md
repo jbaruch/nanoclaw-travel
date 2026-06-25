@@ -49,33 +49,34 @@ Migration:
 
 ## Calendar-as-State: Drive Blocks
 
-A created drive block has no local record — the calendar event itself IS the state (Epic #59 §4). The recheck poll re-fetches the near-term window by a direct API call and reads each of its own blocks back off the event. There is no `blocks.json`; the only local state file is `skip-state.json` above. Owned by `block_props.py` (`build_block_args` writes, `parse_block` reads).
+A created drive block has no local record — the calendar event itself IS the state (Epic #59 §4). The recheck poll re-fetches the near-term window by a direct API call and reads each of its own blocks back off the event. There is no `blocks.json`; the only local state file is `skip-state.json` above. Owned by `block_props.py` (`build_block_args` / `build_description` write, `parse_block` reads).
 
-Two surfaces per block:
+All state lives in the event **`description`** — the live Composio v3 calendar toolkit exposes NO writable `extendedProperties` on any create/patch/update action (verified against the NAS during Phase 1), so the description is the only durable, writable surface. It carries three parts:
 
-- **`description`** carries the human line plus the self-marker `[drive-planner:meeting=<id>:dir=<dir>]`. `scan.py` reads the marker to recognize the planner's own blocks (idempotency, lombot #50); the marker `build_block_args` emits is pinned against `scan._MARKER_RE` by a test.
-- **`extendedProperties.private`** carries the machine state, string→string (Google Calendar's private-props are string-valued):
+- the human line `Drive: <summary>`;
+- the self-marker `[drive-planner:meeting=<id>:dir=<dir>]` — `scan.py` reads it to recognize the planner's own blocks (idempotency, lombot #50); pinned against `scan._MARKER_RE` by a test;
+- a `<!--dp:{...}-->` JSON comment (compact, hidden in most calendar UIs) with the machine state:
 
-| key | meaning |
-|-----|---------|
-| `drive_planner_schema_version` | record schema version (currently `"1"`) |
-| `drive_planner_meeting` | served meeting's event id |
-| `drive_planner_dir` | leg direction — `outbound` / `return` / `bridge` |
-| `drive_planner_baseline_seconds` | routed drive seconds captured at creation (recheck baseline) |
-| `drive_planner_arrive_by` | arrival-anchor timestamp, ISO-8601 — the hard arrival deadline for `outbound` / `bridge`; for a `return` leg it is the leg end (informational, the poll never rechecks returns) |
-| `drive_planner_origin` / `drive_planner_destination` | the routed leg endpoints (the poll re-routes exactly this pair) |
-| `drive_planner_alerted` | comma-joined record of alerts already pushed — `growth` and/or `leave_now` — so a later poll never re-pings the same condition |
+| state key | meaning |
+|-----------|---------|
+| `v` | record schema version (currently `2`) |
+| `b` | routed drive seconds captured at creation (recheck baseline) |
+| `a` | arrival-anchor timestamp, ISO-8601 — the hard arrival deadline for `outbound` / `bridge`; for a `return` leg it is the leg end (informational, the poll never rechecks returns) |
+| `o` / `d` | the routed leg endpoints (the poll re-routes exactly this pair) |
+| `al` | comma-joined record of alerts already pushed — `growth` and/or `leave_now` — so a later poll never re-pings the same condition |
+
+The leg `direction` and served meeting id come from the marker; the block's start/duration carry the times (CREATE uses flat `start_datetime` + `event_duration_*`).
 
 Writer / reader contract:
 
-- **Writer** — the sweep creates blocks via `apply.py create` (idempotent: finds existing markers first, never double-books). When an alert fires, the recheck poll emits a patch and the recheck SKILL.md applies it via `apply.py suppress` AFTER the send; the patch carries the FULL private map with only `drive_planner_alerted` updated (Google Calendar's PATCH replaces the whole private map, so a single-key patch would wipe the record).
+- **Writer** — the sweep creates blocks via `apply.py create` (idempotent: finds existing markers first via `GOOGLECALENDAR_FIND_EVENT`, never double-books). When an alert fires, the recheck poll emits a patch and the recheck SKILL.md applies it via `apply.py suppress` AFTER the send; the patch carries the full rebuilt `description` with only `al` updated (`GOOGLECALENDAR_PATCH_EVENT` supports a partial `description` update).
 - **Reader** — the recheck poll calls `parse_block(event)`; a non-block or malformed event yields `None` (never raises), so one bad event can't abort the poll. Only arrival-anchored legs (`outbound` / `bridge`) are rechecked; a `return` leg is created for visibility but not watched.
 
 Migration (per `coding-policy: stateful-artifacts`):
 
-- `drive_planner_schema_version` `1` is the initial version; bump on any shape change to the private-props map and add the owner-side upgrade in `parse_block`. A record stamped NEWER than this tile supports parses to `None` (no-usable-prior-state — the poll skips it, the safe non-disruptive fallback). A missing version is treated as v1 for back-compat.
+- `v` `2` is the current version. `v` `1` was the original `extendedProperties.private` string-map shape — defunct: the live v3 toolkit has no writable extendedProperties, so no v1 record was ever written, and the description-based parser cannot read that shape anyway (it carries no `<!--dp:-->` comment). Bump on any further shape change to the description state JSON and add the owner-side upgrade in `parse_block`. A record stamped NEWER than this tile supports — or carrying a non-int `v` — parses to `None` (no-usable-prior-state, the safe non-disruptive fallback). A missing `v` is treated as the current shape for back-compat.
 
 Tolerance:
 
-- A block whose private props are missing or malformed (no `drive_planner_meeting`, unparseable baseline / arrive-by, empty endpoints, unknown direction) parses to `None` and is treated as "not a block I recheck" — never raised on.
-- Composio is mid-retirement (nanoclaw#638 → OneCLI workspace MCP); the API fetch + patch are the pieces that re-point later, same as `composio-fetch` and `fetch_events.py`.
+- A block whose state is missing or malformed (no marker, unparseable JSON, unparseable baseline / arrive-by, empty endpoints, unknown direction) parses to `None` and is treated as "not a block I recheck" — never raised on.
+- Composio is mid-retirement (nanoclaw#638 → OneCLI workspace MCP); the API fetch / create / find / patch are the pieces that re-point later, same as `composio-fetch` and `fetch_events.py`.

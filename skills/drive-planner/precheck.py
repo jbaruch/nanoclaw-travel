@@ -168,27 +168,6 @@ def _leg_create_args(
     )
 
 
-def _display_fields(create_args: list[dict]) -> dict:
-    """Display-ready notification fields for a meeting's created blocks.
-
-    Keeps the formula out of the SKILL.md (per `coding-policy:
-    script-as-black-box`): the skill reads `leave_by` / `drive_minutes`
-    verbatim instead of computing them. Reads the arrival-anchored leg
-    (`outbound` / `bridge`) — the one with a leave-by; a return-only creation
-    has no leave-by, so both fields are None.
-    """
-    for arg in create_args:
-        private = arg.get("extendedProperties", {}).get("private", {})
-        if private.get("drive_planner_dir") in ("outbound", "bridge"):
-            baseline = private.get("drive_planner_baseline_seconds")
-            drive_minutes = round(int(baseline) / 60) if baseline is not None else None
-            return {
-                "leave_by": arg.get("start", {}).get("dateTime"),
-                "drive_minutes": drive_minutes,
-            }
-    return {"leave_by": None, "drive_minutes": None}
-
-
 def plan_meetings(
     results: list[MeetingClass],
     *,
@@ -211,6 +190,12 @@ def plan_meetings(
     for meeting in actionable(results):
         create_args: list[dict] = []
         route_errors: list[dict] = []
+        # Display-ready notification fields (per `coding-policy:
+        # script-as-black-box` — the SKILL.md reads these verbatim, no math).
+        # Captured from the arrival-anchored leg (outbound / bridge), which is
+        # the one with a leave-by; a return-only creation leaves them None.
+        leave_by: str | None = None
+        drive_minutes: int | None = None
         for leg in meeting.legs:
             origin = leg.origin or home_address
             destination = leg.destination or home_address
@@ -229,16 +214,18 @@ def plan_meetings(
                     }
                 )
                 continue
-            create_args.append(
-                _leg_create_args(
-                    meeting,
-                    leg,
-                    home_address=home_address,
-                    baseline_seconds=baseline,
-                    calendar_id=calendar_id,
-                    buffer_seconds=buffer_seconds,
-                )
+            arg = _leg_create_args(
+                meeting,
+                leg,
+                home_address=home_address,
+                baseline_seconds=baseline,
+                calendar_id=calendar_id,
+                buffer_seconds=buffer_seconds,
             )
+            create_args.append(arg)
+            if leg.direction in ("outbound", "bridge"):
+                leave_by = arg["start_datetime"]
+                drive_minutes = round(baseline / 60)
         # A meeting with no legs produced nothing to do — a `back_to_back`
         # meeting stays put (legs == ()), so it has no block and no route to
         # price. Skip it so the gate never wakes the agent with an empty
@@ -246,7 +233,6 @@ def plan_meetings(
         # had legs but they all failed to price still surfaces via route_errors.
         if not create_args and not route_errors:
             continue
-        display = _display_fields(create_args)
         meetings.append(
             {
                 "meeting_id": meeting.meeting_id,
@@ -254,8 +240,8 @@ def plan_meetings(
                 "bucket": meeting.bucket,
                 "location": meeting.location,
                 "start": meeting.start.isoformat() if meeting.start else None,
-                "leave_by": display["leave_by"],
-                "drive_minutes": display["drive_minutes"],
+                "leave_by": leave_by,
+                "drive_minutes": drive_minutes,
                 "create_args": create_args,
                 "route_errors": route_errors,
             }

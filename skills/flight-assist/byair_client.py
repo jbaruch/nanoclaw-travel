@@ -115,7 +115,14 @@ class ByAirClient:
             try:
                 return self._tools_call(name, arguments)
             except _SessionExpired as second_failure:
-                raise second_failure.__cause__ from None
+                # `_SessionExpired` is always raised `from` the underlying
+                # transport error, so `__cause__` carries the real HTTPError to
+                # surface. Guard the None case anyway — `raise None` would be a
+                # TypeError that buries the actual failure.
+                cause = second_failure.__cause__
+                if cause is None:
+                    raise
+                raise cause from None
 
     def _initialize(self) -> None:
         """Run the MCP initialize handshake; capture the session-id header."""

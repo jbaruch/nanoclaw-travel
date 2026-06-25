@@ -1,13 +1,15 @@
 """Tests for the drive-planner block-props codec (`block_props.py`).
 
 Covers the round trip the calendar-as-state design depends on: build the
-create-event arguments for a block, then parse a fetched event carrying those
-same private props back into a `BlockState`. Pins two contracts that, if they
+create-event arguments for a block, then parse a fetched event carrying that
+same description back into a `BlockState`. State lives in the event
+**description** (the live Composio v3 toolkit has no writable
+extendedProperties), so the codec encodes a `<!--dp:{...}-->` JSON comment plus
+the `scan` marker, and parses both back. Pins two contracts that, if they
 drift, break silently in production:
 
-  * the marker token `build_block_args` writes into the description must match
-    `scan._MARKER_RE`, or `scan.py` stops recognizing the planner's own blocks
-    (lombot #50 — duplicate blocks);
+  * the marker token must match `scan._MARKER_RE` (lombot #50 — duplicate
+    blocks if scan stops recognizing them);
   * a malformed / non-block event parses to None rather than raising, so one
     bad event can never abort the recheck poll.
 
@@ -20,20 +22,23 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-planner"))
 
-import block_props  # noqa: E402
 from block_props import (  # noqa: E402
     ALERT_GROWTH,
     ALERT_LEAVE_NOW,
-    KEY_ALERTED,
+    BLOCK_SCHEMA_VERSION,
     BlockState,
     build_block_args,
+    build_description,
     build_marker,
     next_alerts,
     parse_alerted,
     parse_block,
+    parse_marker,
     serialize_alerted,
 )
 from scan import _MARKER_RE  # noqa: E402
@@ -59,39 +64,34 @@ def _build_args(**overrides):
     return build_block_args(**args)
 
 
-def _event_from_args(args: dict, *, event_id: str = "block_1", alerted: str | None = None) -> dict:
-    """Shape a fetched event from create-args (private props round-trip)."""
-    private = dict(args["extendedProperties"]["private"])
-    if alerted is not None:
-        private[KEY_ALERTED] = alerted
-    return {
-        "id": event_id,
-        "summary": args["summary"],
-        "start": args["start"],
-        "end": args["end"],
-        "description": args["description"],
-        "extendedProperties": {"private": private},
-    }
+def _event(*, description: str, event_id: str = "block_1", summary: str = "Drive to Customer sync"):
+    """A fetched event carrying a drive-planner description."""
+    return {"id": event_id, "summary": summary, "description": description}
+
+
+def _event_from_args(args: dict, *, event_id: str = "block_1") -> dict:
+    return _event(description=args["description"], event_id=event_id, summary=args["summary"])
 
 
 # --- marker contract with scan.py ----------------------------------------
 
 
 def test_built_marker_matches_scan_regex():
-    marker = build_marker("evt_42", "outbound")
-    match = _MARKER_RE.search(marker)
-    assert match is not None
-    assert match["id"] == "evt_42"
-    assert match["dir"] == "outbound"
-
-
-def test_create_args_description_carries_scan_marker():
-    args = _build_args()
-    match = _MARKER_RE.search(args["description"])
+    match = _MARKER_RE.search(build_marker("evt_42", "outbound"))
     assert match is not None and match["id"] == "evt_42" and match["dir"] == "outbound"
 
 
-# --- create-arg shape ----------------------------------------------------
+def test_parse_marker_round_trips():
+    assert parse_marker(build_marker("evt_9", "bridge")) == ("evt_9", "bridge")
+    assert parse_marker("no marker here") is None
+
+
+def test_description_carries_scan_marker():
+    match = _MARKER_RE.search(_build_args()["description"])
+    assert match is not None and match["id"] == "evt_42" and match["dir"] == "outbound"
+
+
+# --- create-arg shape (live v3 contract) ---------------------------------
 
 
 def test_block_is_free_by_default():
@@ -102,82 +102,60 @@ def test_busy_block_is_opaque():
     assert _build_args(busy=True)["transparency"] == "opaque"
 
 
-def test_private_props_carry_machine_state():
-    private = _build_args()["extendedProperties"]["private"]
-    assert private[block_props.KEY_MEETING] == "evt_42"
-    assert private[block_props.KEY_BASELINE] == "1500"
-    assert private[block_props.KEY_ARRIVE_BY] == ARRIVE.isoformat()
-    assert private[block_props.KEY_DIRECTION] == "outbound"
-
-
-def test_private_props_carry_schema_version():
-    private = _build_args()["extendedProperties"]["private"]
-    assert private[block_props.KEY_SCHEMA_VERSION] == str(block_props.BLOCK_SCHEMA_VERSION)
-
-
-def test_parse_block_rejects_newer_schema_version():
-    # A record from a future tile parses to None — no-usable-prior-state, the
-    # poll skips it rather than mis-parsing a shape it doesn't understand.
+def test_create_args_use_flat_start_and_duration():
     args = _build_args()
-    args["extendedProperties"]["private"][block_props.KEY_SCHEMA_VERSION] = "2"
-    assert parse_block(_event_from_args(args)) is None
+    # flat start_datetime, no nested start/end
+    assert args["start_datetime"] == LEG_START.isoformat()
+    assert "start" not in args and "end" not in args
+    # 12:30 -> 13:00 is 30 minutes
+    assert args["event_duration_hour"] == 0
+    assert args["event_duration_minutes"] == 30
+    # destination on the location field, no extendedProperties
+    assert args["location"] == "100 Broadway, Nashville, TN"
+    assert "extendedProperties" not in args
 
 
-def test_parse_block_accepts_missing_schema_version():
-    # Back-compat: a record without the version key is treated as v1.
-    args = _build_args()
-    del args["extendedProperties"]["private"][block_props.KEY_SCHEMA_VERSION]
-    state = parse_block(_event_from_args(args))
-    assert state is not None and state.meeting_id == "evt_42"
-
-
-def test_leg_end_defaults_to_arrive_by():
-    assert _build_args()["end"]["dateTime"] == ARRIVE.isoformat()
-
-
-# --- input guards --------------------------------------------------------
-
-
-def test_naive_datetime_rejected():
-    import pytest
-
-    with pytest.raises(ValueError, match="timezone-aware"):
-        _build_args(arrive_by=datetime(2026, 7, 2, 13, 0))
-
-
-def test_unknown_direction_rejected():
-    import pytest
-
-    with pytest.raises(ValueError, match="outbound/return/bridge"):
-        _build_args(direction="sideways")
-
-
-def test_empty_endpoint_rejected():
-    import pytest
-
-    with pytest.raises(ValueError, match="non-empty"):
-        _build_args(origin="")
-
-
-# --- parse round trip ----------------------------------------------------
-
-
-def test_round_trip_parse():
-    event = _event_from_args(_build_args())
-    state = parse_block(event)
+def test_description_state_round_trips_via_parse_block():
+    state = parse_block(_event_from_args(_build_args()))
     assert isinstance(state, BlockState)
-    assert state.event_id == "block_1"
     assert state.meeting_id == "evt_42"
     assert state.direction == "outbound"
     assert state.baseline_seconds == 1500
     assert state.arrive_by == ARRIVE
     assert state.origin.startswith("12 Example St")
     assert state.destination == "100 Broadway, Nashville, TN"
+    assert state.summary == "Drive to Customer sync"
+    assert state.alerted == frozenset()
+
+
+def test_schema_version_in_state():
+    args = _build_args()
+    assert f'"v":{BLOCK_SCHEMA_VERSION}' in args["description"]
+
+
+# --- input guards --------------------------------------------------------
+
+
+def test_naive_datetime_rejected():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _build_args(arrive_by=datetime(2026, 7, 2, 13, 0))
+
+
+def test_unknown_direction_rejected():
+    with pytest.raises(ValueError, match="outbound/return/bridge"):
+        _build_args(direction="sideways")
+
+
+def test_empty_endpoint_rejected():
+    with pytest.raises(ValueError, match="non-empty"):
+        _build_args(origin="")
+
+
+# --- parse rejections ----------------------------------------------------
 
 
 def test_parse_non_block_event_returns_none():
-    # A plain meeting with no drive-planner private props is not a block.
-    assert parse_block({"id": "evt_1", "summary": "Customer sync"}) is None
+    assert parse_block({"id": "evt_1", "summary": "Customer sync", "description": "plain"}) is None
 
 
 def test_parse_non_dict_returns_none():
@@ -185,16 +163,52 @@ def test_parse_non_dict_returns_none():
     assert parse_block(None) is None
 
 
-def test_parse_malformed_baseline_returns_none():
-    args = _build_args()
-    args["extendedProperties"]["private"][block_props.KEY_BASELINE] = "not-a-number"
-    assert parse_block(_event_from_args(args)) is None
+def test_parse_malformed_state_json_returns_none():
+    bad = _event(description="Drive\n[drive-planner:meeting=e:dir=outbound]\n<!--dp:{not json}-->")
+    assert parse_block(bad) is None
 
 
-def test_parse_missing_arrive_by_returns_none():
-    args = _build_args()
-    del args["extendedProperties"]["private"][block_props.KEY_ARRIVE_BY]
-    assert parse_block(_event_from_args(args)) is None
+def test_parse_missing_marker_returns_none():
+    # state present but no marker -> not a recognizable block
+    blob = build_description(
+        summary="x",
+        meeting_id="e",
+        direction="outbound",
+        baseline_seconds=10,
+        arrive_by=ARRIVE,
+        origin="A",
+        destination="B",
+    )
+    no_marker = blob.replace("[drive-planner:meeting=e:dir=outbound]\n", "")
+    assert parse_block(_event(description=no_marker)) is None
+
+
+def test_parse_rejects_newer_schema_version():
+    blob = build_description(
+        summary="x",
+        meeting_id="evt_42",
+        direction="outbound",
+        baseline_seconds=10,
+        arrive_by=ARRIVE,
+        origin="A",
+        destination="B",
+    ).replace(f'"v":{BLOCK_SCHEMA_VERSION}', f'"v":{BLOCK_SCHEMA_VERSION + 1}')
+    assert parse_block(_event(description=blob)) is None
+
+
+def test_parse_rejects_non_int_version():
+    # A present-but-non-int version (corrupt or future-shaped record) must read
+    # as no-usable-prior-state, not slip through as a missing version.
+    blob = build_description(
+        summary="x",
+        meeting_id="evt_42",
+        direction="outbound",
+        baseline_seconds=10,
+        arrive_by=ARRIVE,
+        origin="A",
+        destination="B",
+    ).replace(f'"v":{BLOCK_SCHEMA_VERSION}', '"v":"x"')
+    assert parse_block(_event(description=blob)) is None
 
 
 # --- leave-by + recheck window -------------------------------------------
@@ -203,7 +217,7 @@ def test_parse_missing_arrive_by_returns_none():
 def test_baseline_leave_by_subtracts_drive_and_buffer():
     state = parse_block(_event_from_args(_build_args()))
     assert state is not None
-    # 1500s drive + 300s default buffer = 1800s = 30 min before arrive.
+    # 1500s drive + 300s default buffer = 30 min before arrive.
     assert state.baseline_leave_by == ARRIVE - timedelta(minutes=30)
 
 
@@ -211,13 +225,9 @@ def test_due_for_recheck_inside_and_outside_window():
     state = parse_block(_event_from_args(_build_args()))
     assert state is not None
     leave_by = state.baseline_leave_by
-    # 40 min before leave-by: inside the 45-min horizon.
     assert state.due_for_recheck(leave_by - timedelta(minutes=40)) is True
-    # 50 min before leave-by: too early.
     assert state.due_for_recheck(leave_by - timedelta(minutes=50)) is False
-    # 10 min after leave-by: inside the 15-min departed grace.
     assert state.due_for_recheck(leave_by + timedelta(minutes=10)) is True
-    # 20 min after leave-by: past grace, stale.
     assert state.due_for_recheck(leave_by + timedelta(minutes=20)) is False
 
 
@@ -225,59 +235,49 @@ def test_due_for_recheck_inside_and_outside_window():
 
 
 def test_alerted_round_trip():
-    raw = serialize_alerted({ALERT_GROWTH, ALERT_LEAVE_NOW})
-    assert parse_alerted(raw) == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
-
-
-def test_alerted_drops_unknown_tokens():
-    assert parse_alerted("growth,bogus,leave_now") == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
-
-
-def test_alerted_non_string_is_empty():
-    assert parse_alerted(None) == frozenset()
+    assert parse_alerted(serialize_alerted({ALERT_GROWTH, ALERT_LEAVE_NOW})) == frozenset(
+        {ALERT_GROWTH, ALERT_LEAVE_NOW}
+    )
 
 
 def test_alerted_strips_whitespace_around_tokens():
     assert parse_alerted(" growth , leave_now ") == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
 
 
-def test_parsed_state_exposes_alerted():
-    event = _event_from_args(_build_args(), alerted="growth")
-    state = parse_block(event)
+def test_alerted_non_string_is_empty():
+    assert parse_alerted(None) == frozenset()
+
+
+def test_description_with_alerts_round_trips():
+    state = parse_block(_event_from_args(_build_args()))
     assert state is not None
-    assert state.already_alerted(ALERT_GROWTH) is True
-    assert state.already_alerted(ALERT_LEAVE_NOW) is False
+    updated = state.description_with_alerts(frozenset({ALERT_GROWTH}))
+    reparsed = parse_block(_event(description=updated))
+    assert reparsed is not None
+    assert reparsed.already_alerted(ALERT_GROWTH) is True
+    assert reparsed.already_alerted(ALERT_LEAVE_NOW) is False
+    # everything else preserved
+    assert reparsed.baseline_seconds == 1500 and reparsed.origin == state.origin
 
 
-# --- alert-suppression decision (next_alerts) ----------------------------
+# --- next_alerts ---------------------------------------------------------
 
 
 def test_next_alerts_fires_growth_once():
     fire, new = next_alerts(frozenset(), grew=True, leave_now=False)
-    assert fire == (ALERT_GROWTH,)
-    assert new == frozenset({ALERT_GROWTH})
+    assert fire == (ALERT_GROWTH,) and new == frozenset({ALERT_GROWTH})
 
 
 def test_next_alerts_suppresses_repeat_growth():
     fire, new = next_alerts(frozenset({ALERT_GROWTH}), grew=True, leave_now=False)
-    assert fire == ()
-    assert new == frozenset({ALERT_GROWTH})
+    assert fire == () and new == frozenset({ALERT_GROWTH})
 
 
 def test_next_alerts_fires_leave_now_after_prior_growth():
     fire, new = next_alerts(frozenset({ALERT_GROWTH}), grew=True, leave_now=True)
-    assert fire == (ALERT_LEAVE_NOW,)
-    assert new == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
-
-
-def test_next_alerts_fires_both_from_clean_state():
-    fire, new = next_alerts(frozenset(), grew=True, leave_now=True)
-    assert set(fire) == {ALERT_GROWTH, ALERT_LEAVE_NOW}
-    assert new == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
+    assert fire == (ALERT_LEAVE_NOW,) and new == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
 
 
 def test_next_alerts_silent_when_nothing_new():
     fire, new = next_alerts(frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW}), grew=True, leave_now=True)
-    assert fire == ()
-    # unchanged record so the caller skips the suppression patch
-    assert new == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
+    assert fire == () and new == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})

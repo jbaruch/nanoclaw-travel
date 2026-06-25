@@ -43,7 +43,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-# Event-kind tags stamped into `extendedProperties.private`.
+# Event-kind tags. Carried in the event description's `<!--fa:{...}-->` comment
+# (the live v3 toolkit has no writable extendedProperties); the reconcile write
+# helpers encode them and `normalize_event` decodes them back to `private_props`.
 TAG_FLIGHT_ID = "faFlightId"
 TAG_KIND = "faKind"
 TAG_MANAGED = "faManaged"
@@ -297,11 +299,15 @@ def _plan_flight_event(
                 calendar_id=match["calendar_id"],
                 event_id=match["event_id"],
                 body={
+                    # Carry byAir's existing description so the adopt patch
+                    # appends our tags to it rather than replacing it — the
+                    # tags ride in the description (no writable extendedProps).
+                    "description": match.get("description", ""),
                     "private_props": {
                         TAG_FLIGHT_ID: str(flight_id),
                         TAG_KIND: KIND_FLIGHT,
                         TAG_MANAGED: MANAGED_ADOPTED,
-                    }
+                    },
                 },
                 signature=_event_signature(match),
                 reason=f"adopt byAir flight event {match['event_id']} for {flight['code']}",

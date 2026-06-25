@@ -33,4 +33,4 @@ Only after Step 1's `mcp__nanoclaw__send_message` has delivered the alert, persi
 echo '<data JSON>' | python3 /home/node/.claude/skills/tessl__drive-planner/apply.py suppress
 ```
 
-Each patch carries the block's full `extendedProperties.private` map with the alert record updated; the script PATCHes it back. It prints `{"patched": [...]}`. If the send in Step 1 failed, do NOT run this step — leaving the block unsuppressed re-pings next poll, which is the safe direction. Finish here.
+Each patch carries the block's full rebuilt `description` (the machine state lives in the description) with the alert record updated; the script PATCHes it back. It prints `{"patched": [...]}`. If the send in Step 1 failed, do NOT run this step — leaving the block unsuppressed re-pings next poll, which is the safe direction. Finish here.

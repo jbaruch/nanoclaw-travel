@@ -20,7 +20,7 @@ DRIVE = REPO_ROOT / "skills" / "drive-planner"
 sys.path.insert(0, str(DRIVE))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))  # maps_client for _route_seconds
 
-from block_props import parse_block  # noqa: E402
+from block_props import parse_block, parse_marker  # noqa: E402
 from route_error import RouteError  # noqa: E402
 from scan import scan  # noqa: E402
 
@@ -65,7 +65,7 @@ def _scan(events):
 
 
 def _dir(create_arg: dict) -> str:
-    return create_arg["extendedProperties"]["private"]["drive_planner_dir"]
+    return parse_marker(create_arg["description"])[1]
 
 
 def _leg(create_args: list[dict], direction: str) -> dict:
@@ -118,9 +118,9 @@ def test_outbound_block_starts_baseline_plus_buffer_before_meeting():
     [m] = payload["meetings"]
     outbound = _leg(m["create_args"], "outbound")
     # arrive_by = 14:00; baseline 1500s (25m) + 300s buffer (5m) = 30m before.
-    assert outbound["start"]["dateTime"] == datetime(2026, 7, 1, 13, 30, tzinfo=CT).isoformat()
-    assert outbound["end"]["dateTime"] == datetime(2026, 7, 1, 14, 0, tzinfo=CT).isoformat()
-    assert outbound["extendedProperties"]["private"]["drive_planner_baseline_seconds"] == "1500"
+    # Live v3 contract: flat start_datetime + duration (no nested start/end).
+    assert outbound["start_datetime"] == datetime(2026, 7, 1, 13, 30, tzinfo=CT).isoformat()
+    assert outbound["event_duration_hour"] == 0 and outbound["event_duration_minutes"] == 30
     # display-ready fields the SKILL.md consumes verbatim (no arithmetic there)
     assert m["leave_by"] == datetime(2026, 7, 1, 13, 30, tzinfo=CT).isoformat()
     assert m["drive_minutes"] == 25  # 1500s / 60
@@ -131,9 +131,9 @@ def test_return_block_starts_at_meeting_end():
     payload = precheck.plan_meetings(_scan(events), route=_fixed_router(1500), home_address=HOME)
     [m] = payload["meetings"]
     ret = _leg(m["create_args"], "return")
-    assert ret["start"]["dateTime"] == datetime(2026, 7, 1, 15, 0, tzinfo=CT).isoformat()
-    # return leg ends baseline seconds after departure (15:00 + 25m)
-    assert ret["start"]["dateTime"] < ret["end"]["dateTime"]
+    assert ret["start_datetime"] == datetime(2026, 7, 1, 15, 0, tzinfo=CT).isoformat()
+    # return leg lasts baseline seconds (25m) after departure
+    assert ret["event_duration_minutes"] == 25
 
 
 # --- round trip: built blocks parse back for the recheck poll ------------
@@ -144,11 +144,11 @@ def test_built_outbound_block_round_trips_to_blockstate():
     payload = precheck.plan_meetings(_scan(events), route=_fixed_router(1500), home_address=HOME)
     [m] = payload["meetings"]
     outbound = _leg(m["create_args"], "outbound")
-    # Shape a fetched event from the create-args and parse it back.
+    # Shape a fetched event from the create-args (description carries state).
     fetched = {
         "id": "block_evt",
+        "summary": outbound["summary"],
         "description": outbound["description"],
-        "extendedProperties": outbound["extendedProperties"],
     }
     state = parse_block(fetched)
     assert state is not None

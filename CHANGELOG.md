@@ -1,5 +1,23 @@
 # Changelog
 
+### Fixed — calendar writes rebuilt for the live Composio v3 contract (`jbaruch/nanoclaw-travel#59`)
+
+Live NAS verification of the *write* path showed both skills' calendar I/O was built against an assumed Composio contract that does not exist on the live v3 toolkit — every create silently failed (`executed: 0`), so no blocks or boarding events were ever written. Probed every `GOOGLECALENDAR_*` action against the NAS and rebuilt to the real shapes:
+
+- **No writable `extendedProperties`.** Neither `CREATE_EVENT` nor `PATCH_EVENT` exposes it, so the machine state both skills stamped there could never be written. drive-planner's block state (baseline seconds, arrive-by, routed endpoints, alert record) and flight-assist's managed-event tags (`faFlightId`/`faKind`/`faManaged`) both move into the event **`description`** — drive-planner as a `<!--dp:{...}-->` comment beside its `scan` marker, flight-assist as a `<!--fa:{...}-->` comment via the new `calendar_tags` codec. This supersedes the `extendedProperties.private` design described in 0.1.44.
+- **Flat create/patch.** `CREATE_EVENT` takes flat `start_datetime` + `event_duration_hour`/`event_duration_minutes` (the old nested `start.dateTime`/`end.dateTime` was rejected); `PATCH_EVENT` takes flat `start_time`/`end_time`. flight-assist's adopt path now appends its tags to byAir's existing description (preserving it, stripped back off on the next read so tags never accumulate) instead of clobbering a separate field.
+- **Response shapes.** `FIND_EVENT` double-nests events at `data.event_data.event_data`; `LIST_CALENDARS` returns the list under `calendars`. The old `items` reads found nothing. Both skills' `_items` walk the live shapes; drive-planner's recheck-poll suppression PATCHes the rebuilt `description`.
+
+The internal `private_props` abstraction is unchanged end-to-end — `normalize_event` decodes the description comment back into it on read, the reconcile write helpers encode it on create/patch — so the flight-assist planner is untouched. Verified live with the real modules: create → fetch → parse round-trips for a drive block, and create → normalize → adopt-patch (description preserved) for a boarding event, each cleaned up after. Added direct create/patch arg-shape regression tests (the gap that let the nested-format bug ship) plus a `calendar_tags` codec test.
+
+### Fixed — drive-planner never plans a drive to a declined or cancelled meeting (`jbaruch/nanoclaw-travel#59`)
+
+`scan` filtered virtual / all-day / past meetings but ignored the operator's RSVP, so a meeting you declined still got a drive block — and `fetch_events` dropped `attendees` entirely, so the data to detect it wasn't even carried through. Live probing confirmed the shape: the operator's own attendee row carries `self: true` + `responseStatus`. `scan` now filters an event whose self-attendee is **explicitly** `declined` (and event `status: "cancelled"`); `accepted` / `tentative` / `needsAction` all still plan, and a declined meeting is excluded as a routing neighbour so it can't strip a real meeting's home legs. `fetch_events` carries `attendees` + `status` through its projection.
+
+### Fixed — flight-assist state-validation crash + Optional-flow type bugs (`jbaruch/nanoclaw-travel#59`)
+
+Resolving pyright across the `sys.path`-insert bundle layout surfaced real source bugs. The flight-state validators formatted type-mismatch errors with `expected_type.__name__`, but the schema dicts permit tuple types like `(dict, type(None))` — a tuple-typed field on a mismatch would raise `AttributeError: 'tuple' object has no attribute '__name__'`, masking the intended `StateError`; a `_type_name` helper now handles both shapes. `byair_client` guards a `raise __cause__` where `__cause__` could be `None`. `phase_markers`' `check_*` functions had `scheduled_*_time: str` params that already tolerated `None` internally (`_parse_iso8601` accepts `str | None`); the annotations were corrected and the fired-event appends in `precheck` guarded so a `None` event can't reach `events.append`.
+
 ## 0.1.45 — 2026-06-24
 
 ### Fixed — drive-planner calendar fetch action slug (`jbaruch/nanoclaw-travel#59`)

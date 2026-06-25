@@ -27,7 +27,7 @@ Modes (subcommand on argv[1]):
                     "calendar_id": "primary"}
              stdout {"removed": [...], "skip_recorded": true}
     suppress stdin {"patches": [{"event_id": "...", "calendar_id": "...",
-                    "private": {<full extendedProperties.private map>}}]}
+                    "description": "<full rebuilt block description>"}]}
              stdout {"patched": ["<event_id>", ...]}
              Invoked by the recheck SKILL.md AFTER the alert is sent, so a
              failed send never permanently suppresses an alert.
@@ -72,7 +72,7 @@ def _flight_assist_dir() -> Path:
 # error-handling` rather than a bare catch-all.
 sys.path.insert(0, str(_flight_assist_dir()))
 
-from block_props import parse_block  # noqa: E402
+from block_props import parse_block, parse_marker  # noqa: E402
 from composio_client import ComposioClient, ComposioError  # noqa: E402
 from skip_state import add_skip  # noqa: E402
 
@@ -96,27 +96,32 @@ def _load_composio():
 
 
 def _items(data: object) -> list:
-    """Pull the `items` list out of a Composio find-events response, tolerantly.
+    """Pull the event list out of a Composio FIND_EVENT response, tolerantly.
 
-    Mirrors flight-assist's reconcile `_items`: the Google-native
-    `{"items": [...]}` payload, sometimes nested under `response_data`.
+    The live v3 `GOOGLECALENDAR_FIND_EVENT` double-nests the events at
+    `data.event_data.event_data` (verified against the NAS); a flat
+    `event_data`/`items` list and a `response_data` wrap are tolerated for other
+    toolkit shapes. Walks one level into a dict container; first list wins.
     """
     if not isinstance(data, dict):
         return []
-    items = data.get("items")
-    if items is None:
-        nested = data.get("response_data")
-        items = nested.get("items") if isinstance(nested, dict) else None
-    return items if isinstance(items, list) else []
+    for container in (data, data.get("event_data"), data.get("response_data")):
+        if not isinstance(container, dict):
+            continue
+        for key in ("event_data", "items"):
+            value = container.get(key)
+            if isinstance(value, list):
+                return value
+    return []
 
 
 def existing_directions(fetched_events: list, meeting_id: str) -> set:
     """The set of leg directions already blocked for `meeting_id` (lombot #50).
 
     Parses each fetched event with `parse_block` (recognition is by the block's
-    `extendedProperties.private`, not the description marker) and collects the
-    directions of blocks that serve `meeting_id`. "Handled" = ANY block, so a
-    create for a (meeting, direction) already in this set is skipped.
+    description state) and collects the directions of blocks that serve
+    `meeting_id`. "Handled" = ANY block, so a create for a (meeting, direction)
+    already in this set is skipped.
     """
     directions = set()
     for event in fetched_events:
@@ -127,12 +132,11 @@ def existing_directions(fetched_events: list, meeting_id: str) -> set:
 
 
 def _arg_direction(create_arg: object) -> str | None:
+    """The leg direction of a create-arg, read from its description marker."""
     if not isinstance(create_arg, dict):
         return None
-    ext = create_arg.get("extendedProperties")
-    private = ext.get("private") if isinstance(ext, dict) else None
-    value = private.get("drive_planner_dir") if isinstance(private, dict) else None
-    return value if isinstance(value, str) else None
+    marker = parse_marker(create_arg.get("description"))
+    return marker[1] if marker else None
 
 
 def _calendar_id_of(create_args: list) -> str:
@@ -168,19 +172,26 @@ def plan_creates(meeting: dict, fetched_events: list) -> tuple[list, list]:
 
 
 def _find_window(create_args: list) -> tuple[datetime | None, datetime | None]:
-    """The padded [min start, max end] across a meeting's create_args."""
+    """The padded [min start, max end] across a meeting's create_args.
+
+    The v3 create contract is flat `start_datetime` + `event_duration_*`, so
+    each block's end is start + its duration.
+    """
     starts, ends = [], []
     for arg in create_args:
         if not isinstance(arg, dict):
             continue
-        start_block = arg.get("start")
-        end_block = arg.get("end")
-        start = _parse_iso(start_block.get("dateTime")) if isinstance(start_block, dict) else None
-        end = _parse_iso(end_block.get("dateTime")) if isinstance(end_block, dict) else None
-        if start:
-            starts.append(start)
-        if end:
-            ends.append(end)
+        start = _parse_iso(arg.get("start_datetime"))
+        if not start:
+            continue
+        hours = arg.get("event_duration_hour") or 0
+        minutes = arg.get("event_duration_minutes") or 0
+        if not isinstance(hours, int) or isinstance(hours, bool):
+            hours = 0
+        if not isinstance(minutes, int) or isinstance(minutes, bool):
+            minutes = 0
+        starts.append(start)
+        ends.append(start + timedelta(hours=hours, minutes=minutes))
     if not starts or not ends:
         return None, None
     return min(starts) - _FIND_PAD, max(ends) + _FIND_PAD
@@ -317,11 +328,10 @@ def _suppress_mode(request: dict, client) -> dict:
 
     The recheck SKILL.md calls this only once `mcp__nanoclaw__send_message` has
     delivered the leave-earlier / leave-now alert, so a failed send never
-    permanently suppresses an alert. Each patch carries the block's FULL
-    `extendedProperties.private` map (the poll built it by carrying the
-    existing props forward with only `drive_planner_alerted` updated) — Google
-    Calendar's PATCH replaces the whole private map, so a partial map would wipe
-    the block's machine state.
+    permanently suppresses an alert. Each patch carries the block's full new
+    `description` (the poll rebuilt it with the updated alert record); since the
+    machine state lives in the description and `GOOGLECALENDAR_PATCH_EVENT`
+    supports a partial `description` update, the patch is just that one field.
     """
     patched = []
     patches = request.get("patches")
@@ -329,8 +339,8 @@ def _suppress_mode(request: dict, client) -> dict:
         if not isinstance(patch, dict):
             continue
         event_id = patch.get("event_id")
-        private = patch.get("private")
-        if not isinstance(event_id, str) or not event_id or not isinstance(private, dict):
+        description = patch.get("description")
+        if not isinstance(event_id, str) or not event_id or not isinstance(description, str):
             continue
         calendar_id = patch.get("calendar_id")
         if not isinstance(calendar_id, str) or not calendar_id:
@@ -340,7 +350,7 @@ def _suppress_mode(request: dict, client) -> dict:
                 {
                     "calendar_id": calendar_id,
                     "event_id": event_id,
-                    "extendedProperties": {"private": private},
+                    "description": description,
                 }
             )
         except ComposioError as exc:

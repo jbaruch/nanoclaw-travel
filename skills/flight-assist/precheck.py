@@ -440,7 +440,7 @@ def _process_flight(
         phase_markers=phase_markers,
         now_utc=now_utc,
     )
-    if fired:
+    if fired and event is not None:
         phase_markers["day_before_fired"] = True
         events.append(event)
 
@@ -458,7 +458,7 @@ def _process_flight(
         phase_markers=phase_markers,
         now_utc=now_utc,
     )
-    if fired:
+    if fired and event is not None:
         phase_markers["time_to_leave_fired"] = True
         events.append(event)
 
@@ -467,7 +467,7 @@ def _process_flight(
         phase_markers=phase_markers,
         now_utc=now_utc,
     )
-    if fired:
+    if fired and event is not None:
         phase_markers["arrival_logistics_fired"] = True
         events.append(event)
 

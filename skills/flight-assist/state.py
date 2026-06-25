@@ -79,6 +79,19 @@ class StateError(Exception):
     """
 
 
+def _type_name(expected: type | tuple[type, ...]) -> str:
+    """Readable name for an expected type — a single type or a tuple of them.
+
+    `int` → "int"; `(str, type(None))` → "str or NoneType". The schema dicts
+    permit tuple types (type-or-None fields), so formatting an error message
+    with a bare `expected.__name__` would itself raise `AttributeError` on the
+    tuple — masking the real validation error.
+    """
+    if isinstance(expected, tuple):
+        return " or ".join(member.__name__ for member in expected)
+    return expected.__name__
+
+
 def state_dir() -> Path:
     """Return the active state directory, resolving via env var.
 
@@ -366,7 +379,7 @@ def write_config(config: dict) -> None:
         if not isinstance(value, expected_type):
             raise ValueError(
                 f"write_config: field '{key}' is {type(value).__name__} "
-                f"{value!r}, expected {expected_type.__name__}"
+                f"{value!r}, expected {_type_name(expected_type)}"
             )
         # Key-specific range checks. `min_transfer_minutes` must be >= 0
         # to match `_resolve_min_transfer_minutes` (precheck) and
@@ -570,7 +583,7 @@ def _validate_flight_state_payload(payload: dict, *, source: Path) -> None:
         if not isinstance(value, expected_type):
             raise StateError(
                 f"flight state file {source} field '{field}' is "
-                f"{type(value).__name__} {value!r}, expected {expected_type.__name__}"
+                f"{type(value).__name__} {value!r}, expected {_type_name(expected_type)}"
             )
 
     # Phase markers structurally validated on read too, not just on write,
@@ -673,7 +686,7 @@ def write_flight_state(state: dict) -> None:
         if not isinstance(value, expected_type):
             raise ValueError(
                 f"write_flight_state: field '{field}' is "
-                f"{type(value).__name__} {value!r}, expected {expected_type.__name__}"
+                f"{type(value).__name__} {value!r}, expected {_type_name(expected_type)}"
             )
     _validate_phase_markers(state["phase_markers"])
 

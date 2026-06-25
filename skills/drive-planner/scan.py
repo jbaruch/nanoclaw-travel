@@ -31,10 +31,11 @@ Buckets (Epic #59 §3, §5):
                     (lombot #49 — never re-ask a live skip).
     past            start ≤ now (small tolerance) — never plan into the
                     past (lombot #28).
-    filtered        Not a routable ground meeting: all-day, virtual
-                    location, the planner's own block, or an unparseable /
-                    missing time. Returned (not dropped) so the sweep can
-                    audit and clean up — the meta-lesson is "no silent miss".
+    filtered        Not a routable ground meeting: the operator declined it
+                    (or it's cancelled), all-day, virtual location, the
+                    planner's own block, or an unparseable / missing time.
+                    Returned (not dropped) so the sweep can audit and clean
+                    up — the meta-lesson is "no silent miss".
 
 Lessons baked in (Epic #59 §5):
     #50  has_block = ANY marker; idempotent — caller checks before insert.
@@ -197,6 +198,8 @@ class _Event:
     end: datetime | None
     all_day: bool
     marker: tuple[str, str] | None  # (served_meeting_id, direction) if a block
+    declined: bool  # the operator's own RSVP is "declined"
+    cancelled: bool  # event-level status == "cancelled"
 
 
 def _normalize_location(location: object) -> str | None:
@@ -259,6 +262,26 @@ def _parse_iso(raw: object) -> datetime | None:
     return parsed
 
 
+def _self_declined(attendees: object) -> bool:
+    """True when the operator's own attendee entry RSVP'd `declined`.
+
+    Google Calendar marks the operator's row with `self: true` and carries
+    their response in `responseStatus`. A meeting you declined must never get a
+    drive block. Tentative / needsAction / accepted all still plan (you might
+    go). Tolerant of any malformed attendees shape — never raises.
+    """
+    if not isinstance(attendees, list):
+        return False
+    for attendee in attendees:
+        if (
+            isinstance(attendee, dict)
+            and attendee.get("self") is True
+            and attendee.get("responseStatus") == "declined"
+        ):
+            return True
+    return False
+
+
 def _parse_event(raw: object) -> _Event:
     """Adapt a raw Google Calendar event into an `_Event`, total over any JSON.
 
@@ -277,6 +300,8 @@ def _parse_event(raw: object) -> _Event:
             end=None,
             all_day=False,
             marker=None,
+            declined=False,
+            cancelled=False,
         )
 
     raw_id = str(raw.get("id") or "")
@@ -297,6 +322,8 @@ def _parse_event(raw: object) -> _Event:
         end=end,
         all_day=start_all_day or end_all_day,
         marker=marker,
+        declined=_self_declined(raw.get("attendees")),
+        cancelled=raw.get("status") == "cancelled",
     )
 
 
@@ -329,6 +356,8 @@ def _is_routable_candidate(event: _Event, now: datetime) -> bool:
     return (
         event.marker is None
         and not event.all_day
+        and not event.declined
+        and not event.cancelled
         and event.start is not None
         and event.end is not None
         and event.location is not None
@@ -468,11 +497,18 @@ def _classify(
     if event.marker is not None:
         return _make_class(event, "filtered", "planner block")
 
-    # 2. All-day events have no drive deadline.
+    # 2. Declined / cancelled — never plan a drive to a meeting you said no to
+    #    (or one the organizer cancelled). This wins over every routable bucket.
+    if event.declined:
+        return _make_class(event, "filtered", "operator declined the meeting")
+    if event.cancelled:
+        return _make_class(event, "filtered", "event cancelled")
+
+    # 3. All-day events have no drive deadline.
     if event.all_day:
         return _make_class(event, "filtered", "all-day event")
 
-    # 3. Unparseable / missing time — can't anchor a leg; surface, don't drop.
+    # 4. Unparseable / missing time — can't anchor a leg; surface, don't drop.
     if event.start is None or event.end is None:
         return _make_class(event, "filtered", "missing or unparseable time")
 

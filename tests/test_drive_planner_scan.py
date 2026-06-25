@@ -53,12 +53,26 @@ def _meeting(
     location: str | None = "100 Broadway, Nashville, TN",
     summary: str = "Customer sync",
     description: str = "",
+    attendees: list | None = None,
+    status: str | None = None,
 ) -> dict:
-    event = {"id": event_id, "summary": summary, "description": description}
+    event: dict = {"id": event_id, "summary": summary, "description": description}
     event.update(_timed(start, end))
     if location is not None:
         event["location"] = location
+    if attendees is not None:
+        event["attendees"] = attendees
+    if status is not None:
+        event["status"] = status
     return event
+
+
+def _self_rsvp(response_status: str) -> list:
+    """An attendees list where the operator's own row carries `response_status`."""
+    return [
+        {"email": "someone@else.com", "responseStatus": "accepted"},
+        {"email": "me@me.com", "self": True, "responseStatus": response_status},
+    ]
 
 
 def _block(served_id: str, direction: str, *, event_id: str | None = None) -> dict:
@@ -225,6 +239,64 @@ def test_all_day_event_is_filtered():
     result = scan([event], now=NOW, home_address=HOME)[0]
     assert result.bucket == "filtered"
     assert result.reason == "all-day event"
+
+
+def test_declined_meeting_is_filtered():
+    # The operator declined it — never plan a drive there.
+    event = _meeting(
+        "m1",
+        start=NOW + timedelta(hours=2),
+        end=NOW + timedelta(hours=3),
+        attendees=_self_rsvp("declined"),
+    )
+    result = scan([event], now=NOW, home_address=HOME)[0]
+    assert result.bucket == "filtered"
+    assert result.reason == "operator declined the meeting"
+
+
+@pytest.mark.parametrize("rsvp", ["accepted", "tentative", "needsAction"])
+def test_non_declined_rsvp_still_plans(rsvp):
+    # Accepted / tentative / no-response all still get a drive block.
+    event = _meeting(
+        "m1",
+        start=NOW + timedelta(hours=2),
+        end=NOW + timedelta(hours=3),
+        attendees=_self_rsvp(rsvp),
+    )
+    result = scan([event], now=NOW, home_address=HOME)[0]
+    assert result.bucket == "needs_decision"
+
+
+def test_cancelled_event_is_filtered():
+    event = _meeting(
+        "m1", start=NOW + timedelta(hours=2), end=NOW + timedelta(hours=3), status="cancelled"
+    )
+    result = scan([event], now=NOW, home_address=HOME)[0]
+    assert result.bucket == "filtered"
+    assert result.reason == "event cancelled"
+
+
+def test_declined_neighbour_does_not_make_meeting_back_to_back():
+    # A declined same-venue meeting must not strip a real meeting's home legs.
+    venue = "100 Broadway, Nashville, TN"
+    declined = _meeting(
+        "d",
+        start=NOW + timedelta(hours=2),
+        end=NOW + timedelta(hours=2, minutes=30),
+        location=venue,
+        attendees=_self_rsvp("declined"),
+    )
+    real = _meeting(
+        "r",
+        start=NOW + timedelta(hours=3),
+        end=NOW + timedelta(hours=4),
+        location=venue,
+    )
+    results = _by_id(scan([declined, real], now=NOW, home_address=HOME))
+    assert results["d"].bucket == "filtered"
+    # `r` keeps its outbound-from-home + return legs (not back_to_back).
+    assert results["r"].bucket == "needs_decision"
+    assert sorted(leg.direction for leg in results["r"].legs) == ["outbound", "return"]
 
 
 # --- lombot #28: past guard ----------------------------------------------

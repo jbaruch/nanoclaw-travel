@@ -48,7 +48,8 @@ class FakeComposio:
 
     def find_events(self, arguments):
         # Ignore the window; tests pass exactly the events they want found.
-        return {"items": list(self.events)}
+        # Live v3 FIND_EVENT double-nests: data.event_data.event_data.
+        return {"event_data": {"event_data": list(self.events)}}
 
     def create_event(self, arguments):
         self.created.append(arguments)
@@ -80,11 +81,7 @@ def _create_args(meeting_id="evt_42", direction="outbound"):
 
 
 def _fetched_block(args, event_id="block_1"):
-    return {
-        "id": event_id,
-        "description": args["description"],
-        "extendedProperties": args["extendedProperties"],
-    }
+    return {"id": event_id, "summary": args["summary"], "description": args["description"]}
 
 
 # --- create: idempotency (lombot #50) ------------------------------------
@@ -162,7 +159,7 @@ def test_remove_with_past_meeting_end_keeps_find_window_valid():
     class CapturingComposio(FakeComposio):
         def find_events(self, arguments):
             self.find_args = arguments
-            return {"items": list(self.events)}
+            return {"event_data": {"event_data": list(self.events)}}
 
     args = _create_args()
     client = CapturingComposio(existing=[_fetched_block(args, "block_x")])
@@ -264,23 +261,19 @@ def test_create_skips_malformed_meeting_without_crashing():
     assert all(f["error"] == "missing meeting_id" for f in result["failed"])
 
 
-# --- suppress: patch the full private map AFTER the send ------------------
+# --- suppress: patch the rebuilt description AFTER the send ---------------
 
 
-def test_suppress_patches_full_private_map():
+def test_suppress_patches_description():
     client = FakeComposio()
-    private = {
-        "drive_planner_meeting": "evt_42",
-        "drive_planner_baseline_seconds": "1500",
-        "drive_planner_alerted": "growth",
-    }
-    request = {"patches": [{"event_id": "block_x", "calendar_id": "primary", "private": private}]}
+    desc = 'Drive: X\n[drive-planner:meeting=evt_42:dir=outbound]\n<!--dp:{"v":1,"al":"growth"}-->'
+    request = {"patches": [{"event_id": "block_x", "calendar_id": "primary", "description": desc}]}
     result = apply._suppress_mode(request, client)
     assert result["patched"] == ["block_x"]
-    # The PATCH carries the FULL private map (not a single key) so the block's
-    # machine state survives — Google's PATCH replaces the whole private map.
-    assert client.patched[0]["extendedProperties"]["private"] == private
+    # The PATCH carries the rebuilt description (state lives there).
+    assert client.patched[0]["description"] == desc
     assert client.patched[0]["event_id"] == "block_x"
+    assert "extendedProperties" not in client.patched[0]
 
 
 def test_suppress_treats_patch_404_as_idempotent_skip():
@@ -296,8 +289,8 @@ def test_suppress_treats_patch_404_as_idempotent_skip():
     client = Patch404()
     request = {
         "patches": [
-            {"event_id": "gone", "private": {"drive_planner_alerted": "growth"}},
-            {"event_id": "live", "private": {"drive_planner_alerted": "growth"}},
+            {"event_id": "gone", "description": "d1"},
+            {"event_id": "live", "description": "d2"},
         ]
     }
     result = apply._suppress_mode(request, client)
@@ -310,14 +303,16 @@ def test_suppress_propagates_non_404_patch_error():
             raise ComposioError("server error", status_code=500)
 
     client = Boom()
-    request = {"patches": [{"event_id": "x", "private": {"a": "b"}}]}
+    request = {"patches": [{"event_id": "x", "description": "d"}]}
     with pytest.raises(ComposioError):
         apply._suppress_mode(request, client)
 
 
 def test_suppress_skips_malformed_patch():
     client = FakeComposio()
-    request = {"patches": [{"event_id": "", "private": {}}, {"event_id": "ok", "private": "nope"}]}
+    request = {
+        "patches": [{"event_id": "", "description": "d"}, {"event_id": "ok", "description": 5}]
+    }
     result = apply._suppress_mode(request, client)
     assert result["patched"] == []
     assert client.patched == []

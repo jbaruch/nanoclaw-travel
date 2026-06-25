@@ -63,6 +63,7 @@ from calendar_plan import (
     MANAGED_CREATED,
     plan_reconciliation,
 )
+from calendar_tags import encode_tags
 from composio_client import ComposioError
 from disposition import resolve_disposition
 from state import (
@@ -128,39 +129,53 @@ def _find_events_args(*, calendar_id: str, time_min: str, time_max: str) -> dict
     }
 
 
+def _instant(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _duration_minutes(start: str, end: str) -> int:
+    """Whole-minute duration between two RFC 3339 instants (at least 1)."""
+    return max(round((_instant(end) - _instant(start)).total_seconds() / 60), 1)
+
+
 def _create_event_args(op: dict) -> dict:
     """Arguments for GOOGLECALENDAR_CREATE_EVENT from a planner `create` op.
 
-    The planner's `body` is `{summary, start, end, private_props}`; map it to
-    a Google-native event resource under the calendar. Verify field names
-    against the live toolkit.
+    The planner's `body` is `{summary, start, end, private_props}`. The live v3
+    contract is flat `start_datetime` + `event_duration_*` (no nested
+    start/end), and there is NO writable `extendedProperties` — so the managed
+    tags ride in the `description` via `encode_tags`.
     """
     body = op["body"]
+    minutes = _duration_minutes(body["start"], body["end"])
     return {
         "calendar_id": op["calendar_id"],
         "summary": body["summary"],
-        "start": {"dateTime": body["start"]},
-        "end": {"dateTime": body["end"]},
-        "extendedProperties": {"private": body["private_props"]},
+        "description": encode_tags(body.get("description", ""), body["private_props"]),
+        "start_datetime": body["start"],
+        "event_duration_hour": minutes // 60,
+        "event_duration_minutes": minutes % 60,
     }
 
 
 def _patch_event_args(op: dict) -> dict:
     """Arguments for GOOGLECALENDAR_PATCH_EVENT from an `update` / `adopt` op.
 
-    `update` carries `{start, end}` (a delta-shift to byAir truth); `adopt`
-    carries `{private_props}` (the tag-only patch that claims a byAir event).
-    Only the keys present in the op body are sent, so a patch never clobbers
-    a field it did not intend to touch.
+    `update` carries `{start, end}` (a delta-shift to byAir truth) → flat
+    `start_time` / `end_time`. `adopt` carries `{private_props, description}`
+    (claims a byAir event) → the tags are appended to the event's existing
+    description via `encode_tags` (PATCH supports a partial `description`
+    update; there is no writable extendedProperties). Only the keys present in
+    the op body are sent, so a patch never clobbers a field it did not touch.
     """
     body = op["body"]
     args: dict = {"calendar_id": op["calendar_id"], "event_id": op["event_id"]}
     if "start" in body:
-        args["start"] = {"dateTime": body["start"]}
+        args["start_time"] = body["start"]
     if "end" in body:
-        args["end"] = {"dateTime": body["end"]}
+        args["end_time"] = body["end"]
     if "private_props" in body:
-        args["extendedProperties"] = {"private": body["private_props"]}
+        args["description"] = encode_tags(body.get("description", ""), body["private_props"])
     return args
 
 
@@ -169,23 +184,30 @@ def _delete_event_args(op: dict) -> dict:
     return {"calendar_id": op["calendar_id"], "event_id": op["event_id"]}
 
 
-def _items(data: dict) -> list[dict]:
-    """Pull the `items` list out of a Composio GoogleCalendar list/find response.
+def _items(data: object) -> list[dict]:
+    """Pull the event/calendar list out of a Composio GoogleCalendar response.
 
-    Composio returns the Google-native `{"items": [...]}` payload as the
-    action's `data`; some toolkit versions nest it one level under
-    `response_data`. Tolerate both, default to empty.
+    The live v3 shapes (verified against the NAS) differ per action:
+      - `GOOGLECALENDAR_LIST_CALENDARS` → the list is under `calendars`;
+      - `GOOGLECALENDAR_FIND_EVENT` → double-nested at `event_data.event_data`.
+    A flat `items` and a `response_data` wrap are tolerated for other shapes.
+    Walks one level into a dict container; the first list found wins; `[]` when
+    none match.
     """
+    keys = ("calendars", "event_data", "items")
     if not isinstance(data, dict):
         return []
-    items = data.get("items")
-    if items is None:
-        nested = data.get("response_data")
-        items = nested.get("items") if isinstance(nested, dict) else None
-    return items if isinstance(items, list) else []
+    for container in (data, data.get("event_data"), data.get("response_data")):
+        if not isinstance(container, dict):
+            continue
+        for key in keys:
+            value = container.get(key)
+            if isinstance(value, list):
+                return value
+    return []
 
 
-def _created_event_id(data: dict) -> str | None:
+def _created_event_id(data: object) -> str | None:
     """Extract the new event's `id` from a CREATE_EVENT response."""
     if not isinstance(data, dict):
         return None
