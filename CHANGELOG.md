@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.47 — 2026-06-25
+
 ### Fixed — calendar blocks land at the right instant: explicit CREATE timezone (`jbaruch/nanoclaw-travel#83`, `#82`)
 
 Live verification of the *placement* (not just the description round-trip) showed drive blocks landed ~5h early: the live `GOOGLECALENDAR_CREATE_EVENT` reads a bare `start_datetime`'s wall-clock as **UTC** unless an explicit `timezone` is supplied, so an offset-bearing string alone is mis-anchored (created events came back stamped `timeZone: UTC`). The earlier flat-create fix (0.1.46) corrected the duration half of #83 but not this timezone half.
