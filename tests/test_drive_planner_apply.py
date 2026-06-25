@@ -239,6 +239,36 @@ def test_remove_by_unmatched_summary_reports_no_match():
     assert result["unmatched_summary"] == "Nonexistent"
 
 
+def test_remove_same_summary_without_leave_by_is_ambiguous_not_guessed():
+    # Two "Standup" meetings (recurring) — summary alone is ambiguous, so the
+    # script returns the choices instead of guessing by fetch order.
+    mon = _block_for("evt_mon", "Standup", datetime(2026, 7, 6, 9, 0, tzinfo=CT), "b_mon")
+    tue = _block_for("evt_tue", "Standup", datetime(2026, 7, 7, 9, 0, tzinfo=CT), "b_tue")
+    client = FakeComposio(existing=[tue, mon])
+    now = datetime(2026, 7, 6, 7, 0, tzinfo=CT)
+    result = apply._remove_mode({"summary": "Standup", "now": now.isoformat()}, client)
+    assert result["skip_recorded"] is False
+    assert result["ambiguous_summary"] == "Standup"
+    assert len(result["candidates"]) == 2
+    assert client.deleted == []  # nothing guessed/deleted
+
+
+def test_remove_same_summary_with_leave_by_pins_the_right_instance():
+    mon = _block_for("evt_mon", "Standup", datetime(2026, 7, 6, 9, 0, tzinfo=CT), "b_mon")
+    tue = _block_for("evt_tue", "Standup", datetime(2026, 7, 7, 9, 0, tzinfo=CT), "b_tue")
+    client = FakeComposio(existing=[tue, mon])
+    now = datetime(2026, 7, 6, 7, 0, tzinfo=CT)
+    # Tuesday's leave-by = 9:00 - 25min drive - 5min buffer = 8:30 on 2026-07-07.
+    tue_leave_by = datetime(2026, 7, 7, 8, 30, tzinfo=CT).isoformat()
+    result = apply._remove_mode(
+        {"summary": "Standup", "leave_by": tue_leave_by, "now": now.isoformat()}, client
+    )
+    assert result["skip_recorded"] is True
+    assert client.deleted == ["b_tue"]  # only Tuesday's block
+    assert "evt_tue" in skip_state.load_active_skips(now)
+    assert "evt_mon" not in skip_state.load_active_skips(now)
+
+
 def test_remove_with_past_meeting_end_keeps_find_window_valid():
     # A late skip/remove (meeting_end already past) must not invert the find
     # window (timeMax < timeMin), which could fail the whole remove.
