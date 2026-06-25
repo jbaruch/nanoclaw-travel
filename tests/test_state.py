@@ -709,6 +709,62 @@ def test_write_config_rejects_non_string_byair_calendar_id(state_root: Path):
         write_config({"byair_calendar_id": 12345})
 
 
+def test_v4_to_v5_config_migration_bumps_version_without_shape_change(state_root: Path):
+    """v4 config files have no shape change at v5 — schema_version bump only.
+
+    The v5 airport-clearance fields are optional and absent-tolerant, so an old
+    config without them migrates cleanly and gains no keys.
+    """
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text(
+        json.dumps({"schema_version": 4, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
+    )
+    loaded = read_config()
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["home_address"] == "1 Old Loop"
+    assert loaded["min_transfer_minutes"] == 60
+    assert "airport_clearance_domestic_minutes" not in loaded
+
+
+def test_config_round_trips_airport_clearance_fields(state_root: Path):
+    """The v5 airport-clearance config fields write and read back unchanged."""
+    state_root.mkdir(parents=True)
+    write_config(
+        {
+            "airport_clearance_domestic_minutes": 60,
+            "airport_clearance_international_minutes": 120,
+            "airport_post_arrival_domestic_minutes": 20,
+            "airport_post_arrival_intl_us_minutes": 40,
+            "airport_post_arrival_intl_abroad_minutes": 60,
+        }
+    )
+    loaded = read_config()
+    assert loaded["airport_clearance_domestic_minutes"] == 60
+    assert loaded["airport_clearance_international_minutes"] == 120
+    assert loaded["airport_post_arrival_domestic_minutes"] == 20
+    assert loaded["airport_post_arrival_intl_us_minutes"] == 40
+    assert loaded["airport_post_arrival_intl_abroad_minutes"] == 60
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+
+
+def test_write_config_accepts_zero_airport_clearance(state_root: Path):
+    state_root.mkdir(parents=True)
+    write_config({"airport_clearance_domestic_minutes": 0})
+    assert read_config()["airport_clearance_domestic_minutes"] == 0
+
+
+def test_write_config_rejects_negative_airport_clearance(state_root: Path):
+    state_root.mkdir(parents=True)
+    with pytest.raises(ValueError, match="airport_clearance_domestic_minutes"):
+        write_config({"airport_clearance_domestic_minutes": -5})
+
+
+def test_write_config_rejects_bool_airport_post_arrival(state_root: Path):
+    state_root.mkdir(parents=True)
+    with pytest.raises(ValueError, match=r"airport_post_arrival_intl_us_minutes.*bool"):
+        write_config({"airport_post_arrival_intl_us_minutes": True})
+
+
 def test_v2_to_v3_migration_scopes_calendar_events_by_filename(state_root: Path):
     """A non-flight file carrying a stray flight_id key is NOT given calendar_events.
 

@@ -19,7 +19,7 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
   "min_transfer_minutes": 45,
   "byair_calendar_name": "Flighty Flights",
@@ -29,11 +29,16 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 Fields:
 
-- `schema_version` (int, required) — currently `4`
+- `schema_version` (int, required) — currently `5`
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
 - `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in tile terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in tile code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)
 - `byair_calendar_id` (string, optional) — the resolved Google Calendar ID for the flight calendar, cached by `reconcile` after its first name match so later cycles skip the lookup. When present it is used directly and `byair_calendar_name` is not consulted. The Reclaim travel blocks live on the **primary** calendar (content-classified — there is no dedicated Reclaim calendar), so no config field tracks it
+- `airport_clearance_domestic_minutes` (int, optional, non-negative) — minutes before departure to be AT the airport for a domestic (incl. intra-Schengen) flight; overrides `airport_lead.BASE_CLEARANCE_DOMESTIC_MINUTES` (60). Airport drive blocks (#90)
+- `airport_clearance_international_minutes` (int, optional, non-negative) — same, international flight; overrides `airport_lead.BASE_CLEARANCE_INTERNATIONAL_MINUTES` (120)
+- `airport_post_arrival_domestic_minutes` (int, optional, non-negative) — minutes after landing before the drive home can start, domestic arrival; overrides `airport_lead.POST_ARRIVAL_DOMESTIC_MINUTES` (20)
+- `airport_post_arrival_intl_us_minutes` (int, optional, non-negative) — same, international arrival INTO the US; overrides `airport_lead.POST_ARRIVAL_INTL_TO_US_MINUTES` (40)
+- `airport_post_arrival_intl_abroad_minutes` (int, optional, non-negative) — same, international arrival abroad; overrides `airport_lead.POST_ARRIVAL_INTL_ABROAD_MINUTES` (60). The byAir `delay.index` nudge (low/med/high → +0/+15/+30) stays an `airport_lead` constant, not a config field
 
 ### `active-flights.json`
 
@@ -41,14 +46,14 @@ Index of currently-tracked flight IDs. Refreshed daily by the sync-tripit script
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "flight_ids": [12345, 67890, 11111]
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `4`
+- `schema_version` (int, required) — currently `5`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
 ### `current-location.json`
@@ -85,7 +90,7 @@ Per-flight state record. One file per tracked flight.
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "flight_id": 12345,
   "code": "AA2414",
   "ownership": "mine",
@@ -147,7 +152,7 @@ Per-flight state record. One file per tracked flight.
 
 Top-level fields:
 
-- `schema_version` (int, required) — `4`
+- `schema_version` (int, required) — `5`
 - `flight_id` (int, required) — byAir's flight identifier
 - `code` (string, required) — flight number like `"AA2414"`
 - `ownership` (string, required) — `"mine"` or `"friend"`
@@ -205,7 +210,7 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Today `STATE_SCHEMA_VERSION` is `4`.
+Today `STATE_SCHEMA_VERSION` is `5`.
 
 `state.py`'s read helpers enforce these rules on `schema_version`:
 
@@ -229,6 +234,10 @@ Per-flight state: gains the `calendar_events` map (empty `{}` on migration). The
 ### v3 → v4
 
 Config: gains two optional calendar-reconcile fields, `byair_calendar_name` and `byair_calendar_id` (see `config.json` above). Both are optional and absent-tolerant, so there is no shape to add on migration — the owner-side `state.py:_migrate` only bumps the `schema_version`. Per-flight and active-flights files likewise have no shape change at v4 — schema_version bump only.
+
+### v4 → v5
+
+Config: gains five optional airport-clearance fields, `airport_clearance_domestic_minutes`, `airport_clearance_international_minutes`, `airport_post_arrival_domestic_minutes`, `airport_post_arrival_intl_us_minutes`, and `airport_post_arrival_intl_abroad_minutes` (see `config.json` above). All optional and absent-tolerant, so there is no shape to add on migration — the owner-side `state.py:_migrate` only bumps the `schema_version`. Per-flight and active-flights files likewise have no shape change at v5 — schema_version bump only.
 
 ## Bump Procedure
 
