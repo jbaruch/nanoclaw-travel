@@ -192,7 +192,7 @@ def test_parse_rejects_newer_schema_version():
         arrive_by=ARRIVE,
         origin="A",
         destination="B",
-    ).replace('"v":1', '"v":2')
+    ).replace(f'"v":{BLOCK_SCHEMA_VERSION}', f'"v":{BLOCK_SCHEMA_VERSION + 1}')
     assert parse_block(_event(description=blob)) is None
 
 
@@ -207,7 +207,7 @@ def test_parse_rejects_non_int_version():
         arrive_by=ARRIVE,
         origin="A",
         destination="B",
-    ).replace('"v":1', '"v":"2"')
+    ).replace(f'"v":{BLOCK_SCHEMA_VERSION}', '"v":"x"')
     assert parse_block(_event(description=blob)) is None
 
 

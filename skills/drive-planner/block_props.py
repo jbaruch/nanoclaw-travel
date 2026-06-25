@@ -64,8 +64,13 @@ _MARKER_RE = re.compile(r"\[drive-planner:meeting=(?P<id>[^:\]]+):dir=(?P<dir>[^
 # Schema version of the calendar-as-state block record (per `coding-policy:
 # stateful-artifacts` — every persisted record carries a version so migrations
 # are auditable). Bump on any shape change to the description state JSON and add
-# the owner-side upgrade in `parse_block`. v1 is the first and only version.
-BLOCK_SCHEMA_VERSION = 1
+# the owner-side upgrade in `parse_block`.
+#   v1 — the original `extendedProperties.private` string-map shape (defunct:
+#        the live v3 toolkit has no writable extendedProperties, so no v1 record
+#        was ever successfully written; the new parser can't read that shape
+#        regardless, since it carries no `<!--dp:-->` description comment).
+#   v2 — the description `<!--dp:{...}-->` JSON shape (current).
+BLOCK_SCHEMA_VERSION = 2
 
 # The machine-state JSON rides in an HTML comment so it stays out of the way in
 # calendar UIs while remaining round-trippable. Short keys keep the description

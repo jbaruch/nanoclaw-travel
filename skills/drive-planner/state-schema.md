@@ -59,7 +59,7 @@ All state lives in the event **`description`** — the live Composio v3 calendar
 
 | state key | meaning |
 |-----------|---------|
-| `v` | record schema version (currently `1`) |
+| `v` | record schema version (currently `2`) |
 | `b` | routed drive seconds captured at creation (recheck baseline) |
 | `a` | arrival-anchor timestamp, ISO-8601 — the hard arrival deadline for `outbound` / `bridge`; for a `return` leg it is the leg end (informational, the poll never rechecks returns) |
 | `o` / `d` | the routed leg endpoints (the poll re-routes exactly this pair) |
@@ -74,7 +74,7 @@ Writer / reader contract:
 
 Migration (per `coding-policy: stateful-artifacts`):
 
-- `v` `1` is the initial version; bump on any shape change to the description state JSON and add the owner-side upgrade in `parse_block`. A record stamped NEWER than this tile supports parses to `None` (no-usable-prior-state — the poll skips it, the safe non-disruptive fallback). A missing version is treated as v1 for back-compat.
+- `v` `2` is the current version. `v` `1` was the original `extendedProperties.private` string-map shape — defunct: the live v3 toolkit has no writable extendedProperties, so no v1 record was ever written, and the description-based parser cannot read that shape anyway (it carries no `<!--dp:-->` comment). Bump on any further shape change to the description state JSON and add the owner-side upgrade in `parse_block`. A record stamped NEWER than this tile supports — or carrying a non-int `v` — parses to `None` (no-usable-prior-state, the safe non-disruptive fallback). A missing `v` is treated as the current shape for back-compat.
 
 Tolerance:
 
