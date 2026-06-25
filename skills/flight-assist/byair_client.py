@@ -32,6 +32,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from typing import Any
 
 _PROTOCOL_VERSION = "2025-06-18"
 _CLIENT_INFO = {"name": "nanoclaw-flight-assist", "version": "0.1.0"}
@@ -67,6 +68,12 @@ class ByAirClient:
         self._timeout = timeout
         self._session_id: str | None = None
         self._next_id = 0
+        # Per-airport caches for the lifetime of this client. byAir throttles
+        # ~10 calls/session and a single precheck cycle queries the same
+        # departure/arrival airports across several flights, so a repeat
+        # lookup returns the cached payload instead of spending a call.
+        self._airport_cache: dict[int, dict] = {}
+        self._airport_tips_cache: dict[int, list] = {}
 
     @classmethod
     def from_env(cls, *, env_var: str = "BYAIR_MCP_URL", timeout: float = 30.0) -> ByAirClient:
@@ -99,8 +106,44 @@ class ByAirClient:
         """Get push-notification settings for a tracked flight."""
         return self._call_tool("byair_get_flight_notifications", {"flight_id": flight_id})
 
-    def _call_tool(self, name: str, arguments: dict) -> dict:
-        """Send a tools/call request, returning the decoded inner payload."""
+    def get_airport(self, airport_id: int) -> dict:
+        """Get airport details by ID. Returns the byAir airport payload as a dict.
+
+        Carries the fields the airport drive blocks need: `countryName` /
+        `countryFlag` (international classification), the structured `delay`
+        object (`delay.index` congestion nudge), and `timezone` (the IANA tz
+        for placing the block at the right instant).
+
+        Cached per airport_id for this client's lifetime (see __init__).
+        Raises ByAirError("not_found", ...) when the airport_id is unknown.
+        """
+        if airport_id not in self._airport_cache:
+            self._airport_cache[airport_id] = self._call_tool(
+                "byair_get_airport", {"airport_id": airport_id}
+            )
+        return self._airport_cache[airport_id]
+
+    def get_airport_tips(self, airport_id: int) -> list:
+        """Get community/AI tips for an airport. Returns a list of tip objects
+        (free-text `text`, with `category`, `author`, `rating`).
+
+        Advisory free text for the reasoning layer (security/walk/customs
+        hints), not consumed by the deterministic clearance resolver. Cached
+        per airport_id for the same throttle reason as `get_airport`.
+        """
+        if airport_id not in self._airport_tips_cache:
+            self._airport_tips_cache[airport_id] = self._call_tool(
+                "byair_get_airport_tips", {"airport_id": airport_id}
+            )
+        return self._airport_tips_cache[airport_id]
+
+    def _call_tool(self, name: str, arguments: dict) -> Any:
+        """Send a tools/call request, returning the decoded inner payload.
+
+        Return type is `Any`: most byAir tools return a JSON object (dict),
+        but some (e.g. byair_get_airport_tips) return a JSON array (list).
+        The decoded `json.loads` value is whatever the tool emitted.
+        """
         if self._session_id is None:
             self._initialize()
         try:
@@ -154,7 +197,7 @@ class ByAirClient:
         notify_headers = {**headers, "Mcp-Session-Id": self._session_id}
         self._http_post(notify_headers, notify_payload, expect_response=False)
 
-    def _tools_call(self, name: str, arguments: dict) -> dict:
+    def _tools_call(self, name: str, arguments: dict) -> Any:
         """Send tools/call and decode the double-encoded response."""
         assert self._session_id is not None
         payload = self._rpc_envelope("tools/call", {"name": name, "arguments": arguments})

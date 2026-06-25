@@ -19,6 +19,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
+# E402 suppressed: the sys.path.insert above must execute before this import
+# so the skill module resolves by bare name — its bundle dir is only on
+# sys.path at runtime, matching nanoclaw-core's import convention.
 from byair_client import ByAirClient, ByAirError  # noqa: E402
 
 SYNTH_URL = "https://api.byairapp.example/mcp?api_key=synthetic_key"
@@ -64,12 +67,12 @@ def _initialized_notification_ack() -> _FakeResponse:
 
 
 def _tool_response(
-    text_payload: dict | str,
+    text_payload: dict | list | str,
     *,
     is_error: bool = False,
     error_type: str | None = None,
 ) -> _FakeResponse:
-    text = json.dumps(text_payload) if isinstance(text_payload, dict) else text_payload
+    text = json.dumps(text_payload) if isinstance(text_payload, (dict, list)) else text_payload
     result: dict = {"content": [{"type": "text", "text": text}]}
     if is_error:
         result["isError"] = True
@@ -409,3 +412,121 @@ def test_initialize_without_session_id_raises():
         with pytest.raises(ByAirError) as exc_info:
             client.get_flight(flight_id=1)
     assert exc_info.value.error_type == "session_missing"
+
+
+# --- airport endpoints (real BNA-sampled fixtures) ---------------------
+
+# Sampled from a live byair_get_airport(98) payload, trimmed to the fields
+# the airport drive blocks consume plus the structured delay object.
+BNA_AIRPORT = {
+    "id": 98,
+    "name": "Nashville International Airport",
+    "code": "BNA",
+    "cityName": "Nashville",
+    "countryName": "United States",
+    "countryFlag": "🇺🇸",
+    "timezone": "America/Chicago",
+    "lat": 36.125247,
+    "lon": -86.677102,
+    "delay": {
+        "index": "low",
+        "average": 17,
+        "delayedPercentage": 15,
+        "onTimePercentage": 85,
+        "totalFlights": 384,
+    },
+    "delay_detail": "Minor delays possible",
+}
+
+# Sampled from a live byair_get_airport_tips(98) payload (a JSON array).
+BNA_TIPS = [
+    {
+        "id": 6176,
+        "category": "terminal",
+        "aiGenerated": False,
+        "author": {"name": "oil soaked rag", "isVerified": False},
+        "rating": {"upvotes": 0, "downvotes": 1},
+        "text": "It's a long walk to the rental car garage - keep that in mind!",
+    },
+]
+
+
+def _airport_fake(payload, recorder):
+    """urlopen stand-in: handshake once, then echo `payload` for each
+    tools/call, recording (tool_name, airport_id) per call so tests can
+    assert how many byAir calls the cache actually spent."""
+
+    def fake_urlopen(request, **kwargs):
+        data = json.loads(request.data)
+        method = data.get("method")
+        if method == "initialize":
+            return _initialize_response()
+        if method == "notifications/initialized":
+            return _initialized_notification_ack()
+        params = data["params"]
+        recorder.append((params["name"], params["arguments"]["airport_id"]))
+        return _tool_response(payload)
+
+    return fake_urlopen
+
+
+def test_get_airport_returns_payload(client):
+    recorder = []
+    with patch("urllib.request.urlopen", side_effect=_airport_fake(BNA_AIRPORT, recorder)):
+        result = client.get_airport(airport_id=98)
+    assert result == BNA_AIRPORT
+    assert result["delay"]["index"] == "low"
+    assert result["timezone"] == "America/Chicago"
+    assert result["countryFlag"] == "🇺🇸"
+    assert recorder == [("byair_get_airport", 98)]
+
+
+def test_get_airport_tips_returns_list(client):
+    recorder = []
+    with patch("urllib.request.urlopen", side_effect=_airport_fake(BNA_TIPS, recorder)):
+        result = client.get_airport_tips(airport_id=98)
+    assert result == BNA_TIPS
+    assert result[0]["category"] == "terminal"
+    assert recorder == [("byair_get_airport_tips", 98)]
+
+
+def test_get_airport_caches_same_id(client):
+    recorder = []
+    with patch("urllib.request.urlopen", side_effect=_airport_fake(BNA_AIRPORT, recorder)):
+        first = client.get_airport(airport_id=98)
+        second = client.get_airport(airport_id=98)
+    # Second lookup served from cache: same object, only ONE byAir call spent.
+    assert first is second
+    assert recorder == [("byair_get_airport", 98)]
+
+
+def test_get_airport_distinct_ids_each_fetch_once(client):
+    recorder = []
+    with patch("urllib.request.urlopen", side_effect=_airport_fake(BNA_AIRPORT, recorder)):
+        client.get_airport(airport_id=98)
+        client.get_airport(airport_id=98)
+        client.get_airport(airport_id=1238)
+    # Two distinct airports -> two calls; the repeat 98 is cached.
+    assert recorder == [("byair_get_airport", 98), ("byair_get_airport", 1238)]
+
+
+def test_get_airport_tips_cached_independently_of_airport(client):
+    recorder = []
+    with patch("urllib.request.urlopen", side_effect=_airport_fake(BNA_TIPS, recorder)):
+        client.get_airport_tips(airport_id=98)
+        client.get_airport_tips(airport_id=98)
+    assert recorder == [("byair_get_airport_tips", 98)]
+
+
+def test_get_airport_not_found_raises(client):
+    responses = iter(
+        [
+            _initialize_response(),
+            _initialized_notification_ack(),
+            _tool_response("not_found: airport not found", is_error=True, error_type="not_found"),
+        ]
+    )
+    with patch("urllib.request.urlopen", side_effect=lambda *a, **k: next(responses)):
+        with pytest.raises(ByAirError) as exc_info:
+            client.get_airport(airport_id=999999)
+    assert exc_info.value.error_type == "not_found"
