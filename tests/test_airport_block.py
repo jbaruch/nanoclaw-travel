@@ -246,8 +246,8 @@ def test_parse_block_none_when_marker_missing():
     assert parse_block({"id": "e", "description": desc}) is None
 
 
-def test_parse_block_none_when_newer_schema_version():
-    desc = build_description(
+def _desc(**overrides):
+    args = dict(
         summary="Drive: → BNA",
         flight_id="1",
         direction="to_airport",
@@ -255,20 +255,28 @@ def test_parse_block_none_when_newer_schema_version():
         anchor=BE_AT_AIRPORT,
         origin="o",
         destination="BNA",
-    ).replace(f'"v":{BLOCK_SCHEMA_VERSION}', f'"v":{BLOCK_SCHEMA_VERSION + 1}')
+    )
+    args.update(overrides)
+    return build_description(**args)
+
+
+def test_parse_block_none_when_newer_schema_version():
+    desc = _desc().replace(
+        f'"schema_version":{BLOCK_SCHEMA_VERSION}',
+        f'"schema_version":{BLOCK_SCHEMA_VERSION + 1}',
+    )
     assert parse_block({"id": "e", "description": desc}) is None
 
 
 def test_parse_block_none_when_version_not_int():
-    desc = build_description(
-        summary="Drive: → BNA",
-        flight_id="1",
-        direction="to_airport",
-        baseline_seconds=1800,
-        anchor=BE_AT_AIRPORT,
-        origin="o",
-        destination="BNA",
-    ).replace(f'"v":{BLOCK_SCHEMA_VERSION}', '"v":"1"')
+    desc = _desc().replace(f'"schema_version":{BLOCK_SCHEMA_VERSION}', '"schema_version":"1"')
+    assert parse_block({"id": "e", "description": desc}) is None
+
+
+def test_parse_block_none_when_version_missing():
+    # A new artifact has no pre-version legacy records: a record without
+    # schema_version is foreign/corrupt and must read as None, never "current".
+    desc = _desc().replace(f'"schema_version":{BLOCK_SCHEMA_VERSION},', "")
     assert parse_block({"id": "e", "description": desc}) is None
 
 

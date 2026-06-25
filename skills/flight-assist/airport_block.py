@@ -70,7 +70,10 @@ BLOCK_SCHEMA_VERSION = 1
 # The machine state rides in an HTML comment so it stays out of the way in
 # calendar UIs while remaining round-trippable. Short keys keep it compact.
 _STATE_RE = re.compile(r"<!--fa:(?P<json>\{.*?\})-->", re.DOTALL)
-_STATE_KEY_VERSION = "v"
+# The version key is spelled out (`schema_version`), not abbreviated like the
+# other keys: `coding-policy: stateful-artifacts` requires every record to
+# carry an auditable `schema_version` field by that name.
+_STATE_KEY_VERSION = "schema_version"
 _STATE_KEY_BASELINE = "b"
 _STATE_KEY_ANCHOR = "a"
 _STATE_KEY_ORIGIN = "o"
@@ -373,9 +376,11 @@ def parse_block(event: object) -> BlockState | None:
     required field is missing — the recheck poll treats None as "not a block I
     recheck" and moves on.
 
-    Schema version (per `coding-policy: stateful-artifacts`): a record stamped
-    NEWER than this codec supports reads as None — no-usable-prior-state, the
-    safe non-disruptive fallback. A missing version is treated as the current.
+    Schema version (per `coding-policy: stateful-artifacts`): every record
+    carries `schema_version`. A MISSING, non-int, or NEWER-than-supported
+    version all read as None — no-usable-prior-state, the safe non-disruptive
+    fallback. This is a new artifact with no pre-version legacy records, so a
+    record without `schema_version` is foreign/corrupt, never "assume current".
     """
     if not isinstance(event, dict):
         return None
@@ -385,13 +390,8 @@ def parse_block(event: object) -> BlockState | None:
         return None
 
     version = state.get(_STATE_KEY_VERSION)
-    if version is not None:
-        if (
-            not isinstance(version, int)
-            or isinstance(version, bool)
-            or version > BLOCK_SCHEMA_VERSION
-        ):
-            return None
+    if not isinstance(version, int) or isinstance(version, bool) or version > BLOCK_SCHEMA_VERSION:
+        return None
 
     marker = _MARKER_RE.search(description) if isinstance(description, str) else None
     if marker is None:

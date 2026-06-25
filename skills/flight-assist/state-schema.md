@@ -251,7 +251,7 @@ All state lives in the event **`description`** — the live Composio v3 calendar
 
 | state key | meaning |
 |-----------|---------|
-| `v` | record schema version (`BLOCK_SCHEMA_VERSION`, currently `1`) |
+| `schema_version` | record schema version (`BLOCK_SCHEMA_VERSION`, currently `1`) — spelled out per `coding-policy: stateful-artifacts`, which requires every record to carry an auditable `schema_version` field by that name; the remaining keys stay abbreviated for description compactness |
 | `b` | routed drive seconds captured at creation (recheck baseline) |
 | `a` | anchor timestamp, ISO-8601 — for `to_airport` the be-at-the-airport DEADLINE (`dep − clearance`); for `from_airport` the earliest the drive home can START (`actual_arr + post_arrival_delay`) |
 | `o` / `d` | the routed leg endpoints (the poll re-routes exactly this pair) |
@@ -266,7 +266,7 @@ Writer / reader contract:
 
 Migration (per `coding-policy: stateful-artifacts`):
 
-- `v` `1` is the initial version; no migration exists yet. Bump on any shape change to the description state JSON and add the owner-side upgrade in `parse_block`. A record stamped NEWER than this codec supports — or carrying a non-int `v` — parses to `None` (no-usable-prior-state, the safe non-disruptive fallback). A missing `v` is treated as the current shape for back-compat.
+- `schema_version` `1` is the initial version; no migration exists yet. Bump on any shape change to the description state JSON and add the owner-side upgrade in `parse_block`. Every record carries `schema_version`: a record stamped NEWER than this codec supports, carrying a non-int version, OR **missing** the field entirely all parse to `None` (no-usable-prior-state, the safe non-disruptive fallback). This is a new artifact with no pre-version legacy records, so a missing version is foreign/corrupt — never assumed current.
 
 Tolerance:
 
