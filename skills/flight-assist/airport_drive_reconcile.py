@@ -83,17 +83,28 @@ def _parse_instant(raw: object) -> datetime | None:
 
 
 def _effective_instant(state: dict, snapshot_key: str, scheduled_key: str) -> datetime | None:
-    """The byAir-truth instant for a leg: snapshot actual when present, else scheduled.
+    """The byAir-truth instant for a leg: snapshot actual when usable, else scheduled.
 
     Mirrors `calendar_reconcile._effective_times` — `last_snapshot.<dep|arr>_time`
     is byAir's live value (the ETA in flight, the actual once known); the
-    sync-seeded scheduled time is the pre-poll fallback.
+    sync-seeded scheduled time is the fallback. A snapshot value that is absent OR
+    present-but-unparseable (e.g. an empty string from bad byAir data) falls back
+    to scheduled rather than suppressing the block; an unparseable present value
+    is logged, since silent bad data contradicts the per-leg degradation posture.
+    Returns None only when scheduled is unusable too — the caller logs that drop.
     """
     snapshot = state.get("last_snapshot") or {}
     raw = snapshot.get(snapshot_key)
-    if raw is None:
-        raw = state.get(scheduled_key)
-    return _parse_instant(raw)
+    instant = _parse_instant(raw)
+    if instant is not None:
+        return instant
+    if raw is not None:
+        print(
+            f"flight-assist airport-drive: unparseable {snapshot_key}={raw!r}; "
+            f"falling back to {scheduled_key}",
+            file=sys.stderr,
+        )
+    return _parse_instant(state.get(scheduled_key))
 
 
 def _safe_airport_context(byair, airport_id: object) -> AirportContext:
@@ -129,7 +140,26 @@ def _route_seconds(maps, *, origin: str, destination: str) -> int | None:
     except (MapsError, urllib.error.URLError) as exc:
         print(f"flight-assist airport-drive: maps route failed: {exc}", file=sys.stderr)
         return None
-    return result.in_traffic_seconds or result.duration_seconds
+    # `is not None`, not truthiness — a modelled 0-second in-traffic estimate is a
+    # valid time and must not fall back to free-flow.
+    if result.in_traffic_seconds is not None:
+        return result.in_traffic_seconds
+    return result.duration_seconds
+
+
+def _clean_endpoint(value: str | None) -> str | None:
+    """A stripped, non-empty endpoint string, or None when absent / blank.
+
+    A resolved `origin` / `home_address` can arrive as `""` or whitespace (an
+    empty config value, an origin ladder that produced nothing usable). The real
+    `MapsClient.travel_time` raises `ValueError` on a blank endpoint — which
+    `_route_seconds` does not catch — so a blank string must read as absent here
+    (the leg is skipped) rather than enter routing and abort the assembler.
+    """
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 def _airport_endpoint(ctx: AirportContext) -> str | None:
@@ -152,6 +182,11 @@ def _build_departure(
         return None  # no airport code → no usable summary; retry next cycle
     dep_instant = _effective_instant(state, "dep_time", "scheduled_dep_time")
     if dep_instant is None:
+        print(
+            f"flight-assist airport-drive: no usable departure time for "
+            f"{flight_code or state.get('flight_id')}; dropping to_airport block",
+            file=sys.stderr,
+        )
         return None
     destination = _airport_endpoint(dep_ctx)
     if not destination:
@@ -186,6 +221,11 @@ def _build_arrival(
         return None
     arr_instant = _effective_instant(state, "arr_time", "scheduled_arr_time")
     if arr_instant is None:
+        print(
+            f"flight-assist airport-drive: no usable arrival time for "
+            f"{state.get('code') or state.get('flight_id')}; dropping from_airport block",
+            file=sys.stderr,
+        )
         return None
     origin = _airport_endpoint(arr_ctx)
     if not origin:
@@ -228,9 +268,11 @@ def build_drive_blocks_for_flight(
         maps: a Maps client exposing `travel_time(origin=, destination=)`, or
             None when no routing key is configured (then nothing is built).
         origin: the resolved drive origin for the to_airport leg (the live
-            location / home), or None — the to_airport block is skipped without it.
+            location / home), or None — the to_airport block is skipped when it is
+            None, empty, or whitespace.
         home_address: the drive-home destination for the from_airport leg, or
-            None — the from_airport block is skipped without it.
+            None — the from_airport block is skipped when it is None, empty, or
+            whitespace.
         config: optional `config.json` dict for the clearance overrides.
 
     Returns:
@@ -243,6 +285,10 @@ def build_drive_blocks_for_flight(
     status = snapshot.get("computed_status") or "scheduled"
     flight_code = state.get("code") or ""
 
+    # Normalize endpoints before gating: a blank origin / home_address is absent,
+    # not a routable string (see `_clean_endpoint`).
+    origin = _clean_endpoint(origin)
+    home_address = _clean_endpoint(home_address)
     want_departure = status in _TO_AIRPORT_STATUSES and origin is not None
     want_arrival = status in _FROM_AIRPORT_STATUSES and home_address is not None
     if not want_departure and not want_arrival:

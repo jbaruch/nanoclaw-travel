@@ -313,3 +313,78 @@ def test_block_dropped_when_routing_fails():
         _state(), byair=byair, maps=maps, origin="home", home_address=HOME
     )
     assert blocks == []
+
+
+# --- blank endpoints read as absent (never reach routing) ----------------------
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_origin_skips_to_airport_without_routing(blank):
+    # A blank resolved origin must read as absent, not a routable string —
+    # MapsClient.travel_time raises ValueError on an empty endpoint.
+    byair, maps = FakeByAir(), FakeMaps()
+    blocks = build_drive_blocks_for_flight(
+        _state(), byair=byair, maps=maps, origin=blank, home_address=HOME
+    )
+    assert blocks == []
+    assert maps.routes == []
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_blank_home_address_skips_from_airport_without_routing(blank):
+    byair, maps = FakeByAir(), FakeMaps()
+    blocks = build_drive_blocks_for_flight(
+        _state(last_snapshot=_snapshot("landed")),
+        byair=byair,
+        maps=maps,
+        origin="home",
+        home_address=blank,
+    )
+    assert blocks == []
+    assert maps.routes == []
+
+
+# --- snapshot-time fallback (bad byAir data) -----------------------------------
+
+
+def test_empty_snapshot_dep_time_falls_back_to_scheduled():
+    # A present-but-empty actual time must not suppress the block — fall back to
+    # the scheduled time rather than dropping it.
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800)
+    snap = _snapshot("scheduled", dep_time="")
+    blocks = build_drive_blocks_for_flight(
+        _state(last_snapshot=snap), byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    dep = datetime(2026, 7, 2, 14, 0, tzinfo=CT)  # scheduled
+    assert blocks[0].anchor == dep - timedelta(minutes=60)
+
+
+def test_unparseable_snapshot_arr_time_falls_back_to_scheduled():
+    byair, maps = FakeByAir(), FakeMaps(seconds=1200)
+    snap = _snapshot("landed", arr_time="not-a-timestamp")
+    blocks = build_drive_blocks_for_flight(
+        _state(last_snapshot=snap), byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    arr = datetime(2026, 7, 2, 16, 30, tzinfo=CT)  # scheduled
+    assert blocks[0].anchor == arr + timedelta(minutes=20)
+
+
+def test_block_dropped_when_both_snapshot_and_scheduled_times_unusable():
+    byair, maps = FakeByAir(), FakeMaps()
+    snap = _snapshot("scheduled", dep_time="garbage")
+    state = _state(last_snapshot=snap, scheduled_dep_time="also-garbage")
+    blocks = build_drive_blocks_for_flight(
+        state, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    assert blocks == []
+
+
+# --- routing seconds: 0 in-traffic is a valid time -----------------------------
+
+
+def test_zero_in_traffic_seconds_is_used_not_treated_as_missing():
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800, in_traffic=0)
+    blocks = build_drive_blocks_for_flight(
+        _state(), byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    assert blocks[0].baseline_seconds == 0  # the 0 in-traffic estimate, not 1800
