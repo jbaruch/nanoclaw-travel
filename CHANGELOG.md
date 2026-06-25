@@ -1,5 +1,9 @@
 # Changelog
 
+### Added — byAir airport-context client methods, groundwork for airport drive blocks (`jbaruch/nanoclaw-travel#90`)
+
+`byair_client` gains `get_airport(airport_id)` and `get_airport_tips(airport_id)` — the airport context the drive blocks need: `countryName`/`countryFlag` for international classification, the structured `delay` index for the congestion nudge, the IANA `timezone` for correct block placement, and free-text community tips for the reasoning layer. Both cache per airport id for the client's lifetime: byAir throttles ~10 calls/session and a single precheck cycle queries the same departure/arrival airports across flights, so repeats are served from cache without spending a call. `_call_tool`/`_tools_call` return types are corrected to `Any` (some byAir tools — `byair_get_airport_tips` — return a JSON array, not an object). Not yet wired into block creation; the integration lands in follow-up PRs on #90.
+
 ## 0.1.50 — 2026-06-25
 
 ### Added — airport clearance resolver, groundwork for airport drive blocks (`jbaruch/nanoclaw-travel#90`)
