@@ -115,6 +115,19 @@ def test_create_args_use_flat_start_and_duration():
     assert "extendedProperties" not in args
 
 
+def test_create_args_carry_explicit_timezone():
+    # Without an explicit IANA timezone the live CREATE reads the wall-clock as
+    # UTC and the block lands hours off (#83). When the meeting carries one, it
+    # must reach the create args.
+    args = _build_args(timezone="America/Chicago")
+    assert args["timezone"] == "America/Chicago"
+
+
+def test_create_args_omit_timezone_when_absent():
+    args = _build_args()
+    assert "timezone" not in args
+
+
 def test_description_state_round_trips_via_parse_block():
     state = parse_block(_event_from_args(_build_args()))
     assert isinstance(state, BlockState)

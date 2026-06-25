@@ -1,5 +1,14 @@
 # Changelog
 
+### Fixed — calendar blocks land at the right instant: explicit CREATE timezone (`jbaruch/nanoclaw-travel#83`, `#82`)
+
+Live verification of the *placement* (not just the description round-trip) showed drive blocks landed ~5h early: the live `GOOGLECALENDAR_CREATE_EVENT` reads a bare `start_datetime`'s wall-clock as **UTC** unless an explicit `timezone` is supplied, so an offset-bearing string alone is mis-anchored (created events came back stamped `timeZone: UTC`). The earlier flat-create fix (0.1.46) corrected the duration half of #83 but not this timezone half.
+
+- **drive-planner** threads the meeting's IANA `start.timeZone` (every real event carries one) from `scan` → `MeetingClass` → `build_block_args`, emitted as the CREATE `timezone`. Verified live: a 14:00-CT meeting's block now lands at 13:30 America/Chicago, not 08:30.
+- **flight-assist** has only the departure offset, so `calendar_reconcile` maps a whole-hour offset to a fixed-offset `Etc/GMT±N` zone (correct instant + local-clock display); a rare non-whole-hour offset (e.g. +05:30) normalizes `start_datetime` to UTC instead. This also closes the boarding-create half of #82 (the create itself was fixed in 0.1.46).
+
+Both paths verified end-to-end against the live toolkit (create → fetch → assert wall-clock placement → delete).
+
 ## 0.1.46 — 2026-06-25
 
 ### Fixed — calendar writes rebuilt for the live Composio v3 contract (`jbaruch/nanoclaw-travel#59`)

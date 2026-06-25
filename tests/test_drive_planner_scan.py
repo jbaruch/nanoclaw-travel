@@ -276,6 +276,17 @@ def test_cancelled_event_is_filtered():
     assert result.reason == "event cancelled"
 
 
+def test_meeting_timezone_is_captured():
+    # The meeting's start.timeZone flows onto the MeetingClass so the block
+    # CREATE can pass an explicit IANA timezone (#83 — else it lands hours off).
+    [result] = scan(
+        [_meeting("m1", start=NOW + timedelta(hours=3), end=NOW + timedelta(hours=4))],
+        now=NOW,
+        home_address=HOME,
+    )
+    assert result.timezone == "America/Chicago"
+
+
 def test_declined_neighbour_does_not_make_meeting_back_to_back():
     # A declined same-venue meeting must not strip a real meeting's home legs.
     venue = "100 Broadway, Nashville, TN"

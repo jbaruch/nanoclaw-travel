@@ -179,6 +179,7 @@ def build_block_args(
     destination: str,
     leg_end: datetime | None = None,
     busy: bool = False,
+    timezone: str | None = None,
 ) -> dict:
     """Build the `GOOGLECALENDAR_CREATE_EVENT` arguments for a drive block.
 
@@ -203,10 +204,15 @@ def build_block_args(
             exactly this pair).
         leg_end: block end; defaults to `arrive_by`.
         busy: create the block Busy instead of Free.
+        timezone: the meeting's IANA timezone (e.g. "America/Chicago"). Emitted
+            as the live CREATE's `timezone` arg so the block lands at the right
+            instant — without it Composio reads the wall-clock as UTC and the
+            block lands hours off (#83). Omitted from the args when None.
 
     Returns:
         a dict of create-event arguments (calendar_id, summary, description,
-        location, start_datetime, event_duration_hour/minutes, transparency).
+        location, start_datetime, event_duration_hour/minutes, transparency,
+        and `timezone` when provided).
 
     Raises:
         ValueError: on a naive datetime, an empty endpoint, a negative or
@@ -241,7 +247,7 @@ def build_block_args(
         origin=origin,
         destination=destination,
     )
-    return {
+    args = {
         "calendar_id": calendar_id,
         "summary": summary,
         "description": description,
@@ -251,6 +257,13 @@ def build_block_args(
         "event_duration_minutes": total_minutes % 60,
         "transparency": "opaque" if busy else "transparent",
     }
+    # The live CREATE needs an explicit IANA `timezone`, or it reads the
+    # wall-clock as UTC and the block lands hours off (#83). When the meeting
+    # carries no timeZone, omit it rather than guess — the caller anchors the
+    # block to the same instant either way.
+    if timezone:
+        args["timezone"] = timezone
+    return args
 
 
 @dataclass(frozen=True)

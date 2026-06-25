@@ -185,6 +185,7 @@ class MeetingClass:
     end: datetime | None = None
     legs: tuple[TransitLeg, ...] = ()
     present_directions: tuple[str, ...] = ()
+    timezone: str | None = None  # IANA tz of the meeting, for the block's CREATE
 
 
 @dataclass
@@ -200,6 +201,7 @@ class _Event:
     marker: tuple[str, str] | None  # (served_meeting_id, direction) if a block
     declined: bool  # the operator's own RSVP is "declined"
     cancelled: bool  # event-level status == "cancelled"
+    timezone: str | None  # IANA name from start.timeZone, for the block's CREATE
 
 
 def _normalize_location(location: object) -> str | None:
@@ -282,6 +284,20 @@ def _self_declined(attendees: object) -> bool:
     return False
 
 
+def _extract_timezone(block: object) -> str | None:
+    """Pull the IANA `timeZone` (e.g. "America/Chicago") off a start/end block.
+
+    The block's `timeZone` is what the live `GOOGLECALENDAR_CREATE_EVENT` needs
+    as a separate `timezone` argument — without it, Composio reinterprets the
+    block's wall-clock as UTC and the drive block lands hours off (#83). Returns
+    None for a missing / malformed block so the caller can fall back.
+    """
+    if not isinstance(block, dict):
+        return None
+    tz = block.get("timeZone")
+    return tz if isinstance(tz, str) and tz else None
+
+
 def _parse_event(raw: object) -> _Event:
     """Adapt a raw Google Calendar event into an `_Event`, total over any JSON.
 
@@ -302,6 +318,7 @@ def _parse_event(raw: object) -> _Event:
             marker=None,
             declined=False,
             cancelled=False,
+            timezone=None,
         )
 
     raw_id = str(raw.get("id") or "")
@@ -324,6 +341,7 @@ def _parse_event(raw: object) -> _Event:
         marker=marker,
         declined=_self_declined(raw.get("attendees")),
         cancelled=raw.get("status") == "cancelled",
+        timezone=_extract_timezone(raw.get("start")),
     )
 
 
@@ -477,6 +495,7 @@ def _make_class(
         end=event.end,
         legs=legs,
         present_directions=present_directions,
+        timezone=event.timezone,
     )
 
 
