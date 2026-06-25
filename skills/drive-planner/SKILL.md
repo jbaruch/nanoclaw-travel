@@ -18,7 +18,7 @@ Skill bundle scripts run from the runtime mount `/home/node/.claude/skills/tessl
 
 ## Step 1 — Handle a sweep wake cycle
 
-This step fires when the precheck wakes the agent with a `data.meetings` payload. Each entry is one in-person meeting that needs a drive block, carrying `meeting_id`, `summary`, `start`, `location`, display-ready `leave_by` and `drive_minutes`, the prepared `create_args` (one per leg), `route_errors`, and `unplannable` (legs the precheck refused to block because the drive can't be real — too far to be a drive, or it overruns the gap between the two meetings). The blocks are create-first: create them, then tell the user they can skip.
+This step fires when the precheck wakes the agent with a `data.meetings` payload. Each entry is one in-person meeting that needs a drive block, carrying `meeting_id`, `summary`, `start`, `location`, display-ready `leave_by` and `drive_minutes`, the prepared `create_args` (one per leg), `route_errors`, and `unplannable` (legs with no block — the drive is too far to be a drive, or it overruns the gap between the two meetings). The blocks are create-first: create them, then tell the user they can skip.
 
 First create the blocks. Pass the whole `data` object (it already has the `meetings` array) to the apply script in `create` mode:
 
@@ -48,4 +48,4 @@ echo '{"meeting_id": "<meeting_id>", "now": "<current ISO-8601, tz-aware>"}' \
 
 `now` is the current time as a timezone-aware ISO-8601 string. The script deletes the meeting's drive blocks and records a skip (it computes the skip's expiry itself — see `apply.py` / `state-schema.md`) so the next sweep won't recreate them, then prints `{"removed": [...], "skip_recorded": true}`.
 
-Confirm to the user via `mcp__nanoclaw__send_message`: "Removed the drive block for `<meeting_id>` — won't plan it again." If `removed` is empty (the block was already gone), still confirm the skip was recorded so a later sweep won't recreate it. Finish here.
+Confirm to the user via `mcp__nanoclaw__send_message`. When `removed` lists blocks: "Removed the drive block for `<meeting_id>` — won't plan it again." When `removed` is empty (nothing was created — e.g. the meeting was unplannable — or the block was already gone): "Won't plan a drive to `<meeting_id>`." The skip is recorded either way, so a later sweep won't recreate it. Finish here.
