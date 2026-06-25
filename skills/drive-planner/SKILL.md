@@ -18,7 +18,7 @@ Skill bundle scripts run from the runtime mount `/home/node/.claude/skills/tessl
 
 ## Step 1 — Handle a sweep wake cycle
 
-This step fires when the precheck wakes the agent with a `data.meetings` payload. Each entry is one in-person meeting that needs a drive block, carrying `meeting_id`, `summary`, `start`, `location`, display-ready `leave_by` and `drive_minutes`, the prepared `create_args` (one per leg), `route_errors`, and `unplannable` (legs the precheck refused to block because the drive can't be real — too far, or it overruns the gap between meetings; the operator likely flew). The blocks are create-first: create them, then tell the user they can skip.
+This step fires when the precheck wakes the agent with a `data.meetings` payload. Each entry is one in-person meeting that needs a drive block, carrying `meeting_id`, `summary`, `start`, `location`, display-ready `leave_by` and `drive_minutes`, the prepared `create_args` (one per leg), `route_errors`, and `unplannable` (legs the precheck refused to block because the drive can't be real — too far to be a drive, or it overruns the gap between the two meetings). The blocks are create-first: create them, then tell the user they can skip.
 
 First create the blocks. Pass the whole `data` object (it already has the `meetings` array) to the apply script in `create` mode:
 
