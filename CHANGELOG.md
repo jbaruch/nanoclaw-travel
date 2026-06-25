@@ -1,5 +1,9 @@
 # Changelog
 
+### Added — airport clearance resolver, groundwork for airport drive blocks (`jbaruch/nanoclaw-travel#90`)
+
+New `airport_lead.py` (sibling of `boarding_lead.py`) resolves the two ground-transit deadlines around a flight: how early to be at the airport before departure (domestic 60 / international 120 min, nudged up by byAir's airport `delay.index`), and how long after landing before the drive home can start (domestic 20 / intl-to-US 40 / abroad 60 min). International vs domestic is decided by decoding each airport's `countryFlag` emoji to its ISO 3166-1 alpha-2 code (byAir exposes no ISO field, only a native-spelling `countryName`) and matching a canonical Schengen set, so intra-Schengen counts as domestic. An undecodable flag falls back to the international (larger) buffer. Pure, config-overridable, fully unit-tested; not yet wired into block creation — the integration lands in follow-up PRs on #90.
+
 ## 0.1.49 — 2026-06-25
 
 ### Fixed — drive-planner cancel UX: by list number or name, never an internal id (`jbaruch/nanoclaw-travel#86`)
