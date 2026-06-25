@@ -18,7 +18,7 @@ Skill bundle scripts run from the runtime mount `/home/node/.claude/skills/tessl
 
 ## Step 1 — Handle a sweep wake cycle
 
-This step fires when the precheck wakes the agent with a `data.meetings` payload. Each entry is one in-person meeting that needs a drive block, carrying `meeting_id`, `summary`, `start`, `location`, display-ready `leave_by` and `drive_minutes`, the prepared `create_args` (one per leg), `route_errors`, and `unplannable` (legs with no block — the drive is too far to be a drive, or it overruns the gap between the two meetings). The blocks are create-first: create them, then tell the user they can skip.
+This step fires when the precheck wakes the agent with a `data.meetings` payload. Each entry is one in-person meeting that needs a drive block, carrying `meeting_id`, `summary`, `start`, `location`, display-ready `leave_by` and `drive_minutes`, the prepared `create_args` (one per leg), `route_errors`, and `unplannable` (legs the precheck would not block, each carrying a `direction`, `drive_minutes`, and a display-ready `reason`). The blocks are create-first: create them, then tell the user they can skip.
 
 First create the blocks. Pass the whole `data` object (it already has the `meetings` array) to the apply script in `create` mode:
 
@@ -32,7 +32,7 @@ Then compose ONE Telegram notification via `mcp__nanoclaw__send_message` summari
 
 - For each meeting that got ANY created block (`created` lists `outbound` / `bridge` / `return` legs): "Added drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip <meeting_id>` if you're not driving." Use the meeting's `leave_by` and `drive_minutes` fields verbatim; when both are null (the only created leg is a `return`), phrase it "Added a return drive block for `<summary>`." Phrase relative-date words per `rules/operator-local-tz-phrasing.md`.
 - If a meeting carries `route_errors`, add a line: "Couldn't compute drive time for `<summary>` (`<error>`) — no block created; will retry next sweep."
-- If a meeting carries `unplannable` legs, add one line per leg, in the order listed (naming the leg's `direction` keeps it accurate when other legs of the same meeting still got a block — e.g. a `bridge` is gated but the `return` is created): "No `<direction>` drive block for `<summary>` — `<reason>`." Use each leg's `reason` verbatim (it already says whether it's too far or doesn't fit the gap); don't add your own cause. Then add one "Reply `skip <meeting_id>` to stop seeing it." for the meeting.
+- If a meeting carries `unplannable` legs, add one line per leg, in the order listed, naming the leg's `direction` (so it stays accurate when another leg of the same meeting still got a block): "No `<direction>` drive block for `<summary>` — `<reason>`." Use each leg's `reason` verbatim; don't add your own cause. Then add one "Reply `skip <meeting_id>` to stop seeing it." for the meeting.
 - If `apply` reported `failed` legs, add a line naming the meeting and the error.
 
 Silence rule: if `created`, `route_errors`, `unplannable`, and `failed` are all empty (every surfaced meeting was already handled), send nothing — proceed silently. Finish here.
