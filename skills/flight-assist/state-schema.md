@@ -238,3 +238,37 @@ When adding or renaming a field:
 2. Add migration logic to `state.py` that reads old `schema_version` and rewrites the upgraded shape via the owner-skill code path (the precheck, the agent on wake, sync-tripit — every entry point that uses `read_flight_state` from inside `flight-assist`)
 3. Non-owner reader skills (other tiles, future cross-tile composition) call `read_active_flights_snapshot` / `read_flight_state_snapshot` instead of the owner-side helpers; the snapshot readers treat any mismatched `schema_version` as "no usable prior state" and return without rewriting. Migration happens exclusively on the owner-skill's next read
 4. CHANGELOG entry describing the version bump and the owner-side migration path — an un-headed `### ` block at the top of `CHANGELOG.md`; the publish stamp step adds the `## <version> — <date>` heading (no `## Unreleased` section — that heading is forbidden per `coding-policy: context-artifacts` CHANGELOG Hygiene)
+
+## Calendar-as-State: Airport Drive Blocks
+
+A created airport drive block has no local record — the calendar event itself IS the state (Epic #59 §4, same design as drive-planner's meeting blocks but a self-contained sibling codec; see `#90`). The recheck poll re-fetches the near-term window by a direct API call and reads each of its own blocks back off the event. There is no `airport-blocks.json`. Owned by `airport_block.py` (`build_block_args` / `build_description` write, `parse_block` reads). This `BLOCK_SCHEMA_VERSION` is **distinct from** the on-disk `STATE_SCHEMA_VERSION` above — a separate, calendar-carried record with its own version line.
+
+All state lives in the event **`description`** — the live Composio v3 calendar toolkit exposes NO writable `extendedProperties` (verified against the NAS during Phase 1), so the description is the only durable, writable surface. It carries three parts:
+
+- the human line `Drive: → <CODE> (<flight>)` (to_airport) or `Drive: <CODE> → home` (from_airport);
+- the self-marker `[flight-assist:flight=<id>:dir=<to_airport|from_airport>]` — recognizes flight-assist's own airport blocks for idempotent create; pinned against the codec's marker regex by a test;
+- a `<!--fa:{...}-->` JSON comment (compact, hidden in most calendar UIs) with the machine state:
+
+| state key | meaning |
+|-----------|---------|
+| `v` | record schema version (`BLOCK_SCHEMA_VERSION`, currently `1`) |
+| `b` | routed drive seconds captured at creation (recheck baseline) |
+| `a` | anchor timestamp, ISO-8601 — for `to_airport` the be-at-the-airport DEADLINE (`dep − clearance`); for `from_airport` the earliest the drive home can START (`actual_arr + post_arrival_delay`) |
+| `o` / `d` | the routed leg endpoints (the poll re-routes exactly this pair) |
+| `al` | comma-joined record of alerts already pushed — `growth` and/or `leave_now` — so a later poll never re-pings the same condition |
+
+The served `flight_id` and leg `direction` come from the marker; the block's start/duration carry the times (CREATE uses flat `start_datetime` + `event_duration_*` plus the airport's IANA `timezone`).
+
+Writer / reader contract:
+
+- **Writer** — flight-assist creates blocks via the calendar-reconcile path (idempotent: finds an existing marker first, never double-books). When an alert fires, the recheck poll rebuilds the full `description` with only `al` updated and applies it via a partial `GOOGLECALENDAR_PATCH_EVENT` AFTER the send. `build_block_args` / `build_description` are the single source of the description format for both create and the suppression patch.
+- **Reader** — the recheck poll calls `parse_block(event)`; a non-block or malformed event yields `None` (never raises), so one bad event can't abort the poll.
+
+Migration (per `coding-policy: stateful-artifacts`):
+
+- `v` `1` is the initial version; no migration exists yet. Bump on any shape change to the description state JSON and add the owner-side upgrade in `parse_block`. A record stamped NEWER than this codec supports — or carrying a non-int `v` — parses to `None` (no-usable-prior-state, the safe non-disruptive fallback). A missing `v` is treated as the current shape for back-compat.
+
+Tolerance:
+
+- A block whose state is missing or malformed (no marker, unparseable JSON, unparseable baseline / anchor, empty endpoints, unknown direction, missing event id) parses to `None` and is treated as "not a block I recheck" — never raised on.
+- Composio is mid-retirement (nanoclaw#638 → OneCLI workspace MCP); the API fetch / create / find / patch are the pieces that re-point later, same as the flight-assist reconcile path.
