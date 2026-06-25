@@ -165,6 +165,7 @@ def _leg_create_args(
         origin=leg.origin or home_address,
         destination=leg.destination or home_address,
         leg_end=leg_end,
+        timezone=meeting.timezone,
     )
 
 

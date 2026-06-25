@@ -181,6 +181,32 @@ def test_create_event_args_are_flat_with_tags_in_description():
     assert "extendedProperties" not in args
     # tags ride in the description
     assert '"faFlightId":"1"' in args["description"]
+    # an explicit timezone anchors the instant (#82) — -05:00 -> Etc/GMT+5
+    assert args["timezone"] == "Etc/GMT+5"
+
+
+def test_create_time_fields_maps_offset_to_etc_zone():
+    # Whole-hour offsets map to a fixed-offset Etc zone (correct instant + local
+    # display); the start string is preserved.
+    assert cr._create_time_fields("2026-07-01T09:30:00-05:00") == (
+        "2026-07-01T09:30:00-05:00",
+        "Etc/GMT+5",
+    )
+    assert cr._create_time_fields("2026-07-01T09:30:00+01:00") == (
+        "2026-07-01T09:30:00+01:00",
+        "Etc/GMT-1",
+    )
+    assert cr._create_time_fields("2026-07-01T09:30:00+00:00") == (
+        "2026-07-01T09:30:00+00:00",
+        "Etc/GMT",
+    )
+
+
+def test_create_time_fields_non_whole_hour_falls_back_to_utc():
+    # +05:30 (India) has no Etc zone — normalize to UTC so the instant is right.
+    start, tz = cr._create_time_fields("2026-07-01T09:30:00+05:30")
+    assert tz is None
+    assert start == "2026-07-01T04:00:00+00:00"
 
 
 def test_patch_event_args_delta_shift_uses_flat_times():

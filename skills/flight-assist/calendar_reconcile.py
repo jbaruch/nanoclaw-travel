@@ -138,24 +138,53 @@ def _duration_minutes(start: str, end: str) -> int:
     return max(round((_instant(end) - _instant(start)).total_seconds() / 60), 1)
 
 
+def _create_time_fields(start_iso: str) -> tuple[str, str | None]:
+    """`(start_datetime, timezone)` for the live CREATE, anchored to the right instant.
+
+    The live `GOOGLECALENDAR_CREATE_EVENT` reads a bare `start_datetime`'s
+    wall-clock as UTC unless an explicit `timezone` is given — so an offset
+    string alone lands the event hours off (#82/#83). flight-assist has only the
+    departure offset, not an IANA name, so map a whole-hour offset to a
+    fixed-offset `Etc/GMT±N` zone (correct instant AND local-clock display).
+    A rare non-whole-hour offset (e.g. +05:30) has no Etc zone, so fall back to
+    a UTC-normalized `start_datetime` (correct instant, UTC display).
+    """
+    dt = _instant(start_iso)
+    offset = dt.utcoffset()
+    if offset is None:
+        return start_iso, None
+    total_minutes = offset.total_seconds() / 60
+    if total_minutes % 60 != 0:
+        return dt.astimezone(timezone.utc).isoformat(), None
+    hours = int(total_minutes // 60)
+    inverted = -hours  # POSIX Etc/GMT zones invert the sign
+    tz = "Etc/GMT" if inverted == 0 else f"Etc/GMT{inverted:+d}"
+    return start_iso, tz
+
+
 def _create_event_args(op: dict) -> dict:
     """Arguments for GOOGLECALENDAR_CREATE_EVENT from a planner `create` op.
 
     The planner's `body` is `{summary, start, end, private_props}`. The live v3
     contract is flat `start_datetime` + `event_duration_*` (no nested
     start/end), and there is NO writable `extendedProperties` — so the managed
-    tags ride in the `description` via `encode_tags`.
+    tags ride in the `description` via `encode_tags`. An explicit `timezone`
+    anchors the block to the right instant (see `_create_time_fields`).
     """
     body = op["body"]
     minutes = _duration_minutes(body["start"], body["end"])
-    return {
+    start_datetime, tz = _create_time_fields(body["start"])
+    args = {
         "calendar_id": op["calendar_id"],
         "summary": body["summary"],
         "description": encode_tags(body.get("description", ""), body["private_props"]),
-        "start_datetime": body["start"],
+        "start_datetime": start_datetime,
         "event_duration_hour": minutes // 60,
         "event_duration_minutes": minutes % 60,
     }
+    if tz:
+        args["timezone"] = tz
+    return args
 
 
 def _patch_event_args(op: dict) -> dict:

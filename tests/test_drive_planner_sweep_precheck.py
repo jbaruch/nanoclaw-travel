@@ -50,7 +50,10 @@ def _meeting(eid: str, start_h: int, *, location: str, end_h: int | None = None)
         "id": eid,
         "summary": f"Meeting {eid}",
         "location": location,
-        "start": {"dateTime": datetime(2026, 7, 1, start_h, 0, tzinfo=CT).isoformat()},
+        "start": {
+            "dateTime": datetime(2026, 7, 1, start_h, 0, tzinfo=CT).isoformat(),
+            "timeZone": "America/Chicago",
+        },
         "end": {"dateTime": datetime(2026, 7, 1, end_h, 0, tzinfo=CT).isoformat()},
         "description": "",
     }
@@ -124,6 +127,8 @@ def test_outbound_block_starts_baseline_plus_buffer_before_meeting():
     # display-ready fields the SKILL.md consumes verbatim (no arithmetic there)
     assert m["leave_by"] == datetime(2026, 7, 1, 13, 30, tzinfo=CT).isoformat()
     assert m["drive_minutes"] == 25  # 1500s / 60
+    # the meeting's IANA timezone reaches the CREATE args (#83)
+    assert outbound["timezone"] == "America/Chicago"
 
 
 def test_return_block_starts_at_meeting_end():
