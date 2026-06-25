@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.1.46 — 2026-06-25
+
 ### Fixed — calendar writes rebuilt for the live Composio v3 contract (`jbaruch/nanoclaw-travel#59`)
 
 Live NAS verification of the *write* path showed both skills' calendar I/O was built against an assumed Composio contract that does not exist on the live v3 toolkit — every create silently failed (`executed: 0`), so no blocks or boarding events were ever written. Probed every `GOOGLECALENDAR_*` action against the NAS and rebuilt to the real shapes:
