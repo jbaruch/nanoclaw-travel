@@ -29,9 +29,14 @@ Modes (subcommand on argv[1]):
              drive block, ordered by leave_by. Lets the cancel UX map a user's
              ordinal / natural-language reference to the internal `meeting_id`
              without that id ever appearing in a user-facing message (#86).
-    remove   stdin {"meeting_id": "...", "meeting_end": "<ISO>", "now": "<ISO>",
-                    "calendar_id": "primary"}
+    remove   stdin {"meeting_id" OR "summary": "...", "meeting_end": "<ISO>",
+                    "now": "<ISO>", "calendar_id": "primary"}
              stdout {"removed": [...], "skip_recorded": true}
+             `summary` resolves to the meeting_id server-side (by exact meeting
+             name, position-immune) so the cancel UX never needs a raw id (#86);
+             an unplannable meeting with no block resolves via the meeting event
+             itself. An unmatched summary returns
+             {"removed": [], "skip_recorded": false, "unmatched_summary": "..."}.
     suppress stdin {"patches": [{"event_id": "...", "calendar_id": "...",
                     "description": "<full rebuilt block description>"}]}
              stdout {"patched": ["<event_id>", ...]}
@@ -261,8 +266,11 @@ def _create_mode(request: dict, client) -> dict:
 
 def _remove_mode(request: dict, client) -> dict:
     meeting_id = request.get("meeting_id")
-    if not isinstance(meeting_id, str) or not meeting_id:
-        raise ValueError("remove: `meeting_id` is required")
+    summary = request.get("summary")
+    has_id = isinstance(meeting_id, str) and bool(meeting_id)
+    has_summary = isinstance(summary, str) and bool(summary)
+    if not has_id and not has_summary:
+        raise ValueError("remove: `meeting_id` or `summary` is required")
     now = _parse_iso(request.get("now"))
     if now is None:
         raise ValueError("remove: `now` must be a timezone-aware ISO-8601 string")
@@ -297,6 +305,20 @@ def _remove_mode(request: dict, client) -> dict:
             }
         )
     )
+
+    # Resolve a name reference to its meeting_id server-side (position-immune):
+    # the agent maps the user's ordinal / name onto a summary, and this finds
+    # the meeting by exact summary regardless of how many other blocks exist
+    # (#86). An unplannable meeting has no block, so fall back to the meeting
+    # event itself, giving it a working skip path.
+    if not has_id:
+        assert isinstance(summary, str)  # validation above requires id or summary
+        resolved = _resolve_meeting_id(fetched, summary)
+        if resolved is None:
+            return {"removed": [], "skip_recorded": False, "unmatched_summary": summary}
+        meeting_id = resolved
+    assert isinstance(meeting_id, str)  # has_id, or resolved to a str above
+
     removed = []
     block_arrivals = []
     for event in fetched:
@@ -332,6 +354,30 @@ def _remove_mode(request: dict, client) -> dict:
 # The block summary is "Drive: <meeting summary>" (see precheck `_leg_create_args`).
 # Stripping the prefix recovers the meeting summary the operator recognizes.
 _DRIVE_SUMMARY_PREFIX = "Drive: "
+
+
+def _resolve_meeting_id(fetched: list, summary: str) -> str | None:
+    """Resolve a user-facing meeting summary to its `meeting_id`, position-immune.
+
+    Prefer a drive block serving that meeting (its parsed `meeting_id`); fall
+    back to the meeting event itself (its id) so an `unplannable` meeting —
+    which has no block — can still be skipped (#86). Matching is by exact
+    summary, so the result never depends on calendar ordering or how many other
+    blocks already exist. Returns None when nothing matches.
+    """
+    target = f"{_DRIVE_SUMMARY_PREFIX}{summary}"
+    for event in fetched:
+        state = parse_block(event)
+        if state is not None and state.summary == target:
+            return state.meeting_id
+    for event in fetched:
+        if not isinstance(event, dict) or parse_block(event) is not None:
+            continue
+        if event.get("summary") == summary:
+            event_id = event.get("id")
+            if isinstance(event_id, str) and event_id:
+                return event_id
+    return None
 
 
 def _list_mode(request: dict, client) -> dict:

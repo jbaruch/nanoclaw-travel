@@ -35,35 +35,29 @@ Then compose ONE Telegram notification via `mcp__nanoclaw__send_message` summari
 - When exactly ONE meeting got a created block: "Added a drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip` or `don't drive` to cancel." When the only created leg is a `return` (`leave_by` / `drive_minutes` null): "Added a return drive block for `<summary>` — reply `skip` to cancel."
 - When SEVERAL meetings got blocks: number them and let the user cancel by number. Open with "Added drive blocks:", then one numbered line each — "`<n>`. `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive)" — then close with "Reply `cancel 2` or `cancel 1,3` to drop any." Keep the numbering for the cancel step (it matches `leave_by` order).
 - If a meeting carries `route_errors`, add a line: "Couldn't compute drive time for `<summary>` (`<error>`) — no block created; will retry next sweep."
-- If a meeting carries `unplannable` legs, add one line per leg, in the order listed, naming the leg's `direction` (so it stays accurate when another leg of the same meeting still got a block): "No `<direction>` drive block for `<summary>` — `<reason>`." Use each leg's `reason` verbatim; don't add your own cause.
+- If a meeting carries `unplannable` legs, add one line per leg, in the order listed, naming the leg's `direction` (so it stays accurate when another leg of the same meeting still got a block): "No `<direction>` drive block for `<summary>` — `<reason>`." Use each leg's `reason` verbatim; don't add your own cause. When ALL of a meeting's legs are unplannable (it got no block at all), also add "Reply `don't drive to <summary>` to stop seeing it." so the operator can mute it.
 - If `apply` reported `failed` legs, add a line naming the meeting and the error.
 
 Silence rule: if `created`, `route_errors`, `unplannable`, and `failed` are all empty (every surfaced meeting was already handled), send nothing — proceed silently. Finish here.
 
 ## Step 2 — Handle a cancel reply
 
-This step fires when the user replies to cancel a drive block — by list number ("cancel 2", "cancel 1,3"), a plain "skip" / "don't drive", or by meeting name ("don't drive to swimming"). The user never types an id; resolve their reference to the internal `meeting_id` here.
+This step fires when the user replies to cancel a drive block — by list number ("cancel 2", "cancel 1,3"), a plain "skip" / "don't drive", or by meeting name ("don't drive to swimming"). The user never types an id; resolve their reference to a meeting NAME, then let the script find the id.
 
-First list the current drive blocks (one per meeting, ordered by `leave_by`, the same order the sweep notification numbered them):
+Resolve the reference to one or more meeting names:
 
-```bash
-echo '{"now": "<current ISO-8601, tz-aware>"}' \
-  | python3 /home/node/.claude/skills/tessl__drive-planner/apply.py list
-```
+- A number ("cancel 2") or list of numbers ("cancel 1,3") refers to the numbered lines in YOUR prior sweep notification (read them from the conversation) — take the meeting name from each referenced line. The number is only an index into that one notification; never index by calendar order.
+- A bare "skip" / "don't drive" refers to the single block you just announced.
+- A meeting name ("don't drive to swimming") is the name directly.
+- If you can't tell which meeting is meant, run `apply.py list` (prints `{"blocks": [{"summary", "meeting_id", "leave_by"}]}`) and ask the user which `summary` they mean — show only the `summary` values, never the ids.
 
-It prints `{"blocks": [{"summary": "...", "meeting_id": "...", "leave_by": "<ISO>"}]}`. Map the user's reference onto these blocks to get the `meeting_id`(s):
-
-- A number ("cancel 2") or list of numbers ("cancel 1,3") indexes the numbered list from your prior notification — match those summaries to the `blocks` here. A bare "skip" / "don't drive" when there is exactly one block means that block.
-- A meeting name ("don't drive to swimming") matches the block whose `summary` names it.
-- If the reference is ambiguous or matches nothing (the list changed since the notification), ask the user which meeting, listing the current block `summary` values — never the ids.
-
-Then remove each resolved meeting. `now` is the current tz-aware ISO-8601 time:
+Remove each resolved meeting by name (`now` is the current tz-aware ISO-8601 time):
 
 ```bash
-echo '{"meeting_id": "<resolved meeting_id>", "now": "<current ISO-8601, tz-aware>"}' \
+echo '{"summary": "<meeting name>", "now": "<current ISO-8601, tz-aware>"}' \
   | python3 /home/node/.claude/skills/tessl__drive-planner/apply.py remove
 ```
 
-The script deletes that meeting's blocks and records a skip (it computes the expiry itself — see `apply.py` / `state-schema.md`) so the next sweep won't recreate them, printing `{"removed": [...], "skip_recorded": true}`.
+The script resolves the name to that meeting's id itself — by exact name, independent of calendar order — deletes its drive blocks, and records a skip (it computes the expiry itself — see `apply.py` / `state-schema.md`) so the next sweep won't recreate them. A meeting with no block (an `unplannable` one) still records the skip via its calendar event. It prints `{"removed": [...], "skip_recorded": true}`, or `{"removed": [], "skip_recorded": false, "unmatched_summary": "..."}` when nothing matched.
 
-Confirm to the user via `mcp__nanoclaw__send_message` by meeting name, never id: "Removed the drive block for `<summary>` — won't plan it again." When `removed` is empty (the block was already gone), still confirm: "Won't plan a drive to `<summary>`." The skip is recorded either way. Finish here.
+Confirm to the user via `mcp__nanoclaw__send_message` by meeting name, never id. When `removed` lists blocks: "Removed the drive block for `<summary>` — won't plan it again." When `removed` is empty but `skip_recorded` is true: "Won't plan a drive to `<summary>`." When `unmatched_summary` came back, tell the user you couldn't find that meeting and ask which they mean, listing names from `apply.py list`. Finish here.

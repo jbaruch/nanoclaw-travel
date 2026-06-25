@@ -194,6 +194,51 @@ def test_remove_deletes_blocks_and_records_skip():
     assert "evt_42" in skip_state.load_active_skips(now)
 
 
+def test_remove_by_summary_picks_the_right_meeting_among_pre_existing_blocks():
+    # The cancel UX resolves by name, never list position — a pre-existing block
+    # for another meeting must not be hit by "cancel <name>" (#86 / the OpenAI
+    # ordinal-shift concern). Two blocks on the calendar; remove "Football
+    # Practice" by summary deletes only its block.
+    swim = _block_for(
+        "evt_swim", "Swimming Practice", datetime(2026, 7, 2, 9, 30, tzinfo=CT), "b_sw"
+    )
+    football = _block_for(
+        "evt_fb", "Football Practice", datetime(2026, 7, 2, 15, 30, tzinfo=CT), "b_fb"
+    )
+    client = FakeComposio(existing=[swim, football])
+    now = datetime(2026, 7, 2, 8, 0, tzinfo=CT)
+    result = apply._remove_mode({"summary": "Football Practice", "now": now.isoformat()}, client)
+    assert client.deleted == ["b_fb"]  # only football, not swimming
+    assert result["skip_recorded"] is True
+    assert "evt_fb" in skip_state.load_active_skips(now)
+    assert "evt_swim" not in skip_state.load_active_skips(now)
+
+
+def test_remove_by_summary_skips_unplannable_meeting_with_no_block():
+    # An unplannable meeting has no drive block, so resolution falls back to the
+    # meeting event itself — the skip still records, giving it a working cancel
+    # path without exposing an id (#86 / the OpenAI unplannable-skip concern).
+    meeting_event = {
+        "id": "evt_flight",
+        "summary": "St. Louis talk",
+        "description": "",
+    }
+    client = FakeComposio(existing=[meeting_event])
+    now = datetime(2026, 7, 2, 8, 0, tzinfo=CT)
+    result = apply._remove_mode({"summary": "St. Louis talk", "now": now.isoformat()}, client)
+    assert result["removed"] == []  # no block to delete
+    assert result["skip_recorded"] is True
+    assert "evt_flight" in skip_state.load_active_skips(now)
+
+
+def test_remove_by_unmatched_summary_reports_no_match():
+    client = FakeComposio(existing=[])
+    now = datetime(2026, 7, 2, 8, 0, tzinfo=CT)
+    result = apply._remove_mode({"summary": "Nonexistent", "now": now.isoformat()}, client)
+    assert result["skip_recorded"] is False
+    assert result["unmatched_summary"] == "Nonexistent"
+
+
 def test_remove_with_past_meeting_end_keeps_find_window_valid():
     # A late skip/remove (meeting_end already past) must not invert the find
     # window (timeMax < timeMin), which could fail the whole remove.
