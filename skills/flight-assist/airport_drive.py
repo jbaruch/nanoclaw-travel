@@ -6,17 +6,25 @@ the precheck, mirroring how `calendar_plan.py` receives a resolved
 `boarding_lead_minutes`), this module decides whether to create a new airport
 drive block, shift an existing one, or leave it as-is, and emits the ops.
 
-It is a PURE function: no network, no clock reads beyond the injected `now`,
-no I/O. The caller executes the returned ops (create / update via the
-`airport_block` CREATE/PATCH contract) and writes the event IDs back into the
-flight's `calendar_events` ledger.
+It is a PURE function: no network, no clock reads, no I/O. The caller executes
+the returned ops (create / update via the `airport_block` CREATE/PATCH
+contract) and the calendar carries the result.
+
+Calendar-as-state, no local ledger (Epic #59 §4, the drive-planner model):
+the planner finds an existing block by scanning the fetched calendar events for
+its own `[flight-assist:flight=<id>:dir=<dir>]` marker (via
+`airport_block.parse_block`), NOT by reading the per-flight `calendar_events`
+ledger. So airport drive blocks add no entry to that ledger — the event itself
+is the record, matching how `state-schema.md` documents them. This is distinct
+from the boarding/flight events, which `calendar_plan.py` DOES track in the
+ledger.
 
 Why not `calendar_plan.py`: that reconcile planner emits `{summary, start,
 end, private_props}` bodies encoded via `calendar_tags` for byAir-calendar
 events. The airport drive blocks use the self-contained `airport_block` codec
 (full `build_block_args`, `<!--fadrive:-->` state) and live on the PRIMARY
-calendar, create-first and re-anchored — the drive-planner model, not the
-reconcile model. So the op body here IS the `build_block_args` dict.
+calendar, create-first and re-anchored. So the op body here IS the
+`build_block_args` dict.
 
 Two block kinds, one per direction:
   - `airport_drive_dep` — drive TO the departure airport (to_airport).
@@ -36,7 +44,7 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from airport_block import build_block_args  # noqa: E402
+from airport_block import build_block_args, parse_block  # noqa: E402
 
 KIND_AIRPORT_DRIVE_DEP = "airport_drive_dep"
 KIND_AIRPORT_DRIVE_ARR = "airport_drive_arr"
@@ -122,27 +130,48 @@ def _make_op(
     }
 
 
+def _find_existing_block(events: list[dict], flight_id, direction: str) -> dict | None:
+    """Find this flight+direction's block among fetched events, by its marker.
+
+    Parses each event with `airport_block.parse_block` (which recognizes the
+    `[flight-assist:flight=<id>:dir=<dir>]` marker + `<!--fadrive:-->` state)
+    and returns the first event whose block serves this `flight_id` in this
+    `direction`, or None. The calendar — not a ledger — is the source of block
+    identity. A non-block or malformed event yields None from `parse_block` and
+    is skipped, so one bad event can't break the scan.
+    """
+    target = str(flight_id)
+    for event in events:
+        state = parse_block(event)
+        if state is not None and state.flight_id == target and state.direction == direction:
+            return event
+    return None
+
+
 def plan_drive_block(
     *,
     flight_id,
     flight_code: str,
     desired: DesiredDriveBlock,
-    ledger: dict,
-    events_by_id: dict,
+    events: list[dict],
     calendar_id: str,
 ) -> list[dict]:
-    """Reconcile one airport drive block against the ledger. Returns 0–1 ops.
+    """Reconcile one airport drive block against the calendar. Returns 0–1 ops.
 
-    `ledger` is the flight's `calendar_events` map; `events_by_id` maps live
-    event ids to their normalized fetched events (carrying a `signature` of the
-    live `<start>/<end>`). The op `create_args` is the `airport_block`
-    `build_block_args` dict; the executor passes it straight to CREATE (or, for
-    an update, PATCH).
+    `events` is the fetched calendar events for the drive-block calendar, each a
+    dict carrying `id`, `description`, a `signature` of the live `<start>/<end>`
+    window, and `calendar_id`. The planner finds this flight+direction's block
+    by its marker (no ledger), then:
 
-    - No ledger entry → create.
-    - Tracked but missing from the calendar (deleted out of band) → recreate.
-    - Live window + last-written signature both match desired → no-op.
-    - Otherwise → update (re-anchor / re-route shifted the block).
+    - no existing block → create;
+    - existing block whose live window matches desired → no-op;
+    - existing block with a different window (re-anchor / re-route) → update.
+
+    The op `create_args` is the `airport_block` `build_block_args` dict; the
+    executor passes it to CREATE, or to PATCH on update (targeting the existing
+    event's id). `create_args["calendar_id"]` always equals the op's
+    `calendar_id` — airport blocks live on one calendar, passed in here — so the
+    PATCH target and the body's calendar never diverge.
     """
     kind = desired.kind
     create_args = build_block_args(
@@ -160,9 +189,9 @@ def plan_drive_block(
     )
     desired_sig = desired.signature()
     start_iso = desired.leg_start.isoformat()
-    entry = ledger.get(kind)
+    existing = _find_existing_block(events, flight_id, desired.direction)
 
-    if not entry:
+    if existing is None:
         return [
             _make_op(
                 op="create",
@@ -171,34 +200,20 @@ def plan_drive_block(
                 calendar_id=calendar_id,
                 create_args=create_args,
                 signature=desired_sig,
-                reason=f"no {kind} block tracked for {flight_code}; create at {start_iso}",
+                reason=f"no {kind} block on the calendar for {flight_code}; create at {start_iso}",
             )
         ]
 
-    live = events_by_id.get(entry["event_id"])
-    if live is None:
-        return [
-            _make_op(
-                op="create",
-                kind=kind,
-                flight_id=flight_id,
-                calendar_id=calendar_id,
-                create_args=create_args,
-                signature=desired_sig,
-                reason=f"tracked {kind} block {entry['event_id']} missing; recreate",
-            )
-        ]
-
-    if live.get("signature") == desired_sig and entry.get("synced_signature") == desired_sig:
-        return []  # window already matches; nothing to write
+    if existing.get("signature") == desired_sig:
+        return []  # live window already matches; nothing to write
 
     return [
         _make_op(
             op="update",
             kind=kind,
             flight_id=flight_id,
-            calendar_id=entry["calendar_id"],
-            event_id=entry["event_id"],
+            calendar_id=calendar_id,
+            event_id=existing.get("id"),
             create_args=create_args,
             signature=desired_sig,
             reason=f"shift {kind} block for {flight_code} to {start_iso}",

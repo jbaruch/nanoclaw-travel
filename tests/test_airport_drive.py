@@ -1,8 +1,8 @@
 """Tests for the airport drive block planner (`airport_drive.py`).
 
 Deterministic fixtures only — fixed tz-aware datetimes, no generated inputs.
-The planner is pure; these exercise the create / recreate / no-op / shift
-decisions against a ledger for both directions.
+The planner is pure; these exercise the create / no-op / shift decisions by
+scanning fetched calendar events for the block's marker (no ledger).
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 # E402 suppressed: the sys.path.insert above must execute before this import
 # so the skill module resolves by bare name — its bundle dir is only on
 # sys.path at runtime, matching nanoclaw-core's import convention.
+from airport_block import build_description  # noqa: E402
 from airport_drive import (  # noqa: E402
     KIND_AIRPORT_DRIVE_ARR,
     KIND_AIRPORT_DRIVE_DEP,
@@ -48,13 +49,31 @@ def _dep_desired(**overrides) -> DesiredDriveBlock:
     return DesiredDriveBlock(**args)
 
 
-def _plan(desired, ledger=None, events_by_id=None):
+def _existing_event(desired, *, flight_id="12345", event_id="evt_abc", signature=None) -> dict:
+    """A fetched calendar event whose description carries `desired`'s marker."""
+    desc = build_description(
+        summary=desired.summary,
+        flight_id=flight_id,
+        direction=desired.direction,
+        baseline_seconds=desired.baseline_seconds,
+        anchor=desired.anchor,
+        origin=desired.origin,
+        destination=desired.destination,
+    )
+    return {
+        "id": event_id,
+        "description": desc,
+        "calendar_id": "primary",
+        "signature": signature if signature is not None else desired.signature(),
+    }
+
+
+def _plan(desired, events=None):
     return plan_drive_block(
         flight_id=12345,
         flight_code="DL123",
         desired=desired,
-        ledger=ledger or {},
-        events_by_id=events_by_id or {},
+        events=events or [],
         calendar_id="primary",
     )
 
@@ -93,8 +112,8 @@ def test_signature_from_airport_uses_explicit_leg_end():
 # --- plan_drive_block: create ------------------------------------------
 
 
-def test_create_when_no_ledger_entry():
-    ops = _plan(_dep_desired())
+def test_create_when_no_block_on_calendar():
+    ops = _plan(_dep_desired(), events=[])
     assert len(ops) == 1
     op = ops[0]
     assert op["op"] == "create"
@@ -104,8 +123,17 @@ def test_create_when_no_ledger_entry():
     assert args["location"] == "BNA"
     assert args["transparency"] == "transparent"  # Free
     assert args["timezone"] == "America/Chicago"
+    assert args["calendar_id"] == op["calendar_id"]  # never diverge
     assert "[flight-assist:flight=12345:dir=to_airport]" in args["description"]
     assert op["signature"] == _dep_desired().signature()
+
+
+def test_create_ignores_other_flights_and_non_blocks():
+    other_flight = _existing_event(_dep_desired(), flight_id="99999", event_id="other")
+    other_dir = _existing_event(_dep_desired(direction="from_airport"), event_id="arr_evt")
+    junk = {"id": "x", "description": "just a meeting, no marker", "signature": "a/b"}
+    ops = _plan(_dep_desired(), events=[other_flight, other_dir, junk])
+    assert ops[0]["op"] == "create"  # none match this flight+to_airport
 
 
 def test_create_from_airport_kind():
@@ -121,51 +149,29 @@ def test_create_from_airport_kind():
         destination="home",
         timezone=None,
     )
-    ops = _plan(desired)
+    ops = _plan(desired, events=[])
     assert ops[0]["kind"] == KIND_AIRPORT_DRIVE_ARR
     assert "timezone" not in ops[0]["create_args"]
 
 
-# --- plan_drive_block: recreate / no-op / shift ------------------------
+# --- plan_drive_block: no-op / shift -----------------------------------
 
 
-def test_recreate_when_tracked_but_live_missing():
-    ledger = {KIND_AIRPORT_DRIVE_DEP: {"event_id": "gone", "calendar_id": "primary"}}
-    ops = _plan(_dep_desired(), ledger=ledger, events_by_id={})  # live not present
-    assert len(ops) == 1
-    assert ops[0]["op"] == "create"
-    assert "recreate" in ops[0]["reason"]
-
-
-def test_noop_when_live_and_signature_match():
-    sig = _dep_desired().signature()
-    ledger = {
-        KIND_AIRPORT_DRIVE_DEP: {
-            "event_id": "e1",
-            "calendar_id": "primary",
-            "synced_signature": sig,
-        }
-    }
-    events_by_id = {"e1": {"event_id": "e1", "signature": sig}}
-    ops = _plan(_dep_desired(), ledger=ledger, events_by_id=events_by_id)
-    assert ops == []
+def test_noop_when_existing_window_matches():
+    desired = _dep_desired()
+    events = [_existing_event(desired)]  # signature == desired.signature()
+    assert _plan(desired, events=events) == []
 
 
 def test_update_when_window_shifted():
+    desired = _dep_desired()
     old_sig = "2026-07-02T11:00:00-05:00/2026-07-02T13:00:00-05:00"
-    ledger = {
-        KIND_AIRPORT_DRIVE_DEP: {
-            "event_id": "e1",
-            "calendar_id": "primary",
-            "synced_signature": old_sig,
-        }
-    }
-    events_by_id = {"e1": {"event_id": "e1", "signature": old_sig}}
-    # desired has a different (re-anchored) window than the live event
-    ops = _plan(_dep_desired(), ledger=ledger, events_by_id=events_by_id)
+    events = [_existing_event(desired, event_id="e1", signature=old_sig)]
+    ops = _plan(desired, events=events)
     assert len(ops) == 1
     op = ops[0]
     assert op["op"] == "update"
     assert op["event_id"] == "e1"
-    assert op["signature"] == _dep_desired().signature()
+    assert op["signature"] == desired.signature()
     assert op["create_args"] is not None  # carries the rebuilt block args
+    assert op["create_args"]["calendar_id"] == op["calendar_id"]
