@@ -385,20 +385,29 @@ def _resolve_candidates(fetched: list, summary: str) -> list[tuple[str, str | No
     """
     target = f"{_DRIVE_SUMMARY_PREFIX}{summary}"
     found: dict[str, str | None] = {}
+    # Blocks first. A meeting has several leg blocks (outbound / return) with
+    # different leave-bys; keep the EARLIEST per meeting so the value matches
+    # what `list` and the notification showed (the outbound leave-by), since the
+    # caller disambiguates by exactly that.
     for event in fetched:
         state = parse_block(event)
-        if state is not None and state.summary == target and state.meeting_id not in found:
-            found[state.meeting_id] = state.baseline_leave_by.isoformat()
-    if not found:
-        for event in fetched:
-            if not isinstance(event, dict) or parse_block(event) is not None:
-                continue
-            if event.get("summary") == summary:
-                event_id = event.get("id")
-                if isinstance(event_id, str) and event_id and event_id not in found:
-                    start = event.get("start")
-                    when = start.get("dateTime") if isinstance(start, dict) else None
-                    found[event_id] = when
+        if state is None or state.summary != target:
+            continue
+        leave_by = state.baseline_leave_by.isoformat()
+        current = found.get(state.meeting_id)
+        if current is None or leave_by < current:
+            found[state.meeting_id] = leave_by
+    # Meeting events too — an `unplannable` meeting has no block, and it can
+    # share a name with a DIFFERENT occurrence that does (so don't stop at
+    # blocks). A blocked meeting's event shares its id, so it's already covered.
+    for event in fetched:
+        if not isinstance(event, dict) or parse_block(event) is not None:
+            continue
+        if event.get("summary") == summary:
+            event_id = event.get("id")
+            if isinstance(event_id, str) and event_id and event_id not in found:
+                start = event.get("start")
+                found[event_id] = start.get("dateTime") if isinstance(start, dict) else None
     return sorted(found.items(), key=lambda item: item[1] or "")
 
 

@@ -253,6 +253,48 @@ def test_remove_same_summary_without_leave_by_is_ambiguous_not_guessed():
     assert client.deleted == []  # nothing guessed/deleted
 
 
+def test_remove_resolves_unplannable_occurrence_even_when_another_has_a_block():
+    # Monday "Standup" has a drive block; Tuesday "Standup" is unplannable (only
+    # the meeting event exists). Cancelling Tuesday must still resolve + skip it,
+    # not be masked by Monday's block (the OpenAI collision case).
+    mon_block = _block_for("evt_mon", "Standup", datetime(2026, 7, 6, 9, 0, tzinfo=CT), "b_mon")
+    tue_meeting = {
+        "id": "evt_tue",
+        "summary": "Standup",
+        "description": "",
+        "start": {"dateTime": datetime(2026, 7, 7, 9, 0, tzinfo=CT).isoformat()},
+    }
+    client = FakeComposio(existing=[mon_block, tue_meeting])
+    now = datetime(2026, 7, 6, 7, 0, tzinfo=CT)
+    # both occurrences are offered (block + unplannable event), not just the block
+    amb = apply._remove_mode({"summary": "Standup", "now": now.isoformat()}, client)
+    assert {c["leave_by"] for c in amb["candidates"]} == {
+        datetime(2026, 7, 6, 8, 30, tzinfo=CT).isoformat(),  # Monday block leave-by
+        datetime(2026, 7, 7, 9, 0, tzinfo=CT).isoformat(),  # Tuesday meeting start
+    }
+    # pin Tuesday (the unplannable one) — it skips even though it has no block
+    res = apply._remove_mode(
+        {
+            "summary": "Standup",
+            "leave_by": datetime(2026, 7, 7, 9, 0, tzinfo=CT).isoformat(),
+            "now": now.isoformat(),
+        },
+        client,
+    )
+    assert res["removed"] == [] and res["skip_recorded"] is True
+    assert "evt_tue" in skip_state.load_active_skips(now)
+
+
+def test_resolve_candidates_uses_earliest_leg_leave_by():
+    # A meeting's outbound + return legs have different leave-bys; the candidate
+    # must report the EARLIEST (outbound), matching what `list` shows, so the
+    # leave_by disambiguation lines up regardless of calendar fetch order.
+    out = _block_for("evt_42", "Customer sync", datetime(2026, 7, 2, 13, 0, tzinfo=CT), "ob")
+    ret = _block_for("evt_42", "Customer sync", datetime(2026, 7, 2, 16, 0, tzinfo=CT), "rt")
+    candidates = apply._resolve_candidates([ret, out], "Customer sync")  # return seen first
+    assert candidates == [("evt_42", datetime(2026, 7, 2, 12, 30, tzinfo=CT).isoformat())]
+
+
 def test_remove_same_summary_with_leave_by_pins_the_right_instance():
     mon = _block_for("evt_mon", "Standup", datetime(2026, 7, 6, 9, 0, tzinfo=CT), "b_mon")
     tue = _block_for("evt_tue", "Standup", datetime(2026, 7, 7, 9, 0, tzinfo=CT), "b_tue")
