@@ -9,7 +9,7 @@ origin) and the pure planner `airport_drive.plan_drive_block`:
     routed drive (origin/dest/seconds) ─┘
 
 The caller (the wake-cycle reconcile + the precheck re-anchor, both later 4c
-slices) performs the I/O — `byair.get_airport(id)`, `maps.travel_time(...)`,
+slices) performs the I/O — `byair.get_airport(airport_id)`, `maps.travel_time(...)`,
 the moving-origin ladder — then hands the resolved values here. This module does
 ONLY the window math, summary text, and tz selection, mirroring how
 `airport_drive.py` is a pure planner the precheck feeds. No network, no clock,
