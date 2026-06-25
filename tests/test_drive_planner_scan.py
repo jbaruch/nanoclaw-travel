@@ -287,6 +287,15 @@ def test_meeting_timezone_is_captured():
     assert result.timezone == "America/Chicago"
 
 
+def test_meeting_timezone_falls_back_to_etc_offset_when_no_iana():
+    # A block missing its IANA timeZone but carrying an offset still anchors via
+    # a fixed-offset Etc/GMT zone (-05:00 -> Etc/GMT+5).
+    event = _meeting("m1", start=NOW + timedelta(hours=3), end=NOW + timedelta(hours=4))
+    del event["start"]["timeZone"]
+    [result] = scan([event], now=NOW, home_address=HOME)
+    assert result.timezone == "Etc/GMT+5"
+
+
 def test_declined_neighbour_does_not_make_meeting_back_to_back():
     # A declined same-venue meeting must not strip a real meeting's home legs.
     venue = "100 Broadway, Nashville, TN"

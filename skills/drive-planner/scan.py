@@ -284,18 +284,40 @@ def _self_declined(attendees: object) -> bool:
     return False
 
 
-def _extract_timezone(block: object) -> str | None:
-    """Pull the IANA `timeZone` (e.g. "America/Chicago") off a start/end block.
+def _etc_zone(dt: datetime | None) -> str | None:
+    """A fixed-offset `Etc/GMT±N` zone for a tz-aware datetime, or None.
 
-    The block's `timeZone` is what the live `GOOGLECALENDAR_CREATE_EVENT` needs
-    as a separate `timezone` argument — without it, Composio reinterprets the
-    block's wall-clock as UTC and the drive block lands hours off (#83). Returns
-    None for a missing / malformed block so the caller can fall back.
+    POSIX `Etc/GMT` zones invert the sign (`-05:00` → `Etc/GMT+5`). Only
+    whole-hour offsets map; a non-whole-hour offset (e.g. +05:30) has no Etc
+    zone and yields None.
+    """
+    offset = dt.utcoffset() if dt is not None else None
+    if offset is None:
+        return None
+    total_minutes = offset.total_seconds() / 60
+    if total_minutes % 60 != 0:
+        return None
+    inverted = -int(total_minutes // 60)
+    return "Etc/GMT" if inverted == 0 else f"Etc/GMT{inverted:+d}"
+
+
+def _extract_timezone(block: object) -> str | None:
+    """The IANA `timeZone` for a start/end block, with an offset fallback.
+
+    The live `GOOGLECALENDAR_CREATE_EVENT` needs a `timezone` argument or it
+    reads the block's wall-clock as UTC and the drive block lands hours off
+    (#83). Real Google events carry `timeZone` (e.g. "America/Chicago"); when a
+    block omits it but its `dateTime` carries an offset, fall back to a
+    fixed-offset `Etc/GMT±N` zone so the instant is still anchored. Returns None
+    only when neither is available.
     """
     if not isinstance(block, dict):
         return None
     tz = block.get("timeZone")
-    return tz if isinstance(tz, str) and tz else None
+    if isinstance(tz, str) and tz:
+        return tz
+    parsed, _ = _parse_dt(block)
+    return _etc_zone(parsed)
 
 
 def _parse_event(raw: object) -> _Event:
@@ -699,6 +721,7 @@ def _class_to_dict(result: MeetingClass) -> dict:
         "end": result.end.isoformat() if result.end else None,
         "legs": [_leg_to_dict(leg) for leg in result.legs],
         "present_directions": list(result.present_directions),
+        "timezone": result.timezone,
     }
 
 
