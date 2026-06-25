@@ -377,10 +377,12 @@ def parse_block(event: object) -> BlockState | None:
     recheck" and moves on.
 
     Schema version (per `coding-policy: stateful-artifacts`): every record
-    carries `schema_version`. A MISSING, non-int, or NEWER-than-supported
-    version all read as None — no-usable-prior-state, the safe non-disruptive
-    fallback. This is a new artifact with no pre-version legacy records, so a
-    record without `schema_version` is foreign/corrupt, never "assume current".
+    carries `schema_version`, and `parse_block` accepts ONLY the EXACT current
+    version. v1 is the first version, so no owner-side migration exists yet — a
+    missing, non-int, OLDER, or NEWER version all read as None
+    (no-usable-prior-state, the safe non-disruptive fallback). When a future
+    shape bumps the version, add the owner-side v1→vN upgrade here and widen
+    acceptance accordingly.
     """
     if not isinstance(event, dict):
         return None
@@ -390,7 +392,7 @@ def parse_block(event: object) -> BlockState | None:
         return None
 
     version = state.get(_STATE_KEY_VERSION)
-    if not isinstance(version, int) or isinstance(version, bool) or version > BLOCK_SCHEMA_VERSION:
+    if not isinstance(version, int) or isinstance(version, bool) or version != BLOCK_SCHEMA_VERSION:
         return None
 
     marker = _MARKER_RE.search(description) if isinstance(description, str) else None

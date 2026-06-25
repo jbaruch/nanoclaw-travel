@@ -280,6 +280,13 @@ def test_parse_block_none_when_version_missing():
     assert parse_block({"id": "e", "description": desc}) is None
 
 
+def test_parse_block_none_when_older_version():
+    # Exact-match acceptance: with no migration (v1 is first), an OLDER integer
+    # version must not be trusted as current — it reads as no-usable-prior-state.
+    desc = _desc().replace(f'"schema_version":{BLOCK_SCHEMA_VERSION}', '"schema_version":0')
+    assert parse_block({"id": "e", "description": desc}) is None
+
+
 def test_parse_block_none_when_event_id_missing():
     args = build_block_args(
         calendar_id="primary",

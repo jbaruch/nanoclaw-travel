@@ -266,7 +266,7 @@ Writer / reader contract:
 
 Migration (per `coding-policy: stateful-artifacts`):
 
-- `schema_version` `1` is the initial version; no migration exists yet. Bump on any shape change to the description state JSON and add the owner-side upgrade in `parse_block`. Every record carries `schema_version`: a record stamped NEWER than this codec supports, carrying a non-int version, OR **missing** the field entirely all parse to `None` (no-usable-prior-state, the safe non-disruptive fallback). This is a new artifact with no pre-version legacy records, so a missing version is foreign/corrupt — never assumed current.
+- `schema_version` `1` is the initial version; no migration exists yet, so `parse_block` accepts **only the exact current version**. A record that is **missing** `schema_version`, carries a **non-int**, or differs from the current version in **either** direction — **older** or newer — all parse to `None` (no-usable-prior-state, the safe non-disruptive fallback). v1 is the first version with no pre-version legacy records, so accepting an older integer as "current" would silently trust an unmigrated shape — hence exact-match. When a future shape bumps the version, add the owner-side v1→vN upgrade in `parse_block` and widen acceptance to include the migratable older versions.
 
 Tolerance:
 
