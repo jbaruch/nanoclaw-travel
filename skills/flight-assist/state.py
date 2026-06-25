@@ -386,15 +386,16 @@ def write_config(config: dict) -> None:
     """Persist the tile-wide config. `schema_version` is set automatically.
 
     Validates field types and rejects undocumented keys per the
-    writer/reader contract in `state-schema.md`. The optional fields
-    today are: `home_address` (str) and `min_transfer_minutes` (int,
-    non-negative). Add new fields here when bumping the config schema;
-    same place as the schema doc.
+    writer/reader contract in `state-schema.md`. The accepted optional
+    fields are `_CONFIG_OPTIONAL_FIELDS` (`home_address` and the calendar /
+    airport-clearance fields); the int fields that must be non-negative are
+    `_CONFIG_NON_NEGATIVE_INT_FIELDS`. Add new fields to those when bumping
+    the config schema; same place as the schema doc.
 
     Raises ValueError on:
     - Wrong type for a documented field (incl. `bool` rejected when an
       int field is expected — `bool` is an `int` subclass in Python)
-    - `min_transfer_minutes` below zero
+    - A `_CONFIG_NON_NEGATIVE_INT_FIELDS` field below zero
     - Any key not in `_CONFIG_OPTIONAL_FIELDS` (caller-supplied
       `schema_version` is allowed but is always overwritten by the
       canonical constant)

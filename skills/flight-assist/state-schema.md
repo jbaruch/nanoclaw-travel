@@ -19,7 +19,7 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
   "min_transfer_minutes": 45,
   "byair_calendar_name": "Flighty Flights",
@@ -46,7 +46,7 @@ Index of currently-tracked flight IDs. Refreshed daily by the sync-tripit script
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "flight_ids": [12345, 67890, 11111]
 }
 ```
@@ -90,7 +90,7 @@ Per-flight state record. One file per tracked flight.
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "flight_id": 12345,
   "code": "AA2414",
   "ownership": "mine",
