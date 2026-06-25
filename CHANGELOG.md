@@ -1,5 +1,9 @@
 # Changelog
 
+### Fixed — drive-planner cancel UX: by list number or name, never an internal id (`jbaruch/nanoclaw-travel#86`)
+
+The sweep notification told the operator to "Reply `skip <meeting_id>`", where `meeting_id` was the raw Google Calendar event id (opaque base32, effectively untypeable) — internal plumbing leaked to the user. Now the user-facing surface never carries an id: when one block is added the notification offers a plain "reply `skip` to cancel"; when several are added it numbers them and offers "`cancel 2`" / "`cancel 1,3`". A new `apply.py list` mode returns the current drive blocks (one per meeting, ordered by leave-by, summary stripped of the "Drive: " prefix) with their internal `meeting_id`s, so the cancel step maps the operator's ordinal or meeting name onto the id itself and confirms by name. The id never appears in, or is required from, a user message.
+
 ## 0.1.48 — 2026-06-25
 
 ### Fixed — drive-planner no longer plans impossible cross-city ground drives (`jbaruch/nanoclaw-travel#85`)

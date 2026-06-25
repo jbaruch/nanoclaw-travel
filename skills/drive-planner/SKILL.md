@@ -1,6 +1,6 @@
 ---
 name: drive-planner
-description: "Ground-transit drive planner for in-person meetings. On a ~2h precheck sweep it creates a traffic-aware Free drive block (home → venue → home) for each in-person meeting that lacks one and tells the user, who can reply to skip; the recheck poll then watches each block for traffic growth. Use on a drive-planner sweep wake event, or when the user replies to skip a drive block. Triggers - 'drive block', 'plan my drive', 'skip drive <id>', 'don't drive to that meeting', 'remove drive block', 'drive to my meeting', 'leave-by for a meeting'."
+description: "Ground-transit drive planner for in-person meetings. On a ~2h precheck sweep it creates a traffic-aware Free drive block (home → venue → home) for each in-person meeting that lacks one and tells the user, who can reply to cancel; the recheck poll then watches each block for traffic growth. Use on a drive-planner sweep wake event, or when the user replies to cancel a drive block. Triggers - 'drive block', 'plan my drive', 'cancel 2', 'cancel that drive', 'skip', 'don't drive to that meeting', 'remove drive block', 'drive to my meeting', 'leave-by for a meeting'."
 cadence: "0 */2 * * *"
 agentModel: "claude-haiku-4-5-20251001"
 script: "precheck.py"
@@ -12,7 +12,9 @@ This skill is an action router — pick the step that matches the user's intent 
 
 Available actions:
 - Handle a sweep wake cycle (precheck woke with `data.meetings`) — create the prepared drive blocks and notify the user
-- Handle a skip reply (user said "skip `<meeting_id>`") — remove that meeting's drive blocks and record the skip
+- Handle a cancel reply (user said "cancel 2", "cancel 1,3", "skip", or "don't drive to `<meeting>`") — remove the referenced meeting's drive blocks and record the skip
+
+Never put an internal calendar event/meeting id in a user-facing message, and never require the user to type one. The user refers to a block by its list number or the meeting name; the skill maps that to the id itself.
 
 Skill bundle scripts run from the runtime mount `/home/node/.claude/skills/tessl__drive-planner/`. Routing and the canonical home address are resolved by the precheck; `maps_client` ships in the co-located `tessl__flight-assist` bundle and is imported by the scripts, not invoked here.
 
@@ -28,24 +30,40 @@ echo '<data JSON>' | python3 /home/node/.claude/skills/tessl__drive-planner/appl
 
 It is idempotent — a meeting whose block already exists is skipped, never duplicated (lombot #50). It prints single-line JSON: `{"created": [...], "skipped_existing": [...], "failed": [...]}`.
 
-Then compose ONE Telegram notification via `mcp__nanoclaw__send_message` summarizing what changed:
+Then compose ONE Telegram notification via `mcp__nanoclaw__send_message` summarizing what changed. List the meetings that got blocks in `leave_by` order, and never include a `meeting_id` — the cancel reply works by list number or meeting name. Phrase relative-date words per `rules/operator-local-tz-phrasing.md`, and use each meeting's `leave_by` / `drive_minutes` fields verbatim.
 
-- For each meeting that got ANY created block (`created` lists `outbound` / `bridge` / `return` legs): "Added drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip <meeting_id>` if you're not driving." Use the meeting's `leave_by` and `drive_minutes` fields verbatim; when both are null (the only created leg is a `return`), phrase it "Added a return drive block for `<summary>`." Phrase relative-date words per `rules/operator-local-tz-phrasing.md`.
+- When exactly ONE meeting got a created block: "Added a drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip` or `don't drive` to cancel." When the only created leg is a `return` (`leave_by` / `drive_minutes` null): "Added a return drive block for `<summary>` — reply `skip` to cancel."
+- When SEVERAL meetings got blocks: number them and let the user cancel by number. Open with "Added drive blocks:", then one numbered line each — "`<n>`. `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive)" — then close with "Reply `cancel 2` or `cancel 1,3` to drop any." Keep the numbering for the cancel step (it matches `leave_by` order).
 - If a meeting carries `route_errors`, add a line: "Couldn't compute drive time for `<summary>` (`<error>`) — no block created; will retry next sweep."
-- If a meeting carries `unplannable` legs, add one line per leg, in the order listed, naming the leg's `direction` (so it stays accurate when another leg of the same meeting still got a block): "No `<direction>` drive block for `<summary>` — `<reason>`." Use each leg's `reason` verbatim; don't add your own cause. Then add one "Reply `skip <meeting_id>` to stop seeing it." for the meeting.
+- If a meeting carries `unplannable` legs, add one line per leg, in the order listed, naming the leg's `direction` (so it stays accurate when another leg of the same meeting still got a block): "No `<direction>` drive block for `<summary>` — `<reason>`." Use each leg's `reason` verbatim; don't add your own cause.
 - If `apply` reported `failed` legs, add a line naming the meeting and the error.
 
 Silence rule: if `created`, `route_errors`, `unplannable`, and `failed` are all empty (every surfaced meeting was already handled), send nothing — proceed silently. Finish here.
 
-## Step 2 — Handle a skip reply
+## Step 2 — Handle a cancel reply
 
-This step fires when the user replies "skip `<meeting_id>`" (or "don't drive to `<meeting_id>`") about a drive block the sweep created. Remove the blocks and record the skip so the next sweep does not recreate them.
+This step fires when the user replies to cancel a drive block — by list number ("cancel 2", "cancel 1,3"), a plain "skip" / "don't drive", or by meeting name ("don't drive to swimming"). The user never types an id; resolve their reference to the internal `meeting_id` here.
+
+First list the current drive blocks (one per meeting, ordered by `leave_by`, the same order the sweep notification numbered them):
 
 ```bash
-echo '{"meeting_id": "<meeting_id>", "now": "<current ISO-8601, tz-aware>"}' \
+echo '{"now": "<current ISO-8601, tz-aware>"}' \
+  | python3 /home/node/.claude/skills/tessl__drive-planner/apply.py list
+```
+
+It prints `{"blocks": [{"summary": "...", "meeting_id": "...", "leave_by": "<ISO>"}]}`. Map the user's reference onto these blocks to get the `meeting_id`(s):
+
+- A number ("cancel 2") or list of numbers ("cancel 1,3") indexes the numbered list from your prior notification — match those summaries to the `blocks` here. A bare "skip" / "don't drive" when there is exactly one block means that block.
+- A meeting name ("don't drive to swimming") matches the block whose `summary` names it.
+- If the reference is ambiguous or matches nothing (the list changed since the notification), ask the user which meeting, listing the current block `summary` values — never the ids.
+
+Then remove each resolved meeting. `now` is the current tz-aware ISO-8601 time:
+
+```bash
+echo '{"meeting_id": "<resolved meeting_id>", "now": "<current ISO-8601, tz-aware>"}' \
   | python3 /home/node/.claude/skills/tessl__drive-planner/apply.py remove
 ```
 
-`now` is the current time as a timezone-aware ISO-8601 string. The script deletes the meeting's drive blocks and records a skip (it computes the skip's expiry itself — see `apply.py` / `state-schema.md`) so the next sweep won't recreate them, then prints `{"removed": [...], "skip_recorded": true}`.
+The script deletes that meeting's blocks and records a skip (it computes the expiry itself — see `apply.py` / `state-schema.md`) so the next sweep won't recreate them, printing `{"removed": [...], "skip_recorded": true}`.
 
-Confirm to the user via `mcp__nanoclaw__send_message`. When `removed` lists blocks: "Removed the drive block for `<meeting_id>` — won't plan it again." When `removed` is empty (nothing was created — e.g. the meeting was unplannable — or the block was already gone): "Won't plan a drive to `<meeting_id>`." The skip is recorded either way, so a later sweep won't recreate it. Finish here.
+Confirm to the user via `mcp__nanoclaw__send_message` by meeting name, never id: "Removed the drive block for `<summary>` — won't plan it again." When `removed` is empty (the block was already gone), still confirm: "Won't plan a drive to `<summary>`." The skip is recorded either way. Finish here.

@@ -23,6 +23,12 @@ drive-planner's own (`block_props`, `skip_state`).
 Modes (subcommand on argv[1]):
     create   stdin {"meetings": [{"meeting_id": "...", "create_args": [...]}]}
              stdout {"created": [...], "skipped_existing": [...], "failed": [...]}
+    list     stdin {"now": "<ISO>", "calendar_id": "primary"}
+             stdout {"blocks": [{"summary": "...", "meeting_id": "...",
+                    "leave_by": "<ISO>"}]} — one per meeting with a current
+             drive block, ordered by leave_by. Lets the cancel UX map a user's
+             ordinal / natural-language reference to the internal `meeting_id`
+             without that id ever appearing in a user-facing message (#86).
     remove   stdin {"meeting_id": "...", "meeting_end": "<ISO>", "now": "<ISO>",
                     "calendar_id": "primary"}
              stdout {"removed": [...], "skip_recorded": true}
@@ -323,6 +329,59 @@ def _remove_mode(request: dict, client) -> dict:
     return {"removed": removed, "skip_recorded": True}
 
 
+# The block summary is "Drive: <meeting summary>" (see precheck `_leg_create_args`).
+# Stripping the prefix recovers the meeting summary the operator recognizes.
+_DRIVE_SUMMARY_PREFIX = "Drive: "
+
+
+def _list_mode(request: dict, client) -> dict:
+    """List the current drive blocks, one per meeting, for the cancel UX (#86).
+
+    Returns `{"blocks": [{summary, meeting_id, leave_by}]}` ordered by leave_by.
+    The agent maps a user's ordinal ("cancel 2") or natural-language ("don't
+    drive to swimming") onto a `meeting_id` from this list, so the internal id
+    never has to appear in — or be typed into — a user-facing message.
+    """
+    now = _parse_iso(request.get("now"))
+    if now is None:
+        raise ValueError("list: `now` must be a timezone-aware ISO-8601 string")
+    calendar_id = request.get("calendar_id")
+    if not isinstance(calendar_id, str) or not calendar_id:
+        calendar_id = "primary"
+    fetched = _items(
+        client.find_events(
+            {
+                "calendar_id": calendar_id,
+                "timeMin": (now - _FIND_PAD).isoformat(),
+                "timeMax": (now + _DEFAULT_SKIP_HORIZON).isoformat(),
+            }
+        )
+    )
+    # One entry per meeting; a meeting has several leg blocks, so key by
+    # meeting_id and keep the earliest leave-by (the outbound) as the meeting's.
+    by_meeting: dict[str, dict] = {}
+    for event in fetched:
+        state = parse_block(event)
+        if state is None:
+            continue
+        leave_by = state.baseline_leave_by
+        summary = state.summary
+        if summary.startswith(_DRIVE_SUMMARY_PREFIX):
+            summary = summary[len(_DRIVE_SUMMARY_PREFIX) :]
+        existing = by_meeting.get(state.meeting_id)
+        if existing is None or leave_by < existing["_leave_by"]:
+            by_meeting[state.meeting_id] = {
+                "summary": summary,
+                "meeting_id": state.meeting_id,
+                "leave_by": leave_by.isoformat(),
+                "_leave_by": leave_by,
+            }
+    blocks = sorted(by_meeting.values(), key=lambda b: b["_leave_by"])
+    for block in blocks:
+        del block["_leave_by"]
+    return {"blocks": blocks}
+
+
 def _suppress_mode(request: dict, client) -> dict:
     """Persist the recheck poll's alert-suppression records — AFTER the ping.
 
@@ -365,10 +424,10 @@ def _suppress_mode(request: dict, client) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in ("create", "remove", "suppress"):
+    if len(argv) < 2 or argv[1] not in ("create", "list", "remove", "suppress"):
         print(
             json.dumps(
-                {"error": "usage: apply.py <create|remove|suppress> (request JSON on stdin)"}
+                {"error": "usage: apply.py <create|list|remove|suppress> (request JSON on stdin)"}
             ),
             file=sys.stderr,
         )
@@ -386,6 +445,8 @@ def main(argv: list[str]) -> int:
         client = _load_composio()
         if argv[1] == "create":
             result = _create_mode(request, client)
+        elif argv[1] == "list":
+            result = _list_mode(request, client)
         elif argv[1] == "remove":
             result = _remove_mode(request, client)
         else:

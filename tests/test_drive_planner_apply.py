@@ -84,6 +84,47 @@ def _fetched_block(args, event_id="block_1"):
     return {"id": event_id, "summary": args["summary"], "description": args["description"]}
 
 
+def _block_for(meeting_id, summary, arrive, event_id):
+    args = build_block_args(
+        calendar_id="primary",
+        meeting_id=meeting_id,
+        direction="outbound",
+        summary=f"Drive: {summary}",
+        leg_start=arrive - timedelta(minutes=30),
+        arrive_by=arrive,
+        baseline_seconds=1500,
+        origin="Home",
+        destination="venue",
+    )
+    return _fetched_block(args, event_id)
+
+
+# --- list: cancel-UX block listing (#86) ---------------------------------
+
+
+def test_list_returns_one_per_meeting_ordered_by_leave_by_no_drive_prefix():
+    early = _block_for(
+        "evt_early", "Swimming Practice", datetime(2026, 7, 2, 9, 30, tzinfo=CT), "b1"
+    )
+    late = _block_for(
+        "evt_late", "Football Practice", datetime(2026, 7, 2, 15, 30, tzinfo=CT), "b2"
+    )
+    client = FakeComposio(existing=[late, early])  # unordered on the calendar
+    result = apply._list_mode({"now": datetime(2026, 7, 2, 8, 0, tzinfo=CT).isoformat()}, client)
+    # ordered by leave_by; the "Drive: " prefix is stripped for the operator
+    assert [b["summary"] for b in result["blocks"]] == ["Swimming Practice", "Football Practice"]
+    assert result["blocks"][0]["meeting_id"] == "evt_early"
+
+
+def test_list_groups_multiple_legs_of_one_meeting():
+    out = _block_for("evt_42", "Customer sync", datetime(2026, 7, 2, 13, 0, tzinfo=CT), "ob")
+    ret = _block_for("evt_42", "Customer sync", datetime(2026, 7, 2, 15, 0, tzinfo=CT), "rt")
+    client = FakeComposio(existing=[out, ret])
+    result = apply._list_mode({"now": datetime(2026, 7, 2, 8, 0, tzinfo=CT).isoformat()}, client)
+    assert len(result["blocks"]) == 1  # one entry per meeting, not per leg
+    assert result["blocks"][0]["meeting_id"] == "evt_42"
+
+
 # --- create: idempotency (lombot #50) ------------------------------------
 
 
