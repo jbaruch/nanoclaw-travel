@@ -284,6 +284,28 @@ def test_arrival_block_config_overrides_post_arrival():
     assert block.anchor == ARR + timedelta(minutes=75)
 
 
+def test_arrival_block_ignores_malformed_config_override():
+    # Symmetric to the departure-side check, exercising the post-arrival path
+    # through _post_arrival_minutes: a hand-edited bad value is ignored and the
+    # airport_lead default (intl-to-US = 40) applies.
+    for bad in (
+        {"airport_post_arrival_intl_us_minutes": "75"},
+        {"airport_post_arrival_intl_us_minutes": -5},
+        {"airport_post_arrival_intl_us_minutes": True},
+    ):
+        block = arrival_block(
+            arr_code="BNA",
+            dep_ctx=FR,
+            arr_ctx=US,
+            arr_instant=ARR,
+            origin="BNA",
+            destination="home",
+            baseline_seconds=1200,
+            config=bad,
+        )
+        assert block.anchor == ARR + timedelta(minutes=40)
+
+
 # --- validation ----------------------------------------------------------------
 
 
