@@ -217,6 +217,11 @@ def build_block_args(
         raise ValueError("build_block_args: `origin` and `destination` must be non-empty")
 
     end = leg_end if leg_end is not None else anchor
+    if end < leg_start:
+        raise ValueError(
+            "build_block_args: block end must not be before `leg_start` "
+            "(a leg_end earlier than leg_start, or leg_start later than anchor)"
+        )
     total_minutes = _duration_minutes(leg_start, end)
     description = build_description(
         summary=summary,
@@ -369,7 +374,7 @@ def parse_block(event: object) -> BlockState | None:
     recheck" and moves on.
 
     Schema version (per `coding-policy: stateful-artifacts`): a record stamped
-    NEWER than this tile supports reads as None — no-usable-prior-state, the
+    NEWER than this codec supports reads as None — no-usable-prior-state, the
     safe non-disruptive fallback. A missing version is treated as the current.
     """
     if not isinstance(event, dict):

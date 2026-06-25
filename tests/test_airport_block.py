@@ -157,6 +157,7 @@ def test_build_block_args_validation_errors():
         {**base, "baseline_seconds": True},  # bool is not a valid int here
         {**base, "origin": ""},
         {**base, "destination": ""},
+        {**base, "leg_end": LEAVE_BY - timedelta(minutes=1)},  # end before leg_start
     ):
         try:
             build_block_args(**bad)
