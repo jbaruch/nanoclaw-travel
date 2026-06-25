@@ -68,7 +68,7 @@ def test_build_description_shape():
     lines = desc.split("\n")
     assert lines[0] == "Drive: → BNA (DL123)"
     assert lines[1] == "[flight-assist:flight=12345:dir=to_airport]"
-    assert lines[2].startswith("<!--fa:{") and lines[2].endswith("}-->")
+    assert lines[2].startswith("<!--fadrive:{") and lines[2].endswith("}-->")
 
 
 # --- build_block_args ---------------------------------------------------
@@ -285,6 +285,22 @@ def test_parse_block_none_when_older_version():
     # version must not be trusted as current — it reads as no-usable-prior-state.
     desc = _desc().replace(f'"schema_version":{BLOCK_SCHEMA_VERSION}', '"schema_version":0')
     assert parse_block({"id": "e", "description": desc}) is None
+
+
+def test_parse_block_ignores_calendar_tags_fa_comment():
+    # flight-assist's boarding/flight events carry a `<!--fa:{...}-->` tag comment
+    # (calendar_tags.py). The airport-block parser must NOT match those — it uses
+    # the distinct `<!--fadrive:-->` prefix. Regression for the prefix collision.
+    event = {
+        "id": "boarding_evt",
+        "summary": "Boarding DL123",
+        "description": (
+            "Boarding DL123\n"
+            '<!--fa:{"faKind":"boarding","faFlightId":"12345","faManaged":"created"}-->'
+        ),
+        "calendar_id": "byair_cal",
+    }
+    assert parse_block(event) is None
 
 
 def test_parse_block_none_when_event_id_missing():

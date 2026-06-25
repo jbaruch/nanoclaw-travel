@@ -17,7 +17,7 @@ toolkit exposes no writable `extendedProperties`):
 
   * the human line (`Drive: → BNA (DL123)` / `Drive: BNA → home`),
   * the self-marker `[flight-assist:flight=<id>:dir=<to_airport|from_airport>]`,
-  * a compact `<!--fa:{...}-->` JSON comment with the machine state the recheck
+  * a compact `<!--fadrive:{...}-->` JSON comment with the machine state the recheck
     poll reads back: schema version, baseline drive seconds, the anchor instant,
     the routed origin/destination, and the alert-suppression record. Parsed
     defensively — a malformed comment yields `None`, never raises.
@@ -69,7 +69,10 @@ BLOCK_SCHEMA_VERSION = 1
 
 # The machine state rides in an HTML comment so it stays out of the way in
 # calendar UIs while remaining round-trippable. Short keys keep it compact.
-_STATE_RE = re.compile(r"<!--fa:(?P<json>\{.*?\})-->", re.DOTALL)
+# Distinct `fadrive:` prefix (not `fa:`): flight-assist's calendar_tags.py
+# already uses `<!--fa:{...}-->` for boarding/flight event tags, so the airport
+# drive block carries its own prefix to avoid matching those event comments.
+_STATE_RE = re.compile(r"<!--fadrive:(?P<json>\{.*?\})-->", re.DOTALL)
 # The version key is spelled out (`schema_version`), not abbreviated like the
 # other keys: `coding-policy: stateful-artifacts` requires every record to
 # carry an auditable `schema_version` field by that name.
@@ -148,7 +151,7 @@ def build_description(
     }
     marker = build_marker(flight_id, direction)
     blob = json.dumps(state, separators=(",", ":"))
-    return f"{summary}\n{marker}\n<!--fa:{blob}-->"
+    return f"{summary}\n{marker}\n<!--fadrive:{blob}-->"
 
 
 def _duration_minutes(leg_start: datetime, leg_end: datetime) -> int:
@@ -354,7 +357,7 @@ def _parse_iso(raw: object) -> datetime | None:
 
 
 def _decode_state(description: object) -> dict | None:
-    """Pull the `<!--fa:{...}-->` state JSON out of a description, defensively."""
+    """Pull the `<!--fadrive:{...}-->` state JSON out of a description, defensively."""
     if not isinstance(description, str):
         return None
     match = _STATE_RE.search(description)
@@ -370,7 +373,7 @@ def _decode_state(description: object) -> dict | None:
 def parse_block(event: object) -> BlockState | None:
     """Parse a fetched calendar event into a `BlockState`, or None.
 
-    Recognition is by the description's `<!--fa:{...}-->` state JSON plus the
+    Recognition is by the description's `<!--fadrive:{...}-->` state JSON plus the
     `[flight-assist:flight=...:dir=...]` marker. Returns None when the event
     carries no airport-block state, the marker is absent/malformed, or a
     required field is missing — the recheck poll treats None as "not a block I

@@ -247,7 +247,7 @@ All state lives in the event **`description`** — the live Composio v3 calendar
 
 - the human line `Drive: → <CODE> (<flight>)` (to_airport) or `Drive: <CODE> → home` (from_airport);
 - the self-marker `[flight-assist:flight=<id>:dir=<to_airport|from_airport>]` — recognizes flight-assist's own airport blocks for idempotent create; pinned against the codec's marker regex by a test;
-- a `<!--fa:{...}-->` JSON comment (compact, hidden in most calendar UIs) with the machine state:
+- a `<!--fadrive:{...}-->` JSON comment (compact, hidden in most calendar UIs) with the machine state. The prefix is `fadrive`, **not** `fa`: flight-assist's `calendar_tags.py` already uses `<!--fa:{...}-->` for boarding/flight event tags, so the airport drive block carries its own prefix to avoid matching those:
 
 | state key | meaning |
 |-----------|---------|
