@@ -23,9 +23,24 @@ drive-planner's own (`block_props`, `skip_state`).
 Modes (subcommand on argv[1]):
     create   stdin {"meetings": [{"meeting_id": "...", "create_args": [...]}]}
              stdout {"created": [...], "skipped_existing": [...], "failed": [...]}
-    remove   stdin {"meeting_id": "...", "meeting_end": "<ISO>", "now": "<ISO>",
-                    "calendar_id": "primary"}
+    list     stdin {"now": "<ISO>", "calendar_id": "primary"}
+             stdout {"blocks": [{"summary": "...", "meeting_id": "...",
+                    "leave_by": "<ISO>"}]} — one per meeting with a current
+             drive block, ordered by leave_by. Lets the cancel UX map a user's
+             ordinal / natural-language reference to the internal `meeting_id`
+             without that id ever appearing in a user-facing message (#86).
+    remove   stdin {"meeting_id" OR "summary": "...", "now": "<ISO>",
+                    optional: "leave_by", "meeting_end", "calendar_id"}
              stdout {"removed": [...], "skip_recorded": true}
+             `summary` resolves to the meeting_id server-side (by exact meeting
+             name, position-immune) so the cancel UX never needs a raw id (#86);
+             an unplannable meeting with no block resolves via the meeting event
+             itself. Pass optional `leave_by` to pin the exact instance when
+             meetings share a summary (a daily "Standup"). Non-match /
+             still-ambiguous return, respectively,
+             {"removed": [], "skip_recorded": false, "unmatched_summary": "..."}
+             and {"removed": [], "skip_recorded": false, "ambiguous_summary":
+             "...", "candidates": [{"summary","leave_by"}]} — never an id.
     suppress stdin {"patches": [{"event_id": "...", "calendar_id": "...",
                     "description": "<full rebuilt block description>"}]}
              stdout {"patched": ["<event_id>", ...]}
@@ -255,8 +270,11 @@ def _create_mode(request: dict, client) -> dict:
 
 def _remove_mode(request: dict, client) -> dict:
     meeting_id = request.get("meeting_id")
-    if not isinstance(meeting_id, str) or not meeting_id:
-        raise ValueError("remove: `meeting_id` is required")
+    summary = request.get("summary")
+    has_id = isinstance(meeting_id, str) and bool(meeting_id)
+    has_summary = isinstance(summary, str) and bool(summary)
+    if not has_id and not has_summary:
+        raise ValueError("remove: `meeting_id` or `summary` is required")
     now = _parse_iso(request.get("now"))
     if now is None:
         raise ValueError("remove: `now` must be a timezone-aware ISO-8601 string")
@@ -291,6 +309,34 @@ def _remove_mode(request: dict, client) -> dict:
             }
         )
     )
+
+    # Resolve a name reference to its meeting_id server-side (position-immune):
+    # the agent maps the user's ordinal / name onto a summary, and this finds
+    # the meeting by exact summary regardless of how many other blocks exist
+    # (#86). An unplannable meeting has no block, so fall back to the meeting
+    # event itself, giving it a working skip path.
+    if not has_id:
+        assert isinstance(summary, str)  # validation above requires id or summary
+        candidates = _resolve_candidates(fetched, summary)
+        # Pin the exact instance when the caller passes the block's leave-by
+        # (several meetings can share a summary — a daily "Standup").
+        leave_by = request.get("leave_by")
+        if isinstance(leave_by, str) and leave_by:
+            candidates = [c for c in candidates if c[1] == leave_by]
+        if not candidates:
+            return {"removed": [], "skip_recorded": False, "unmatched_summary": summary}
+        if len(candidates) > 1:
+            # Don't guess between same-summary meetings — hand the choices back
+            # (summary + leave_by, never an id) for the agent to disambiguate.
+            return {
+                "removed": [],
+                "skip_recorded": False,
+                "ambiguous_summary": summary,
+                "candidates": [{"summary": summary, "leave_by": when} for _, when in candidates],
+            }
+        meeting_id = candidates[0][0]
+    assert isinstance(meeting_id, str)  # has_id, or resolved to a single str above
+
     removed = []
     block_arrivals = []
     for event in fetched:
@@ -311,8 +357,13 @@ def _remove_mode(request: dict, client) -> dict:
     # Record the skip so the next sweep does not recreate the block. Expiry is
     # the meeting's end when given; otherwise the latest block arrive-by (a skip
     # is meaningless once the meeting is over, and scan filters it as `past`
-    # after its start anyway). With no meeting_end and no blocks found, fall
-    # back to a bounded horizon so a future recurrence is still suppressed.
+    # after its start anyway). For a no-block (unplannable) skip resolved from a
+    # meeting event, anchor to that event's end rather than the bounded fallback,
+    # so the persisted expiry matches the documented contract (state-schema.md)
+    # and never over-suppresses a later recurrence. The fallback horizon applies
+    # only when nothing time-anchored is available.
+    if meeting_end is None and not block_arrivals:
+        meeting_end = _meeting_event_end(fetched, meeting_id)
     if meeting_end is not None:
         expires = meeting_end
     elif block_arrivals:
@@ -321,6 +372,135 @@ def _remove_mode(request: dict, client) -> dict:
         expires = now + _DEFAULT_SKIP_HORIZON
     add_skip(meeting_id, expires=expires, now=now)
     return {"removed": removed, "skip_recorded": True}
+
+
+# The block summary is "Drive: <meeting summary>" (see precheck `_leg_create_args`).
+# Stripping the prefix recovers the meeting summary the operator recognizes.
+_DRIVE_SUMMARY_PREFIX = "Drive: "
+
+
+def _block_start(state) -> datetime:
+    """The block's actual start (the leave-by the operator saw) for any direction.
+
+    `baseline_leave_by` is the leave-by only for arrival-anchored legs
+    (outbound / bridge start `baseline + buffer` before arrival). A return
+    block's stored `arrive_by` is its synthetic leg END, so it starts `baseline`
+    before that — at the meeting end. Deriving per direction keeps `list` /
+    resolve reporting the real block start for every leg, not a return leg's
+    buffer-shifted value.
+    """
+    if state.direction == "return":
+        return state.arrive_by - timedelta(seconds=state.baseline_seconds)
+    return state.baseline_leave_by
+
+
+def _meeting_event_end(fetched: list, meeting_id: str) -> datetime | None:
+    """The end (or start) of a fetched meeting event, for a no-block skip expiry."""
+    for event in fetched:
+        if not isinstance(event, dict) or event.get("id") != meeting_id:
+            continue
+        if parse_block(event) is not None:
+            continue
+        for key in ("end", "start"):
+            block = event.get(key)
+            if isinstance(block, dict):
+                when = _parse_iso(block.get("dateTime"))
+                if when is not None:
+                    return when
+    return None
+
+
+def _resolve_candidates(fetched: list, summary: str) -> list[tuple[str, str | None]]:
+    """Meetings matching `summary` as `(meeting_id, leave_by_iso)`, position-immune.
+
+    Prefer drive blocks serving that meeting (parsed `meeting_id` + leave-by);
+    fall back to the meeting event itself (its id + start) so an `unplannable`
+    meeting — which has no block — can still be skipped (#86). Matching is by
+    exact summary; several distinct meetings can share a summary (a daily
+    "Standup"), so the caller disambiguates by leave-by rather than this picking
+    one by fetch order. De-duped by meeting_id, ordered by leave-by.
+    """
+    target = f"{_DRIVE_SUMMARY_PREFIX}{summary}"
+    found: dict[str, str | None] = {}
+    # Blocks first. A meeting has several leg blocks (outbound / return) with
+    # different starts; keep the EARLIEST per meeting so the value matches what
+    # `list` and the notification showed (the outbound leave-by), since the
+    # caller disambiguates by exactly that.
+    for event in fetched:
+        state = parse_block(event)
+        if state is None or state.summary != target:
+            continue
+        leave_by = _block_start(state).isoformat()
+        current = found.get(state.meeting_id)
+        if current is None or leave_by < current:
+            found[state.meeting_id] = leave_by
+    # Meeting events too — an `unplannable` meeting has no block, and it can
+    # share a name with a DIFFERENT occurrence that does (so don't stop at
+    # blocks). A blocked meeting's event shares its id, so it's already covered.
+    for event in fetched:
+        if not isinstance(event, dict) or parse_block(event) is not None:
+            continue
+        if event.get("summary") == summary:
+            event_id = event.get("id")
+            if isinstance(event_id, str) and event_id and event_id not in found:
+                start = event.get("start")
+                # Prefer the timed `dateTime`; fall back to an all-day `date` so
+                # the candidate still carries a sortable when.
+                found[event_id] = (
+                    (start.get("dateTime") or start.get("date"))
+                    if isinstance(start, dict)
+                    else None
+                )
+    # Order by when; a candidate with no parseable when sorts LAST, not first.
+    return sorted(found.items(), key=lambda item: (item[1] is None, item[1] or ""))
+
+
+def _list_mode(request: dict, client) -> dict:
+    """List the current drive blocks, one per meeting, for the cancel UX (#86).
+
+    Returns `{"blocks": [{summary, meeting_id, leave_by}]}` ordered by leave_by.
+    The agent maps a user's ordinal ("cancel 2") or natural-language ("don't
+    drive to swimming") onto a `meeting_id` from this list, so the internal id
+    never has to appear in — or be typed into — a user-facing message.
+    """
+    now = _parse_iso(request.get("now"))
+    if now is None:
+        raise ValueError("list: `now` must be a timezone-aware ISO-8601 string")
+    calendar_id = request.get("calendar_id")
+    if not isinstance(calendar_id, str) or not calendar_id:
+        calendar_id = "primary"
+    fetched = _items(
+        client.find_events(
+            {
+                "calendar_id": calendar_id,
+                "timeMin": (now - _FIND_PAD).isoformat(),
+                "timeMax": (now + _DEFAULT_SKIP_HORIZON).isoformat(),
+            }
+        )
+    )
+    # One entry per meeting; a meeting has several leg blocks, so key by
+    # meeting_id and keep the earliest leave-by (the outbound) as the meeting's.
+    by_meeting: dict[str, dict] = {}
+    for event in fetched:
+        state = parse_block(event)
+        if state is None:
+            continue
+        leave_by = _block_start(state)
+        summary = state.summary
+        if summary.startswith(_DRIVE_SUMMARY_PREFIX):
+            summary = summary[len(_DRIVE_SUMMARY_PREFIX) :]
+        existing = by_meeting.get(state.meeting_id)
+        if existing is None or leave_by < existing["_leave_by"]:
+            by_meeting[state.meeting_id] = {
+                "summary": summary,
+                "meeting_id": state.meeting_id,
+                "leave_by": leave_by.isoformat(),
+                "_leave_by": leave_by,
+            }
+    blocks = sorted(by_meeting.values(), key=lambda b: b["_leave_by"])
+    for block in blocks:
+        del block["_leave_by"]
+    return {"blocks": blocks}
 
 
 def _suppress_mode(request: dict, client) -> dict:
@@ -365,10 +545,10 @@ def _suppress_mode(request: dict, client) -> dict:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[1] not in ("create", "remove", "suppress"):
+    if len(argv) < 2 or argv[1] not in ("create", "list", "remove", "suppress"):
         print(
             json.dumps(
-                {"error": "usage: apply.py <create|remove|suppress> (request JSON on stdin)"}
+                {"error": "usage: apply.py <create|list|remove|suppress> (request JSON on stdin)"}
             ),
             file=sys.stderr,
         )
@@ -386,6 +566,8 @@ def main(argv: list[str]) -> int:
         client = _load_composio()
         if argv[1] == "create":
             result = _create_mode(request, client)
+        elif argv[1] == "list":
+            result = _list_mode(request, client)
         elif argv[1] == "remove":
             result = _remove_mode(request, client)
         else:

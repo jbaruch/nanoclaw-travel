@@ -71,7 +71,7 @@ def _create_args(meeting_id="evt_42", direction="outbound"):
         calendar_id="primary",
         meeting_id=meeting_id,
         direction=direction,
-        summary="Drive to Customer sync",
+        summary="Drive: Customer sync",
         leg_start=LEG_START,
         arrive_by=ARRIVE,
         baseline_seconds=1500,
@@ -82,6 +82,47 @@ def _create_args(meeting_id="evt_42", direction="outbound"):
 
 def _fetched_block(args, event_id="block_1"):
     return {"id": event_id, "summary": args["summary"], "description": args["description"]}
+
+
+def _block_for(meeting_id, summary, arrive, event_id):
+    args = build_block_args(
+        calendar_id="primary",
+        meeting_id=meeting_id,
+        direction="outbound",
+        summary=f"Drive: {summary}",
+        leg_start=arrive - timedelta(minutes=30),
+        arrive_by=arrive,
+        baseline_seconds=1500,
+        origin="Home",
+        destination="venue",
+    )
+    return _fetched_block(args, event_id)
+
+
+# --- list: cancel-UX block listing (#86) ---------------------------------
+
+
+def test_list_returns_one_per_meeting_ordered_by_leave_by_no_drive_prefix():
+    early = _block_for(
+        "evt_early", "Swimming Practice", datetime(2026, 7, 2, 9, 30, tzinfo=CT), "b1"
+    )
+    late = _block_for(
+        "evt_late", "Football Practice", datetime(2026, 7, 2, 15, 30, tzinfo=CT), "b2"
+    )
+    client = FakeComposio(existing=[late, early])  # unordered on the calendar
+    result = apply._list_mode({"now": datetime(2026, 7, 2, 8, 0, tzinfo=CT).isoformat()}, client)
+    # ordered by leave_by; the "Drive: " prefix is stripped for the operator
+    assert [b["summary"] for b in result["blocks"]] == ["Swimming Practice", "Football Practice"]
+    assert result["blocks"][0]["meeting_id"] == "evt_early"
+
+
+def test_list_groups_multiple_legs_of_one_meeting():
+    out = _block_for("evt_42", "Customer sync", datetime(2026, 7, 2, 13, 0, tzinfo=CT), "ob")
+    ret = _block_for("evt_42", "Customer sync", datetime(2026, 7, 2, 15, 0, tzinfo=CT), "rt")
+    client = FakeComposio(existing=[out, ret])
+    result = apply._list_mode({"now": datetime(2026, 7, 2, 8, 0, tzinfo=CT).isoformat()}, client)
+    assert len(result["blocks"]) == 1  # one entry per meeting, not per leg
+    assert result["blocks"][0]["meeting_id"] == "evt_42"
 
 
 # --- create: idempotency (lombot #50) ------------------------------------
@@ -151,6 +192,154 @@ def test_remove_deletes_blocks_and_records_skip():
     assert result["removed"][0]["event_id"] == "block_x"
     # The skip is now active, so the next sweep would bucket evt_42 as skipped.
     assert "evt_42" in skip_state.load_active_skips(now)
+
+
+def test_remove_by_summary_picks_the_right_meeting_among_pre_existing_blocks():
+    # The cancel UX resolves by name, never list position — a pre-existing block
+    # for another meeting must not be hit by "cancel <name>" (#86 / the OpenAI
+    # ordinal-shift concern). Two blocks on the calendar; remove "Football
+    # Practice" by summary deletes only its block.
+    swim = _block_for(
+        "evt_swim", "Swimming Practice", datetime(2026, 7, 2, 9, 30, tzinfo=CT), "b_sw"
+    )
+    football = _block_for(
+        "evt_fb", "Football Practice", datetime(2026, 7, 2, 15, 30, tzinfo=CT), "b_fb"
+    )
+    client = FakeComposio(existing=[swim, football])
+    now = datetime(2026, 7, 2, 8, 0, tzinfo=CT)
+    result = apply._remove_mode({"summary": "Football Practice", "now": now.isoformat()}, client)
+    assert client.deleted == ["b_fb"]  # only football, not swimming
+    assert result["skip_recorded"] is True
+    assert "evt_fb" in skip_state.load_active_skips(now)
+    assert "evt_swim" not in skip_state.load_active_skips(now)
+
+
+def test_remove_by_summary_skips_unplannable_meeting_with_no_block():
+    # An unplannable meeting has no drive block, so resolution falls back to the
+    # meeting event itself — the skip still records, giving it a working cancel
+    # path without exposing an id (#86 / the OpenAI unplannable-skip concern).
+    # The skip expiry anchors to the meeting's END, not the 30-day fallback,
+    # matching the documented contract (stateful-artifacts / state-schema.md).
+    meeting_end = datetime(2026, 7, 2, 15, 0, tzinfo=CT)
+    meeting_event = {
+        "id": "evt_flight",
+        "summary": "St. Louis talk",
+        "description": "",
+        "start": {"dateTime": datetime(2026, 7, 2, 14, 0, tzinfo=CT).isoformat()},
+        "end": {"dateTime": meeting_end.isoformat()},
+    }
+    client = FakeComposio(existing=[meeting_event])
+    now = datetime(2026, 7, 2, 8, 0, tzinfo=CT)
+    result = apply._remove_mode({"summary": "St. Louis talk", "now": now.isoformat()}, client)
+    assert result["removed"] == []  # no block to delete
+    assert result["skip_recorded"] is True
+    skips = skip_state.load_active_skips(now)
+    assert "evt_flight" in skips
+    # expiry is the meeting end, not now + 30-day fallback
+    assert skips["evt_flight"] == meeting_end.isoformat()
+
+
+def test_resolve_candidates_reports_return_block_actual_start():
+    # A return block's stored arrive_by is its leg END; its real start is the
+    # meeting end, not the buffer-shifted baseline_leave_by (Copilot return-leg
+    # concern). The candidate must carry the real start so disambiguation lines
+    # up with the calendar.
+    meeting_end = datetime(2026, 7, 2, 15, 0, tzinfo=CT)
+    ret_args = build_block_args(
+        calendar_id="primary",
+        meeting_id="evt_ret",
+        direction="return",
+        summary="Drive: Solo meeting",
+        leg_start=meeting_end,
+        arrive_by=meeting_end + timedelta(seconds=1500),
+        baseline_seconds=1500,
+        origin="venue",
+        destination="Home",
+    )
+    ret = _fetched_block(ret_args, "b_ret")
+    assert apply._resolve_candidates([ret], "Solo meeting") == [
+        ("evt_ret", meeting_end.isoformat())
+    ]
+
+
+def test_remove_by_unmatched_summary_reports_no_match():
+    client = FakeComposio(existing=[])
+    now = datetime(2026, 7, 2, 8, 0, tzinfo=CT)
+    result = apply._remove_mode({"summary": "Nonexistent", "now": now.isoformat()}, client)
+    assert result["skip_recorded"] is False
+    assert result["unmatched_summary"] == "Nonexistent"
+
+
+def test_remove_same_summary_without_leave_by_is_ambiguous_not_guessed():
+    # Two "Standup" meetings (recurring) — summary alone is ambiguous, so the
+    # script returns the choices instead of guessing by fetch order.
+    mon = _block_for("evt_mon", "Standup", datetime(2026, 7, 6, 9, 0, tzinfo=CT), "b_mon")
+    tue = _block_for("evt_tue", "Standup", datetime(2026, 7, 7, 9, 0, tzinfo=CT), "b_tue")
+    client = FakeComposio(existing=[tue, mon])
+    now = datetime(2026, 7, 6, 7, 0, tzinfo=CT)
+    result = apply._remove_mode({"summary": "Standup", "now": now.isoformat()}, client)
+    assert result["skip_recorded"] is False
+    assert result["ambiguous_summary"] == "Standup"
+    assert len(result["candidates"]) == 2
+    assert client.deleted == []  # nothing guessed/deleted
+
+
+def test_remove_resolves_unplannable_occurrence_even_when_another_has_a_block():
+    # Monday "Standup" has a drive block; Tuesday "Standup" is unplannable (only
+    # the meeting event exists). Cancelling Tuesday must still resolve + skip it,
+    # not be masked by Monday's block (the OpenAI collision case).
+    mon_block = _block_for("evt_mon", "Standup", datetime(2026, 7, 6, 9, 0, tzinfo=CT), "b_mon")
+    tue_meeting = {
+        "id": "evt_tue",
+        "summary": "Standup",
+        "description": "",
+        "start": {"dateTime": datetime(2026, 7, 7, 9, 0, tzinfo=CT).isoformat()},
+    }
+    client = FakeComposio(existing=[mon_block, tue_meeting])
+    now = datetime(2026, 7, 6, 7, 0, tzinfo=CT)
+    # both occurrences are offered (block + unplannable event), not just the block
+    amb = apply._remove_mode({"summary": "Standup", "now": now.isoformat()}, client)
+    assert {c["leave_by"] for c in amb["candidates"]} == {
+        datetime(2026, 7, 6, 8, 30, tzinfo=CT).isoformat(),  # Monday block leave-by
+        datetime(2026, 7, 7, 9, 0, tzinfo=CT).isoformat(),  # Tuesday meeting start
+    }
+    # pin Tuesday (the unplannable one) — it skips even though it has no block
+    res = apply._remove_mode(
+        {
+            "summary": "Standup",
+            "leave_by": datetime(2026, 7, 7, 9, 0, tzinfo=CT).isoformat(),
+            "now": now.isoformat(),
+        },
+        client,
+    )
+    assert res["removed"] == [] and res["skip_recorded"] is True
+    assert "evt_tue" in skip_state.load_active_skips(now)
+
+
+def test_resolve_candidates_uses_earliest_leg_leave_by():
+    # A meeting's outbound + return legs have different leave-bys; the candidate
+    # must report the EARLIEST (outbound), matching what `list` shows, so the
+    # leave_by disambiguation lines up regardless of calendar fetch order.
+    out = _block_for("evt_42", "Customer sync", datetime(2026, 7, 2, 13, 0, tzinfo=CT), "ob")
+    ret = _block_for("evt_42", "Customer sync", datetime(2026, 7, 2, 16, 0, tzinfo=CT), "rt")
+    candidates = apply._resolve_candidates([ret, out], "Customer sync")  # return seen first
+    assert candidates == [("evt_42", datetime(2026, 7, 2, 12, 30, tzinfo=CT).isoformat())]
+
+
+def test_remove_same_summary_with_leave_by_pins_the_right_instance():
+    mon = _block_for("evt_mon", "Standup", datetime(2026, 7, 6, 9, 0, tzinfo=CT), "b_mon")
+    tue = _block_for("evt_tue", "Standup", datetime(2026, 7, 7, 9, 0, tzinfo=CT), "b_tue")
+    client = FakeComposio(existing=[tue, mon])
+    now = datetime(2026, 7, 6, 7, 0, tzinfo=CT)
+    # Tuesday's leave-by = 9:00 - 25min drive - 5min buffer = 8:30 on 2026-07-07.
+    tue_leave_by = datetime(2026, 7, 7, 8, 30, tzinfo=CT).isoformat()
+    result = apply._remove_mode(
+        {"summary": "Standup", "leave_by": tue_leave_by, "now": now.isoformat()}, client
+    )
+    assert result["skip_recorded"] is True
+    assert client.deleted == ["b_tue"]  # only Tuesday's block
+    assert "evt_tue" in skip_state.load_active_skips(now)
+    assert "evt_mon" not in skip_state.load_active_skips(now)
 
 
 def test_remove_with_past_meeting_end_keeps_find_window_valid():
