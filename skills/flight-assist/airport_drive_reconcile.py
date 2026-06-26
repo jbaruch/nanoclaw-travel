@@ -22,8 +22,10 @@ shift ops via Composio. Calendar-as-state, no ledger — an existing block is fo
 by its marker and its no-op `signature` is derived from the block's OWN stored
 state (the `anchor` + baseline it carries), not from Google's start/end echo, so
 the comparison is round-trip-stable regardless of how the calendar API formats
-the offset. A shift past the re-anchor threshold is a delete + recreate, so every
-write goes through the timezone-correct `build_block_args` create path; a
+the offset. A shift past the re-anchor threshold is a recreate-then-delete (create
+first so there is never a gap, roll the new one back if the old delete fails so
+there is never a duplicate), so every write goes through the timezone-correct
+`build_block_args` create path; a
 sub-threshold drift (traffic jitter under `_REANCHOR_THRESHOLD`) is left alone so
 the block does not thrash the calendar every poll (#90 §7). The fetch window is
 anchored on the flight's stable scheduled times so a block created before a delay
@@ -73,7 +75,7 @@ from byair_client import ByAirError  # noqa: E402
 # (the v3 response nesting in `_items` was verified against the NAS) rather than
 # duplicate it here — same skill bundle, no circular import (calendar_reconcile
 # does not import this module).
-from calendar_reconcile import _find_events_args, _items  # noqa: E402
+from calendar_reconcile import _created_event_id, _find_events_args, _items  # noqa: E402
 from composio_client import ComposioError  # noqa: E402
 from maps_client import MapsError  # noqa: E402
 
@@ -482,21 +484,30 @@ def _fetch_block_events(
 def _execute_op(op: dict, *, composio) -> None:
     """Execute one planner op against the calendar. create / update only.
 
-    A shift (`update`) is a delete + recreate, so the recreated block always goes
+    A shift (`update`) is a recreate-then-delete, so the replacement always goes
     through `build_block_args`' timezone-aware create path rather than a PATCH
-    that would re-introduce the offset-as-UTC ambiguity (#83). A delete that 404s
-    (already gone) is an idempotent success.
+    that would re-introduce the offset-as-UTC ambiguity (#83). Create FIRST so the
+    old block is never removed before its replacement exists (no gap on a
+    transient create failure — that raises before any delete, leaving the old
+    block intact for the next cycle). Then delete the old block; if that delete
+    fails for a real reason, roll back the just-created replacement so the cycle
+    never leaves a duplicate, and re-raise so the op defers. A delete that 404s
+    (old already gone) leaves the new block standing alone — an idempotent success.
     """
     if op["op"] == "create":
         composio.create_event(op["create_args"])
         return
     if op["op"] == "update":
+        created = composio.create_event(op["create_args"])
         try:
             composio.delete_event({"calendar_id": op["calendar_id"], "event_id": op["event_id"]})
         except ComposioError as exc:
-            if exc.status_code != 404:
-                raise
-        composio.create_event(op["create_args"])
+            if exc.status_code == 404:
+                return  # old already gone — the replacement stands alone
+            new_id = _created_event_id(created)
+            if new_id is not None:
+                composio.delete_event({"calendar_id": op["calendar_id"], "event_id": new_id})
+            raise
         return
     raise ValueError(f"airport_drive_reconcile: unexpected op {op['op']!r}")
 
@@ -580,7 +591,7 @@ def run_airport_drive_reconcile(
             planned += 1
             try:
                 _execute_op(op, composio=composio)
-            except (ComposioError, OSError) as exc:
+            except (ComposioError, urllib.error.URLError) as exc:
                 print(
                     f"flight-assist airport-drive: op {op['op']}/{op['kind']} for flight "
                     f"{flight_id} failed: {exc}",

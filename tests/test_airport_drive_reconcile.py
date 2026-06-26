@@ -422,13 +422,21 @@ class FakeComposio:
     shifts it rather than creating a duplicate).
     """
 
-    def __init__(self, events=None, *, create_fail=False, delete_404=False):
+    def __init__(
+        self,
+        events=None,
+        *,
+        create_fail=False,
+        delete_404=False,
+        delete_fail_ids: frozenset[str] | set[str] = frozenset(),
+    ):
         self._events = list(events or [])
         self.created: list[dict] = []
         self.deleted: list[dict] = []
         self.find_called = 0
         self._create_fail = create_fail
         self._delete_404 = delete_404
+        self._delete_fail_ids = set(delete_fail_ids)
 
     def find_events(self, arguments: dict) -> dict:
         self.find_called += 1
@@ -454,6 +462,8 @@ class FakeComposio:
     def delete_event(self, arguments: dict) -> dict:
         if self._delete_404:
             raise ComposioError("already gone", status_code=404)
+        if arguments["event_id"] in self._delete_fail_ids:
+            raise ComposioError("delete boom", status_code=500)
         self.deleted.append(arguments)
         return {}
 
@@ -667,3 +677,24 @@ def test_fetch_window_spans_scheduled_time_under_a_large_delay():
     lo = datetime.fromisoformat(time_min.replace("Z", "+00:00"))
     old_block_start = TO_ANCHOR - timedelta(seconds=1800)  # the stale block's start
     assert lo <= old_block_start
+
+
+def test_run_rolls_back_new_block_when_old_delete_fails_on_shift():
+    # Shift past threshold: the replacement is created first, then the old delete
+    # fails (non-404). The new block is rolled back (deleted) so the cycle leaves
+    # no duplicate — the old (stale) block remains for the next cycle to retry —
+    # and the op is reported failed.
+    composio = FakeComposio(
+        events=[_existing_to_airport_event(event_id="evt_old")],
+        delete_fail_ids={"evt_old"},
+    )
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800)
+    state = _state(scheduled_dep_time="2026-07-02T14:30:00-05:00")
+    result = run_airport_drive_reconcile(
+        [state], composio=composio, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    # The replacement was created, then rolled back when the old delete failed.
+    assert len(composio.created) == 1
+    assert composio.deleted == [{"calendar_id": "primary", "event_id": "evt_new_1"}]
+    assert result["executed"] == 0
+    assert result["failed"] == [{"flight_id": 12345, "op": "update", "kind": "airport_drive_dep"}]
