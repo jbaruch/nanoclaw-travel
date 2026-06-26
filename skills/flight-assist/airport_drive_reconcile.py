@@ -501,12 +501,23 @@ def _execute_op(op: dict, *, composio) -> None:
         created = composio.create_event(op["create_args"])
         try:
             composio.delete_event({"calendar_id": op["calendar_id"], "event_id": op["event_id"]})
-        except ComposioError as exc:
-            if exc.status_code == 404:
+        except (ComposioError, urllib.error.URLError) as exc:
+            if getattr(exc, "status_code", None) == 404:
                 return  # old already gone — the replacement stands alone
             new_id = _created_event_id(created)
             if new_id is not None:
-                composio.delete_event({"calendar_id": op["calendar_id"], "event_id": new_id})
+                try:
+                    composio.delete_event({"calendar_id": op["calendar_id"], "event_id": new_id})
+                except (ComposioError, urllib.error.URLError) as rollback_exc:
+                    # Rollback failed too — a duplicate may remain until the next
+                    # cycle reconciles it. Log it, but re-raise the ORIGINAL delete
+                    # failure so the caller records the real reason, not this one.
+                    print(
+                        f"flight-assist airport-drive: rollback of replacement {new_id} failed "
+                        f"after the old-block delete failed; a duplicate may remain until the "
+                        f"next cycle: {rollback_exc}",
+                        file=sys.stderr,
+                    )
             raise
         return
     raise ValueError(f"airport_drive_reconcile: unexpected op {op['op']!r}")
@@ -594,7 +605,9 @@ def run_airport_drive_reconcile(
             except (ComposioError, urllib.error.URLError) as exc:
                 print(
                     f"flight-assist airport-drive: op {op['op']}/{op['kind']} for flight "
-                    f"{flight_id} failed: {exc}",
+                    f"{flight_id} failed — deferred, retried next cycle. If this repeats, check "
+                    f"Composio/Google Calendar connectivity and credentials (COMPOSIO_API_KEY / "
+                    f"COMPOSIO_USER_ID). Cause: {exc}",
                     file=sys.stderr,
                 )
                 failed.append({"flight_id": flight_id, "op": op["op"], "kind": op["kind"]})

@@ -698,3 +698,21 @@ def test_run_rolls_back_new_block_when_old_delete_fails_on_shift():
     assert composio.deleted == [{"calendar_id": "primary", "event_id": "evt_new_1"}]
     assert result["executed"] == 0
     assert result["failed"] == [{"flight_id": 12345, "op": "update", "kind": "airport_drive_dep"}]
+
+
+def test_run_reraises_original_delete_failure_when_rollback_also_fails():
+    # Both the old-block delete and the rollback delete fail. The op is recorded
+    # failed (the ORIGINAL delete reason, not the rollback), and a duplicate is
+    # left for the next cycle — never silently masked.
+    composio = FakeComposio(
+        events=[_existing_to_airport_event(event_id="evt_old")],
+        delete_fail_ids={"evt_old", "evt_new_1"},
+    )
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800)
+    state = _state(scheduled_dep_time="2026-07-02T14:30:00-05:00")
+    result = run_airport_drive_reconcile(
+        [state], composio=composio, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    assert len(composio.created) == 1  # replacement created; both deletes failed
+    assert composio.deleted == []
+    assert result["failed"] == [{"flight_id": 12345, "op": "update", "kind": "airport_drive_dep"}]
