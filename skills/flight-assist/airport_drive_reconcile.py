@@ -85,13 +85,15 @@ def _parse_instant(raw: object) -> datetime | None:
 def _effective_instant(state: dict, snapshot_key: str, scheduled_key: str) -> datetime | None:
     """The byAir-truth instant for a leg: snapshot actual when usable, else scheduled.
 
-    Mirrors `calendar_reconcile._effective_times` — `last_snapshot.<dep|arr>_time`
-    is byAir's live value (the ETA in flight, the actual once known); the
-    sync-seeded scheduled time is the fallback. A snapshot value that is absent OR
-    present-but-unparseable (e.g. an empty string from bad byAir data) falls back
-    to scheduled rather than suppressing the block; an unparseable present value
-    is logged, since silent bad data contradicts the per-leg degradation posture.
-    Returns None only when scheduled is unusable too — the caller logs that drop.
+    `last_snapshot.<dep|arr>_time` is byAir's live value (the ETA in flight, the
+    actual once known); the sync-seeded scheduled time is the fallback. Like
+    `calendar_reconcile._effective_times` it prefers the snapshot actual — but it
+    deliberately diverges on a present-but-unparseable snapshot value (e.g. an
+    empty string from bad byAir data): `_effective_times` would use it as-is,
+    whereas this falls back to scheduled rather than suppressing the block, and
+    logs the bad value (silent bad data contradicts the per-leg degradation
+    posture). Returns None only when scheduled is unusable too — the caller logs
+    that drop.
     """
     snapshot = state.get("last_snapshot") or {}
     raw = snapshot.get(snapshot_key)
@@ -264,7 +266,8 @@ def build_drive_blocks_for_flight(
 
     Args:
         state: the flight's persisted state record.
-        byair: a byAir client exposing `get_airport(airport_id)`.
+        byair: a byAir client exposing `get_airport(airport_id)`, or None — then
+            nothing is built (preserves the never-raises contract).
         maps: a Maps client exposing `travel_time(origin=, destination=)`, or
             None when no routing key is configured (then nothing is built).
         origin: the resolved drive origin for the to_airport leg (the live
@@ -279,7 +282,10 @@ def build_drive_blocks_for_flight(
         The desired blocks, in to_airport-then-from_airport order. Empty when the
         status gates nothing in, a required input is absent, or `maps` is None.
     """
-    if maps is None:
+    # Either client absent → build nothing. maps is legitimately None when no
+    # routing key is configured; byair guards the never-raises contract against a
+    # caller that fumbles the client (it would AttributeError in the airport lookup).
+    if maps is None or byair is None:
         return []
     snapshot = state.get("last_snapshot") or {}
     status = snapshot.get("computed_status") or "scheduled"

@@ -268,6 +268,19 @@ def test_no_maps_client_builds_nothing():
     assert byair.calls == []  # short-circuits before any airport lookup
 
 
+def test_no_byair_client_builds_nothing_without_raising():
+    # A None byair must not AttributeError in the airport lookup — the
+    # never-raises contract treats it the same as a None maps client.
+    maps = FakeMaps()
+    assert (
+        build_drive_blocks_for_flight(
+            _state(), byair=None, maps=maps, origin="home", home_address=HOME
+        )
+        == []
+    )
+    assert maps.routes == []
+
+
 @pytest.mark.parametrize("status", ["cancelled", "diverted"])
 def test_cancelled_or_diverted_builds_nothing(status):
     byair, maps = FakeByAir(), FakeMaps()
