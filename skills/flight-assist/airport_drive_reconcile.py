@@ -360,22 +360,37 @@ def build_drive_blocks_for_flight(
 # --- Orchestration: fetch the calendar, plan, execute ------------------------
 
 
+def _window(block_or_state) -> tuple[datetime, datetime]:
+    """The `(start, end)` instants a block occupies, for a desired block or a
+    parsed `BlockState`. Direction-specific: to_airport runs `[anchor − drive,
+    anchor]`, from_airport runs `[anchor, anchor + drive]`.
+
+    For a desired block the endpoints are read straight off it; for a parsed
+    `BlockState` they are recomputed from its stored `anchor` + `baseline_seconds`
+    (what it carries in its description), so the comparison never depends on how
+    the calendar API echoes the offset.
+    """
+    if isinstance(block_or_state, DesiredDriveBlock):
+        end = block_or_state.leg_end
+        return block_or_state.leg_start, end if end is not None else block_or_state.anchor
+    if block_or_state.direction == "from_airport":
+        return block_or_state.anchor, block_or_state.anchor + timedelta(
+            seconds=block_or_state.baseline_seconds
+        )
+    return (
+        block_or_state.anchor - timedelta(seconds=block_or_state.baseline_seconds),
+        block_or_state.anchor,
+    )
+
+
 def _block_window_signature(state) -> str:
     """The `<start>/<end>` signature of a block on the calendar, from its OWN state.
 
-    Computed from the block's stored `anchor` + `baseline_seconds` (which it
-    carries in its description), NOT from the calendar event's start/end — so it
-    is byte-stable against the same arithmetic `DesiredDriveBlock.signature()`
-    uses, regardless of how the calendar API echoes the offset. Mirrors the
-    direction-specific window math: to_airport runs `[anchor − drive, anchor]`,
-    from_airport runs `[anchor, anchor + drive]`.
+    Byte-stable against the same arithmetic `DesiredDriveBlock.signature()` uses
+    (see `_window`), so a no-op compares equal regardless of the calendar API's
+    offset formatting.
     """
-    if state.direction == "from_airport":
-        start = state.anchor
-        end = state.anchor + timedelta(seconds=state.baseline_seconds)
-    else:
-        start = state.anchor - timedelta(seconds=state.baseline_seconds)
-        end = state.anchor
+    start, end = _window(state)
     return f"{start.isoformat()}/{end.isoformat()}"
 
 
@@ -403,12 +418,18 @@ def _existing_block(events: list[dict], flight_id, direction: str):
     return None
 
 
-def _leave_by(block_or_state) -> datetime:
-    """The leave-by instant a block defends — `leg_start` for a desired block,
-    `baseline_leave_by` for a parsed `BlockState` (both = anchor for from_airport)."""
-    if isinstance(block_or_state, DesiredDriveBlock):
-        return block_or_state.leg_start
-    return block_or_state.baseline_leave_by
+def _window_drift(desired: DesiredDriveBlock, existing) -> timedelta:
+    """The larger of the start- and end-instant drift between a desired block and
+    the block already on the calendar.
+
+    Comparing BOTH endpoints is load-bearing: for a `from_airport` block the start
+    is the (stable) arrival anchor while the end carries the routed drive
+    duration, so a start-only comparison would read a 20-min → 2-h drive-home
+    change as zero drift and never shift it.
+    """
+    d_start, d_end = _window(desired)
+    e_start, e_end = _window(existing)
+    return max(abs(d_start - e_start), abs(d_end - e_end))
 
 
 def _fetch_window(blocks: list[DesiredDriveBlock]) -> tuple[str, str]:
@@ -515,13 +536,12 @@ def run_airport_drive_reconcile(
         flight_id = state["flight_id"]
         flight_code = state.get("code") or ""
         existing = _existing_block(events, flight_id, block.direction)
-        # Anti-thrash: an existing block whose leave-by is within the threshold of
-        # the freshly-routed one stays put — skip before planning a shift.
-        if existing is not None:
-            drift = abs(_leave_by(block) - _leave_by(existing))
-            if drift < _REANCHOR_THRESHOLD:
-                suppressed += 1
-                continue
+        # Anti-thrash: an existing block whose full window (start AND end) is
+        # within the threshold of the freshly-routed one stays put — skip before
+        # planning a shift.
+        if existing is not None and _window_drift(block, existing) < _REANCHOR_THRESHOLD:
+            suppressed += 1
+            continue
         ops = plan_drive_block(
             flight_id=flight_id,
             flight_code=flight_code,

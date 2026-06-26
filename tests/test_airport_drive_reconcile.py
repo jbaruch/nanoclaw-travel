@@ -548,3 +548,63 @@ def test_run_with_no_desired_blocks_skips_the_fetch():
     )
     assert result == {"status": "ok", "planned": 0, "executed": 0, "suppressed": 0, "failed": []}
     assert composio.find_called == 0  # no desired blocks → never hit the calendar
+
+
+# --- from_airport orchestration: end-time (duration) drift must shift ----------
+
+FA_ANCHOR = datetime(2026, 7, 2, 16, 50, tzinfo=CT)  # arr 16:30 + 20-min domestic post-arrival
+
+
+def _existing_from_airport_event(*, anchor=FA_ANCHOR, baseline=1200, event_id="evt_arr"):
+    """A fetched primary-calendar event carrying a from_airport block's state."""
+    desc = build_description(
+        summary="Drive: LGA → home",
+        flight_id="12345",
+        direction="from_airport",
+        baseline_seconds=baseline,
+        anchor=anchor,
+        origin="LaGuardia Airport",
+        destination=HOME,
+    )
+    return {
+        "id": event_id,
+        "summary": "Drive: LGA → home",
+        "description": desc,
+        "calendar_id": "primary",
+    }
+
+
+def test_run_shifts_from_airport_block_when_only_duration_changes_past_threshold():
+    # Same arrival anchor (so leg_start is unchanged), but the routed drive home
+    # grows 20 → 40 min: the END moves 20 min, which must shift the block. A
+    # start-only comparison would wrongly read this as zero drift.
+    composio = FakeComposio(events=[_existing_from_airport_event(baseline=1200)])
+    byair, maps = FakeByAir(), FakeMaps(seconds=2400)
+    result = run_airport_drive_reconcile(
+        [_state(last_snapshot=_snapshot("landed"))],
+        composio=composio,
+        byair=byair,
+        maps=maps,
+        origin="home",
+        home_address=HOME,
+    )
+    assert result["suppressed"] == 0
+    assert result["executed"] == 1
+    assert composio.deleted == [{"calendar_id": "primary", "event_id": "evt_arr"}]
+    assert len(composio.created) == 1
+
+
+def test_run_suppresses_from_airport_subthreshold_duration_drift():
+    # Drive home grows by 60s (1200 → 1260) → end drifts < 5 min → stay put.
+    composio = FakeComposio(events=[_existing_from_airport_event(baseline=1200)])
+    byair, maps = FakeByAir(), FakeMaps(seconds=1260)
+    result = run_airport_drive_reconcile(
+        [_state(last_snapshot=_snapshot("landed"))],
+        composio=composio,
+        byair=byair,
+        maps=maps,
+        origin="home",
+        home_address=HOME,
+    )
+    assert result["suppressed"] == 1
+    assert composio.created == [] and composio.deleted == []
