@@ -19,8 +19,13 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
-from airport_drive_reconcile import build_drive_blocks_for_flight  # noqa: E402
+from airport_block import build_description  # noqa: E402
+from airport_drive_reconcile import (  # noqa: E402
+    build_drive_blocks_for_flight,
+    run_airport_drive_reconcile,
+)
 from byair_client import ByAirError  # noqa: E402
+from composio_client import ComposioError  # noqa: E402
 from maps_client import MapsError  # noqa: E402
 
 CT = timezone(timedelta(hours=-5))
@@ -401,3 +406,145 @@ def test_zero_in_traffic_seconds_is_used_not_treated_as_missing():
         _state(), byair=byair, maps=maps, origin="home", home_address=HOME
     )
     assert blocks[0].baseline_seconds == 0  # the 0 in-traffic estimate, not 1800
+
+
+# === orchestration: run_airport_drive_reconcile ================================
+
+TO_ANCHOR = datetime(2026, 7, 2, 13, 0, tzinfo=CT)  # dep 14:00 − 60-min domestic clearance
+
+
+class FakeComposio:
+    """Records create/delete calls; serves canned find_events results."""
+
+    def __init__(self, events=None, *, create_fail=False, delete_404=False):
+        self._events = list(events or [])
+        self.created: list[dict] = []
+        self.deleted: list[dict] = []
+        self.find_called = 0
+        self._create_fail = create_fail
+        self._delete_404 = delete_404
+
+    def find_events(self, arguments: dict) -> dict:
+        self.find_called += 1
+        self.find_args = arguments
+        return {"items": list(self._events)}
+
+    def create_event(self, arguments: dict) -> dict:
+        if self._create_fail:
+            raise ComposioError("create boom", status_code=500)
+        self.created.append(arguments)
+        return {"id": f"evt_new_{len(self.created)}"}
+
+    def delete_event(self, arguments: dict) -> dict:
+        if self._delete_404:
+            raise ComposioError("already gone", status_code=404)
+        self.deleted.append(arguments)
+        return {}
+
+
+def _existing_to_airport_event(*, anchor=TO_ANCHOR, baseline=1800, event_id="evt_old"):
+    """A fetched primary-calendar event carrying a to_airport block's state."""
+    desc = build_description(
+        summary="Drive: → BNA (DL123)",
+        flight_id="12345",
+        direction="to_airport",
+        baseline_seconds=baseline,
+        anchor=anchor,
+        origin="home",
+        destination="Nashville International Airport",
+    )
+    return {
+        "id": event_id,
+        "summary": "Drive: → BNA (DL123)",
+        "description": desc,
+        "calendar_id": "primary",
+    }
+
+
+def test_run_creates_block_when_none_exists():
+    composio = FakeComposio(events=[])
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800)
+    result = run_airport_drive_reconcile(
+        [_state()], composio=composio, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    assert result["status"] == "ok"
+    assert result["planned"] == 1 and result["executed"] == 1
+    assert composio.find_called == 1
+    assert len(composio.created) == 1
+    assert composio.created[0]["summary"] == "Drive: → BNA (DL123)"
+    assert composio.deleted == []
+
+
+def test_run_suppresses_unchanged_block():
+    composio = FakeComposio(events=[_existing_to_airport_event()])
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800)
+    result = run_airport_drive_reconcile(
+        [_state()], composio=composio, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    assert result["suppressed"] == 1
+    assert result["executed"] == 0
+    assert composio.created == [] and composio.deleted == []
+
+
+def test_run_suppresses_subthreshold_traffic_drift():
+    # Existing block routed at 1800s; fresh route 1860s → leave-by drifts 60s < 5min.
+    composio = FakeComposio(events=[_existing_to_airport_event(baseline=1800)])
+    byair, maps = FakeByAir(), FakeMaps(seconds=1860)
+    result = run_airport_drive_reconcile(
+        [_state()], composio=composio, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    assert result["suppressed"] == 1
+    assert composio.created == [] and composio.deleted == []
+
+
+def test_run_shifts_block_past_threshold_via_delete_and_recreate():
+    # Flight delayed 30 min: existing anchor 13:00 (old dep 14:00), new dep 14:30
+    # → desired anchor 13:30, leave-by drifts 30 min > threshold.
+    composio = FakeComposio(events=[_existing_to_airport_event(event_id="evt_old")])
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800)
+    state = _state(scheduled_dep_time="2026-07-02T14:30:00-05:00")
+    result = run_airport_drive_reconcile(
+        [state], composio=composio, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    assert result["executed"] == 1
+    assert composio.deleted == [{"calendar_id": "primary", "event_id": "evt_old"}]
+    assert len(composio.created) == 1
+    # Recreated via build_block_args → carries the timezone (correct-instant create).
+    assert composio.created[0]["timezone"] == "America/Chicago"
+
+
+def test_run_collects_create_failure_without_raising():
+    composio = FakeComposio(events=[], create_fail=True)
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800)
+    result = run_airport_drive_reconcile(
+        [_state()], composio=composio, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    assert result["executed"] == 0
+    assert result["failed"] == [{"flight_id": 12345, "op": "create", "kind": "airport_drive_dep"}]
+
+
+def test_run_tolerates_delete_404_on_shift():
+    composio = FakeComposio(events=[_existing_to_airport_event()], delete_404=True)
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800)
+    state = _state(scheduled_dep_time="2026-07-02T14:30:00-05:00")
+    result = run_airport_drive_reconcile(
+        [state], composio=composio, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    # Delete 404'd (already gone) → idempotent; the recreate still ran.
+    assert result["executed"] == 1
+    assert len(composio.created) == 1
+
+
+def test_run_with_no_desired_blocks_skips_the_fetch():
+    composio = FakeComposio(events=[])
+    byair, maps = FakeByAir(), FakeMaps()
+    result = run_airport_drive_reconcile(
+        [_state(last_snapshot=_snapshot("cancelled"))],
+        composio=composio,
+        byair=byair,
+        maps=maps,
+        origin="home",
+        home_address=HOME,
+    )
+    assert result == {"status": "ok", "planned": 0, "executed": 0, "suppressed": 0, "failed": []}
+    assert composio.find_called == 0  # no desired blocks → never hit the calendar

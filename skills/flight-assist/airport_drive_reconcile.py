@@ -15,11 +15,17 @@ and hands those to `airport_drive_inputs.departure_block` / `arrival_block`. The
 window math, summaries, and tz selection live there; this module is the glue
 that feeds them live data.
 
-What it does NOT do yet (the next slice): fetch the primary calendar, run
-`plan_drive_block`, or execute the create/shift ops via Composio. This is the
-pure-of-calendar-I/O assembly half — given injected `byair` / `maps` clients and
-an already-resolved `origin`, it returns the desired blocks; the orchestration
-that fetches, plans, and writes lands on top of it.
+`run_airport_drive_reconcile` is the orchestration on top: for each active
+flight it assembles the desired blocks, fetches the primary calendar once across
+the spanning window, runs `plan_drive_block` per block, and executes the create /
+shift ops via Composio. Calendar-as-state, no ledger — an existing block is found
+by its marker and its no-op `signature` is derived from the block's OWN stored
+state (the `anchor` + baseline it carries), not from Google's start/end echo, so
+the comparison is round-trip-stable regardless of how the calendar API formats
+the offset. A shift past the re-anchor threshold is a delete + recreate, so every
+write goes through the timezone-correct `build_block_args` create path; a
+sub-threshold drift (traffic jitter under `_REANCHOR_THRESHOLD`) is left alone so
+the block does not thrash the calendar every poll (#90 §7).
 
 Which blocks get built is gated on the flight's `computed_status`:
   * `to_airport` — while the flight has not left (scheduled / check-in / boarding).
@@ -44,14 +50,15 @@ from __future__ import annotations
 
 import sys
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from airport_drive import DesiredDriveBlock  # noqa: E402
+from airport_block import parse_block  # noqa: E402
+from airport_drive import DesiredDriveBlock, plan_drive_block  # noqa: E402
 from airport_drive_inputs import (  # noqa: E402
     AirportContext,
     airport_context,
@@ -59,7 +66,27 @@ from airport_drive_inputs import (  # noqa: E402
     departure_block,
 )
 from byair_client import ByAirError  # noqa: E402
+
+# Reuse the live-verified Composio event-fetch shaping from calendar_reconcile
+# (the v3 response nesting in `_items` was verified against the NAS) rather than
+# duplicate it here — same skill bundle, no circular import (calendar_reconcile
+# does not import this module).
+from calendar_reconcile import _find_events_args, _items  # noqa: E402
+from composio_client import ComposioError  # noqa: E402
 from maps_client import MapsError  # noqa: E402
+
+# A re-routed leave-by that drifts less than this from the block already on the
+# calendar is left in place — traffic jitter under it must not rewrite the event
+# every poll (#90 §7 "shift only past a ~5-min threshold").
+_REANCHOR_THRESHOLD = timedelta(minutes=5)
+
+# Padding on the primary-calendar fetch window, so a block whose endpoints sit
+# just outside the spanning [min leg_start, max leg_end] is still fetched.
+_FETCH_WINDOW_PAD = timedelta(hours=1)
+
+# Where the airport drive blocks live (#90 decision: the primary calendar,
+# alongside drive-planner's `Drive:` meeting blocks).
+PRIMARY_CALENDAR_ID = "primary"
 
 # `computed_status` values that gate each direction. Before the flight leaves,
 # the drive TO the departure airport may still be needed; once it is airborne or
@@ -328,3 +355,197 @@ def build_drive_blocks_for_flight(
         if block is not None:
             blocks.append(block)
     return blocks
+
+
+# --- Orchestration: fetch the calendar, plan, execute ------------------------
+
+
+def _block_window_signature(state) -> str:
+    """The `<start>/<end>` signature of a block on the calendar, from its OWN state.
+
+    Computed from the block's stored `anchor` + `baseline_seconds` (which it
+    carries in its description), NOT from the calendar event's start/end — so it
+    is byte-stable against the same arithmetic `DesiredDriveBlock.signature()`
+    uses, regardless of how the calendar API echoes the offset. Mirrors the
+    direction-specific window math: to_airport runs `[anchor − drive, anchor]`,
+    from_airport runs `[anchor, anchor + drive]`.
+    """
+    if state.direction == "from_airport":
+        start = state.anchor
+        end = state.anchor + timedelta(seconds=state.baseline_seconds)
+    else:
+        start = state.anchor - timedelta(seconds=state.baseline_seconds)
+        end = state.anchor
+    return f"{start.isoformat()}/{end.isoformat()}"
+
+
+def _annotate_signatures(events: list[dict]) -> list[dict]:
+    """Attach the state-derived `signature` to each event that is one of our blocks.
+
+    `plan_drive_block` compares `event["signature"]` to the desired signature to
+    decide no-op vs shift. A non-block event (no `<!--fadrive:-->` state) gets no
+    signature and is ignored by the planner's marker scan.
+    """
+    for event in events:
+        state = parse_block(event)
+        if state is not None:
+            event["signature"] = _block_window_signature(state)
+    return events
+
+
+def _existing_block(events: list[dict], flight_id, direction: str):
+    """The parsed `BlockState` for this flight+direction among events, or None."""
+    target = str(flight_id)
+    for event in events:
+        state = parse_block(event)
+        if state is not None and state.flight_id == target and state.direction == direction:
+            return state
+    return None
+
+
+def _leave_by(block_or_state) -> datetime:
+    """The leave-by instant a block defends — `leg_start` for a desired block,
+    `baseline_leave_by` for a parsed `BlockState` (both = anchor for from_airport)."""
+    if isinstance(block_or_state, DesiredDriveBlock):
+        return block_or_state.leg_start
+    return block_or_state.baseline_leave_by
+
+
+def _fetch_window(blocks: list[DesiredDriveBlock]) -> tuple[str, str]:
+    """RFC 3339 [time_min, time_max] spanning all desired blocks, padded."""
+    starts = [b.leg_start for b in blocks]
+    ends = [b.leg_end if b.leg_end is not None else b.anchor for b in blocks]
+    lo = (min(starts) - _FETCH_WINDOW_PAD).astimezone(timezone.utc)
+    hi = (max(ends) + _FETCH_WINDOW_PAD).astimezone(timezone.utc)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return lo.strftime(fmt), hi.strftime(fmt)
+
+
+def _fetch_block_events(
+    composio, *, calendar_id: str, blocks: list[DesiredDriveBlock]
+) -> list[dict]:
+    """Fetch the primary-calendar events in the window spanning the desired blocks.
+
+    Returns the raw Composio events (description intact, so `parse_block` reads
+    the `<!--fadrive:-->` state), each annotated with its state-derived signature.
+    """
+    time_min, time_max = _fetch_window(blocks)
+    raw = composio.find_events(
+        _find_events_args(calendar_id=calendar_id, time_min=time_min, time_max=time_max)
+    )
+    return _annotate_signatures(_items(raw))
+
+
+def _execute_op(op: dict, *, composio) -> None:
+    """Execute one planner op against the calendar. create / update only.
+
+    A shift (`update`) is a delete + recreate, so the recreated block always goes
+    through `build_block_args`' timezone-aware create path rather than a PATCH
+    that would re-introduce the offset-as-UTC ambiguity (#83). A delete that 404s
+    (already gone) is an idempotent success.
+    """
+    if op["op"] == "create":
+        composio.create_event(op["create_args"])
+        return
+    if op["op"] == "update":
+        try:
+            composio.delete_event({"calendar_id": op["calendar_id"], "event_id": op["event_id"]})
+        except ComposioError as exc:
+            if exc.status_code != 404:
+                raise
+        composio.create_event(op["create_args"])
+        return
+    raise ValueError(f"airport_drive_reconcile: unexpected op {op['op']!r}")
+
+
+def run_airport_drive_reconcile(
+    states: list[dict],
+    *,
+    composio,
+    byair,
+    maps,
+    origin: str | None,
+    home_address: str | None,
+    calendar_id: str = PRIMARY_CALENDAR_ID,
+    config: dict | None = None,
+) -> dict:
+    """Reconcile every active flight's airport drive blocks against the calendar.
+
+    For each state in `states`, assembles the blocks it currently warrants
+    (`build_drive_blocks_for_flight`), then — across all of them — fetches the
+    block calendar once over the spanning window, and per block runs
+    `plan_drive_block` and executes the resulting create / shift. A shift whose
+    re-routed leave-by drifts less than `_REANCHOR_THRESHOLD` from the block
+    already on the calendar is suppressed (anti-thrash, #90 §7).
+
+    Per-flight / per-op failures are collected, never raised — one bad Composio
+    call defers that op to the next cycle. Returns a summary
+    `{status, planned, executed, suppressed, failed}`.
+
+    Args:
+        states: the active flights' state records.
+        composio: a Composio client (`find_events` / `create_event` /
+            `delete_event`).
+        byair / maps: the airport-context and routing clients (see
+            `build_drive_blocks_for_flight`); either None builds nothing.
+        origin: the resolved to_airport drive origin (live location / home).
+        home_address: the from_airport drive destination.
+        calendar_id: the calendar the blocks live on (primary).
+        config: optional `config.json` for the clearance overrides.
+    """
+    desired: list[tuple[dict, DesiredDriveBlock]] = []
+    for state in states:
+        for block in build_drive_blocks_for_flight(
+            state, byair=byair, maps=maps, origin=origin, home_address=home_address, config=config
+        ):
+            desired.append((state, block))
+
+    if not desired:
+        return {"status": "ok", "planned": 0, "executed": 0, "suppressed": 0, "failed": []}
+
+    events = _fetch_block_events(
+        composio, calendar_id=calendar_id, blocks=[block for _, block in desired]
+    )
+
+    planned = 0
+    executed = 0
+    suppressed = 0
+    failed: list[dict] = []
+    for state, block in desired:
+        flight_id = state["flight_id"]
+        flight_code = state.get("code") or ""
+        existing = _existing_block(events, flight_id, block.direction)
+        # Anti-thrash: an existing block whose leave-by is within the threshold of
+        # the freshly-routed one stays put — skip before planning a shift.
+        if existing is not None:
+            drift = abs(_leave_by(block) - _leave_by(existing))
+            if drift < _REANCHOR_THRESHOLD:
+                suppressed += 1
+                continue
+        ops = plan_drive_block(
+            flight_id=flight_id,
+            flight_code=flight_code,
+            desired=block,
+            events=events,
+            calendar_id=calendar_id,
+        )
+        for op in ops:
+            planned += 1
+            try:
+                _execute_op(op, composio=composio)
+            except (ComposioError, OSError) as exc:
+                print(
+                    f"flight-assist airport-drive: op {op['op']}/{op['kind']} for flight "
+                    f"{flight_id} failed: {exc}",
+                    file=sys.stderr,
+                )
+                failed.append({"flight_id": flight_id, "op": op["op"], "kind": op["kind"]})
+                continue
+            executed += 1
+    return {
+        "status": "ok",
+        "planned": planned,
+        "executed": executed,
+        "suppressed": suppressed,
+        "failed": failed,
+    }
