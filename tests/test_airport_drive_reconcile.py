@@ -414,7 +414,13 @@ TO_ANCHOR = datetime(2026, 7, 2, 13, 0, tzinfo=CT)  # dep 14:00 − 60-min domes
 
 
 class FakeComposio:
-    """Records create/delete calls; serves canned find_events results."""
+    """Records create/delete calls; serves find_events filtered by the window.
+
+    `find_events` returns only events whose `start.dateTime` falls within the
+    requested `[timeMin, timeMax]` — like the real toolkit — so a test can prove
+    the fetch window is wide enough to surface a stale block (and that the run
+    shifts it rather than creating a duplicate).
+    """
 
     def __init__(self, events=None, *, create_fail=False, delete_404=False):
         self._events = list(events or [])
@@ -427,7 +433,17 @@ class FakeComposio:
     def find_events(self, arguments: dict) -> dict:
         self.find_called += 1
         self.find_args = arguments
-        return {"items": list(self._events)}
+        lo = datetime.fromisoformat(arguments["timeMin"].replace("Z", "+00:00"))
+        hi = datetime.fromisoformat(arguments["timeMax"].replace("Z", "+00:00"))
+        items = []
+        for event in self._events:
+            start = event.get("start", {}).get("dateTime")
+            if start is None:
+                items.append(event)
+                continue
+            if lo <= datetime.fromisoformat(start) <= hi:
+                items.append(event)
+        return {"items": items}
 
     def create_event(self, arguments: dict) -> dict:
         if self._create_fail:
@@ -453,11 +469,14 @@ def _existing_to_airport_event(*, anchor=TO_ANCHOR, baseline=1800, event_id="evt
         origin="home",
         destination="Nashville International Airport",
     )
+    start = anchor - timedelta(seconds=baseline)
     return {
         "id": event_id,
         "summary": "Drive: → BNA (DL123)",
         "description": desc,
         "calendar_id": "primary",
+        "start": {"dateTime": start.isoformat()},
+        "end": {"dateTime": anchor.isoformat()},
     }
 
 
@@ -566,11 +585,14 @@ def _existing_from_airport_event(*, anchor=FA_ANCHOR, baseline=1200, event_id="e
         origin="LaGuardia Airport",
         destination=HOME,
     )
+    end = anchor + timedelta(seconds=baseline)
     return {
         "id": event_id,
         "summary": "Drive: LGA → home",
         "description": desc,
         "calendar_id": "primary",
+        "start": {"dateTime": anchor.isoformat()},
+        "end": {"dateTime": end.isoformat()},
     }
 
 
@@ -608,3 +630,40 @@ def test_run_suppresses_from_airport_subthreshold_duration_drift():
     )
     assert result["suppressed"] == 1
     assert composio.created == [] and composio.deleted == []
+
+
+# --- fetch window: a stale block far outside the desired window is still found --
+
+
+def test_run_shifts_not_duplicates_a_block_left_far_outside_the_desired_window():
+    # The block was created at the scheduled time (13:00), then the flight was
+    # delayed 3h (dep 17:00). The old block sits hours before the new desired
+    # window — a desired-window-only fetch would miss it and create a DUPLICATE.
+    # Anchored on the scheduled times, the fetch still surfaces it, so the run
+    # shifts (delete + recreate) the one block instead.
+    old = _existing_to_airport_event(anchor=TO_ANCHOR)  # start 12:30, at the scheduled time
+    composio = FakeComposio(events=[old])
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800)
+    state = _state(last_snapshot=_snapshot("scheduled", dep_time="2026-07-02T17:00:00-05:00"))
+    result = run_airport_drive_reconcile(
+        [state], composio=composio, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    assert composio.deleted == [{"calendar_id": "primary", "event_id": "evt_old"}]
+    assert len(composio.created) == 1  # one block, shifted — not two
+    assert result["executed"] == 1
+
+
+def test_fetch_window_spans_scheduled_time_under_a_large_delay():
+    # Unit-level guard on the window: a 3h-delayed departure's window still
+    # reaches back to cover a block at the scheduled time.
+    from airport_drive_reconcile import _fetch_window  # noqa: PLC0415
+
+    byair, maps = FakeByAir(), FakeMaps(seconds=1800)
+    state = _state(last_snapshot=_snapshot("scheduled", dep_time="2026-07-02T17:00:00-05:00"))
+    blocks = build_drive_blocks_for_flight(
+        state, byair=byair, maps=maps, origin="home", home_address=HOME
+    )
+    time_min, _ = _fetch_window([state], blocks)
+    lo = datetime.fromisoformat(time_min.replace("Z", "+00:00"))
+    old_block_start = TO_ANCHOR - timedelta(seconds=1800)  # the stale block's start
+    assert lo <= old_block_start

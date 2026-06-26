@@ -25,7 +25,9 @@ the comparison is round-trip-stable regardless of how the calendar API formats
 the offset. A shift past the re-anchor threshold is a delete + recreate, so every
 write goes through the timezone-correct `build_block_args` create path; a
 sub-threshold drift (traffic jitter under `_REANCHOR_THRESHOLD`) is left alone so
-the block does not thrash the calendar every poll (#90 §7).
+the block does not thrash the calendar every poll (#90 §7). The fetch window is
+anchored on the flight's stable scheduled times so a block created before a delay
+is still found (and shifted, not duplicated) however far the flight has moved.
 
 Which blocks get built is gated on the flight's `computed_status`:
   * `to_airport` — while the flight has not left (scheduled / check-in / boarding).
@@ -80,9 +82,14 @@ from maps_client import MapsError  # noqa: E402
 # every poll (#90 §7 "shift only past a ~5-min threshold").
 _REANCHOR_THRESHOLD = timedelta(minutes=5)
 
-# Padding on the primary-calendar fetch window, so a block whose endpoints sit
-# just outside the spanning [min leg_start, max leg_end] is still fetched.
-_FETCH_WINDOW_PAD = timedelta(hours=1)
+# Padding on the primary-calendar fetch window. It must cover the distance from
+# a flight time to its drive block (max clearance 120 min + the drive, or the
+# post-arrival delay + the drive), so that — with the window also anchored on the
+# flight's STABLE scheduled times — a block created before a delay is still
+# fetched no matter how far the flight has since shifted. Anchoring on scheduled
+# times (not just the delayed desired window) is what makes this independent of
+# the delay magnitude: a pad sized to the delay would be unbounded.
+_FETCH_WINDOW_PAD = timedelta(hours=5)
 
 # Where the airport drive blocks live (#90 decision: the primary calendar,
 # alongside drive-planner's `Drive:` meeting blocks).
@@ -432,25 +439,40 @@ def _window_drift(desired: DesiredDriveBlock, existing) -> timedelta:
     return max(abs(d_start - e_start), abs(d_end - e_end))
 
 
-def _fetch_window(blocks: list[DesiredDriveBlock]) -> tuple[str, str]:
-    """RFC 3339 [time_min, time_max] spanning all desired blocks, padded."""
-    starts = [b.leg_start for b in blocks]
-    ends = [b.leg_end if b.leg_end is not None else b.anchor for b in blocks]
-    lo = (min(starts) - _FETCH_WINDOW_PAD).astimezone(timezone.utc)
-    hi = (max(ends) + _FETCH_WINDOW_PAD).astimezone(timezone.utc)
+def _fetch_window(states: list[dict], blocks: list[DesiredDriveBlock]) -> tuple[str, str]:
+    """RFC 3339 [time_min, time_max] covering every desired block AND every
+    flight's scheduled times, padded.
+
+    Anchoring on the scheduled `dep`/`arr` instants (not only the delayed desired
+    window) keeps a pre-delay block in range no matter how far the flight has
+    shifted: the stale block sits within `_FETCH_WINDOW_PAD` of the scheduled
+    time, so it is fetched and shifted/recreated rather than duplicated.
+    """
+    instants: list[datetime] = []
+    for state in states:
+        for key in ("scheduled_dep_time", "scheduled_arr_time"):
+            dt = _parse_instant(state.get(key))
+            if dt is not None:
+                instants.append(dt)
+    for block in blocks:
+        instants.append(block.leg_start)
+        instants.append(block.leg_end if block.leg_end is not None else block.anchor)
+    lo = (min(instants) - _FETCH_WINDOW_PAD).astimezone(timezone.utc)
+    hi = (max(instants) + _FETCH_WINDOW_PAD).astimezone(timezone.utc)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     return lo.strftime(fmt), hi.strftime(fmt)
 
 
 def _fetch_block_events(
-    composio, *, calendar_id: str, blocks: list[DesiredDriveBlock]
+    composio, *, calendar_id: str, states: list[dict], blocks: list[DesiredDriveBlock]
 ) -> list[dict]:
-    """Fetch the primary-calendar events in the window spanning the desired blocks.
+    """Fetch the primary-calendar events in the window spanning the desired blocks
+    and the flights' scheduled times (see `_fetch_window`).
 
     Returns the raw Composio events (description intact, so `parse_block` reads
     the `<!--fadrive:-->` state), each annotated with its state-derived signature.
     """
-    time_min, time_max = _fetch_window(blocks)
+    time_min, time_max = _fetch_window(states, blocks)
     raw = composio.find_events(
         _find_events_args(calendar_id=calendar_id, time_min=time_min, time_max=time_max)
     )
@@ -499,8 +521,10 @@ def run_airport_drive_reconcile(
     re-routed leave-by drifts less than `_REANCHOR_THRESHOLD` from the block
     already on the calendar is suppressed (anti-thrash, #90 §7).
 
-    Per-flight / per-op failures are collected, never raised — one bad Composio
-    call defers that op to the next cycle. Returns a summary
+    Per-op (create / delete) failures are collected, not raised — one bad write
+    defers that op to the next cycle. The one-shot calendar FETCH is the
+    exception: a `find_events` failure propagates (there is nothing to reconcile
+    against without it), matching `calendar_reconcile`. Returns a summary
     `{status, planned, executed, suppressed, failed}`.
 
     Args:
@@ -525,7 +549,10 @@ def run_airport_drive_reconcile(
         return {"status": "ok", "planned": 0, "executed": 0, "suppressed": 0, "failed": []}
 
     events = _fetch_block_events(
-        composio, calendar_id=calendar_id, blocks=[block for _, block in desired]
+        composio,
+        calendar_id=calendar_id,
+        states=[state for state, _ in desired],
+        blocks=[block for _, block in desired],
     )
 
     planned = 0
