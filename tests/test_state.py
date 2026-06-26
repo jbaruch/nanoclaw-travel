@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ from state import (  # noqa: E402
     read_current_location,
     read_flight_state,
     read_flight_state_snapshot,
+    resolve_live_origin,
     state_dir,
     write_active_flights,
     write_config,
@@ -1091,3 +1093,40 @@ def test_list_flight_state_ids_skips_non_flight_files(state_root: Path):
     (state_root / "flight-notanint.json").write_text("{}")
     (state_root / "flight-.json").write_text("{}")
     assert list_flight_state_ids() == [7]
+
+
+# --- resolve_live_origin (the shared origin ladder) ----------------------------
+
+_NOW = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _write_location(state_root: Path, captured_at: str) -> None:
+    state_root.mkdir(parents=True, exist_ok=True)
+    payload = _valid_location_payload(captured_at=captured_at)
+    (state_root / CURRENT_LOCATION_FILE).write_text(json.dumps(payload))
+
+
+def test_resolve_live_origin_uses_fresh_location(state_root: Path):
+    # 15 min old (within the 30-min window) → the live lat,lng wins.
+    _write_location(state_root, "2026-05-20T11:45:00Z")
+    assert resolve_live_origin("1 Infinite Loop", now=_NOW) == "59.6519,17.9186"
+
+
+def test_resolve_live_origin_falls_back_to_home_when_stale(state_root: Path):
+    # 60 min old → past the window → the static home address.
+    _write_location(state_root, "2026-05-20T11:00:00Z")
+    assert resolve_live_origin("1 Infinite Loop", now=_NOW) == "1 Infinite Loop"
+
+
+def test_resolve_live_origin_falls_back_when_location_is_in_the_future(state_root: Path):
+    # Future-dated snapshot (negative age) is not "fresh" → home address.
+    _write_location(state_root, "2026-05-20T12:30:00Z")
+    assert resolve_live_origin("1 Infinite Loop", now=_NOW) == "1 Infinite Loop"
+
+
+def test_resolve_live_origin_returns_home_when_no_location(state_root: Path):
+    assert resolve_live_origin("1 Infinite Loop", now=_NOW) == "1 Infinite Loop"
+
+
+def test_resolve_live_origin_returns_none_when_no_location_and_no_home(state_root: Path):
+    assert resolve_live_origin(None, now=_NOW) is None

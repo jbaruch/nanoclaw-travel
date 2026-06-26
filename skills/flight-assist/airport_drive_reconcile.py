@@ -1,9 +1,8 @@
 """Assemble a flight's airport drive blocks from live byAir + Maps inputs.
 
-Piece 4c of #90 (the integration), reconcile/route half — first slice. This is
-the I/O-bearing layer that turns a flight's persisted state into the two
-`DesiredDriveBlock`s the pure planner `airport_drive.plan_drive_block` reconciles
-against the calendar:
+Piece 4c of #90 (the integration). This is the I/O-bearing layer that turns a
+flight's persisted state into the two `DesiredDriveBlock`s the pure planner
+`airport_drive.plan_drive_block` reconciles against the calendar:
 
     flight state ──► airport_drive_reconcile ──► [DesiredDriveBlock, ...] ──► plan_drive_block
 
@@ -47,11 +46,19 @@ Errors degrade per leg, never abort: a byAir or Maps failure for one direction
 drops just that block (logged to stderr) and the next cycle retries — one bad
 airport lookup never costs the other block or the other flight.
 
-stdlib-only (`datetime`) per `jbaruch/coding-policy: dependency-management`.
+`run_airport_drive_pass` is the wake-cycle entry point the reconcile script
+calls: it resolves the inputs from the environment + on-disk state (config
+`home_address`, the live origin via `state.resolve_live_origin`, the byAir + Maps
+clients, the active flights' states) and runs the reconcile, staying dormant
+(idle summary) when routing is unavailable.
+
+No external dependencies (`jbaruch/coding-policy: dependency-management`); imports
+are sibling flight-assist modules resolved on `sys.path` at runtime.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -69,7 +76,7 @@ from airport_drive_inputs import (  # noqa: E402
     arrival_block,
     departure_block,
 )
-from byair_client import ByAirError  # noqa: E402
+from byair_client import ByAirClient, ByAirError  # noqa: E402
 
 # Reuse the live-verified Composio event-fetch shaping from calendar_reconcile
 # (the v3 response nesting in `_items` was verified against the NAS) rather than
@@ -77,7 +84,13 @@ from byair_client import ByAirError  # noqa: E402
 # does not import this module).
 from calendar_reconcile import _created_event_id, _find_events_args, _items  # noqa: E402
 from composio_client import ComposioError  # noqa: E402
-from maps_client import MapsError  # noqa: E402
+from maps_client import MapsClient, MapsError  # noqa: E402
+from state import (  # noqa: E402
+    read_active_flights,
+    read_config,
+    read_flight_state,
+    resolve_live_origin,
+)
 
 # A re-routed leave-by that drifts less than this from the block already on the
 # calendar is left in place — traffic jitter under it must not rewrite the event
@@ -620,3 +633,69 @@ def run_airport_drive_reconcile(
         "suppressed": suppressed,
         "failed": failed,
     }
+
+
+# --- Wake-cycle entry point (env + state glue) -------------------------------
+
+# Per-call client timeouts for the wake cycle. Unlike the precheck (bounded by
+# the agent-runner's 30s kill), the reconcile runs on the wake, so the client
+# defaults are fine; pinned here only to keep one slow upstream from stalling
+# the whole pass.
+_BYAIR_CALL_TIMEOUT_SECONDS = 8.0
+_MAPS_CALL_TIMEOUT_SECONDS = 8.0
+
+_IDLE_SUMMARY = {"status": "ok", "planned": 0, "executed": 0, "suppressed": 0, "failed": []}
+
+
+def _maybe_byair_client() -> ByAirClient | None:
+    """A byAir client when `BYAIR_MCP_URL` is set, else None (pass builds nothing)."""
+    if not os.environ.get("BYAIR_MCP_URL"):
+        return None
+    return ByAirClient.from_env(timeout=_BYAIR_CALL_TIMEOUT_SECONDS)
+
+
+def _maybe_maps_client() -> MapsClient | None:
+    """A Maps client when `GOOGLE_MAPS_API_KEY` is set, else None (no routing)."""
+    if not os.environ.get("GOOGLE_MAPS_API_KEY"):
+        return None
+    return MapsClient.from_env(timeout=_MAPS_CALL_TIMEOUT_SECONDS)
+
+
+def run_airport_drive_pass(composio, *, now: datetime) -> dict:
+    """The wake-cycle airport-drive reconcile: resolve inputs from env + state,
+    then run `run_airport_drive_reconcile`.
+
+    Reads the tile config (`home_address`), resolves the live drive origin
+    (`state.resolve_live_origin` — the same ladder the precheck uses), constructs
+    the byAir + Maps clients from the environment, loads the active flights'
+    states, and reconciles their airport drive blocks on the primary calendar.
+
+    Returns the reconcile summary, or an idle summary when routing is unavailable
+    (no Maps key, no byAir URL, or no tracked flights) — the airport blocks are an
+    additive capability that simply stays dormant without its inputs, never an
+    error for the wake cycle.
+    """
+    maps = _maybe_maps_client()
+    byair = _maybe_byair_client()
+    if maps is None or byair is None:
+        return dict(_IDLE_SUMMARY)
+
+    config = read_config() or {}
+    home_address = config.get("home_address")
+    origin = resolve_live_origin(home_address, now=now)
+
+    states = [
+        state for fid in read_active_flights() if (state := read_flight_state(fid)) is not None
+    ]
+    if not states:
+        return dict(_IDLE_SUMMARY)
+
+    return run_airport_drive_reconcile(
+        states,
+        composio=composio,
+        byair=byair,
+        maps=maps,
+        origin=origin,
+        home_address=home_address,
+        config=config,
+    )

@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 STATE_SCHEMA_VERSION = 5
@@ -335,6 +335,42 @@ def read_current_location() -> dict | None:
     if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
         return None
     return {"latitude": float(lat), "longitude": float(lng), "captured_at": captured}
+
+
+# Maximum age of a `current-location.json` snapshot to be used as a drive
+# origin. Older than this and origin resolution falls back to `home_address`,
+# on the principle that a stale location guess is worse than the static home
+# base (#18). 30 min matches the orchestrator's typical Telegram
+# live-location write cadence.
+MAX_LIVE_ORIGIN_AGE_MINUTES = 30
+
+
+def resolve_live_origin(home_address: str | None, *, now: datetime) -> str | None:
+    """Resolve the drive origin: fresh live location → `home_address` → None.
+
+    The single origin-resolution ladder shared by the precheck's time-to-leave
+    query and the airport-drive reconcile, so the two never disagree on where the
+    user is:
+
+    1. `current-location.json` (orchestrator-written) when present and fresh —
+       `0 <= now - captured_at <= MAX_LIVE_ORIGIN_AGE_MINUTES`. Returned as
+       `"<lat>,<lng>"`, which Distance Matrix accepts as a numeric origin.
+    2. `home_address` from `config.json` (the static fallback).
+    3. `None` — neither available; the caller skips routing.
+
+    `now` must be timezone-aware (UTC). `read_current_location` already
+    shape-validates the snapshot and returns None on any mismatch (including a
+    `captured_at` that does not resolve to a UTC instant), so a corrupt or
+    stale-schema file falls through to `home_address` here, and the `captured_at`
+    on a returned snapshot is always a parseable UTC string.
+    """
+    loc = read_current_location()
+    if loc is not None:
+        captured = datetime.fromisoformat(loc["captured_at"].replace("Z", "+00:00"))
+        age = now - captured
+        if timedelta() <= age <= timedelta(minutes=MAX_LIVE_ORIGIN_AGE_MINUTES):
+            return f"{loc['latitude']},{loc['longitude']}"
+    return home_address
 
 
 _CONFIG_OPTIONAL_FIELDS: dict[str, type] = {
