@@ -93,8 +93,25 @@ def main() -> int:
     # to the outer boundary as an unexpected error.
     try:
         summary["airport_drive"] = run_airport_drive_pass(client, now=now)
+    except StateError as exc:
+        # The pass reads active-flights / per-flight state, so a corrupt file
+        # raises StateError here — after run_reconcile already produced a summary.
+        # Record it on the airport_drive sub-result and keep the cycle's
+        # single-line JSON intact, rather than letting it escape past the
+        # credentials/state handler above and surface as a raw traceback.
+        print(
+            f"flight-assist reconcile: airport-drive state error — drive blocks skipped this "
+            f"cycle. Check active-flights.json / flight-*.json for corruption. Cause: {exc}",
+            file=sys.stderr,
+        )
+        summary["airport_drive"] = {"status": "error", "error": "state"}
     except (ComposioError, ByAirError, MapsError, urllib.error.URLError) as exc:
-        print(f"flight-assist reconcile: airport-drive pass failed: {exc}", file=sys.stderr)
+        print(
+            f"flight-assist reconcile: airport-drive pass failed — deferred, retried next cycle. "
+            f"If it repeats, check Composio / byAir / Maps connectivity and credentials. "
+            f"Cause: {exc}",
+            file=sys.stderr,
+        )
         summary["airport_drive"] = {"status": "error"}
 
     print(json.dumps(summary, separators=(",", ":")))

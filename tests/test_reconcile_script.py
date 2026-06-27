@@ -68,3 +68,34 @@ def test_state_failure_is_not_mislabeled_as_credentials(tmp_path):
     assert result.returncode == 1
     payload = json.loads(result.stdout.strip())
     assert payload == {"status": "error", "error": "state"}
+
+
+def test_airport_drive_state_error_stays_single_line_json(tmp_path):
+    """A corrupt active-flights file fails the airport-drive pass AFTER the
+    byAir-calendar reconcile already produced a (no_calendar) summary.
+
+    The pass reads state, so a malformed `active-flights.json` raises StateError
+    inside it — past the credentials/state handler scoped to run_reconcile. The
+    script must catch it and keep its single-line JSON contract: the cycle still
+    succeeds (exit 0) with `airport_drive` recorded as a state error, never a
+    raw traceback the wake cycle can't parse.
+    """
+    state_dir = tmp_path / "state" / "flight-assist"
+    state_dir.mkdir(parents=True)
+    # No config.json → run_reconcile resolves no flight calendar → no_calendar
+    # (no StateError there). A forward-incompatible active-flights.json then
+    # raises StateError inside the airport-drive pass.
+    (state_dir / "active-flights.json").write_text('{"schema_version": 999, "flight_ids": [1]}')
+    result = _run(
+        {
+            "COMPOSIO_API_KEY": "synthetic_key_value",
+            "COMPOSIO_USER_ID": "synthetic_user_value",
+            "FLIGHT_ASSIST_STATE_DIR": str(state_dir),
+            "GOOGLE_MAPS_API_KEY": "synthetic_maps_key",
+            "BYAIR_MCP_URL": "https://example.invalid/mcp/synthetic",
+        }
+    )
+    assert result.returncode == 0  # the cycle succeeded; only the drive sub-pass failed
+    payload = json.loads(result.stdout.strip())  # single-line JSON, not a traceback
+    assert payload["status"] == "no_calendar"
+    assert payload["airport_drive"] == {"status": "error", "error": "state"}

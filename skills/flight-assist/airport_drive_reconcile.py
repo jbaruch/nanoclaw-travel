@@ -644,7 +644,10 @@ def run_airport_drive_reconcile(
 _BYAIR_CALL_TIMEOUT_SECONDS = 8.0
 _MAPS_CALL_TIMEOUT_SECONDS = 8.0
 
-_IDLE_SUMMARY = {"status": "ok", "planned": 0, "executed": 0, "suppressed": 0, "failed": []}
+
+def _idle_summary() -> dict:
+    """A fresh zero-op summary (a new `failed` list each call, never shared)."""
+    return {"status": "ok", "planned": 0, "executed": 0, "suppressed": 0, "failed": []}
 
 
 def _maybe_byair_client() -> ByAirClient | None:
@@ -678,7 +681,7 @@ def run_airport_drive_pass(composio, *, now: datetime) -> dict:
     maps = _maybe_maps_client()
     byair = _maybe_byair_client()
     if maps is None or byair is None:
-        return dict(_IDLE_SUMMARY)
+        return _idle_summary()
 
     config = read_config() or {}
     home_address = config.get("home_address")
@@ -688,7 +691,7 @@ def run_airport_drive_pass(composio, *, now: datetime) -> dict:
         state for fid in read_active_flights() if (state := read_flight_state(fid)) is not None
     ]
     if not states:
-        return dict(_IDLE_SUMMARY)
+        return _idle_summary()
 
     return run_airport_drive_reconcile(
         states,
