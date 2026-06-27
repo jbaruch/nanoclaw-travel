@@ -13,7 +13,11 @@ Usage:
 
 Output: single-line JSON summary on stdout —
     {"status": "...", "byair_calendar_id": "...", "planned": N,
-     "executed": N, "failed": [...], "airport_drive": {...}}
+     "executed": N, "archived": N, "failed": [...], "airport_drive": {...}}
+
+Some keys vary by `status`: `byair_calendar_id` and `archived` are present only
+when a cycle actually ran (`ok` / `no_flights`) and are omitted on `no_calendar`.
+`airport_drive` is always present (it runs independently — see below).
 
 `status` is `ok` (a cycle ran), `no_calendar` (no flight calendar resolved
 from config — reconciliation disabled, like maps with no key), or

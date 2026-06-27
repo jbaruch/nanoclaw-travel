@@ -1130,3 +1130,11 @@ def test_resolve_live_origin_returns_home_when_no_location(state_root: Path):
 
 def test_resolve_live_origin_returns_none_when_no_location_and_no_home(state_root: Path):
     assert resolve_live_origin(None, now=_NOW) is None
+
+
+def test_resolve_live_origin_rejects_naive_now(state_root: Path):
+    # A naive `now` is a caller bug — fail fast with a clear message rather than
+    # TypeError mid-subtraction against the aware captured_at.
+    naive = datetime(2026, 5, 20, 12, 0, 0)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        resolve_live_origin("1 Infinite Loop", now=naive)

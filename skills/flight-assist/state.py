@@ -358,12 +358,16 @@ def resolve_live_origin(home_address: str | None, *, now: datetime) -> str | Non
     2. `home_address` from `config.json` (the static fallback).
     3. `None` — neither available; the caller skips routing.
 
-    `now` must be timezone-aware (UTC). `read_current_location` already
-    shape-validates the snapshot and returns None on any mismatch (including a
-    `captured_at` that does not resolve to a UTC instant), so a corrupt or
-    stale-schema file falls through to `home_address` here, and the `captured_at`
-    on a returned snapshot is always a parseable UTC string.
+    `now` must be timezone-aware (UTC) — a naive `now` is rejected up front with a
+    clear `ValueError` rather than failing mid-subtraction against the aware
+    `captured_at`. `read_current_location` already shape-validates the snapshot
+    and returns None on any mismatch (including a `captured_at` that does not
+    resolve to a UTC instant), so a corrupt or stale-schema file falls through to
+    `home_address` here, and the `captured_at` on a returned snapshot is always a
+    parseable UTC string.
     """
+    if now.tzinfo is None:
+        raise ValueError("resolve_live_origin: `now` must be timezone-aware (UTC)")
     loc = read_current_location()
     if loc is not None:
         captured = datetime.fromisoformat(loc["captured_at"].replace("Z", "+00:00"))
