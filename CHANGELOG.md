@@ -1,5 +1,9 @@
 # Changelog
 
+### Changed — run the flight-assist cadence wake on Haiku (`jbaruch/nanoclaw-travel#101`)
+
+The flight-assist `agentModel` moves from `claude-sonnet-4-6` to `claude-haiku-4-5-20251001`, joining sync-tripit, nightly-travel-sync, drive-planner, and drive-planner-recheck on Haiku. The wake-cycle work is deterministic-script output (`reconcile.py`) plus a fixed `reason → sentence` template lookup — the hard logic lives in scripts, not the LLM — so the cheaper model carries it. The interactive diagnose / set-home-base paths are user-triggered and unaffected.
+
 ### Added — wire airport drive blocks into the wake-cycle reconcile (`jbaruch/nanoclaw-travel#90`)
 
 The airport drive blocks now run for real. `airport_drive_reconcile.run_airport_drive_pass(composio, now=)` is the wake-cycle entry point — it resolves the inputs from the environment and on-disk state (config `home_address`, the live drive origin, the byAir + Maps clients, the active flights' states) and runs `run_airport_drive_reconcile`; the `reconcile.py` script calls it after the byAir-calendar reconcile and folds the result into its JSON under `airport_drive`. The drive blocks live on the **primary** calendar, so the pass runs even when the byAir-flight reconcile returns `no_calendar`; it stays a dormant zero-op summary when routing is unavailable (no `GOOGLE_MAPS_API_KEY`, no `BYAIR_MCP_URL`, or no tracked flights), and a transient byAir/Maps/Composio failure during it is logged and recorded as `{"status": "error"}` without failing the rest of the cycle. The origin ladder (fresh `current-location.json` → `home_address` → None) is extracted to `state.resolve_live_origin`, the single resolver the precheck's time-to-leave query now delegates to as well, so the two paths can never disagree on where the user is. SKILL.md Step 3 documents the new `airport_drive` output object.
