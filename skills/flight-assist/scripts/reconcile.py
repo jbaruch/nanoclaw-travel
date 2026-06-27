@@ -17,7 +17,10 @@ Output: single-line JSON summary on stdout —
 
 Some keys vary by `status`: `byair_calendar_id` and `archived` are present only
 when a cycle actually ran (`ok` / `no_flights`) and are omitted on `no_calendar`.
-`airport_drive` is always present (it runs independently — see below).
+`airport_drive` is present on every NON-error summary (`ok` / `no_calendar` /
+`no_flights`) — it runs independently, see below — but is absent on the early
+`{"status": "error", "error": "credentials" | "state"}` setup-failure exits,
+which return before it runs (no Composio client / unreadable state).
 
 `status` is `ok` (a cycle ran), `no_calendar` (no flight calendar resolved
 from config — reconciliation disabled, like maps with no key), or
