@@ -19,9 +19,11 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
+import airport_drive_reconcile as adr  # noqa: E402
 from airport_block import build_description  # noqa: E402
 from airport_drive_reconcile import (  # noqa: E402
     build_drive_blocks_for_flight,
+    run_airport_drive_pass,
     run_airport_drive_reconcile,
 )
 from byair_client import ByAirError  # noqa: E402
@@ -716,3 +718,55 @@ def test_run_reraises_original_delete_failure_when_rollback_also_fails():
     assert len(composio.created) == 1  # replacement created; both deletes failed
     assert composio.deleted == []
     assert result["failed"] == [{"flight_id": 12345, "op": "update", "kind": "airport_drive_dep"}]
+
+
+# === wake-cycle entry point: run_airport_drive_pass ============================
+
+_PASS_NOW = datetime(2026, 7, 2, 12, 0, tzinfo=timezone.utc)
+
+
+def test_pass_is_idle_without_a_maps_client(monkeypatch):
+    # No routing client → dormant idle summary, the calendar is never touched.
+    monkeypatch.setattr(adr, "_maybe_maps_client", lambda: None)
+    monkeypatch.setattr(adr, "_maybe_byair_client", lambda: FakeByAir())
+    composio = FakeComposio(events=[])
+    result = run_airport_drive_pass(composio, now=_PASS_NOW)
+    assert result == {"status": "ok", "planned": 0, "executed": 0, "suppressed": 0, "failed": []}
+    assert composio.find_called == 0
+
+
+def test_pass_is_idle_without_a_byair_client(monkeypatch):
+    monkeypatch.setattr(adr, "_maybe_maps_client", lambda: FakeMaps())
+    monkeypatch.setattr(adr, "_maybe_byair_client", lambda: None)
+    composio = FakeComposio(events=[])
+    result = run_airport_drive_pass(composio, now=_PASS_NOW)
+    assert result["planned"] == 0
+    assert composio.find_called == 0
+
+
+def test_pass_is_idle_with_no_active_flights(monkeypatch):
+    monkeypatch.setattr(adr, "_maybe_maps_client", lambda: FakeMaps())
+    monkeypatch.setattr(adr, "_maybe_byair_client", lambda: FakeByAir())
+    monkeypatch.setattr(adr, "read_config", lambda: {"home_address": HOME})
+    monkeypatch.setattr(adr, "resolve_live_origin", lambda home, now: home)
+    monkeypatch.setattr(adr, "read_active_flights", lambda: [])
+    composio = FakeComposio(events=[])
+    result = run_airport_drive_pass(composio, now=_PASS_NOW)
+    assert result["planned"] == 0
+    assert composio.find_called == 0
+
+
+def test_pass_reconciles_active_flights(monkeypatch):
+    # Full glue path: clients present, one active pre-departure flight → a
+    # to_airport block is created on the (fake) primary calendar.
+    monkeypatch.setattr(adr, "_maybe_maps_client", lambda: FakeMaps(seconds=1800))
+    monkeypatch.setattr(adr, "_maybe_byair_client", lambda: FakeByAir())
+    monkeypatch.setattr(adr, "read_config", lambda: {"home_address": HOME})
+    monkeypatch.setattr(adr, "resolve_live_origin", lambda home, now: "36.1,-86.6")
+    monkeypatch.setattr(adr, "read_active_flights", lambda: [12345])
+    monkeypatch.setattr(adr, "read_flight_state", lambda fid: _state())
+    composio = FakeComposio(events=[])
+    result = run_airport_drive_pass(composio, now=_PASS_NOW)
+    assert result["executed"] == 1
+    assert len(composio.created) == 1
+    assert composio.created[0]["summary"] == "Drive: → BNA (DL123)"

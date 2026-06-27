@@ -61,8 +61,8 @@ from phase_markers import (  # noqa: E402
 from state import (  # noqa: E402
     read_active_flights,
     read_config,
-    read_current_location,
     read_flight_state,
+    resolve_live_origin,
     write_flight_state,
 )
 from wake_rules import detect_wake_events  # noqa: E402
@@ -92,15 +92,6 @@ _POLL_HORIZON_HOURS = 24
 # Window for querying maps_client for travel time. Past this window
 # the time-to-leave marker has either fired or doesn't matter.
 _TIME_TO_LEAVE_QUERY_WINDOW_HOURS = 6
-
-# Maximum age of a `current-location.json` snapshot to be considered
-# fresh enough to use as the time-to-leave origin. Older than this and
-# the precheck falls back to `home_address`, on the principle that a
-# stale location guess is worse than the user's static home base.
-# Issue #18 suggested 15–30 min; 30 is the more permissive value and
-# matches the orchestrator's typical location-write cadence on
-# Telegram live-location sharing.
-_MAX_CURRENT_LOCATION_AGE_MINUTES = 30
 
 # Per-call timeout for the byAir HTTP client inside `_run_cycle`. The outer
 # `execFile` budget in agent-runner is 30s; a single slow byAir response at
@@ -544,29 +535,12 @@ def _resolve_time_to_leave_origin(
 ) -> str | None:
     """Origin-resolution ladder for the time-to-leave Distance Matrix query.
 
-    Order of preference:
-
-    1. `current-location.json` (orchestrator-written) if present and the
-       snapshot is fresh — `now_utc - captured_at <= _MAX_CURRENT_LOCATION_AGE_MINUTES`.
-       Formatted as `"<lat>,<lng>"` for the Distance Matrix API, which
-       accepts numeric origin/destination pairs natively.
-    2. `home_address` from `config.json` (the legacy single-source).
-    3. `None` — neither origin available; caller skips the maps query.
-
-    A mobile user (constant traveler) gets correct travel times when
-    the orchestrator is publishing live location; the static home
-    address remains the fallback for users who never share location
-    and for the gap between location updates. Issue
+    Delegates to `state.resolve_live_origin` — the single ladder shared with the
+    airport-drive reconcile (fresh `current-location.json` → `home_address` →
+    None), so the two never disagree on where the user is. Issue
     `jbaruch/nanoclaw-flight-assist#18`.
     """
-    loc = read_current_location()
-    if loc is not None:
-        captured = _parse_iso8601(loc.get("captured_at"))
-        if captured is not None:
-            age = now_utc - captured
-            if timedelta() <= age <= timedelta(minutes=_MAX_CURRENT_LOCATION_AGE_MINUTES):
-                return f"{loc['latitude']},{loc['longitude']}"
-    return home_address
+    return resolve_live_origin(home_address, now=now_utc)
 
 
 def _maybe_query_travel_time(
