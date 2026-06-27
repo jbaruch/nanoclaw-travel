@@ -88,9 +88,10 @@ def main() -> int:
 
     # Airport drive blocks (#90) reconcile on the PRIMARY calendar, independent
     # of the byAir flight calendar above — run them even when that returned
-    # no_calendar. A transient byAir / Maps / Composio failure here is logged and
-    # recorded without failing the rest of the cycle; StateError still propagates
-    # to the outer boundary as an unexpected error.
+    # no_calendar. A transient byAir / Maps / Composio failure, or a StateError
+    # from reading active-flights / per-flight state, is caught here, logged, and
+    # recorded on the airport_drive sub-result without failing the rest of the
+    # cycle's single-line JSON.
     try:
         summary["airport_drive"] = run_airport_drive_pass(client, now=now)
     except StateError as exc:

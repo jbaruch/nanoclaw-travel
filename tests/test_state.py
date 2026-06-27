@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 
 import pytest
@@ -1138,3 +1138,25 @@ def test_resolve_live_origin_rejects_naive_now(state_root: Path):
     naive = datetime(2026, 5, 20, 12, 0, 0)
     with pytest.raises(ValueError, match="timezone-aware"):
         resolve_live_origin("1 Infinite Loop", now=naive)
+
+
+class _OffsetNaiveTZ(tzinfo):
+    """A tzinfo whose utcoffset() is None — tzinfo is set but the instant is
+    still offset-naive, which would TypeError on subtraction."""
+
+    def utcoffset(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return None
+
+    def dst(self, dt):
+        return None
+
+
+def test_resolve_live_origin_rejects_offset_naive_now(state_root: Path):
+    # tzinfo is non-None but carries no offset → still rejected with the clear
+    # ValueError, not a TypeError mid-subtraction.
+    offset_naive = datetime(2026, 5, 20, 12, 0, 0, tzinfo=_OffsetNaiveTZ())
+    with pytest.raises(ValueError, match="timezone-aware"):
+        resolve_live_origin("1 Infinite Loop", now=offset_naive)
