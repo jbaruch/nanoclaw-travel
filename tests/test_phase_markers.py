@@ -400,6 +400,50 @@ def test_gate_assignment_window_widens_for_widebody_lead():
     assert fired_wide is True
 
 
+def test_gate_assignment_suppressed_when_boarding_or_gone():
+    """A flight already boarding/departed/cancelled/diverted gets no readout —
+    navigating to a departure gate is moot by then."""
+    now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)  # in window
+    for snapshot in (
+        {
+            "computed_status": "boarding",
+            "computed_status_detail": "Boarding now",
+            "dep_gate": "E16",
+        },
+        {"computed_status": "departed", "dep_gate": "E16"},
+        {"computed_status": "cancelled", "dep_gate": "E16"},
+        {"computed_status": "diverted", "dep_gate": "E16"},
+    ):
+        fired, _ = check_gate_assignment(
+            scheduled_dep_time=SCHED_DEP,
+            boarding_lead_minutes=NARROWBODY_LEAD,
+            snapshot=snapshot,
+            phase_markers=_markers(),
+            now_utc=now,
+        )
+        assert fired is False, f"expected suppression for {snapshot['computed_status']!r}"
+
+
+def test_gate_assignment_not_suppressed_by_premature_boarding_label():
+    """byAir's early "boarding" label (detail still counting down) is not real
+    boarding — the readout must still fire."""
+    now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    fired, event = check_gate_assignment(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=NARROWBODY_LEAD,
+        snapshot={
+            "computed_status": "boarding",
+            "computed_status_detail": "Boarding starts in 25 min",
+            "dep_gate": "E16",
+            "dep_terminal": "2",
+        },
+        phase_markers=_markers(),
+        now_utc=now,
+    )
+    assert fired is True
+    assert event["dep_gate"] == "E16"
+
+
 def test_gate_assignment_with_malformed_time_does_not_fire():
     now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
     fired, _ = check_gate_assignment(

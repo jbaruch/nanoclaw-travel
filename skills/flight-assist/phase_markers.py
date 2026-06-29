@@ -43,11 +43,12 @@ ARRIVAL_LOGISTICS_LEAD_MINUTES = 15
 # notification (#103).
 GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES = 60
 
-# Statuses at/after which a "leave for the airport now" alert is moot — the
-# flight has already left (or won't go). Real boarding is detected separately
-# via wake_rules.is_real_boarding; byAir flips computed_status to "boarding"
-# up to ~1h early, so the raw label alone is not trustworthy (#54).
-_LEAVE_ALERT_MOOT_STATUSES = frozenset({"departed", "en_route", "landed", "cancelled", "diverted"})
+# Statuses at/after which an airport-bound prompt — "leave for the airport now"
+# (#102) or "head to terminal X" (#103) — is moot: the flight has already left
+# or won't go. Real boarding is detected separately via wake_rules.is_real_boarding;
+# byAir flips computed_status to "boarding" up to ~1h early, so the raw label
+# alone is not trustworthy (#54).
+_BOARDING_OR_GONE_STATUSES = frozenset({"departed", "en_route", "landed", "cancelled", "diverted"})
 
 
 def check_day_before(
@@ -111,7 +112,7 @@ def check_time_to_leave(
     """
     if phase_markers.get("time_to_leave_fired"):
         return (False, None)
-    if _leave_alert_moot(snapshot):
+    if _boarding_or_gone(snapshot):
         return (False, None)
     if travel_time_seconds is None:
         return (False, None)
@@ -184,11 +185,17 @@ def check_gate_assignment(
     gate appears. Gate info before the window is recorded to state silently
     by the caller and never fires here (#103).
 
+    A flight already boarding, departed, cancelled, or diverted gets no
+    readout — navigating to a departure gate is moot by then (same gate as
+    the leave-by suppression in #102).
+
     `phase_markers["gate_assignment_fired"]` must be False to fire; the
     caller sets it True once fired so subsequent gate moves surface as
     ordinary `gate_change` events.
     """
     if phase_markers.get("gate_assignment_fired"):
+        return (False, None)
+    if _boarding_or_gone(snapshot):
         return (False, None)
     dep_dt = _parse_iso8601(scheduled_dep_time)
     if dep_dt is None:
@@ -215,19 +222,20 @@ def check_gate_assignment(
     )
 
 
-def _leave_alert_moot(snapshot: dict | None) -> bool:
-    """True when a "leave for the airport" alert no longer makes sense.
+def _boarding_or_gone(snapshot: dict | None) -> bool:
+    """True when an airport-bound prompt no longer makes sense for this flight.
 
     The flight is either really boarding (per `wake_rules.is_real_boarding`,
     which screens out byAir's premature "boarding" label) or its status has
-    moved past departure. Either way the user is at — or past — the gate, so
-    the leave-by gate must not fire (#102).
+    moved past departure (or it won't go). Either way the user is at — or past —
+    the gate, so neither the leave-by gate (#102) nor the gate/terminal readout
+    (#103) should fire.
     """
     if not snapshot:
         return False
     if is_real_boarding(snapshot):
         return True
-    return snapshot.get("computed_status") in _LEAVE_ALERT_MOOT_STATUSES
+    return snapshot.get("computed_status") in _BOARDING_OR_GONE_STATUSES
 
 
 def _parse_iso8601(value: str | None) -> datetime | None:

@@ -717,11 +717,14 @@ def _build_flight_state(
 def _resolve_boarding_lead_minutes(snapshot: dict) -> int:
     """Resolve the boarding-lead minutes for the gate-readout window (#103).
 
-    Reads the aircraft model + airport coordinates the lead policy needs out
-    of the trimmed snapshot — the same inputs `calendar_reconcile._resolve_lead`
-    feeds the planner — so the readout window and the boarding calendar block
-    agree on the lead. Every input is optional; the resolver degrades to the
-    narrowbody default until the precheck stamps the richer fields (#55).
+    Passes whatever lead inputs the snapshot carries to the same resolver
+    `calendar_reconcile._resolve_lead` feeds the planner, so the readout window
+    and the boarding calendar block agree on the lead. Today `_trim_to_snapshot`
+    populates only `inbound.aircraft_model`, so the widebody lead resolves via
+    the inbound-aircraft chain and the narrowbody default (30 min) covers the
+    rest. The top-level `aircraft_model` and dep/arr airport coordinates are
+    absent until the precheck stamps them (#55); the resolver reads them as
+    None and they widen the window automatically once present.
     """
     inbound = snapshot.get("inbound") or {}
     return resolve_boarding_lead_minutes(
