@@ -437,6 +437,49 @@ def test_gate_assignment_readout_fires_in_window(state_root: Path):
     assert persisted["phase_markers"]["gate_assignment_fired"] is True
 
 
+def test_gate_assignment_window_resolves_widebody_lead_from_snapshot(state_root: Path):
+    """End-to-end: a widebody inbound aircraft resolves a 50-min boarding lead
+    through the real precheck path, opening the readout window 20 min earlier
+    than the narrowbody default. The readout fires at 15:15 — inside the
+    widebody window (opens 15:10) but before a narrowbody flight's window
+    (opens 15:30), so firing here proves the precheck resolved the 50-min lead
+    from the snapshot, not the 30-min fallback. The top-level-model and
+    transoceanic inputs are not yet stamped into the snapshot (#55); the
+    inbound-aircraft chain is the path available today."""
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T14:55:00Z",
+        last_snapshot=_scheduled_snapshot_with_gate(dep_gate=None),
+        phase_markers={
+            "day_before_fired": True,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
+        },
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    fake_flight = _byair_flight(
+        flight_id=12345,
+        dep_gate="E16",
+        dep_terminal="2",
+        inbound={"aircraft_model": "Boeing 777-300ER"},  # widebody → 50-min lead
+    )
+    fake_now = datetime(2026, 5, 18, 15, 15, 0, tzinfo=timezone.utc)
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    by_reason = {e["event"]["reason"]: e["event"] for e in events}
+    assert "gate_assignment" in by_reason  # would NOT fire on a 30-min lead at 15:15
+    assert by_reason["gate_assignment"]["dep_terminal"] == "2"
+
+
 def test_poll_cycle_preserves_calendar_events_ledger(state_root: Path):
     """A poll rewrite must not wipe the reconcile-owned calendar_events ledger.
 

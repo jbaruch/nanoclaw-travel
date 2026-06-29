@@ -19,7 +19,7 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
   "min_transfer_minutes": 45,
   "byair_calendar_name": "Flighty Flights",
@@ -29,7 +29,7 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 Fields:
 
-- `schema_version` (int, required) — currently `5`
+- `schema_version` (int, required) — currently `6`
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
 - `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in tile terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in tile code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)
@@ -46,14 +46,14 @@ Index of currently-tracked flight IDs. Refreshed daily by the sync-tripit script
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "flight_ids": [12345, 67890, 11111]
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `5`
+- `schema_version` (int, required) — currently `6`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
 ### `current-location.json`
@@ -90,7 +90,7 @@ Per-flight state record. One file per tracked flight.
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "flight_id": 12345,
   "code": "AA2414",
   "ownership": "mine",
@@ -153,7 +153,7 @@ Per-flight state record. One file per tracked flight.
 
 Top-level fields:
 
-- `schema_version` (int, required) — `5`
+- `schema_version` (int, required) — `6`
 - `flight_id` (int, required) — byAir's flight identifier
 - `code` (string, required) — flight number like `"AA2414"`
 - `ownership` (string, required) — `"mine"` or `"friend"`
