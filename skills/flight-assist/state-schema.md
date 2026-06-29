@@ -204,7 +204,7 @@ Each entry's fields:
 - `arrival_logistics_fired` — T-arr−15min logistics push
 - `landed_acknowledged` — User acknowledged the landing notification
 - `connection_at_risk_fired` — Cross-flight: projected transfer window on this leg-2 has fallen below `min_transfer_minutes`. Carried on the leg-2 (downstream) record so the marker survives leg-1 landing
-- `gate_assignment_fired` — The once-per-flight gate + terminal readout has fired (first gate seen inside the pre-boarding window). After it fires, gate moves surface as `gate_change`; before the window, gate info is recorded to state silently
+- `gate_assignment_fired` — The once-per-flight gate + terminal readout has fired (first gate seen inside the pre-boarding window). Gate-change suppression itself is window-based, not gated on this marker: before the pre-boarding window the precheck records gate moves to state silently; from the window onward they surface as `gate_change` (the readout's own cycle excepted). A flight first polled after departure never fires the readout yet still surfaces gate moves
 
 ## Atomic Writes
 

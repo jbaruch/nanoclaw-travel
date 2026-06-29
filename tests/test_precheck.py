@@ -480,6 +480,67 @@ def test_gate_assignment_window_resolves_widebody_lead_from_snapshot(state_root:
     assert by_reason["gate_assignment"]["dep_terminal"] == "2"
 
 
+def test_gate_change_surfaces_when_readout_never_fired(state_root: Path):
+    """#103 regression: a flight already in flight (the gate-readout never fires —
+    the window is past and the flight is en_route) must still surface gate moves.
+    Suppression is window-based, so an arrival-gate change mid-flight is NOT muted
+    forever by gate_assignment_fired staying false."""
+    enroute_snapshot = {
+        "code": "XX123",
+        "computed_status": "en_route",
+        "computed_status_detail": "...",
+        "computed_phase_progress": None,
+        "computed_phase_risk": None,
+        "computed_phase_overdue": None,
+        "dep_gate": "B7",
+        "arr_gate": "G1",
+        "dep_terminal": None,
+        "arr_terminal": None,
+        "dep_time": "2026-05-18T17:00:00+00:00",
+        "arr_time": "2026-05-18T20:30:00+00:00",
+        "baggage": None,
+        "inbound": {
+            "aircraft_model": None,
+            "registration": None,
+            "flew": None,
+            "predicted_delay_minutes": None,
+        },
+        "position_lat": None,
+        "position_lon": None,
+    }
+    prior = _make_state(
+        flight_id=12345,
+        scheduled_arr_time="2026-05-18T20:30:00+00:00",
+        last_polled_at="2026-05-18T19:50:00Z",
+        last_snapshot=enroute_snapshot,
+        phase_markers={
+            "day_before_fired": True,
+            "time_to_leave_fired": True,
+            "boarding_fired": True,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,  # readout never fired (late-tracked)
+        },
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    # Arrival gate moves G1 → G5 while en_route, well past the readout window.
+    fake_flight = _byair_flight(flight_id=12345, computed_status="en_route", dep_gate="B7")
+    fake_flight["arrGate"] = "G5"
+    fake_flight["arrTime"] = "2026-05-18T20:30:00+00:00"
+    fake_now = datetime(2026, 5, 18, 20, 0, 0, tzinfo=timezone.utc)  # mid-flight, window long past
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    reasons = [e["event"]["reason"] for e in events]
+    assert "gate_change" in reasons  # arrival-gate move surfaces, not muted forever
+    assert "gate_assignment" not in reasons  # readout never fires for a departed flight
+
+
 def test_poll_cycle_preserves_calendar_events_ledger(state_root: Path):
     """A poll rewrite must not wipe the reconcile-owned calendar_events ledger.
 

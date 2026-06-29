@@ -167,6 +167,27 @@ def check_arrival_logistics(
     )
 
 
+def gate_assignment_window_open(
+    *,
+    scheduled_dep_time: str | None,
+    boarding_lead_minutes: int,
+) -> datetime | None:
+    """The instant the gate-readout window opens, or None if dep time is unparseable.
+
+    `scheduled_dep − boarding_lead − GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES`. Shared
+    by `check_gate_assignment` (the readout gate) and the precheck's gate_change
+    suppression so the two agree on the one window boundary (#103).
+    """
+    dep_dt = _parse_iso8601(scheduled_dep_time)
+    if dep_dt is None:
+        return None
+    return (
+        dep_dt
+        - timedelta(minutes=boarding_lead_minutes)
+        - timedelta(minutes=GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES)
+    )
+
+
 def check_gate_assignment(
     *,
     scheduled_dep_time: str | None,
@@ -197,15 +218,11 @@ def check_gate_assignment(
         return (False, None)
     if _boarding_or_gone(snapshot):
         return (False, None)
-    dep_dt = _parse_iso8601(scheduled_dep_time)
-    if dep_dt is None:
-        return (False, None)
-    window_open = (
-        dep_dt
-        - timedelta(minutes=boarding_lead_minutes)
-        - timedelta(minutes=GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES)
+    window_open = gate_assignment_window_open(
+        scheduled_dep_time=scheduled_dep_time,
+        boarding_lead_minutes=boarding_lead_minutes,
     )
-    if now_utc < window_open:
+    if window_open is None or now_utc < window_open:
         return (False, None)
     if not snapshot:
         return (False, None)
