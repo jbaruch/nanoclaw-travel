@@ -106,7 +106,7 @@ def detect_wake_events(
     # `computed_status` never changed across that flip.
     # First-cycle "already boarding" does not fire (we don't have a prior
     # to confirm the transition).
-    if prev is not None and _is_real_boarding(new) and not _is_real_boarding(prev):
+    if prev is not None and is_real_boarding(new) and not is_real_boarding(prev):
         events.append({"reason": "boarding_started"})
 
     # Gate change: dep_gate or arr_gate differs from a prior non-null value.
@@ -214,7 +214,7 @@ def detect_wake_events(
     return events
 
 
-def _is_real_boarding(snapshot: dict) -> bool:
+def is_real_boarding(snapshot: dict) -> bool:
     """True when the snapshot reflects boarding that has ACTUALLY started.
 
     byAir's `computed_status == "boarding"` is not trustworthy on its own:
