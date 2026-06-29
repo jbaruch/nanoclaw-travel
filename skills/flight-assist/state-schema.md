@@ -212,7 +212,7 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Today `STATE_SCHEMA_VERSION` is `5`.
+Today `STATE_SCHEMA_VERSION` is `6`.
 
 `state.py`'s read helpers enforce these rules on `schema_version`:
 

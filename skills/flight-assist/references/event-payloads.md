@@ -125,7 +125,7 @@ Fires when `now + travel_time + 15min buffer ≥ scheduled_dep_time`. `travel_ti
 {"reason": "gate_assignment", "dep_gate": "E16", "dep_terminal": "2"}
 ```
 
-One-time departure gate + terminal readout, fired the first cycle a gate exists inside the pre-boarding window (`scheduled_dep − boarding_lead − 1h`). `dep_terminal` is null when byAir hasn't published a terminal. Gate info before the window is recorded to state silently; gate moves after this readout surface as `gate_change` (#103).
+One-time departure gate + terminal readout, fired the first cycle a gate exists inside the pre-boarding window. The window bound lives in `phase_markers.check_gate_assignment` (`GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES`). `dep_terminal` is null when byAir hasn't published a terminal. Gate info before the window is recorded to state silently; gate moves after this readout surface as `gate_change` (#103).
 
 #### `arrival_logistics`
 
