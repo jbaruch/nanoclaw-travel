@@ -32,9 +32,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from wake_rules import is_real_boarding
+
 DAY_BEFORE_HOURS = 24
 TIME_TO_LEAVE_BUFFER_MINUTES = 15
 ARRIVAL_LOGISTICS_LEAD_MINUTES = 15
+
+# Statuses at/after which a "leave for the airport now" alert is moot — the
+# flight has already left (or won't go). Real boarding is detected separately
+# via wake_rules.is_real_boarding; byAir flips computed_status to "boarding"
+# up to ~1h early, so the raw label alone is not trustworthy (#54).
+_LEAVE_ALERT_MOOT_STATUSES = frozenset({"departed", "en_route", "landed", "cancelled", "diverted"})
 
 
 def check_day_before(
@@ -73,6 +81,7 @@ def check_time_to_leave(
     travel_time_seconds: int | None,
     phase_markers: dict,
     now_utc: datetime,
+    snapshot: dict | None = None,
 ) -> tuple[bool, dict | None]:
     """Traffic-aware "leave by" gate. Returns (should_fire, event_payload).
 
@@ -86,9 +95,18 @@ def check_time_to_leave(
     query maps yet), the gate doesn't fire — the caller defers the
     decision until traffic data is available.
 
+    `snapshot` is the current trimmed byAir snapshot. When it shows the
+    flight already boarding or departed (#102 — a delayed flight or a
+    stale travel estimate can push the leave-by moment past boarding),
+    the alert is moot and the gate stays silent rather than waking the
+    agent to say nothing. Defaults to None so callers without a snapshot
+    keep the pre-boarding behavior.
+
     `phase_markers["time_to_leave_fired"]` must be False to fire.
     """
     if phase_markers.get("time_to_leave_fired"):
+        return (False, None)
+    if _leave_alert_moot(snapshot):
         return (False, None)
     if travel_time_seconds is None:
         return (False, None)
@@ -141,6 +159,21 @@ def check_arrival_logistics(
             "minutes_until_arr": ARRIVAL_LOGISTICS_LEAD_MINUTES,
         },
     )
+
+
+def _leave_alert_moot(snapshot: dict | None) -> bool:
+    """True when a "leave for the airport" alert no longer makes sense.
+
+    The flight is either really boarding (per `wake_rules.is_real_boarding`,
+    which screens out byAir's premature "boarding" label) or its status has
+    moved past departure. Either way the user is at — or past — the gate, so
+    the leave-by gate must not fire (#102).
+    """
+    if not snapshot:
+        return False
+    if is_real_boarding(snapshot):
+        return True
+    return snapshot.get("computed_status") in _LEAVE_ALERT_MOOT_STATUSES
 
 
 def _parse_iso8601(value: str | None) -> datetime | None:

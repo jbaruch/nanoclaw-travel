@@ -181,6 +181,73 @@ def test_time_to_leave_buffer_applied():
     assert TIME_TO_LEAVE_BUFFER_MINUTES == 15  # documenting the constant
 
 
+def _boarding_snapshot(**overrides) -> dict:
+    """A snapshot byAir reports as genuinely boarding (not the premature label)."""
+    base = {
+        "computed_status": "boarding",
+        "computed_status_detail": "Boarding now",
+        "dep_gate": "B7",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_time_to_leave_suppressed_when_really_boarding():
+    """#102 — leave-by is moot once boarding has actually started, even if the
+    leave-by threshold is met (delayed flight / stale travel estimate)."""
+    now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=timezone.utc)  # past leave_by
+    fired, _ = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=1800,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot=_boarding_snapshot(),
+    )
+    assert fired is False
+
+
+def test_time_to_leave_not_suppressed_by_premature_boarding_label():
+    """byAir's early "boarding" label (detail still counting down) is not real
+    boarding — the leave-by alert must still fire."""
+    now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=timezone.utc)
+    fired, _ = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=1800,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot=_boarding_snapshot(computed_status_detail="Boarding starts in 35 min"),
+    )
+    assert fired is True
+
+
+def test_time_to_leave_suppressed_when_departed_or_cancelled():
+    """Once the flight has left or been cancelled, leave-by never fires."""
+    now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=timezone.utc)
+    for status in ("departed", "en_route", "landed", "cancelled", "diverted"):
+        fired, _ = check_time_to_leave(
+            scheduled_dep_time=SCHED_DEP,
+            travel_time_seconds=1800,
+            phase_markers=_markers(),
+            now_utc=now,
+            snapshot={"computed_status": status},
+        )
+        assert fired is False, f"expected suppression for status {status!r}"
+
+
+def test_time_to_leave_fires_pre_boarding_with_scheduled_snapshot():
+    """Regression: a still-scheduled flight at the leave-by threshold fires."""
+    now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=timezone.utc)
+    fired, event = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=0,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot={"computed_status": "scheduled", "dep_gate": None},
+    )
+    assert fired is True
+    assert event["reason"] == "time_to_leave"
+
+
 # ---------------------------------------------------------------------------
 # arrival_logistics
 # ---------------------------------------------------------------------------

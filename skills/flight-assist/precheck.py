@@ -448,6 +448,7 @@ def _process_flight(
         travel_time_seconds=travel_time_seconds,
         phase_markers=phase_markers,
         now_utc=now_utc,
+        snapshot=new_snapshot,
     )
     if fired and event is not None:
         phase_markers["time_to_leave_fired"] = True
