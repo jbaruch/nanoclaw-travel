@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.2 — 2026-06-29
+
 ### Fixed — suppress `time_to_leave` once the flight is boarding or gone (`jbaruch/nanoclaw-travel#102`)
 
 The traffic-aware leave-by gate (`phase_markers.check_time_to_leave`) no longer wakes the agent when the flight has already started boarding or departed. On a delayed flight or with a stale travel estimate, the leave-by moment can land after boarding begins, so the marker fired, the agent woke, found nothing useful to say, and stayed silent — 2 of 16 flight-assist wakes on 2026-06-25 were this wasted pattern. The gate now takes the current snapshot and returns silent when it reads real-boarding (via `wake_rules.is_real_boarding`, which screens out byAir's premature "boarding" label per #54) or a `departed`/`en_route`/`landed`/`cancelled`/`diverted` status. The `_is_real_boarding` predicate is promoted to the public `is_real_boarding` since it is now shared across `wake_rules` and `phase_markers`. The normal pre-boarding leave-by alert is unchanged.
