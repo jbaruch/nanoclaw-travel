@@ -129,7 +129,8 @@ Per-flight state record. One file per tracked flight.
     "boarding_fired": false,
     "arrival_logistics_fired": false,
     "landed_acknowledged": false,
-    "connection_at_risk_fired": false
+    "connection_at_risk_fired": false,
+    "gate_assignment_fired": false
   },
   "last_wake_at": null,
   "last_wake_reason": null,
@@ -203,6 +204,7 @@ Each entry's fields:
 - `arrival_logistics_fired` — T-arr−15min logistics push
 - `landed_acknowledged` — User acknowledged the landing notification
 - `connection_at_risk_fired` — Cross-flight: projected transfer window on this leg-2 has fallen below `min_transfer_minutes`. Carried on the leg-2 (downstream) record so the marker survives leg-1 landing
+- `gate_assignment_fired` — The once-per-flight gate + terminal readout has fired (first gate seen inside the pre-boarding window). After it fires, gate moves surface as `gate_change`; before the window, gate info is recorded to state silently
 
 ## Atomic Writes
 
@@ -238,6 +240,10 @@ Config: gains two optional calendar-reconcile fields, `byair_calendar_name` and 
 ### v4 → v5
 
 Config: gains five optional airport-clearance fields, `airport_clearance_domestic_minutes`, `airport_clearance_international_minutes`, `airport_post_arrival_domestic_minutes`, `airport_post_arrival_intl_us_minutes`, and `airport_post_arrival_intl_abroad_minutes` (see `config.json` above). All optional and absent-tolerant, so there is no shape to add on migration — the owner-side `state.py:_migrate` only bumps the `schema_version`. Per-flight and active-flights files likewise have no shape change at v5 — schema_version bump only.
+
+### v5 → v6
+
+Per-flight state: `phase_markers` gains `gate_assignment_fired: false`. The owner-side migration in `state.py:_migrate` adds the missing key on first read — scoped to the `flight-<id>.json` files — and rewrites the file at v6. Config and active-flights files have no shape change at v6 — they receive a schema_version bump only.
 
 ## Bump Procedure
 

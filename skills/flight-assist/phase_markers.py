@@ -37,6 +37,11 @@ from wake_rules import is_real_boarding
 DAY_BEFORE_HOURS = 24
 TIME_TO_LEAVE_BUFFER_MINUTES = 15
 ARRIVAL_LOGISTICS_LEAD_MINUTES = 15
+# The gate/terminal readout window opens this many minutes before boarding
+# begins (boarding = scheduled_dep − boarding_lead). Gate info earlier than
+# this is recorded to state silently; the readout is the first in-window
+# notification (#103).
+GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES = 60
 
 # Statuses at/after which a "leave for the airport now" alert is moot — the
 # flight has already left (or won't go). Real boarding is detected separately
@@ -157,6 +162,55 @@ def check_arrival_logistics(
             "reason": "arrival_logistics",
             "scheduled_arr_time": scheduled_arr_time,
             "minutes_until_arr": ARRIVAL_LOGISTICS_LEAD_MINUTES,
+        },
+    )
+
+
+def check_gate_assignment(
+    *,
+    scheduled_dep_time: str | None,
+    boarding_lead_minutes: int,
+    snapshot: dict | None,
+    phase_markers: dict,
+    now_utc: datetime,
+) -> tuple[bool, dict | None]:
+    """Once-per-flight gate + terminal readout. Returns (should_fire, payload).
+
+    The window opens at `scheduled_dep − boarding_lead − 1h`. The readout is
+    the first in-window cycle a departure gate exists: it carries the
+    departure gate + terminal so the operator knows which terminal to head
+    to. When no gate is assigned yet as the window opens (late gate
+    assignment is common), the readout defers to the first in-window cycle a
+    gate appears. Gate info before the window is recorded to state silently
+    by the caller and never fires here (#103).
+
+    `phase_markers["gate_assignment_fired"]` must be False to fire; the
+    caller sets it True once fired so subsequent gate moves surface as
+    ordinary `gate_change` events.
+    """
+    if phase_markers.get("gate_assignment_fired"):
+        return (False, None)
+    dep_dt = _parse_iso8601(scheduled_dep_time)
+    if dep_dt is None:
+        return (False, None)
+    window_open = (
+        dep_dt
+        - timedelta(minutes=boarding_lead_minutes)
+        - timedelta(minutes=GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES)
+    )
+    if now_utc < window_open:
+        return (False, None)
+    if not snapshot:
+        return (False, None)
+    dep_gate = snapshot.get("dep_gate")
+    if dep_gate is None:
+        return (False, None)
+    return (
+        True,
+        {
+            "reason": "gate_assignment",
+            "dep_gate": dep_gate,
+            "dep_terminal": snapshot.get("dep_terminal"),
         },
     )
 

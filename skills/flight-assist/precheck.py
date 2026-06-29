@@ -47,6 +47,7 @@ from pathlib import Path
 _BUNDLE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_BUNDLE_DIR))
 
+from boarding_lead import resolve_boarding_lead_minutes  # noqa: E402
 from byair_client import ByAirClient, ByAirError  # noqa: E402
 from connection_risk import (  # noqa: E402
     DEFAULT_MIN_TRANSFER_MINUTES,
@@ -56,6 +57,7 @@ from maps_client import MapsClient, MapsError  # noqa: E402
 from phase_markers import (  # noqa: E402
     check_arrival_logistics,
     check_day_before,
+    check_gate_assignment,
     check_time_to_leave,
 )
 from state import (  # noqa: E402
@@ -421,8 +423,18 @@ def _process_flight(
         prior_state["scheduled_arr_time"] if prior_state else raw_flight.get("scheduledArrTime")
     )
 
-    # Delta-driven events from wake_rules.
-    events.extend(detect_wake_events(prior_snapshot, new_snapshot, scheduled_dep_time))
+    # Delta-driven events from wake_rules. Gate changes are suppressed until
+    # the once-per-flight gate_assignment readout has fired (#103): before the
+    # pre-boarding window the latest gate is recorded to state silently, and on
+    # the readout cycle the gate_assignment event carries the current gate, so a
+    # simultaneous gate_change would be redundant. After the readout, gate moves
+    # surface normally. The pre-cycle flag is captured before check_gate_assignment
+    # can flip it below, so the readout cycle itself still suppresses gate_change.
+    gate_assignment_already_fired = phase_markers.get("gate_assignment_fired", False)
+    delta_events = detect_wake_events(prior_snapshot, new_snapshot, scheduled_dep_time)
+    if not gate_assignment_already_fired:
+        delta_events = [e for e in delta_events if e.get("reason") != "gate_change"]
+    events.extend(delta_events)
 
     # Time-based events from phase_markers.
 
@@ -461,6 +473,17 @@ def _process_flight(
     )
     if fired and event is not None:
         phase_markers["arrival_logistics_fired"] = True
+        events.append(event)
+
+    fired, event = check_gate_assignment(
+        scheduled_dep_time=scheduled_dep_time,
+        boarding_lead_minutes=_resolve_boarding_lead_minutes(new_snapshot),
+        snapshot=new_snapshot,
+        phase_markers=phase_markers,
+        now_utc=now_utc,
+    )
+    if fired and event is not None:
+        phase_markers["gate_assignment_fired"] = True
         events.append(event)
 
     # Persist updated state. write_flight_state requires every documented
@@ -691,6 +714,26 @@ def _build_flight_state(
     return new_state
 
 
+def _resolve_boarding_lead_minutes(snapshot: dict) -> int:
+    """Resolve the boarding-lead minutes for the gate-readout window (#103).
+
+    Reads the aircraft model + airport coordinates the lead policy needs out
+    of the trimmed snapshot — the same inputs `calendar_reconcile._resolve_lead`
+    feeds the planner — so the readout window and the boarding calendar block
+    agree on the lead. Every input is optional; the resolver degrades to the
+    narrowbody default until the precheck stamps the richer fields (#55).
+    """
+    inbound = snapshot.get("inbound") or {}
+    return resolve_boarding_lead_minutes(
+        aircraft_model=snapshot.get("aircraft_model"),
+        inbound_aircraft_model=inbound.get("aircraft_model"),
+        dep_lat=snapshot.get("dep_lat"),
+        dep_lon=snapshot.get("dep_lon"),
+        arr_lat=snapshot.get("arr_lat"),
+        arr_lon=snapshot.get("arr_lon"),
+    )
+
+
 def _initial_phase_markers() -> dict:
     return {
         "day_before_fired": False,
@@ -699,6 +742,7 @@ def _initial_phase_markers() -> dict:
         "arrival_logistics_fired": False,
         "landed_acknowledged": False,
         "connection_at_risk_fired": False,
+        "gate_assignment_fired": False,
     }
 
 

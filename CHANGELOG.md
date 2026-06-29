@@ -1,5 +1,9 @@
 # Changelog
 
+### Added — gate + terminal readout at the pre-boarding window; gate changes only after it (`jbaruch/nanoclaw-travel#103`)
+
+All-day gate-assignment churn is replaced by a one-time departure gate + terminal readout, fired the first cycle a gate exists inside the pre-boarding window (`scheduled_dep − boarding_lead − 1h`), plus ordinary `gate_change` alerts only after that readout. Before the window, the latest gate is recorded to state silently and never notified — WN482's BNA gate changed four times across 2026-06-25 (D3 → D1 → C2 → D6), each a separate wake, none within an hour of boarding. The new `phase_markers.check_gate_assignment` marker carries dep gate + dep terminal (the navigation signal: which terminal to head to) and defers to the first in-window gate appearance when assignment is late; `precheck` resolves the boarding lead from the snapshot (narrowbody 30 / widebody 50 / transoceanic 50 per `boarding_lead.py`) and suppresses `gate_change` until the readout has fired. New event `gate_assignment` documented in SKILL.md Step 3 and `references/event-payloads.md`. `STATE_SCHEMA_VERSION` bumps 5→6 with an additive owner-side migration adding `gate_assignment_fired: false` to per-flight `phase_markers`.
+
 ## 0.2.2 — 2026-06-29
 
 ### Fixed — suppress `time_to_leave` once the flight is boarding or gone (`jbaruch/nanoclaw-travel#102`)

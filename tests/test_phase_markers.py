@@ -20,6 +20,7 @@ from phase_markers import (  # noqa: E402
     TIME_TO_LEAVE_BUFFER_MINUTES,
     check_arrival_logistics,
     check_day_before,
+    check_gate_assignment,
     check_time_to_leave,
 )
 
@@ -293,6 +294,120 @@ def test_arrival_logistics_with_malformed_time_does_not_fire():
     now = datetime(2026, 5, 18, 20, 0, 0, tzinfo=timezone.utc)
     fired, _ = check_arrival_logistics(
         scheduled_arr_time=None, phase_markers=_markers(), now_utc=now
+    )
+    assert fired is False
+
+
+# ---------------------------------------------------------------------------
+# gate_assignment readout (#103)
+# ---------------------------------------------------------------------------
+
+# Narrowbody lead = 30 min, so the window opens at 17:00 − 30 − 60 = 15:30.
+NARROWBODY_LEAD = 30
+WIDEBODY_LEAD = 50
+
+
+def _gate_snapshot(*, dep_gate: str | None, dep_terminal: str | None = None) -> dict:
+    return {"computed_status": "scheduled", "dep_gate": dep_gate, "dep_terminal": dep_terminal}
+
+
+def test_gate_assignment_does_not_fire_before_window():
+    """Gate present at T−3h (before the window) — no readout."""
+    now = datetime(2026, 5, 18, 14, 0, 0, tzinfo=timezone.utc)  # T−3h, window opens 15:30
+    fired, _ = check_gate_assignment(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=NARROWBODY_LEAD,
+        snapshot=_gate_snapshot(dep_gate="E16", dep_terminal="2"),
+        phase_markers=_markers(),
+        now_utc=now,
+    )
+    assert fired is False
+
+
+def test_gate_assignment_fires_when_window_opens_with_gate():
+    """Window opens with a gate present → one readout carrying gate + terminal."""
+    now = datetime(2026, 5, 18, 15, 30, 0, tzinfo=timezone.utc)  # exactly window-open
+    fired, event = check_gate_assignment(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=NARROWBODY_LEAD,
+        snapshot=_gate_snapshot(dep_gate="E16", dep_terminal="2"),
+        phase_markers=_markers(),
+        now_utc=now,
+    )
+    assert fired is True
+    assert event["reason"] == "gate_assignment"
+    assert event["dep_gate"] == "E16"
+    assert event["dep_terminal"] == "2"
+
+
+def test_gate_assignment_defers_until_gate_appears_in_window():
+    """Gate null when the window opens → defer; readout fires on first appearance."""
+    in_window = datetime(2026, 5, 18, 15, 40, 0, tzinfo=timezone.utc)
+    fired_no_gate, _ = check_gate_assignment(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=NARROWBODY_LEAD,
+        snapshot=_gate_snapshot(dep_gate=None),
+        phase_markers=_markers(),
+        now_utc=in_window,
+    )
+    assert fired_no_gate is False
+
+    later = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    fired_gate, event = check_gate_assignment(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=NARROWBODY_LEAD,
+        snapshot=_gate_snapshot(dep_gate="C2"),
+        phase_markers=_markers(),
+        now_utc=later,
+    )
+    assert fired_gate is True
+    assert event["dep_gate"] == "C2"
+    assert event["dep_terminal"] is None  # no terminal published yet
+
+
+def test_gate_assignment_does_not_re_fire_when_marker_set():
+    now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    fired, _ = check_gate_assignment(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=NARROWBODY_LEAD,
+        snapshot=_gate_snapshot(dep_gate="E16", dep_terminal="2"),
+        phase_markers=_markers(gate_assignment_fired=True),
+        now_utc=now,
+    )
+    assert fired is False
+
+
+def test_gate_assignment_window_widens_for_widebody_lead():
+    """A 50-min boarding lead opens the window 20 min earlier than the 30-min lead."""
+    # At 15:20: narrowbody window (opens 15:30) not yet open; widebody (opens 15:10) is.
+    now = datetime(2026, 5, 18, 15, 20, 0, tzinfo=timezone.utc)
+    snapshot = _gate_snapshot(dep_gate="E16", dep_terminal="2")
+    fired_narrow, _ = check_gate_assignment(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=NARROWBODY_LEAD,
+        snapshot=snapshot,
+        phase_markers=_markers(),
+        now_utc=now,
+    )
+    assert fired_narrow is False
+    fired_wide, _ = check_gate_assignment(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=WIDEBODY_LEAD,
+        snapshot=snapshot,
+        phase_markers=_markers(),
+        now_utc=now,
+    )
+    assert fired_wide is True
+
+
+def test_gate_assignment_with_malformed_time_does_not_fire():
+    now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    fired, _ = check_gate_assignment(
+        scheduled_dep_time="not-a-time",
+        boarding_lead_minutes=NARROWBODY_LEAD,
+        snapshot=_gate_snapshot(dep_gate="E16"),
+        phase_markers=_markers(),
+        now_utc=now,
     )
     assert fired is False
 

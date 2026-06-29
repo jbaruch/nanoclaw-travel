@@ -99,6 +99,7 @@ def _phase_markers() -> dict:
         "arrival_logistics_fired": False,
         "landed_acknowledged": False,
         "connection_at_risk_fired": False,
+        "gate_assignment_fired": False,
     }
 
 

@@ -117,7 +117,15 @@ Fires once per flight at `T - 24h`.
 {"reason": "time_to_leave", "leave_by": "2026-05-18T16:15:00+00:00", "travel_time_minutes": 30, "scheduled_dep_time": "2026-05-18T17:00:00+00:00"}
 ```
 
-Fires when `now + travel_time + 15min buffer ≥ scheduled_dep_time`. `travel_time_minutes` is the in-traffic estimate from Google Maps Distance Matrix.
+Fires when `now + travel_time + 15min buffer ≥ scheduled_dep_time`. `travel_time_minutes` is the in-traffic estimate from Google Maps Distance Matrix. Suppressed once the snapshot shows the flight boarding or departed — the leave-by alert is moot by then (#102).
+
+#### `gate_assignment`
+
+```json
+{"reason": "gate_assignment", "dep_gate": "E16", "dep_terminal": "2"}
+```
+
+One-time departure gate + terminal readout, fired the first cycle a gate exists inside the pre-boarding window (`scheduled_dep − boarding_lead − 1h`). `dep_terminal` is null when byAir hasn't published a terminal. Gate info before the window is recorded to state silently; gate moves after this readout surface as `gate_change` (#103).
 
 #### `arrival_logistics`
 
