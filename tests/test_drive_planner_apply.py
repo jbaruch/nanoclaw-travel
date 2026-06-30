@@ -367,7 +367,7 @@ def test_remove_with_past_meeting_end_keeps_find_window_valid():
 def test_create_tolerates_non_list_meetings():
     client = FakeComposio(existing=[])
     result = apply._create_mode({"meetings": "not-a-list"}, client)  # must not raise
-    assert result == {"created": [], "skipped_existing": [], "failed": []}
+    assert result == {"created": [], "skipped_existing": [], "failed": [], "message": None}
 
 
 def test_suppress_tolerates_non_list_patches():
@@ -519,3 +519,135 @@ def test_remove_derives_skip_expiry_from_block_when_no_meeting_end():
     assert "evt_42" in skip_state.load_active_skips(now)
     # Skip stays active right up to the meeting start, then expires.
     assert "evt_42" not in skip_state.load_active_skips(ARRIVE + timedelta(minutes=1))
+
+
+# --- build_notification: id-free, skip-by-number sweep message -------------
+
+
+def _meeting(meeting_id, summary, *, leave_by, drive_minutes, route_errors=None, unplannable=None):
+    return {
+        "meeting_id": meeting_id,
+        "summary": summary,
+        "leave_by": leave_by,
+        "drive_minutes": drive_minutes,
+        "route_errors": route_errors or [],
+        "unplannable": unplannable or [],
+    }
+
+
+def test_notification_single_block_says_reply_skip():
+    meetings = [
+        _meeting(
+            "evt_1", "Football practice", leave_by="2026-07-13T15:28:00-07:00", drive_minutes=27
+        )
+    ]
+    created = [{"meeting_id": "evt_1", "direction": "outbound"}]
+    msg = apply.build_notification(meetings, created, [], [])
+    assert msg == (
+        "Added a drive block for Football practice — leave by 3:28 PM "
+        "(27-min drive with current traffic).\n"
+        "Reply skip if you're not driving."
+    )
+
+
+def test_notification_single_block_never_includes_meeting_id():
+    meetings = [
+        _meeting(
+            "ccc2067fqsb2qvf6hh6n1uvfk6",
+            "Football practice",
+            leave_by="2026-07-13T15:28:00-07:00",
+            drive_minutes=27,
+        )
+    ]
+    created = [{"meeting_id": "ccc2067fqsb2qvf6hh6n1uvfk6", "direction": "outbound"}]
+    msg = apply.build_notification(meetings, created, [], [])
+    assert "ccc2067fqsb2qvf6hh6n1uvfk6" not in msg
+
+
+def test_notification_multiple_blocks_numbered_skip_by_number():
+    meetings = [
+        _meeting("evt_2", "Dentist", leave_by="2026-07-13T09:10:00-05:00", drive_minutes=15),
+        _meeting(
+            "evt_1", "Football practice", leave_by="2026-07-13T15:28:00-05:00", drive_minutes=27
+        ),
+    ]
+    created = [
+        {"meeting_id": "evt_1", "direction": "outbound"},
+        {"meeting_id": "evt_2", "direction": "outbound"},
+    ]
+    msg = apply.build_notification(meetings, created, [], [])
+    lines = msg.split("\n")
+    # Ordered by leave_by: Dentist (9:10) before Football (3:28 PM).
+    assert lines[0] == "Added drive blocks:"
+    assert lines[1] == "1. Dentist — leave by 9:10 AM (15-min drive)"
+    assert lines[2] == "2. Football practice — leave by 3:28 PM (27-min drive)"
+    assert lines[3] == "Reply skip 1, or skip 1 and 3, to drop any."
+
+
+def test_notification_return_only_block_has_no_leave_by():
+    meetings = [_meeting("evt_3", "Swim", leave_by=None, drive_minutes=None)]
+    created = [{"meeting_id": "evt_3", "direction": "return"}]
+    msg = apply.build_notification(meetings, created, [], [])
+    assert msg == ("Added a return drive block for Swim.\nReply skip if you're not driving.")
+
+
+def test_notification_silent_when_nothing_changed():
+    meetings = [
+        _meeting("evt_4", "Already handled", leave_by="2026-07-13T10:00:00-05:00", drive_minutes=10)
+    ]
+    # No created legs, only an idempotent skip — nothing to announce.
+    skipped = [{"meeting_id": "evt_4", "direction": "outbound"}]
+    assert apply.build_notification(meetings, [], skipped, []) is None
+
+
+def test_notification_fully_unplannable_offers_mute():
+    meetings = [
+        _meeting(
+            "evt_5",
+            "Offsite",
+            leave_by=None,
+            drive_minutes=None,
+            unplannable=[{"direction": "outbound", "reason": "the operator likely flew"}],
+        )
+    ]
+    msg = apply.build_notification(meetings, [], [], [])
+    assert "No outbound drive block for Offsite — the operator likely flew." in msg
+    assert "Reply don't drive to Offsite to stop seeing it." in msg
+
+
+def test_notification_surfaces_route_errors_and_failures():
+    meetings = [
+        _meeting(
+            "evt_6",
+            "Clinic",
+            leave_by="2026-07-13T08:00:00-05:00",
+            drive_minutes=12,
+            route_errors=[{"direction": "outbound", "error": "ZERO_RESULTS"}],
+        ),
+    ]
+    msg = apply.build_notification(meetings, [], [], [])
+    assert "Couldn't compute drive time for Clinic (ZERO_RESULTS)" in msg
+
+
+def test_create_mode_emits_ready_to_send_message():
+    client = FakeComposio(existing=[])
+    request = {
+        "meetings": [
+            {
+                "meeting_id": "evt_42",
+                "summary": "Customer sync",
+                "leave_by": "2026-07-02T12:30:00-05:00",
+                "drive_minutes": 25,
+                "create_args": [_create_args()],
+                "route_errors": [],
+                "unplannable": [],
+            }
+        ]
+    }
+    result = apply._create_mode(request, client)
+    assert result["created"] == [{"meeting_id": "evt_42", "direction": "outbound"}]
+    assert result["message"] == (
+        "Added a drive block for Customer sync — leave by 12:30 PM "
+        "(25-min drive with current traffic).\n"
+        "Reply skip if you're not driving."
+    )

@@ -22,7 +22,11 @@ drive-planner's own (`block_props`, `skip_state`).
 
 Modes (subcommand on argv[1]):
     create   stdin {"meetings": [{"meeting_id": "...", "create_args": [...]}]}
-             stdout {"created": [...], "skipped_existing": [...], "failed": [...]}
+             stdout {"created": [...], "skipped_existing": [...], "failed": [...],
+                    "message": "<ready-to-send notification or null>"} — the agent
+             relays `message` verbatim (id-free; single block → bare "skip",
+             several → numbered "skip 1 and 3"). `null` when nothing is worth
+             sending (the silence rule).
     list     stdin {"now": "<ISO>", "calendar_id": "primary"}
              stdout {"blocks": [{"summary": "...", "meeting_id": "...",
                     "leave_by": "<ISO>"}]} — one per meeting with a current
@@ -225,10 +229,140 @@ def _parse_iso(raw: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
+def _fmt_clock(iso: object) -> str | None:
+    """Format an ISO leave-by into a 12-hour clock label (e.g. "3:28 PM"), or None.
+
+    Uses the timestamp's own offset (the venue-local time the operator drives in).
+    Manual 12-hour math keeps it portable across platforms' strftime.
+    """
+    dt = _parse_iso(iso)
+    if dt is None:
+        return None
+    hour = dt.hour % 12 or 12
+    return f"{hour}:{dt.minute:02d} {'AM' if dt.hour < 12 else 'PM'}"
+
+
+def _summary_of(meeting: dict) -> str:
+    summary = meeting.get("summary")
+    return summary if isinstance(summary, str) and summary else "(unnamed meeting)"
+
+
+def _ordered_blocked(meetings: list, created_ids: set) -> list:
+    """Meetings that got >=1 created leg this run, ordered by leave_by (None last).
+
+    The order matches `_list_mode`'s leave_by ordering so the numbered skip
+    affordance lines up with what `apply.py list` returns.
+    """
+    blocked = [m for m in meetings if isinstance(m, dict) and m.get("meeting_id") in created_ids]
+
+    def _key(meeting: dict) -> tuple:
+        parsed = _parse_iso(meeting.get("leave_by"))
+        return (parsed is None, parsed.isoformat() if parsed else "")
+
+    return sorted(blocked, key=_key)
+
+
+def _blocked_line(meeting: dict, *, index: int | None) -> str:
+    """One blocked-meeting line. `index` None → single-block sentence; else numbered.
+
+    A return-only block (no outbound leave-by) renders without a leave-by clause.
+    """
+    summary = _summary_of(meeting)
+    clock = _fmt_clock(meeting.get("leave_by"))
+    drive = meeting.get("drive_minutes")
+    has_leave_by = clock is not None and isinstance(drive, int) and not isinstance(drive, bool)
+    if index is None:
+        if not has_leave_by:
+            return f"Added a return drive block for {summary}."
+        return (
+            f"Added a drive block for {summary} — leave by {clock} "
+            f"({drive}-min drive with current traffic)."
+        )
+    if not has_leave_by:
+        return f"{index}. {summary} — return drive block"
+    return f"{index}. {summary} — leave by {clock} ({drive}-min drive)"
+
+
+def _status_lines(meetings: list, created_ids: set, skipped_ids: set, failed: list) -> list:
+    """The route-error / unplannable / failed lines, in meeting order (id-free)."""
+    failed_by_id: dict = {}
+    for entry in failed if isinstance(failed, list) else []:
+        if isinstance(entry, dict):
+            failed_by_id.setdefault(entry.get("meeting_id"), []).append(entry)
+    lines: list = []
+    for meeting in meetings:
+        if not isinstance(meeting, dict):
+            continue
+        summary = _summary_of(meeting)
+        meeting_id = meeting.get("meeting_id")
+        route_errors = meeting.get("route_errors") or []
+        for item in route_errors if isinstance(route_errors, list) else []:
+            err = item.get("error") if isinstance(item, dict) else None
+            suffix = f" ({err})" if err else ""
+            lines.append(
+                f"Couldn't compute drive time for {summary}{suffix} — "
+                f"no block created; will retry next sweep."
+            )
+        unplannable = meeting.get("unplannable") or []
+        for leg in unplannable if isinstance(unplannable, list) else []:
+            if not isinstance(leg, dict):
+                continue
+            direction = leg.get("direction") or "drive"
+            reason = leg.get("reason") or "not plannable"
+            lines.append(f"No {direction} drive block for {summary} — {reason}.")
+        # Fully unplannable (no block at all): offer the mute affordance.
+        if (
+            unplannable
+            and meeting_id not in created_ids
+            and meeting_id not in skipped_ids
+            and not route_errors
+        ):
+            lines.append(f"Reply don't drive to {summary} to stop seeing it.")
+        for entry in failed_by_id.get(meeting_id, []):
+            direction = entry.get("direction") or "drive"
+            err = entry.get("error") or "error"
+            lines.append(
+                f"Couldn't create the {direction} drive block for {summary} "
+                f"({err}) — will retry next sweep."
+            )
+    return lines
+
+
+def build_notification(
+    meetings: list, created: list, skipped_existing: list, failed: list
+) -> str | None:
+    """Compose the id-free sweep notification the agent relays verbatim.
+
+    One created block → a single sentence + "Reply skip if you're not driving.".
+    Several → a numbered list + "Reply skip 1, or skip 1 and 3, to drop any.".
+    Route-error / unplannable / failed lines follow. Returns None when nothing
+    is worth sending (the silence rule). No meeting/event id ever appears and
+    the skip affordance is by bare "skip" or list number, so the operator never
+    types an id (#86) and a low-capability wake model can't improvise one.
+    """
+    meetings = meetings if isinstance(meetings, list) else []
+    created_ids = {c.get("meeting_id") for c in created if isinstance(c, dict)}
+    skipped_ids = {s.get("meeting_id") for s in skipped_existing if isinstance(s, dict)}
+    blocked = _ordered_blocked(meetings, created_ids)
+    parts: list = []
+    if len(blocked) == 1:
+        parts.append(_blocked_line(blocked[0], index=None))
+        parts.append("Reply skip if you're not driving.")
+    elif len(blocked) > 1:
+        parts.append("Added drive blocks:")
+        parts.extend(_blocked_line(meeting, index=i) for i, meeting in enumerate(blocked, 1))
+        parts.append("Reply skip 1, or skip 1 and 3, to drop any.")
+    parts.extend(_status_lines(meetings, created_ids, skipped_ids, failed))
+    if not parts:
+        return None
+    return "\n".join(parts)
+
+
 def _create_mode(request: dict, client) -> dict:
     created, skipped_existing, failed = [], [], []
-    meetings = request.get("meetings")
-    for meeting in meetings if isinstance(meetings, list) else []:
+    raw_meetings = request.get("meetings")
+    meetings = raw_meetings if isinstance(raw_meetings, list) else []
+    for meeting in meetings:
         meeting_id = meeting.get("meeting_id") if isinstance(meeting, dict) else None
         if not isinstance(meeting_id, str) or not meeting_id:
             # A malformed entry (no usable meeting id) is recorded, not crashed
@@ -265,7 +399,12 @@ def _create_mode(request: dict, client) -> dict:
                 failed.append(
                     {"meeting_id": meeting_id, "direction": _arg_direction(arg), "error": str(exc)}
                 )
-    return {"created": created, "skipped_existing": skipped_existing, "failed": failed}
+    return {
+        "created": created,
+        "skipped_existing": skipped_existing,
+        "failed": failed,
+        "message": build_notification(meetings, created, skipped_existing, failed),
+    }
 
 
 def _remove_mode(request: dict, client) -> dict:
