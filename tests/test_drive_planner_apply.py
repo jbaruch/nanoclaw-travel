@@ -538,7 +538,7 @@ def _meeting(meeting_id, summary, *, leave_by, drive_minutes, route_errors=None,
 def test_notification_single_block_says_reply_skip():
     meetings = [
         _meeting(
-            "evt_1", "Football practice", leave_by="2026-07-13T15:28:00-07:00", drive_minutes=27
+            "evt_1", "Football practice", leave_by="2026-05-13T15:28:00-07:00", drive_minutes=27
         )
     ]
     created = [{"meeting_id": "evt_1", "direction": "outbound"}]
@@ -555,7 +555,7 @@ def test_notification_single_block_never_includes_meeting_id():
         _meeting(
             "ccc2067fqsb2qvf6hh6n1uvfk6",
             "Football practice",
-            leave_by="2026-07-13T15:28:00-07:00",
+            leave_by="2026-05-13T15:28:00-07:00",
             drive_minutes=27,
         )
     ]
@@ -566,9 +566,9 @@ def test_notification_single_block_never_includes_meeting_id():
 
 def test_notification_multiple_blocks_numbered_skip_by_number():
     meetings = [
-        _meeting("evt_2", "Dentist", leave_by="2026-07-13T09:10:00-05:00", drive_minutes=15),
+        _meeting("evt_2", "Dentist", leave_by="2026-05-13T09:10:00-05:00", drive_minutes=15),
         _meeting(
-            "evt_1", "Football practice", leave_by="2026-07-13T15:28:00-05:00", drive_minutes=27
+            "evt_1", "Football practice", leave_by="2026-05-13T15:28:00-05:00", drive_minutes=27
         ),
     ]
     created = [
@@ -593,7 +593,7 @@ def test_notification_return_only_block_has_no_leave_by():
 
 def test_notification_silent_when_nothing_changed():
     meetings = [
-        _meeting("evt_4", "Already handled", leave_by="2026-07-13T10:00:00-05:00", drive_minutes=10)
+        _meeting("evt_4", "Already handled", leave_by="2026-05-13T10:00:00-05:00", drive_minutes=10)
     ]
     # No created legs, only an idempotent skip — nothing to announce.
     skipped = [{"meeting_id": "evt_4", "direction": "outbound"}]
@@ -620,7 +620,7 @@ def test_notification_surfaces_route_errors_and_failures():
         _meeting(
             "evt_6",
             "Clinic",
-            leave_by="2026-07-13T08:00:00-05:00",
+            leave_by="2026-05-13T08:00:00-05:00",
             drive_minutes=12,
             route_errors=[{"direction": "outbound", "error": "ZERO_RESULTS"}],
         ),
@@ -636,7 +636,7 @@ def test_create_mode_emits_ready_to_send_message():
             {
                 "meeting_id": "evt_42",
                 "summary": "Customer sync",
-                "leave_by": "2026-07-02T12:30:00-05:00",
+                "leave_by": "2026-05-02T12:30:00-05:00",
                 "drive_minutes": 25,
                 "create_args": [_create_args()],
                 "route_errors": [],

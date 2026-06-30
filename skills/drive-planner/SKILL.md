@@ -34,7 +34,7 @@ The `message` field is the complete, ready-to-send notification — the script b
 
 Silence rule: when `message` is `null`, every surfaced meeting was already handled — send nothing, proceed silently. Finish here.
 
-## Step 2 — Handle a cancel reply
+## Step 2 — Handle a skip reply
 
 This step fires when the user replies to skip a drive block — a bare "skip" / "don't drive", a numbered "skip 1" / "skip 1 and 3" / "skip 1, 3", or by meeting name ("don't drive to swimming"). "cancel" is accepted as a synonym for "skip" in all these forms. The user never types an id; resolve their reference to a meeting NAME, then let the script find the id.
 

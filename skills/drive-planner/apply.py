@@ -257,7 +257,11 @@ def _ordered_blocked(meetings: list, created_ids: set) -> list:
 
     def _key(meeting: dict) -> tuple:
         parsed = _parse_iso(meeting.get("leave_by"))
-        return (parsed is None, parsed.isoformat() if parsed else "")
+        # Sort by the actual instant (timestamp), not the ISO string — a
+        # lexicographic compare of offset-bearing strings diverges from
+        # chronological order, which would desync the numbered "skip N" list
+        # from `_list_mode`'s datetime ordering. None (return-only) sorts last.
+        return (parsed is None, parsed.timestamp() if parsed else 0.0)
 
     return sorted(blocked, key=_key)
 
@@ -295,16 +299,21 @@ def _status_lines(meetings: list, created_ids: set, skipped_ids: set, failed: li
             continue
         summary = _summary_of(meeting)
         meeting_id = meeting.get("meeting_id")
-        route_errors = meeting.get("route_errors") or []
-        for item in route_errors if isinstance(route_errors, list) else []:
+        # Normalize to a list up front so a malformed truthy-but-non-list value
+        # (e.g. a stray string) reads as empty everywhere — including the later
+        # `not route_errors` / `if unplannable` membership checks below.
+        route_errors = meeting.get("route_errors")
+        route_errors = route_errors if isinstance(route_errors, list) else []
+        for item in route_errors:
             err = item.get("error") if isinstance(item, dict) else None
             suffix = f" ({err})" if err else ""
             lines.append(
                 f"Couldn't compute drive time for {summary}{suffix} — "
                 f"no block created; will retry next sweep."
             )
-        unplannable = meeting.get("unplannable") or []
-        for leg in unplannable if isinstance(unplannable, list) else []:
+        unplannable = meeting.get("unplannable")
+        unplannable = unplannable if isinstance(unplannable, list) else []
+        for leg in unplannable:
             if not isinstance(leg, dict):
                 continue
             direction = leg.get("direction") or "drive"
@@ -341,8 +350,18 @@ def build_notification(
     types an id (#86) and a low-capability wake model can't improvise one.
     """
     meetings = meetings if isinstance(meetings, list) else []
-    created_ids = {c.get("meeting_id") for c in created if isinstance(c, dict)}
-    skipped_ids = {s.get("meeting_id") for s in skipped_existing if isinstance(s, dict)}
+    # Only string meeting ids count — a malformed entry (None / non-string)
+    # must never match a meeting whose id is also missing.
+    created_ids = {
+        c.get("meeting_id")
+        for c in (created if isinstance(created, list) else [])
+        if isinstance(c, dict) and isinstance(c.get("meeting_id"), str)
+    }
+    skipped_ids = {
+        s.get("meeting_id")
+        for s in (skipped_existing if isinstance(skipped_existing, list) else [])
+        if isinstance(s, dict) and isinstance(s.get("meeting_id"), str)
+    }
     blocked = _ordered_blocked(meetings, created_ids)
     parts: list = []
     if len(blocked) == 1:
