@@ -101,12 +101,12 @@ def check_time_to_leave(
     query maps yet), the gate doesn't fire — the caller defers the
     decision until traffic data is available.
 
-    `snapshot` is the current trimmed byAir snapshot. When it shows the
-    flight already boarding or departed (#102 — a delayed flight or a
-    stale travel estimate can push the leave-by moment past boarding),
-    the alert is moot and the gate stays silent rather than waking the
-    agent to say nothing. Defaults to None so callers without a snapshot
-    keep the pre-boarding behavior.
+    `snapshot` is the current trimmed byAir snapshot. When `is_boarding_or_gone`
+    reports the flight really boarding or already gone — departed, en_route,
+    landed, cancelled, or diverted (#102 — a delayed flight or a stale travel
+    estimate can push the leave-by moment past boarding), the alert is moot and
+    the gate stays silent rather than waking the agent to say nothing. Defaults
+    to None so callers without a snapshot keep the pre-boarding behavior.
 
     `phase_markers["time_to_leave_fired"]` must be False to fire.
     """
