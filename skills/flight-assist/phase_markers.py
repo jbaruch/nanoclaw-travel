@@ -258,14 +258,18 @@ def is_boarding_or_gone(snapshot: dict | None) -> bool:
 def _parse_iso8601(value: str | None) -> datetime | None:
     """Parse an RFC3339 / ISO8601 string into a timezone-aware datetime.
 
-    Returns None on malformed input. Naive datetimes (no tzinfo) are
-    treated as UTC so a malformed-but-parseable value doesn't silently
-    skew the comparison.
+    Returns None on malformed input. A trailing `Z` (RFC3339 zulu) is
+    normalized to `+00:00` first — `datetime.fromisoformat` rejects `Z` on
+    Python < 3.11, and scheduled times can come back zulu-suffixed, so without
+    this the time-based markers would silently never fire (matches
+    `precheck._parse_iso8601` / `state._parse_iso8601`). Naive datetimes (no
+    tzinfo) are treated as UTC so a malformed-but-parseable value doesn't
+    silently skew the comparison.
     """
     if not value:
         return None
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
     if parsed.tzinfo is None:

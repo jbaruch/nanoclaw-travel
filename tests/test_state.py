@@ -797,6 +797,20 @@ def test_v5_to_v6_config_migration_bumps_version_without_shape_change(state_root
     assert "gate_assignment_fired" not in loaded
 
 
+def test_v5_to_v6_migration_scopes_phase_markers_by_filename(state_root: Path):
+    """A non-flight file carrying a stray phase_markers key is NOT given
+    gate_assignment_fired. The v5→v6 step scopes by filename (flight-<id>.json),
+    matching v2→v3, so a config/active-flights file keeps its shape."""
+    state_root.mkdir(parents=True)
+    (state_root / ACTIVE_FLIGHTS_FILE).write_text(
+        json.dumps({"schema_version": 5, "flight_ids": [12345], "phase_markers": {"x": True}})
+    )
+    read_active_flights()  # owner-path read migrates and rewrites at v6
+    raw = json.loads((state_root / ACTIVE_FLIGHTS_FILE).read_text())
+    assert raw["schema_version"] == STATE_SCHEMA_VERSION
+    assert "gate_assignment_fired" not in raw["phase_markers"]
+
+
 def test_config_round_trips_airport_clearance_fields(state_root: Path):
     """The v5 airport-clearance config fields write and read back unchanged."""
     state_root.mkdir(parents=True)

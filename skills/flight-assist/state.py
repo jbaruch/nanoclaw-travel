@@ -242,10 +242,19 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
     if version == 5:
         # v5 → v6: add `gate_assignment_fired: False` to per-flight
         # phase_markers (the once-per-flight gate/terminal readout gate —
-        # see state-schema.md, #103). Scoped to per-flight files; config and
-        # active-flights only get a schema_version bump at v6.
+        # see state-schema.md, #103). Scoped by filename (matching v2→v3), not
+        # payload contents: a config/active-flights file — or any future record
+        # that happens to carry a `phase_markers` key — must never be mutated.
+        # Config and active-flights only get a schema_version bump at v6.
+        is_flight_file = path.name.startswith(_FLIGHT_FILE_PREFIX) and path.name.endswith(
+            _FLIGHT_FILE_SUFFIX
+        )
         phase_markers = payload.get("phase_markers")
-        if isinstance(phase_markers, dict) and "gate_assignment_fired" not in phase_markers:
+        if (
+            is_flight_file
+            and isinstance(phase_markers, dict)
+            and "gate_assignment_fired" not in phase_markers
+        ):
             phase_markers["gate_assignment_fired"] = False
         version = 6
     if version != STATE_SCHEMA_VERSION:

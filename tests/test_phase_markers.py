@@ -467,3 +467,12 @@ def test_naive_iso_string_treated_as_utc():
     now = datetime(2026, 5, 18, 10, 0, 0, tzinfo=timezone.utc)  # T-7h
     fired, _ = check_day_before(scheduled_dep_time=sched, phase_markers=_markers(), now_utc=now)
     assert fired is True
+
+
+def test_zulu_suffixed_iso_string_parses():
+    """A trailing 'Z' must not silently suppress a time-based marker (Python < 3.11
+    rejects 'Z' in fromisoformat; scheduled times can come back zulu-suffixed)."""
+    sched = "2026-05-18T17:00:00Z"
+    now = datetime(2026, 5, 18, 10, 0, 0, tzinfo=timezone.utc)  # T-7h
+    fired, _ = check_day_before(scheduled_dep_time=sched, phase_markers=_markers(), now_utc=now)
+    assert fired is True
