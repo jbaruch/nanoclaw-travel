@@ -206,9 +206,9 @@ def check_gate_assignment(
     gate appears. Gate info before the window is recorded to state silently
     by the caller and never fires here (#103).
 
-    A flight already boarding, departed, cancelled, or diverted gets no
-    readout — navigating to a departure gate is moot by then (same gate as
-    the leave-by suppression in #102).
+    A flight `is_boarding_or_gone` — really boarding, or departed/en_route/
+    landed/cancelled/diverted — gets no readout; navigating to a departure gate
+    is moot by then (same gate as the leave-by suppression in #102).
 
     `phase_markers["gate_assignment_fired"]` must be False to fire; the
     caller sets it True once fired so subsequent gate moves surface as

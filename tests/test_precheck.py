@@ -581,6 +581,42 @@ def test_gate_change_surfaces_when_readout_never_fired(state_root: Path):
     assert "gate_assignment" not in reasons  # readout never fires for a departed flight
 
 
+def test_gate_change_surfaces_when_dep_time_unparseable(state_root: Path):
+    """#103 regression: a corrupted/unparseable scheduled_dep_time means the
+    readout can never fire (no window). gate_change must degrade safely and still
+    surface, not be muted forever."""
+    prior_snapshot = _scheduled_snapshot()
+    prior_snapshot["dep_gate"] = "B25"
+    prior = _make_state(
+        flight_id=12345,
+        scheduled_dep_time="not-a-time",  # unparseable → no readout window
+        last_polled_at="2026-05-18T15:00:00Z",
+        last_snapshot=prior_snapshot,
+        phase_markers={
+            "day_before_fired": True,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
+        },
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    fake_flight = _byair_flight(flight_id=12345, dep_gate="B7")  # gate moved B25 → B7
+    fake_now = datetime(2026, 5, 18, 16, 30, 0, tzinfo=timezone.utc)
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    reasons = [e["event"]["reason"] for e in events]
+    assert "gate_change" in reasons  # not suppressed despite the unparseable dep time
+    assert "gate_assignment" not in reasons  # no window → readout can't fire
+
+
 def test_poll_cycle_preserves_calendar_events_ledger(state_root: Path):
     """A poll rewrite must not wipe the reconcile-owned calendar_events ledger.
 

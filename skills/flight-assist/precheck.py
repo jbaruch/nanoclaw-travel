@@ -59,6 +59,7 @@ from phase_markers import (  # noqa: E402
     check_day_before,
     check_gate_assignment,
     check_time_to_leave,
+    gate_assignment_window_open,
     is_boarding_or_gone,
 )
 from state import (  # noqa: E402
@@ -436,12 +437,21 @@ def _process_flight(
         phase_markers=phase_markers,
         now_utc=now_utc,
     )
+    # The readout can never fire when the flight is already boarding/gone OR the
+    # scheduled dep time is unparseable (no window to anchor on). In either case
+    # gate_change must NOT be suppressed — degrade safely rather than mute a
+    # corrupted-dep-time flight's gate moves forever.
+    window_open = gate_assignment_window_open(
+        scheduled_dep_time=scheduled_dep_time,
+        boarding_lead_minutes=boarding_lead_minutes,
+    )
+    readout_unreachable = window_open is None or is_boarding_or_gone(new_snapshot)
     delta_events = detect_wake_events(prior_snapshot, new_snapshot, scheduled_dep_time)
     delta_events = _filter_gate_changes(
         delta_events,
         readout_fired_before=readout_fired_before,
         readout_fires_now=readout_fired,
-        boarding_or_gone=is_boarding_or_gone(new_snapshot),
+        readout_unreachable=readout_unreachable,
     )
     events.extend(delta_events)
     if readout_fired and readout_event is not None:
@@ -720,7 +730,7 @@ def _filter_gate_changes(
     *,
     readout_fired_before: bool,
     readout_fires_now: bool,
-    boarding_or_gone: bool,
+    readout_unreachable: bool,
 ) -> list[dict]:
     """Apply the #103 gate_change gating relative to the gate-readout anchor.
 
@@ -728,9 +738,11 @@ def _filter_gate_changes(
     actionable; `gate_change` is gated against that anchor:
 
     - readout already fired on a prior cycle → all gate changes flow.
-    - flight already boarding / departed / gone → the readout will never fire,
-      so all gate changes flow (never mute them forever — a flight first polled
-      after departure must still surface gate moves).
+    - readout unreachable (flight already boarding / departed / gone, OR the
+      scheduled dep time is unparseable so no window exists) → the readout will
+      never fire, so all gate changes flow (never mute them forever — a flight
+      first polled after departure, or one with a corrupted dep time, must still
+      surface gate moves).
     - readout fires THIS cycle → drop only the now-redundant DEParture
       gate_change (the gate_assignment event already carries the dep gate), but
       keep an ARRival gate_change — the readout says nothing about the arr gate.
@@ -739,7 +751,7 @@ def _filter_gate_changes(
 
     Non-gate_change events pass through untouched.
     """
-    if readout_fired_before or boarding_or_gone:
+    if readout_fired_before or readout_unreachable:
         return events
     if readout_fires_now:
         return [
