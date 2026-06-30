@@ -253,7 +253,13 @@ def _ordered_blocked(meetings: list, created_ids: set) -> list:
     The order matches `_list_mode`'s leave_by ordering so the numbered skip
     affordance lines up with what `apply.py list` returns.
     """
-    blocked = [m for m in meetings if isinstance(m, dict) and m.get("meeting_id") in created_ids]
+    blocked = [
+        m
+        for m in meetings
+        if isinstance(m, dict)
+        and isinstance(m.get("meeting_id"), str)
+        and m.get("meeting_id") in created_ids
+    ]
 
     def _key(meeting: dict) -> tuple:
         parsed = _parse_iso(meeting.get("leave_by"))
@@ -295,16 +301,21 @@ def _blocked_line(meeting: dict, *, index: int | None, anchored: bool) -> str:
 
 def _status_lines(meetings: list, created_ids: set, skipped_ids: set, failed: list) -> list:
     """The route-error / unplannable / failed lines, in meeting order (id-free)."""
+    # Key failures only by string ids — a malformed entry's unhashable id
+    # (dict/list) must not raise while composing the notification.
     failed_by_id: dict = {}
     for entry in failed if isinstance(failed, list) else []:
-        if isinstance(entry, dict):
-            failed_by_id.setdefault(entry.get("meeting_id"), []).append(entry)
+        if isinstance(entry, dict) and isinstance(entry.get("meeting_id"), str):
+            failed_by_id.setdefault(entry["meeting_id"], []).append(entry)
     lines: list = []
     for meeting in meetings:
         if not isinstance(meeting, dict):
             continue
         summary = _summary_of(meeting)
+        # Normalize the id to a string (or None) before any set/dict lookup so an
+        # unhashable malformed id (dict/list) can't raise here.
         meeting_id = meeting.get("meeting_id")
+        meeting_id = meeting_id if isinstance(meeting_id, str) else None
         # Normalize to a list up front so a malformed truthy-but-non-list value
         # (e.g. a stray string) reads as empty everywhere — including the later
         # `not route_errors` / `if unplannable` membership checks below.
@@ -402,7 +413,10 @@ def build_notification(
             _blocked_line(meeting, index=i, anchored=_anchored(meeting))
             for i, meeting in enumerate(blocked, 1)
         )
-        parts.append("Reply skip 1, or skip 1 and 3, to drop any.")
+        # The multi-skip example must reference indices that exist for the count
+        # (e.g. "skip 1 and 2" when only two blocks were added, not "and 3").
+        second = min(3, len(blocked))
+        parts.append(f"Reply skip 1, or skip 1 and {second}, to drop any.")
     parts.extend(_status_lines(meetings, created_ids, skipped_ids, failed))
     if not parts:
         return None

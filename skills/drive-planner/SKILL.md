@@ -30,7 +30,7 @@ echo '<data JSON>' | python3 /home/node/.claude/skills/tessl__drive-planner/appl
 
 It is idempotent — a meeting whose block already exists is skipped, never duplicated (lombot #50). It prints single-line JSON: `{"created": [...], "skipped_existing": [...], "failed": [...], "message": "<text or null>"}`.
 
-The `message` field is the complete, ready-to-send notification — the script builds it deterministically (`apply.py build_notification`), id-free, with the skip affordance baked in: one created block → a single sentence ending "Reply `skip` if you're not driving."; several → a numbered list ending "Reply `skip 1`, or `skip 1 and 3`, to drop any."; plus any route-error / unplannable / failed lines. Relay `message` **verbatim** via `mcp__nanoclaw__send_message` — do not rewrite, renumber, add a meeting/event id, or append the meeting start time.
+The `message` field is the complete, ready-to-send notification — the script builds it deterministically (`apply.py build_notification`), id-free, with the skip affordance baked in. The exact plain-text shapes it emits (no markdown): one created block ends with the line `Reply skip if you're not driving.`; several render a numbered list ending with `Reply skip 1, or skip 1 and N, to drop any.` (where `N` is an index that exists for the count); plus any route-error / unplannable / failed lines. Relay `message` **verbatim** via `mcp__nanoclaw__send_message` — do not rewrite, renumber, add a meeting/event id, or append the meeting start time.
 
 Silence rule: when `message` is `null`, every surfaced meeting was already handled — send nothing, proceed silently. Finish here.
 

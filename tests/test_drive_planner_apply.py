@@ -581,7 +581,41 @@ def test_notification_multiple_blocks_numbered_skip_by_number():
     assert lines[0] == "Added drive blocks:"
     assert lines[1] == "1. Dentist — leave by 9:10 AM (15-min drive)"
     assert lines[2] == "2. Football practice — leave by 3:28 PM (27-min drive)"
-    assert lines[3] == "Reply skip 1, or skip 1 and 3, to drop any."
+    # Only two blocks → the example references index 2, not a nonexistent 3.
+    assert lines[3] == "Reply skip 1, or skip 1 and 2, to drop any."
+
+
+def test_notification_tolerates_unhashable_meeting_ids():
+    """Malformed payloads (unhashable meeting_id in a meeting / created / failed
+    entry) must not crash notification composition — _create_mode records bad
+    ids into `failed`, and build_notification runs on the raw meetings."""
+    meetings = [
+        {
+            "meeting_id": {"bad": "dict"},  # unhashable
+            "summary": "Weird",
+            "leave_by": None,
+            "drive_minutes": None,
+            "route_errors": [],
+            "unplannable": [{"reason": "no route"}],
+        },
+        _meeting("evt_ok", "Good", leave_by="2026-05-13T08:00:00-05:00", drive_minutes=10),
+    ]
+    created = [{"meeting_id": "evt_ok", "direction": "outbound"}, {"meeting_id": ["also", "bad"]}]
+    failed = [{"meeting_id": {"unhashable": 1}, "error": "boom"}]
+    msg = apply.build_notification(meetings, created, [], failed)  # must not raise
+    assert "Added a drive block for Good" in msg  # the well-formed meeting renders
+
+
+def test_notification_three_blocks_uses_skip_1_and_3():
+    """With three or more blocks the example reads 'skip 1 and 3'."""
+    meetings = [
+        _meeting("evt_1", "A", leave_by="2026-05-13T08:00:00-05:00", drive_minutes=10),
+        _meeting("evt_2", "B", leave_by="2026-05-13T09:00:00-05:00", drive_minutes=11),
+        _meeting("evt_3", "C", leave_by="2026-05-13T10:00:00-05:00", drive_minutes=12),
+    ]
+    created = [{"meeting_id": m["meeting_id"], "direction": "outbound"} for m in meetings]
+    msg = apply.build_notification(meetings, created, [], [])
+    assert msg.split("\n")[-1] == "Reply skip 1, or skip 1 and 3, to drop any."
 
 
 def test_notification_return_only_block_has_no_leave_by():
