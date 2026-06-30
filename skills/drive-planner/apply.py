@@ -316,9 +316,16 @@ def _status_lines(meetings: list, created_ids: set, skipped_ids: set, failed: li
         for leg in unplannable:
             if not isinstance(leg, dict):
                 continue
-            direction = leg.get("direction") or "drive"
+            direction = leg.get("direction")
             reason = leg.get("reason") or "not plannable"
-            lines.append(f"No {direction} drive block for {summary} — {reason}.")
+            # Drop the direction word when it's missing/empty so the line reads
+            # "No drive block ..." rather than "No drive drive block ...".
+            label = (
+                f"{direction} drive block"
+                if isinstance(direction, str) and direction
+                else "drive block"
+            )
+            lines.append(f"No {label} for {summary} — {reason}.")
         # Fully unplannable (no block at all): offer the mute affordance.
         if (
             unplannable
@@ -328,12 +335,16 @@ def _status_lines(meetings: list, created_ids: set, skipped_ids: set, failed: li
         ):
             lines.append(f"Reply don't drive to {summary} to stop seeing it.")
         for entry in failed_by_id.get(meeting_id, []):
-            direction = entry.get("direction") or "drive"
+            direction = entry.get("direction")
             err = entry.get("error") or "error"
-            lines.append(
-                f"Couldn't create the {direction} drive block for {summary} "
-                f"({err}) — will retry next sweep."
+            # "the <dir> drive block" when a direction is known, else "a drive
+            # block" — never "the drive drive block".
+            label = (
+                f"the {direction} drive block"
+                if isinstance(direction, str) and direction
+                else "a drive block"
             )
+            lines.append(f"Couldn't create {label} for {summary} ({err}) — will retry next sweep.")
     return lines
 
 

@@ -629,6 +629,28 @@ def test_notification_surfaces_route_errors_and_failures():
     assert "Couldn't compute drive time for Clinic (ZERO_RESULTS)" in msg
 
 
+def test_notification_missing_direction_phrasing_no_double_drive():
+    """A leg/failure with no direction must not read 'drive drive block'."""
+    unplannable_meeting = _meeting(
+        "evt_7",
+        "Offsite",
+        leave_by=None,
+        drive_minutes=None,
+        unplannable=[{"reason": "no route"}],  # no direction key
+    )
+    msg = apply.build_notification([unplannable_meeting], [], [], [])
+    assert "No drive block for Offsite — no route." in msg
+    assert "drive drive block" not in msg
+
+    failed_meeting = _meeting(
+        "evt_8", "Clinic", leave_by="2026-05-13T08:00:00-05:00", drive_minutes=12
+    )
+    failed = [{"meeting_id": "evt_8", "error": "boom"}]  # no direction
+    msg2 = apply.build_notification([failed_meeting], [], [], failed)
+    assert "Couldn't create a drive block for Clinic (boom)" in msg2
+    assert "drive drive block" not in msg2
+
+
 def test_create_mode_emits_ready_to_send_message():
     client = FakeComposio(existing=[])
     request = {
