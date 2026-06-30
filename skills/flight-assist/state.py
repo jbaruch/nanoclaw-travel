@@ -5,7 +5,7 @@ deltas between byAir snapshots. State lives under
 `/workspace/state/flight-assist/` in production; tests override the
 directory via the `FLIGHT_ASSIST_STATE_DIR` environment variable.
 
-Files written (all JSON, all carry `schema_version: 5` at the top level):
+Files written (all JSON, all carry `schema_version: 6` at the top level):
 
     config.json                       — home_address, etc. (set via /setup)
     active-flights.json               — list of currently-tracked flight_ids
@@ -58,7 +58,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-STATE_SCHEMA_VERSION = 5
+STATE_SCHEMA_VERSION = 6
 
 _DEFAULT_STATE_DIR = "/workspace/state/flight-assist"
 _STATE_DIR_ENV = "FLIGHT_ASSIST_STATE_DIR"
@@ -239,6 +239,24 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
         # shape change to apply on migration — config, active-flights, and
         # per-flight records only get a schema_version bump at v5.
         version = 5
+    if version == 5:
+        # v5 → v6: add `gate_assignment_fired: False` to per-flight
+        # phase_markers (the once-per-flight gate/terminal readout gate —
+        # see state-schema.md, #103). Scoped by filename (matching v2→v3), not
+        # payload contents: a config/active-flights file — or any future record
+        # that happens to carry a `phase_markers` key — must never be mutated.
+        # Config and active-flights only get a schema_version bump at v6.
+        is_flight_file = path.name.startswith(_FLIGHT_FILE_PREFIX) and path.name.endswith(
+            _FLIGHT_FILE_SUFFIX
+        )
+        phase_markers = payload.get("phase_markers")
+        if (
+            is_flight_file
+            and isinstance(phase_markers, dict)
+            and "gate_assignment_fired" not in phase_markers
+        ):
+            phase_markers["gate_assignment_fired"] = False
+        version = 6
     if version != STATE_SCHEMA_VERSION:
         # Unknown older version: refuse to silently pass through. The
         # branches above are the authoritative list of known upgrade
@@ -791,17 +809,19 @@ _PHASE_MARKER_KEYS = frozenset(
         "arrival_logistics_fired",
         "landed_acknowledged",
         "connection_at_risk_fired",
+        "gate_assignment_fired",
     }
 )
 
 
 def _validate_phase_markers(phase_markers: dict) -> None:
-    """Verify phase_markers has exactly the 6 documented keys, all bool.
+    """Verify phase_markers has exactly the 7 documented keys, all bool.
 
     Per state-schema.md: phase_markers is `{day_before_fired,
     time_to_leave_fired, boarding_fired, arrival_logistics_fired,
-    landed_acknowledged, connection_at_risk_fired}` — each a plain `bool`.
-    No undocumented keys, no missing keys, no non-bool values.
+    landed_acknowledged, connection_at_risk_fired, gate_assignment_fired}` —
+    each a plain `bool`. No undocumented keys, no missing keys, no non-bool
+    values.
     """
     actual_keys = set(phase_markers.keys())
     missing = _PHASE_MARKER_KEYS - actual_keys

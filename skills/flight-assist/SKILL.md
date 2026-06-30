@@ -72,6 +72,7 @@ The reason → notification mapping for the documented events:
 |----------|-------------|
 | `cancelled` | "Flight `<code>` cancelled." Include rebooking-options link if the user opted in |
 | `diverted` | "Flight `<code>` diverted." |
+| `gate_assignment` | One-time gate + terminal readout when the pre-boarding window opens: "`<code>` departs Terminal `<dep_terminal>`, Gate `<dep_gate>`." Drop the terminal clause when `dep_terminal` is null: "`<code>` departs Gate `<dep_gate>`." This is the navigation signal — which terminal to head to |
 | `gate_change` | "Gate change: `<code>` moved from `<from>` to `<to>`." If `to` is null, "Gate `<from>` removed from `<code>`." |
 | `delay` | "Flight `<code>` delayed by `<delay_minutes>` min. New departure: `<new_dep_time>` (local)." Negative `delay_minutes` = advanced; phrase as "moved earlier by N min". A `schedule_slip: true` event is the same surface — phrase it identically |
 | `inbound_delay_predicted` | "Inbound aircraft delay predicted: `<delay_minutes>` min for `<code>`. New estimated departure: `<predicted_time>`." |

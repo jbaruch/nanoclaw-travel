@@ -47,6 +47,7 @@ from pathlib import Path
 _BUNDLE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_BUNDLE_DIR))
 
+from boarding_lead import resolve_boarding_lead_minutes  # noqa: E402
 from byair_client import ByAirClient, ByAirError  # noqa: E402
 from connection_risk import (  # noqa: E402
     DEFAULT_MIN_TRANSFER_MINUTES,
@@ -56,7 +57,10 @@ from maps_client import MapsClient, MapsError  # noqa: E402
 from phase_markers import (  # noqa: E402
     check_arrival_logistics,
     check_day_before,
+    check_gate_assignment,
     check_time_to_leave,
+    gate_assignment_window_open,
+    is_boarding_or_gone,
 )
 from state import (  # noqa: E402
     read_active_flights,
@@ -421,8 +425,38 @@ def _process_flight(
         prior_state["scheduled_arr_time"] if prior_state else raw_flight.get("scheduledArrTime")
     )
 
-    # Delta-driven events from wake_rules.
-    events.extend(detect_wake_events(prior_snapshot, new_snapshot, scheduled_dep_time))
+    # Delta-driven events from wake_rules, plus the gate-readout marker (#103).
+    # The gate_assignment readout is evaluated here, before the other phase
+    # markers, so its outcome can gate the gate_change filter below.
+    boarding_lead_minutes = _resolve_boarding_lead_minutes(new_snapshot)
+    readout_fired_before = phase_markers.get("gate_assignment_fired", False)
+    readout_fired, readout_event = check_gate_assignment(
+        scheduled_dep_time=scheduled_dep_time,
+        boarding_lead_minutes=boarding_lead_minutes,
+        snapshot=new_snapshot,
+        phase_markers=phase_markers,
+        now_utc=now_utc,
+    )
+    # The readout can never fire when the flight is already boarding/gone OR the
+    # scheduled dep time is unparseable (no window to anchor on). In either case
+    # gate_change must NOT be suppressed — degrade safely rather than mute a
+    # corrupted-dep-time flight's gate moves forever.
+    window_open = gate_assignment_window_open(
+        scheduled_dep_time=scheduled_dep_time,
+        boarding_lead_minutes=boarding_lead_minutes,
+    )
+    readout_unreachable = window_open is None or is_boarding_or_gone(new_snapshot)
+    delta_events = detect_wake_events(prior_snapshot, new_snapshot, scheduled_dep_time)
+    delta_events = _filter_gate_changes(
+        delta_events,
+        readout_fired_before=readout_fired_before,
+        readout_fires_now=readout_fired,
+        readout_unreachable=readout_unreachable,
+    )
+    events.extend(delta_events)
+    if readout_fired and readout_event is not None:
+        phase_markers["gate_assignment_fired"] = True
+        events.append(readout_event)
 
     # Time-based events from phase_markers.
 
@@ -691,6 +725,64 @@ def _build_flight_state(
     return new_state
 
 
+def _filter_gate_changes(
+    events: list[dict],
+    *,
+    readout_fired_before: bool,
+    readout_fires_now: bool,
+    readout_unreachable: bool,
+) -> list[dict]:
+    """Apply the #103 gate_change gating relative to the gate-readout anchor.
+
+    The `gate_assignment` readout anchors gate info to the moment it becomes
+    actionable; `gate_change` is gated against that anchor:
+
+    - readout already fired on a prior cycle → all gate changes flow.
+    - readout unreachable (flight already boarding / departed / gone, OR the
+      scheduled dep time is unparseable so no window exists) → the readout will
+      never fire, so all gate changes flow (never mute them forever — a flight
+      first polled after departure, or one with a corrupted dep time, must still
+      surface gate moves).
+    - readout fires THIS cycle → drop only the now-redundant DEParture
+      gate_change (the gate_assignment event already carries the dep gate), but
+      keep an ARRival gate_change — the readout says nothing about the arr gate.
+    - readout still pending (before the window, or in-window awaiting a dep
+      gate) → suppress gate churn; it is recorded to state silently.
+
+    Non-gate_change events pass through untouched.
+    """
+    if readout_fired_before or readout_unreachable:
+        return events
+    if readout_fires_now:
+        return [
+            e for e in events if not (e.get("reason") == "gate_change" and e.get("side") == "dep")
+        ]
+    return [e for e in events if e.get("reason") != "gate_change"]
+
+
+def _resolve_boarding_lead_minutes(snapshot: dict) -> int:
+    """Resolve the boarding-lead minutes for the gate-readout window (#103).
+
+    Passes whatever lead inputs the snapshot carries to the same resolver
+    `calendar_reconcile._resolve_lead` feeds the planner, so the readout window
+    and the boarding calendar block agree on the lead. Today `_trim_to_snapshot`
+    populates only `inbound.aircraft_model`, so the widebody lead resolves via
+    the inbound-aircraft chain and the narrowbody default (30 min) covers the
+    rest. The top-level `aircraft_model` and dep/arr airport coordinates are
+    absent until the precheck stamps them (#55); the resolver reads them as
+    None and they widen the window automatically once present.
+    """
+    inbound = snapshot.get("inbound") or {}
+    return resolve_boarding_lead_minutes(
+        aircraft_model=snapshot.get("aircraft_model"),
+        inbound_aircraft_model=inbound.get("aircraft_model"),
+        dep_lat=snapshot.get("dep_lat"),
+        dep_lon=snapshot.get("dep_lon"),
+        arr_lat=snapshot.get("arr_lat"),
+        arr_lon=snapshot.get("arr_lon"),
+    )
+
+
 def _initial_phase_markers() -> dict:
     return {
         "day_before_fired": False,
@@ -699,6 +791,7 @@ def _initial_phase_markers() -> dict:
         "arrival_logistics_fired": False,
         "landed_acknowledged": False,
         "connection_at_risk_fired": False,
+        "gate_assignment_fired": False,
     }
 
 

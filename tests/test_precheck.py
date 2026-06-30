@@ -46,6 +46,7 @@ def _byair_flight(
     flight_id: int = 12345,
     computed_status: str = "scheduled",
     dep_gate: str | None = None,
+    dep_terminal: str | None = None,
     dep_time: str | None = "2026-05-18T17:00:00+00:00",
     baggage: str | None = None,
     inbound: dict | None = None,
@@ -61,7 +62,7 @@ def _byair_flight(
         "computed_phase_overdue": None,
         "depGate": dep_gate,
         "arrGate": None,
-        "depTerminal": None,
+        "depTerminal": dep_terminal,
         "arrTerminal": None,
         "depTime": dep_time,
         "arrTime": None,
@@ -122,6 +123,7 @@ def _make_state(flight_id: int = 12345, **overrides) -> dict:
             "arrival_logistics_fired": False,
             "landed_acknowledged": False,
             "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
         },
         "last_wake_at": None,
         "last_wake_reason": None,
@@ -299,8 +301,9 @@ def test_first_cycle_for_new_flight_writes_state_and_fires_day_before(state_root
     assert "day_before" in reasons
 
 
-def test_gate_change_event_propagates_through_cycle(state_root: Path):
-    """A gate change between prior state and new fetch produces a gate_change event."""
+def test_gate_change_fires_after_readout(state_root: Path):
+    """After the gate_assignment readout has fired, a later gate move surfaces
+    as gate_change (#103 acceptance: gate change after the readout, in-window)."""
     prior = _make_state(
         flight_id=12345,
         last_polled_at="2026-05-18T15:00:00Z",
@@ -334,6 +337,7 @@ def test_gate_change_event_propagates_through_cycle(state_root: Path):
             "arrival_logistics_fired": False,
             "landed_acknowledged": False,
             "connection_at_risk_fired": False,
+            "gate_assignment_fired": True,  # readout already done
         },
     )
     write_flight_state(prior)
@@ -350,6 +354,267 @@ def test_gate_change_event_propagates_through_cycle(state_root: Path):
 
     reasons = [e["event"]["reason"] for e in events]
     assert "gate_change" in reasons
+
+
+def _scheduled_snapshot_with_gate(*, dep_gate: str | None) -> dict:
+    snap = _scheduled_snapshot()
+    snap["dep_gate"] = dep_gate
+    return snap
+
+
+def test_gate_change_suppressed_before_readout_window(state_root: Path):
+    """#103 acceptance: a gate present/changing at T−3h emits no notification,
+    but the snapshot (new gate) is still written to state."""
+    prior = _make_state(
+        flight_id=12345,
+        # T−3h relative to 17:00 dep; narrowbody window opens at 15:30, so 14:00
+        # is well before it. Last polled 30 min earlier to clear the cadence gate.
+        last_polled_at="2026-05-18T13:30:00Z",
+        last_snapshot=_scheduled_snapshot_with_gate(dep_gate="D3"),
+        phase_markers={
+            "day_before_fired": True,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
+        },
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    fake_flight = _byair_flight(flight_id=12345, dep_gate="D1")  # gate churned D3 → D1
+    fake_now = datetime(2026, 5, 18, 14, 0, 0, tzinfo=timezone.utc)  # before window
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    reasons = [e["event"]["reason"] for e in events]
+    assert "gate_change" not in reasons
+    assert "gate_assignment" not in reasons  # window not open yet
+    # State still records the latest gate.
+    persisted = read_flight_state(12345)
+    assert persisted["last_snapshot"]["dep_gate"] == "D1"
+
+
+def test_gate_assignment_readout_fires_in_window(state_root: Path):
+    """#103 acceptance: window opens with a gate present → one gate_assignment
+    readout carrying gate + terminal, and the simultaneous gate delta is muted."""
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T15:20:00Z",
+        last_snapshot=_scheduled_snapshot_with_gate(dep_gate="D3"),
+        phase_markers={
+            "day_before_fired": True,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
+        },
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    # New gate D6 with terminal "1"; window opens 15:30 (narrowbody), now 15:40.
+    fake_flight = _byair_flight(flight_id=12345, dep_gate="D6", dep_terminal="1")
+    fake_now = datetime(2026, 5, 18, 15, 40, 0, tzinfo=timezone.utc)
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    by_reason = {e["event"]["reason"]: e["event"] for e in events}
+    assert "gate_assignment" in by_reason
+    assert by_reason["gate_assignment"]["dep_gate"] == "D6"
+    assert by_reason["gate_assignment"]["dep_terminal"] == "1"
+    assert "gate_change" not in by_reason  # muted on the readout cycle
+    # Marker persisted so the next gate move surfaces as gate_change.
+    persisted = read_flight_state(12345)
+    assert persisted["phase_markers"]["gate_assignment_fired"] is True
+
+
+def test_gate_assignment_window_resolves_widebody_lead_from_snapshot(state_root: Path):
+    """End-to-end: a widebody inbound aircraft resolves a 50-min boarding lead
+    through the real precheck path, opening the readout window 20 min earlier
+    than the narrowbody default. The readout fires at 15:15 — inside the
+    widebody window (opens 15:10) but before a narrowbody flight's window
+    (opens 15:30), so firing here proves the precheck resolved the 50-min lead
+    from the snapshot, not the 30-min fallback. The top-level-model and
+    transoceanic inputs are not yet stamped into the snapshot (#55); the
+    inbound-aircraft chain is the path available today."""
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T14:55:00Z",
+        last_snapshot=_scheduled_snapshot_with_gate(dep_gate=None),
+        phase_markers={
+            "day_before_fired": True,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
+        },
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    fake_flight = _byair_flight(
+        flight_id=12345,
+        dep_gate="E16",
+        dep_terminal="2",
+        inbound={"aircraft_model": "Boeing 777-300ER"},  # widebody → 50-min lead
+    )
+    fake_now = datetime(2026, 5, 18, 15, 15, 0, tzinfo=timezone.utc)
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    by_reason = {e["event"]["reason"]: e["event"] for e in events}
+    assert "gate_assignment" in by_reason  # would NOT fire on a 30-min lead at 15:15
+    assert by_reason["gate_assignment"]["dep_terminal"] == "2"
+
+
+def test_readout_cycle_drops_dep_gate_change_but_keeps_arr(state_root: Path):
+    """#103: on the readout's own cycle, the redundant DEParture gate_change is
+    dropped (the gate_assignment carries the dep gate), but a simultaneous
+    ARRival gate change still surfaces — the readout says nothing about arr."""
+    prior_snapshot = _scheduled_snapshot()
+    prior_snapshot["dep_gate"] = "D1"
+    prior_snapshot["arr_gate"] = "A1"
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T15:20:00Z",
+        last_snapshot=prior_snapshot,
+        phase_markers={
+            "day_before_fired": True,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
+        },
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    # In-window (window opens 15:30 narrowbody). Dep gate D1→D6 AND arr gate A1→A2
+    # in the same poll; the readout fires for the dep gate.
+    fake_flight = _byair_flight(flight_id=12345, dep_gate="D6", dep_terminal="1")
+    fake_flight["arrGate"] = "A2"
+    fake_now = datetime(2026, 5, 18, 15, 40, 0, tzinfo=timezone.utc)
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    gate_changes = [e["event"] for e in events if e["event"]["reason"] == "gate_change"]
+    sides = {gc["side"] for gc in gate_changes}
+    assert sides == {"arr"}, f"expected only the arr gate_change to survive, got {gate_changes}"
+    assert any(e["event"]["reason"] == "gate_assignment" for e in events)
+
+
+def test_gate_change_surfaces_when_readout_never_fired(state_root: Path):
+    """#103 regression: a flight already in flight (the gate-readout never fires —
+    the window is past and the flight is en_route) must still surface gate moves.
+    Suppression is window-based, so an arrival-gate change mid-flight is NOT muted
+    forever by gate_assignment_fired staying false."""
+    enroute_snapshot = {
+        "code": "XX123",
+        "computed_status": "en_route",
+        "computed_status_detail": "...",
+        "computed_phase_progress": None,
+        "computed_phase_risk": None,
+        "computed_phase_overdue": None,
+        "dep_gate": "B7",
+        "arr_gate": "G1",
+        "dep_terminal": None,
+        "arr_terminal": None,
+        "dep_time": "2026-05-18T17:00:00+00:00",
+        "arr_time": "2026-05-18T20:30:00+00:00",
+        "baggage": None,
+        "inbound": {
+            "aircraft_model": None,
+            "registration": None,
+            "flew": None,
+            "predicted_delay_minutes": None,
+        },
+        "position_lat": None,
+        "position_lon": None,
+    }
+    prior = _make_state(
+        flight_id=12345,
+        scheduled_arr_time="2026-05-18T20:30:00+00:00",
+        last_polled_at="2026-05-18T19:50:00Z",
+        last_snapshot=enroute_snapshot,
+        phase_markers={
+            "day_before_fired": True,
+            "time_to_leave_fired": True,
+            "boarding_fired": True,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,  # readout never fired (late-tracked)
+        },
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    # Arrival gate moves G1 → G5 while en_route, well past the readout window.
+    fake_flight = _byair_flight(flight_id=12345, computed_status="en_route", dep_gate="B7")
+    fake_flight["arrGate"] = "G5"
+    fake_flight["arrTime"] = "2026-05-18T20:30:00+00:00"
+    fake_now = datetime(2026, 5, 18, 20, 0, 0, tzinfo=timezone.utc)  # mid-flight, window long past
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    reasons = [e["event"]["reason"] for e in events]
+    assert "gate_change" in reasons  # arrival-gate move surfaces, not muted forever
+    assert "gate_assignment" not in reasons  # readout never fires for a departed flight
+
+
+def test_gate_change_surfaces_when_dep_time_unparseable(state_root: Path):
+    """#103 regression: a corrupted/unparseable scheduled_dep_time means the
+    readout can never fire (no window). gate_change must degrade safely and still
+    surface, not be muted forever."""
+    prior_snapshot = _scheduled_snapshot()
+    prior_snapshot["dep_gate"] = "B25"
+    prior = _make_state(
+        flight_id=12345,
+        scheduled_dep_time="not-a-time",  # unparseable → no readout window
+        last_polled_at="2026-05-18T15:00:00Z",
+        last_snapshot=prior_snapshot,
+        phase_markers={
+            "day_before_fired": True,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
+        },
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    fake_flight = _byair_flight(flight_id=12345, dep_gate="B7")  # gate moved B25 → B7
+    fake_now = datetime(2026, 5, 18, 16, 30, 0, tzinfo=timezone.utc)
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    reasons = [e["event"]["reason"] for e in events]
+    assert "gate_change" in reasons  # not suppressed despite the unparseable dep time
+    assert "gate_assignment" not in reasons  # no window → readout can't fire
 
 
 def test_poll_cycle_preserves_calendar_events_ledger(state_root: Path):

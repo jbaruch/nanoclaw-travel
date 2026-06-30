@@ -74,6 +74,7 @@ def _flight_state(flight_id: int, *, dep_time: datetime) -> dict:
             "arrival_logistics_fired": False,
             "landed_acknowledged": False,
             "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
         },
         "last_wake_at": None,
         "last_wake_reason": None,

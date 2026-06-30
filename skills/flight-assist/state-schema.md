@@ -19,7 +19,7 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
   "min_transfer_minutes": 45,
   "byair_calendar_name": "Flighty Flights",
@@ -29,7 +29,7 @@ Tile-wide configuration set during install via the `/setup` flow.
 
 Fields:
 
-- `schema_version` (int, required) — currently `5`
+- `schema_version` (int, required) — currently `6`
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
 - `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in tile terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in tile code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)
@@ -46,14 +46,14 @@ Index of currently-tracked flight IDs. Refreshed daily by the sync-tripit script
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "flight_ids": [12345, 67890, 11111]
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `5`
+- `schema_version` (int, required) — currently `6`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
 ### `current-location.json`
@@ -90,7 +90,7 @@ Per-flight state record. One file per tracked flight.
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "flight_id": 12345,
   "code": "AA2414",
   "ownership": "mine",
@@ -129,7 +129,8 @@ Per-flight state record. One file per tracked flight.
     "boarding_fired": false,
     "arrival_logistics_fired": false,
     "landed_acknowledged": false,
-    "connection_at_risk_fired": false
+    "connection_at_risk_fired": false,
+    "gate_assignment_fired": false
   },
   "last_wake_at": null,
   "last_wake_reason": null,
@@ -152,7 +153,7 @@ Per-flight state record. One file per tracked flight.
 
 Top-level fields:
 
-- `schema_version` (int, required) — `5`
+- `schema_version` (int, required) — `6`
 - `flight_id` (int, required) — byAir's flight identifier
 - `code` (string, required) — flight number like `"AA2414"`
 - `ownership` (string, required) — `"mine"` or `"friend"`
@@ -203,6 +204,7 @@ Each entry's fields:
 - `arrival_logistics_fired` — T-arr−15min logistics push
 - `landed_acknowledged` — User acknowledged the landing notification
 - `connection_at_risk_fired` — Cross-flight: projected transfer window on this leg-2 has fallen below `min_transfer_minutes`. Carried on the leg-2 (downstream) record so the marker survives leg-1 landing
+- `gate_assignment_fired` — The once-per-flight gate + terminal readout has fired (first gate seen inside the pre-boarding window). `gate_change` is gated against this readout anchor: suppressed (recorded silently) until the readout fires; on the readout's own cycle only the redundant departure gate_change is dropped while an arrival-gate move still surfaces; and a flight already boarding or gone — whose readout never fires — surfaces gate moves rather than muting them forever
 
 ## Atomic Writes
 
@@ -210,7 +212,7 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Today `STATE_SCHEMA_VERSION` is `5`.
+Today `STATE_SCHEMA_VERSION` is `6`.
 
 `state.py`'s read helpers enforce these rules on `schema_version`:
 
@@ -238,6 +240,10 @@ Config: gains two optional calendar-reconcile fields, `byair_calendar_name` and 
 ### v4 → v5
 
 Config: gains five optional airport-clearance fields, `airport_clearance_domestic_minutes`, `airport_clearance_international_minutes`, `airport_post_arrival_domestic_minutes`, `airport_post_arrival_intl_us_minutes`, and `airport_post_arrival_intl_abroad_minutes` (see `config.json` above). All optional and absent-tolerant, so there is no shape to add on migration — the owner-side `state.py:_migrate` only bumps the `schema_version`. Per-flight and active-flights files likewise have no shape change at v5 — schema_version bump only.
+
+### v5 → v6
+
+Per-flight state: `phase_markers` gains `gate_assignment_fired: false`. The owner-side migration in `state.py:_migrate` adds the missing key on first read — scoped to the `flight-<id>.json` files — and rewrites the file at v6. Config and active-flights files have no shape change at v6 — they receive a schema_version bump only.
 
 ## Bump Procedure
 

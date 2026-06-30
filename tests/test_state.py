@@ -71,6 +71,7 @@ def _make_flight_state(flight_id: int = 12345, **overrides) -> dict:
             "arrival_logistics_fired": False,
             "landed_acknowledged": False,
             "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
         },
         "last_snapshot": None,
         "last_wake_at": None,
@@ -726,6 +727,88 @@ def test_v4_to_v5_config_migration_bumps_version_without_shape_change(state_root
     assert loaded["home_address"] == "1 Old Loop"
     assert loaded["min_transfer_minutes"] == 60
     assert "airport_clearance_domestic_minutes" not in loaded
+
+
+def _v5_flight_state(**overrides) -> dict:
+    """Build a raw on-disk v5 per-flight record (pre-gate_assignment_fired)."""
+    base = {
+        "schema_version": 5,
+        "flight_id": 12345,
+        "code": "AA2414",
+        "ownership": "mine",
+        "trip_id": 678,
+        "scheduled_dep_time": "2026-05-17T09:00:00-07:00",
+        "scheduled_arr_time": "2026-05-17T11:09:00-07:00",
+        "dep_airport_id": 20,
+        "arr_airport_id": 28,
+        "last_polled_at": "2026-05-17T18:42:11Z",
+        "last_snapshot": None,
+        "calendar_events": {},
+        "phase_markers": {
+            "day_before_fired": False,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+        },
+        "last_wake_at": None,
+        "last_wake_reason": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_v5_to_v6_migration_adds_gate_assignment_marker(state_root: Path):
+    """v5 per-flight state migrates: phase_markers gains gate_assignment_fired."""
+    state_root.mkdir(parents=True)
+    (state_root / "flight-12345.json").write_text(json.dumps(_v5_flight_state()))
+
+    loaded = read_flight_state(12345)
+    assert loaded is not None
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["phase_markers"]["gate_assignment_fired"] is False
+    # Migration rewrote the file: re-read from disk and verify persisted.
+    raw = json.loads((state_root / "flight-12345.json").read_text())
+    assert raw["schema_version"] == STATE_SCHEMA_VERSION
+    assert raw["phase_markers"]["gate_assignment_fired"] is False
+
+
+def test_v5_to_v6_migration_idempotent_when_marker_present(state_root: Path):
+    """A v5 record that already carries the marker migrates without clobbering it."""
+    state_root.mkdir(parents=True)
+    record = _v5_flight_state()
+    record["phase_markers"]["gate_assignment_fired"] = True  # caller pre-set
+    (state_root / "flight-12345.json").write_text(json.dumps(record))
+
+    loaded = read_flight_state(12345)
+    assert loaded["phase_markers"]["gate_assignment_fired"] is True
+
+
+def test_v5_to_v6_config_migration_bumps_version_without_shape_change(state_root: Path):
+    """v5 config files have no shape change at v6 — schema_version bump only."""
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text(
+        json.dumps({"schema_version": 5, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
+    )
+    loaded = read_config()
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["home_address"] == "1 Old Loop"
+    assert "gate_assignment_fired" not in loaded
+
+
+def test_v5_to_v6_migration_scopes_phase_markers_by_filename(state_root: Path):
+    """A non-flight file carrying a stray phase_markers key is NOT given
+    gate_assignment_fired. The v5→v6 step scopes by filename (flight-<id>.json),
+    matching v2→v3, so a config/active-flights file keeps its shape."""
+    state_root.mkdir(parents=True)
+    (state_root / ACTIVE_FLIGHTS_FILE).write_text(
+        json.dumps({"schema_version": 5, "flight_ids": [12345], "phase_markers": {"x": True}})
+    )
+    read_active_flights()  # owner-path read migrates and rewrites at v6
+    raw = json.loads((state_root / ACTIVE_FLIGHTS_FILE).read_text())
+    assert raw["schema_version"] == STATE_SCHEMA_VERSION
+    assert "gate_assignment_fired" not in raw["phase_markers"]
 
 
 def test_config_round_trips_airport_clearance_fields(state_root: Path):
