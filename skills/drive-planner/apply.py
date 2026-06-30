@@ -305,7 +305,11 @@ def _status_lines(meetings: list, created_ids: set, skipped_ids: set, failed: li
     # (dict/list) must not raise while composing the notification.
     failed_by_id: dict = {}
     for entry in failed if isinstance(failed, list) else []:
-        if isinstance(entry, dict) and isinstance(entry.get("meeting_id"), str):
+        if (
+            isinstance(entry, dict)
+            and isinstance(entry.get("meeting_id"), str)
+            and entry["meeting_id"]
+        ):
             failed_by_id.setdefault(entry["meeting_id"], []).append(entry)
     lines: list = []
     for meeting in meetings:
@@ -315,7 +319,7 @@ def _status_lines(meetings: list, created_ids: set, skipped_ids: set, failed: li
         # Normalize the id to a string (or None) before any set/dict lookup so an
         # unhashable malformed id (dict/list) can't raise here.
         meeting_id = meeting.get("meeting_id")
-        meeting_id = meeting_id if isinstance(meeting_id, str) else None
+        meeting_id = meeting_id if isinstance(meeting_id, str) and meeting_id else None
         # Normalize to a list up front so a malformed truthy-but-non-list value
         # (e.g. a stray string) reads as empty everywhere — including the later
         # `not route_errors` / `if unplannable` membership checks below.
@@ -380,15 +384,17 @@ def build_notification(
     meetings = meetings if isinstance(meetings, list) else []
     # Only string meeting ids count — a malformed entry (None / non-string)
     # must never match a meeting whose id is also missing.
+    # Only non-empty string ids count — `_create_mode` treats the empty string
+    # as a missing id, so it must never match a meeting here either.
     created_ids = {
-        c.get("meeting_id")
+        c["meeting_id"]
         for c in (created if isinstance(created, list) else [])
-        if isinstance(c, dict) and isinstance(c.get("meeting_id"), str)
+        if isinstance(c, dict) and isinstance(c.get("meeting_id"), str) and c["meeting_id"]
     }
     skipped_ids = {
-        s.get("meeting_id")
+        s["meeting_id"]
         for s in (skipped_existing if isinstance(skipped_existing, list) else [])
-        if isinstance(s, dict) and isinstance(s.get("meeting_id"), str)
+        if isinstance(s, dict) and isinstance(s.get("meeting_id"), str) and s["meeting_id"]
     }
     # Directions actually created this run, per meeting. A meeting is "anchored"
     # (the meeting-level leave_by applies) only when an outbound/bridge leg was
@@ -396,7 +402,7 @@ def build_notification(
     # leg was added this run.
     created_dirs: dict = {}
     for c in created if isinstance(created, list) else []:
-        if isinstance(c, dict) and isinstance(c.get("meeting_id"), str):
+        if isinstance(c, dict) and isinstance(c.get("meeting_id"), str) and c["meeting_id"]:
             created_dirs.setdefault(c["meeting_id"], set()).add(c.get("direction"))
 
     def _anchored(meeting: dict) -> bool:

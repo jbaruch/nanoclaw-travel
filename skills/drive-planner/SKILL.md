@@ -1,6 +1,6 @@
 ---
 name: drive-planner
-description: "Ground-transit drive planner for in-person meetings. On a ~2h precheck sweep it creates a traffic-aware Free drive block (home → venue → home) for each in-person meeting that lacks one and tells the user, who can reply to cancel; the recheck poll then watches each block for traffic growth. Use on a drive-planner sweep wake event, or when the user replies to cancel a drive block. Triggers - 'drive block', 'plan my drive', 'skip', 'skip 1', 'skip 1 and 3', 'cancel 2', 'cancel that drive', 'don't drive to that meeting', 'remove drive block', 'drive to my meeting', 'leave-by for a meeting'."
+description: "Ground-transit drive planner for in-person meetings. On a ~2h precheck sweep it creates a traffic-aware Free drive block (home → venue → home) for each in-person meeting that lacks one and tells the user, who can reply to skip; the recheck poll then watches each block for traffic growth. Use on a drive-planner sweep wake event, or when the user replies to skip a drive block. Triggers - 'drive block', 'plan my drive', 'skip', 'skip 1', 'skip 1 and 3', 'cancel 2', 'cancel that drive', 'don't drive to that meeting', 'remove drive block', 'drive to my meeting', 'leave-by for a meeting'."
 cadence: "0 */2 * * *"
 agentModel: "claude-haiku-4-5-20251001"
 script: "precheck.py"
