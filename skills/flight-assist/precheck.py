@@ -743,9 +743,7 @@ def _filter_gate_changes(
         return events
     if readout_fires_now:
         return [
-            e
-            for e in events
-            if not (e.get("reason") == "gate_change" and e.get("side") == "dep")
+            e for e in events if not (e.get("reason") == "gate_change" and e.get("side") == "dep")
         ]
     return [e for e in events if e.get("reason") != "gate_change"]
 
