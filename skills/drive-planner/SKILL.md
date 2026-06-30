@@ -1,6 +1,6 @@
 ---
 name: drive-planner
-description: "Ground-transit drive planner for in-person meetings. On a ~2h precheck sweep it creates a traffic-aware Free drive block (home → venue → home) for each in-person meeting that lacks one and tells the user, who can reply to cancel; the recheck poll then watches each block for traffic growth. Use on a drive-planner sweep wake event, or when the user replies to cancel a drive block. Triggers - 'drive block', 'plan my drive', 'cancel 2', 'cancel that drive', 'skip', 'don't drive to that meeting', 'remove drive block', 'drive to my meeting', 'leave-by for a meeting'."
+description: "Ground-transit drive planner for in-person meetings. On a ~2h precheck sweep it creates a traffic-aware Free drive block (home → venue → home) for each in-person meeting that lacks one and tells the user, who can reply to skip; the recheck poll then watches each block for traffic growth. Use on a drive-planner sweep wake event, or when the user replies to skip a drive block. Triggers - 'drive block', 'plan my drive', 'skip', 'skip 1', 'skip 1 and 3', 'cancel 2', 'cancel that drive', 'don't drive to that meeting', 'remove drive block', 'drive to my meeting', 'leave-by for a meeting'."
 cadence: "0 */2 * * *"
 agentModel: "claude-haiku-4-5-20251001"
 script: "precheck.py"
@@ -12,7 +12,7 @@ This skill is an action router — pick the step that matches the user's intent 
 
 Available actions:
 - Handle a sweep wake cycle (precheck woke with `data.meetings`) — create the prepared drive blocks and notify the user
-- Handle a cancel reply (user said "cancel 2", "cancel 1,3", "skip", or "don't drive to `<meeting>`") — remove the referenced meeting's drive blocks and record the skip
+- Handle a skip reply (user said "skip", "skip 1", "skip 1 and 3", "cancel 2", or "don't drive to `<meeting>`") — remove the referenced meeting's drive blocks and record the skip
 
 Never put an internal calendar event/meeting id in a user-facing message, and never require the user to type one. The user refers to a block by its list number or the meeting name; the skill maps that to the id itself.
 
@@ -28,26 +28,20 @@ First create the blocks. Pass the whole `data` object (it already has the `meeti
 echo '<data JSON>' | python3 /home/node/.claude/skills/tessl__drive-planner/apply.py create
 ```
 
-It is idempotent — a meeting whose block already exists is skipped, never duplicated (lombot #50). It prints single-line JSON: `{"created": [...], "skipped_existing": [...], "failed": [...]}`.
+It is idempotent — a meeting whose block already exists is skipped, never duplicated (lombot #50). It prints single-line JSON: `{"created": [...], "skipped_existing": [...], "failed": [...], "message": "<text or null>"}`.
 
-Then compose ONE Telegram notification via `mcp__nanoclaw__send_message` summarizing what changed. List the meetings that got blocks in `leave_by` order, and never include a `meeting_id` — the cancel reply works by list number or meeting name. Phrase relative-date words per `rules/operator-local-tz-phrasing.md`, and use each meeting's `leave_by` / `drive_minutes` fields verbatim.
+The `message` field is the complete, ready-to-send notification — the script builds it deterministically (`apply.py build_notification`), id-free, with the skip affordance baked in. The exact plain-text shapes it emits (no markdown): one created block ends with the line `Reply skip if you're not driving.`; several render a numbered list ending with `Reply skip 1, or skip 1 and N, to drop any.` (where `N` is an index that exists for the count); plus any route-error / unplannable / failed lines. Relay `message` **verbatim** via `mcp__nanoclaw__send_message` — do not rewrite, renumber, add a meeting/event id, or append the meeting start time.
 
-- When exactly ONE meeting got a created block: "Added a drive block for `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive with current traffic). Reply `skip` or `don't drive` to cancel." When the only created leg is a `return` (`leave_by` / `drive_minutes` null): "Added a return drive block for `<summary>` — reply `skip` to cancel."
-- When SEVERAL meetings got blocks: number them and let the user cancel by number. Open with "Added drive blocks:", then one numbered line each — "`<n>`. `<summary>` — leave by `<leave_by>` (`<drive_minutes>`-min drive)" — then close with "Reply `cancel 2` or `cancel 1,3` to drop any." Keep the numbering for the cancel step (it matches `leave_by` order).
-- If a meeting carries `route_errors`, add a line: "Couldn't compute drive time for `<summary>` (`<error>`) — no block created; will retry next sweep."
-- If a meeting carries `unplannable` legs, add one line per leg, in the order listed, naming the leg's `direction` (so it stays accurate when another leg of the same meeting still got a block): "No `<direction>` drive block for `<summary>` — `<reason>`." Use each leg's `reason` verbatim; don't add your own cause. When ALL of a meeting's legs are unplannable (it got no block at all), also add "Reply `don't drive to <summary>` to stop seeing it." so the operator can mute it.
-- If `apply` reported `failed` legs, add a line naming the meeting and the error.
+Silence rule: when `message` is `null`, every surfaced meeting was already handled — send nothing, proceed silently. Finish here.
 
-Silence rule: if `created`, `route_errors`, `unplannable`, and `failed` are all empty (every surfaced meeting was already handled), send nothing — proceed silently. Finish here.
+## Step 2 — Handle a skip reply
 
-## Step 2 — Handle a cancel reply
-
-This step fires when the user replies to cancel a drive block — by list number ("cancel 2", "cancel 1,3"), a plain "skip" / "don't drive", or by meeting name ("don't drive to swimming"). The user never types an id; resolve their reference to a meeting NAME, then let the script find the id.
+This step fires when the user replies to skip a drive block — a bare "skip" / "don't drive", a numbered "skip 1" / "skip 1 and 3" / "skip 1, 3", or by meeting name ("don't drive to swimming"). "cancel" is accepted as a synonym for "skip" in all these forms. The user never types an id; resolve their reference to a meeting NAME, then let the script find the id.
 
 Resolve the reference to one or more meeting names:
 
-- A number ("cancel 2") or list of numbers ("cancel 1,3") refers to the numbered lines in YOUR prior sweep notification (read them from the conversation) — take the meeting name from each referenced line. The number is only an index into that one notification; never index by calendar order.
 - A bare "skip" / "don't drive" refers to the single block you just announced.
+- A number or list of numbers ("skip 1", "skip 1 and 3", "skip 1, 3", "cancel 2") refers to the numbered lines in YOUR prior sweep notification (read them from the conversation) — take the meeting name from each referenced line. The number is only an index into that one notification; never index by calendar order.
 - A meeting name ("don't drive to swimming") is the name directly.
 - If you can't tell which meeting is meant, run `apply.py list` — it prints `{"blocks": [{"summary": "...", "meeting_id": "...", "leave_by": "<ISO>"}]}` — and ask the user which one they mean, showing each block's `summary` and `leave_by` (never the `meeting_id`).
 

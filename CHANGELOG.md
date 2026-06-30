@@ -1,5 +1,9 @@
 # Changelog
 
+### Changed — drive-planner sweep notification is script-built, id-free, skip-by-number (`jbaruch/nanoclaw-travel`)
+
+`apply.py create` now returns a ready-to-send `message` string (`build_notification`) that the wake agent relays verbatim, instead of composing the notification itself. The Haiku cadence agent was improvising a raw calendar event id into the skip affordance ("Reply skip `<id>` if you're not driving") despite the skill forbidding it; deterministic message assembly removes the improvisation surface entirely. One created block ends with the plain line `Reply skip if you're not driving.`; several render a numbered list ending with `Reply skip 1, or skip 1 and N, to drop any.` (N an index that exists for the count) — so the operator skips by a bare word or a list number, never an id. Route-error / unplannable / failed lines and the silence rule are preserved in the script. The skip-reply handler now treats `skip` as the primary verb (numbered `skip 1` / `skip 1 and 3`), with `cancel` kept as a synonym.
+
 ## 0.2.3 — 2026-06-30
 
 ### Added — gate + terminal readout at the pre-boarding window; gate changes only after it (`jbaruch/nanoclaw-travel#103`)
