@@ -266,15 +266,21 @@ def _ordered_blocked(meetings: list, created_ids: set) -> list:
     return sorted(blocked, key=_key)
 
 
-def _blocked_line(meeting: dict, *, index: int | None) -> str:
+def _blocked_line(meeting: dict, *, index: int | None, anchored: bool) -> str:
     """One blocked-meeting line. `index` None → single-block sentence; else numbered.
 
-    A return-only block (no outbound leave-by) renders without a leave-by clause.
+    `anchored` is True when an outbound/bridge leg (the one the meeting-level
+    `leave_by` describes) was created THIS run. When only the return leg was
+    newly created — the outbound block already existed — `anchored` is False and
+    the line renders as return-only, so it never announces the outbound leave-by
+    as if it were just added.
     """
     summary = _summary_of(meeting)
     clock = _fmt_clock(meeting.get("leave_by"))
     drive = meeting.get("drive_minutes")
-    has_leave_by = clock is not None and isinstance(drive, int) and not isinstance(drive, bool)
+    has_leave_by = (
+        anchored and clock is not None and isinstance(drive, int) and not isinstance(drive, bool)
+    )
     if index is None:
         if not has_leave_by:
             return f"Added a return drive block for {summary}."
@@ -373,14 +379,29 @@ def build_notification(
         for s in (skipped_existing if isinstance(skipped_existing, list) else [])
         if isinstance(s, dict) and isinstance(s.get("meeting_id"), str)
     }
+    # Directions actually created this run, per meeting. A meeting is "anchored"
+    # (the meeting-level leave_by applies) only when an outbound/bridge leg was
+    # created now — not when the outbound already existed and only the return
+    # leg was added this run.
+    created_dirs: dict = {}
+    for c in created if isinstance(created, list) else []:
+        if isinstance(c, dict) and isinstance(c.get("meeting_id"), str):
+            created_dirs.setdefault(c["meeting_id"], set()).add(c.get("direction"))
+
+    def _anchored(meeting: dict) -> bool:
+        return bool(created_dirs.get(meeting.get("meeting_id"), set()) & {"outbound", "bridge"})
+
     blocked = _ordered_blocked(meetings, created_ids)
     parts: list = []
     if len(blocked) == 1:
-        parts.append(_blocked_line(blocked[0], index=None))
+        parts.append(_blocked_line(blocked[0], index=None, anchored=_anchored(blocked[0])))
         parts.append("Reply skip if you're not driving.")
     elif len(blocked) > 1:
         parts.append("Added drive blocks:")
-        parts.extend(_blocked_line(meeting, index=i) for i, meeting in enumerate(blocked, 1))
+        parts.extend(
+            _blocked_line(meeting, index=i, anchored=_anchored(meeting))
+            for i, meeting in enumerate(blocked, 1)
+        )
         parts.append("Reply skip 1, or skip 1 and 3, to drop any.")
     parts.extend(_status_lines(meetings, created_ids, skipped_ids, failed))
     if not parts:

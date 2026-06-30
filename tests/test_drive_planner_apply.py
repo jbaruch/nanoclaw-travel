@@ -591,6 +591,22 @@ def test_notification_return_only_block_has_no_leave_by():
     assert msg == ("Added a return drive block for Swim.\nReply skip if you're not driving.")
 
 
+def test_notification_only_return_created_when_outbound_already_exists():
+    """Mixed case: the outbound block already existed (skipped_existing) and only
+    the return leg is newly created this run. The line must NOT announce the
+    outbound leave_by as if just added — it renders as a return-only add."""
+    meetings = [
+        _meeting("evt_1", "Customer sync", leave_by="2026-05-13T12:30:00-05:00", drive_minutes=25)
+    ]
+    created = [{"meeting_id": "evt_1", "direction": "return"}]  # only the return leg this run
+    skipped = [{"meeting_id": "evt_1", "direction": "outbound"}]  # outbound already on the calendar
+    msg = apply.build_notification(meetings, created, skipped, [])
+    assert msg == (
+        "Added a return drive block for Customer sync.\nReply skip if you're not driving."
+    )
+    assert "leave by" not in msg
+
+
 def test_notification_silent_when_nothing_changed():
     meetings = [
         _meeting("evt_4", "Already handled", leave_by="2026-05-13T10:00:00-05:00", drive_minutes=10)
