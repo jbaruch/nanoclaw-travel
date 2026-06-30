@@ -112,7 +112,7 @@ def check_time_to_leave(
     """
     if phase_markers.get("time_to_leave_fired"):
         return (False, None)
-    if _boarding_or_gone(snapshot):
+    if is_boarding_or_gone(snapshot):
         return (False, None)
     if travel_time_seconds is None:
         return (False, None)
@@ -174,9 +174,9 @@ def gate_assignment_window_open(
 ) -> datetime | None:
     """The instant the gate-readout window opens, or None if dep time is unparseable.
 
-    `scheduled_dep − boarding_lead − GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES`. Shared
-    by `check_gate_assignment` (the readout gate) and the precheck's gate_change
-    suppression so the two agree on the one window boundary (#103).
+    `scheduled_dep − boarding_lead − GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES`. The
+    readout (`check_gate_assignment`) only fires once now is at/after this
+    boundary (#103).
     """
     dep_dt = _parse_iso8601(scheduled_dep_time)
     if dep_dt is None:
@@ -216,7 +216,7 @@ def check_gate_assignment(
     """
     if phase_markers.get("gate_assignment_fired"):
         return (False, None)
-    if _boarding_or_gone(snapshot):
+    if is_boarding_or_gone(snapshot):
         return (False, None)
     window_open = gate_assignment_window_open(
         scheduled_dep_time=scheduled_dep_time,
@@ -239,7 +239,7 @@ def check_gate_assignment(
     )
 
 
-def _boarding_or_gone(snapshot: dict | None) -> bool:
+def is_boarding_or_gone(snapshot: dict | None) -> bool:
     """True when an airport-bound prompt no longer makes sense for this flight.
 
     The flight is either really boarding (per `wake_rules.is_real_boarding`,

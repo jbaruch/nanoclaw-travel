@@ -117,7 +117,7 @@ Fires once per flight at `T - 24h`.
 {"reason": "time_to_leave", "leave_by": "2026-05-18T16:15:00+00:00", "travel_time_minutes": 30, "scheduled_dep_time": "2026-05-18T17:00:00+00:00"}
 ```
 
-Fires when `now + travel_time + 15min buffer ≥ scheduled_dep_time`. `travel_time_minutes` is the in-traffic estimate from Google Maps Distance Matrix. Suppressed once the snapshot shows the flight boarding or departed — the leave-by alert is moot by then (#102).
+Fires when `now + travel_time + 15min buffer ≥ scheduled_dep_time`. `travel_time_minutes` is the in-traffic estimate from Google Maps Distance Matrix. Suppressed once the snapshot shows the flight really boarding or already gone — departed, en_route, landed, cancelled, or diverted (`phase_markers.is_boarding_or_gone`) — the leave-by alert is moot by then (#102).
 
 #### `gate_assignment`
 

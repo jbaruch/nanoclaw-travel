@@ -59,7 +59,7 @@ from phase_markers import (  # noqa: E402
     check_day_before,
     check_gate_assignment,
     check_time_to_leave,
-    gate_assignment_window_open,
+    is_boarding_or_gone,
 )
 from state import (  # noqa: E402
     read_active_flights,
@@ -427,22 +427,8 @@ def _process_flight(
     # Delta-driven events from wake_rules, plus the gate-readout marker (#103).
     # The gate_assignment readout is evaluated here, before the other phase
     # markers, so its outcome can gate the gate_change filter below.
-    #
-    # gate_change suppression is WINDOW-based, not marker-based: before the
-    # gate-readout window opens, dep/arr gate churn is recorded to state
-    # silently; from the window onward gate moves surface as gate_change. The one
-    # exception is the readout's own cycle — the gate_assignment event already
-    # carries the current gate, so a simultaneous gate_change is redundant and
-    # dropped. Tying suppression to the window rather than to gate_assignment_fired
-    # is deliberate: a flight first polled after departure (or already boarding)
-    # never fires the readout, and a marker-based gate would then mute ALL its
-    # gate changes — including arrival-gate moves — forever.
     boarding_lead_minutes = _resolve_boarding_lead_minutes(new_snapshot)
-    window_open = gate_assignment_window_open(
-        scheduled_dep_time=scheduled_dep_time,
-        boarding_lead_minutes=boarding_lead_minutes,
-    )
-    before_gate_window = window_open is not None and now_utc < window_open
+    readout_fired_before = phase_markers.get("gate_assignment_fired", False)
     readout_fired, readout_event = check_gate_assignment(
         scheduled_dep_time=scheduled_dep_time,
         boarding_lead_minutes=boarding_lead_minutes,
@@ -451,8 +437,12 @@ def _process_flight(
         now_utc=now_utc,
     )
     delta_events = detect_wake_events(prior_snapshot, new_snapshot, scheduled_dep_time)
-    if before_gate_window or readout_fired:
-        delta_events = [e for e in delta_events if e.get("reason") != "gate_change"]
+    delta_events = _filter_gate_changes(
+        delta_events,
+        readout_fired_before=readout_fired_before,
+        readout_fires_now=readout_fired,
+        boarding_or_gone=is_boarding_or_gone(new_snapshot),
+    )
     events.extend(delta_events)
     if readout_fired and readout_event is not None:
         phase_markers["gate_assignment_fired"] = True
@@ -723,6 +713,41 @@ def _build_flight_state(
     if prior_state is not None and "calendar_events" in prior_state:
         new_state["calendar_events"] = prior_state["calendar_events"]
     return new_state
+
+
+def _filter_gate_changes(
+    events: list[dict],
+    *,
+    readout_fired_before: bool,
+    readout_fires_now: bool,
+    boarding_or_gone: bool,
+) -> list[dict]:
+    """Apply the #103 gate_change gating relative to the gate-readout anchor.
+
+    The `gate_assignment` readout anchors gate info to the moment it becomes
+    actionable; `gate_change` is gated against that anchor:
+
+    - readout already fired on a prior cycle → all gate changes flow.
+    - flight already boarding / departed / gone → the readout will never fire,
+      so all gate changes flow (never mute them forever — a flight first polled
+      after departure must still surface gate moves).
+    - readout fires THIS cycle → drop only the now-redundant DEParture
+      gate_change (the gate_assignment event already carries the dep gate), but
+      keep an ARRival gate_change — the readout says nothing about the arr gate.
+    - readout still pending (before the window, or in-window awaiting a dep
+      gate) → suppress gate churn; it is recorded to state silently.
+
+    Non-gate_change events pass through untouched.
+    """
+    if readout_fired_before or boarding_or_gone:
+        return events
+    if readout_fires_now:
+        return [
+            e
+            for e in events
+            if not (e.get("reason") == "gate_change" and e.get("side") == "dep")
+        ]
+    return [e for e in events if e.get("reason") != "gate_change"]
 
 
 def _resolve_boarding_lead_minutes(snapshot: dict) -> int:

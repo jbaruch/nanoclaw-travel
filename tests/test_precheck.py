@@ -480,6 +480,46 @@ def test_gate_assignment_window_resolves_widebody_lead_from_snapshot(state_root:
     assert by_reason["gate_assignment"]["dep_terminal"] == "2"
 
 
+def test_readout_cycle_drops_dep_gate_change_but_keeps_arr(state_root: Path):
+    """#103: on the readout's own cycle, the redundant DEParture gate_change is
+    dropped (the gate_assignment carries the dep gate), but a simultaneous
+    ARRival gate change still surfaces — the readout says nothing about arr."""
+    prior_snapshot = _scheduled_snapshot()
+    prior_snapshot["dep_gate"] = "D1"
+    prior_snapshot["arr_gate"] = "A1"
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T15:20:00Z",
+        last_snapshot=prior_snapshot,
+        phase_markers={
+            "day_before_fired": True,
+            "time_to_leave_fired": False,
+            "boarding_fired": False,
+            "arrival_logistics_fired": False,
+            "landed_acknowledged": False,
+            "connection_at_risk_fired": False,
+            "gate_assignment_fired": False,
+        },
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+
+    # In-window (window opens 15:30 narrowbody). Dep gate D1→D6 AND arr gate A1→A2
+    # in the same poll; the readout fires for the dep gate.
+    fake_flight = _byair_flight(flight_id=12345, dep_gate="D6", dep_terminal="1")
+    fake_flight["arrGate"] = "A2"
+    fake_now = datetime(2026, 5, 18, 15, 40, 0, tzinfo=timezone.utc)
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = fake_flight
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    gate_changes = [e["event"] for e in events if e["event"]["reason"] == "gate_change"]
+    sides = {gc["side"] for gc in gate_changes}
+    assert sides == {"arr"}, f"expected only the arr gate_change to survive, got {gate_changes}"
+    assert any(e["event"]["reason"] == "gate_assignment" for e in events)
+
+
 def test_gate_change_surfaces_when_readout_never_fired(state_root: Path):
     """#103 regression: a flight already in flight (the gate-readout never fires —
     the window is past and the flight is en_route) must still surface gate moves.
