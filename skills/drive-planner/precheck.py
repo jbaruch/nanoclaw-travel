@@ -25,7 +25,7 @@ filtered events never wake the agent — `scan.actionable()` keeps the gate to
 `needs_decision` / `bridge` / `back_to_back` only.
 
 Cross-bundle: `maps_client` ships in the co-located flight-assist skill (same
-tile); this precheck imports it read-only via the runtime mount path with a
+plugin); this precheck imports it read-only via the runtime mount path with a
 dev-clone fallback, the pattern `sync-tripit/precheck.py` uses. flight-assist's
 own use of `maps_client` is untouched.
 
@@ -36,7 +36,7 @@ error: a transient calendar/route outage skips one sweep, and the next ~2h
 cron fire recovers — far better than waking the agent with nothing to do. Per
 `coding-policy: error-handling` outer-boundary-process-contract carve-out.
 
-stdlib-only (plus the in-tile maps_client) per `coding-policy:
+stdlib-only (plus the in-plugin maps_client) per `coding-policy:
 dependency-management` (Stdlib First).
 """
 
@@ -52,7 +52,7 @@ from pathlib import Path
 _BUNDLE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_BUNDLE_DIR))
 
-# maps_client lives in the co-shipped flight-assist skill (same tile). Resolve
+# maps_client lives in the co-shipped flight-assist skill (same plugin). Resolve
 # its bundle at the runtime mount, falling back to the dev-clone sibling so the
 # import works both on the NAS and in CI — same pattern as sync-tripit.
 _FLIGHT_ASSIST_RUNTIME = Path("/home/node/.claude/skills/tessl__flight-assist")
@@ -87,10 +87,10 @@ MAX_REASONABLE_DRIVE_SECONDS = 3 * 60 * 60
 
 
 def _load_maps_client():
-    """Import and construct the in-tile MapsClient from env, cross-bundle.
+    """Import and construct the in-plugin MapsClient from env, cross-bundle.
 
     Raises FileNotFoundError when neither the runtime mount nor the dev sibling
-    holds flight-assist (both skills ship from the same tile) — main()'s
+    holds flight-assist (both skills ship from the same plugin) — main()'s
     outer-boundary handler converts that into the safe no-wake payload.
     """
     if _FLIGHT_ASSIST_RUNTIME.is_dir():

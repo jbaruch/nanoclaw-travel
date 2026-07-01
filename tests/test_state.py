@@ -1042,7 +1042,7 @@ def test_state_files_use_separate_paths(state_root: Path):
 # --------------------------------------------------------------------
 # Non-owner reader API — read_active_flights_snapshot,
 # read_flight_state_snapshot.  These functions exist so non-owner skills
-# (sync-tripit, future cross-tile readers) can consult the latest
+# (sync-tripit, future cross-plugin readers) can consult the latest
 # snapshot without triggering owner-side schema migrations. Contract
 # per `coding-policy: stateful-artifacts`: schema_version mismatch
 # returns "no usable prior state" instead of migrating; the next

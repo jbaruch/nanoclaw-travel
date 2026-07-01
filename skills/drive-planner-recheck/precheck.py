@@ -38,7 +38,7 @@ next ~15-min fire recovers. The leave-by ping is independently re-derived each
 poll, so one skipped cycle never loses it permanently. Per `coding-policy:
 error-handling` outer-boundary-process-contract carve-out.
 
-stdlib-only (plus in-tile modules) per `coding-policy: dependency-management`.
+stdlib-only (plus in-plugin modules) per `coding-policy: dependency-management`.
 """
 
 from __future__ import annotations

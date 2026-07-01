@@ -402,7 +402,7 @@ def parse_block(event: object) -> BlockState | None:
     recheck" and moves on.
 
     Schema version (per `coding-policy: stateful-artifacts`): a record stamped
-    NEWER than this tile supports reads as None — no-usable-prior-state, the
+    NEWER than this plugin supports reads as None — no-usable-prior-state, the
     safe non-disruptive fallback. A missing version is treated as v1.
     """
     if not isinstance(event, dict):
@@ -413,7 +413,7 @@ def parse_block(event: object) -> BlockState | None:
         return None
 
     # A missing version is treated as v1 (back-compat). A present version that
-    # is newer than this tile supports — OR not a plain int at all (a corrupt
+    # is newer than this plugin supports — OR not a plain int at all (a corrupt
     # or future-shaped record, e.g. "2") — reads as no-usable-prior-state so the
     # poll skips it, the safe non-disruptive fallback.
     version = state.get(_STATE_KEY_VERSION)

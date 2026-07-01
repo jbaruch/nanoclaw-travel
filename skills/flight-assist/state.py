@@ -1,4 +1,4 @@
-"""Per-flight state file read/write for the flight-assist tile.
+"""Per-flight state file read/write for the flight-assist plugin.
 
 The precheck script reads + writes state across invocations to detect
 deltas between byAir snapshots. State lives under
@@ -14,9 +14,9 @@ Files written (all JSON, all carry `schema_version: 6` at the top level):
 Writes are atomic: write-to-tmp + os.replace, so a kill mid-write
 doesn't leave a half-written file on disk.
 
-Owner skill: `flight-assist` (this tile). Per `coding-policy:
+Owner skill: `flight-assist` (this plugin). Per `coding-policy:
 stateful-artifacts`, only the owner skill migrates `schema_version`.
-Reader skills (other tiles, future agent-side actions) treat any
+Reader skills (other plugins, future agent-side actions) treat any
 mismatched `schema_version` as "no usable prior state".
 
 See `state-schema.md` (sibling file) for the full per-record contract.
@@ -34,20 +34,20 @@ Public API:
         read_flight_state, write_flight_state, delete_flight_state,
         list_flight_state_ids,
         # Non-owner reader entry points (snapshot semantics — never
-        # invoke _migrate, so calling tiles do not rewrite owner state):
+        # invoke _migrate, so calling plugins do not rewrite owner state):
         read_active_flights_snapshot,
         read_flight_state_snapshot,
         state_dir,
     )
 
-Non-owner reader contract: any tile that reads (but does not own) this
-state — sync-tripit, future agent-side composition, other tiles — MUST
+Non-owner reader contract: any plugin that reads (but does not own) this
+state — sync-tripit, future agent-side composition, other plugins — MUST
 use the `*_snapshot` entry points. They treat a schema_version BELOW
 the current `STATE_SCHEMA_VERSION` as "no usable prior state" (return
 None / []) without rewriting the file, satisfying `coding-policy:
 stateful-artifacts`'s single-owner migration rule. A schema_version
 ABOVE the current still raises `StateError` (forward incompatibility,
-not an old-state case) — operators need to upgrade the consumer tile,
+not an old-state case) — operators need to upgrade the consumer plugin,
 not be told there's nothing on disk.
 """
 
@@ -195,7 +195,7 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
     Migrations are additive only — non-owner readers see the latest
     schema after the owner skill (this module) reads any older file.
     Per `coding-policy: stateful-artifacts`, only the owner skill
-    migrates; readers from other tiles get `StateError` on mismatch.
+    migrates; readers from other plugins get `StateError` on mismatch.
 
     Each branch handles one version transition and they chain: a v1
     record steps 1→2→3 in a single call. Re-running a migration on
@@ -273,7 +273,7 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
 
 
 def read_config() -> dict | None:
-    """Return the tile-wide config (home_address, etc.) or None if not set."""
+    """Return the plugin-wide config (home_address, etc.) or None if not set."""
     return _read_json_with_version(state_dir() / CONFIG_FILE)
 
 
@@ -401,9 +401,9 @@ _CONFIG_OPTIONAL_FIELDS: dict[str, type] = {
     "min_transfer_minutes": int,
     # Calendar reconciliation (#55). The flight ("Flighty Flights") calendar
     # the reconcile script reads/writes is resolved at runtime — never
-    # hardcoded in the tile per `rules/flight-data-locality.md`. The operator
+    # hardcoded in the plugin per `rules/flight-data-locality.md`. The operator
     # supplies its display name in `byair_calendar_name` (operator data, not
-    # tile code); the reconcile lists calendars, matches that name once, and
+    # plugin code); the reconcile lists calendars, matches that name once, and
     # caches the resolved id in `byair_calendar_id` so later cycles skip the
     # lookup. The Reclaim travel blocks live on the primary calendar
     # (content-classified — there is no dedicated Reclaim calendar), so no
@@ -442,7 +442,7 @@ _CONFIG_NON_NEGATIVE_INT_FIELDS = frozenset(
 
 
 def write_config(config: dict) -> None:
-    """Persist the tile-wide config. `schema_version` is set automatically.
+    """Persist the plugin-wide config. `schema_version` is set automatically.
 
     Validates field types and rejects undocumented keys per the
     writer/reader contract in `state-schema.md`. The accepted optional
@@ -533,14 +533,14 @@ def read_active_flights_snapshot() -> list[int]:
     prior state" (returns `[]`) instead of invoking `_migrate`. Per
     `coding-policy: stateful-artifacts`, only the owner skill
     (flight-assist) may migrate; non-owner skills (sync-tripit, other
-    tiles) call this function on every read so they never trigger an
+    plugins) call this function on every read so they never trigger an
     owner-side rewrite.
 
     StateError is still raised on integrity failures: JSON corruption,
     non-object payload, missing schema_version, schema_version of a
     non-int type, or schema_version HIGHER than current
     `STATE_SCHEMA_VERSION` (forward incompatibility — operators must
-    upgrade the consumer tile). The snapshot reader's "no usable prior
+    upgrade the consumer plugin). The snapshot reader's "no usable prior
     state" semantics apply ONLY to older versions.
     """
     payload = _read_json_with_version(state_dir() / ACTIVE_FLIGHTS_FILE, migrate=False)
@@ -628,7 +628,7 @@ def read_flight_state_snapshot(flight_id: int) -> dict | None:
     StateError still raises on integrity failures: corrupt JSON,
     missing required field at the current schema, schema_version
     HIGHER than `STATE_SCHEMA_VERSION` (forward incompatibility —
-    operators must upgrade the consumer tile). The snapshot reader's
+    operators must upgrade the consumer plugin). The snapshot reader's
     "no usable prior state" semantics apply ONLY to older versions.
     """
     _validate_flight_id(flight_id, fn_name="read_flight_state_snapshot")

@@ -49,7 +49,7 @@ def _atomic_write(path: str, payload: dict) -> None:
     """Write payload to `path` atomically. Same-dir `.tmp` + `os.replace`
     matches the pattern in `skills/check-travel-bookings/scripts/build-
     travel-db.py` and `skills/flight-assist/state.py::_atomic_write_json`;
-    file mode inherits process umask so cross-tile readers (the same
+    file mode inherits process umask so cross-plugin readers (the same
     group-volume readers `build-travel-db.py` accommodates) keep their
     read access."""
     parent = os.path.dirname(path) or "."

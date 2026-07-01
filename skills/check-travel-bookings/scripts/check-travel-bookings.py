@@ -4,7 +4,7 @@ Travel booking gap checker — reads from travel-db.json.
 
 travel-db.json is built nightly by build-travel-db.py inside
 `nightly-travel-sync` Step 4 ("Rebuild travel-db.json from the
-schedule") in the `jbaruch/nanoclaw-travel` tile. A missing, unreadable,
+schedule") in the `jbaruch/nanoclaw-travel` plugin. A missing, unreadable,
 or structurally invalid DB is a hard error: that Step 4's failure
 branch — an `mcp__nanoclaw__send_message` notification, with the next
 daily cron re-running the bundle — is the correct alerting surface for
@@ -286,7 +286,7 @@ def _diagnose_db_failure(db_path: str) -> str:
             return (
                 f"has forward-incompatible schema_version={version}; "
                 f"this skill supports v{SCHEMA_VERSION} — upgrade the "
-                "`tessl__check-travel-bookings` tile"
+                "`tessl__check-travel-bookings` plugin"
             )
     return "missing, unreadable, or structurally invalid"
 

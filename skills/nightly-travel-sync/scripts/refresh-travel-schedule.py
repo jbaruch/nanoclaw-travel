@@ -16,7 +16,7 @@ OUTPUT_PATH = "/workspace/group/travel-schedule.json"
 # schema_version. travel-schedule.json is a list of event records;
 # the version lives on each record because the artifact is regenerated
 # in full from the live TripIt ICS every run (no in-place migration —
-# the writer always emits the current version, cross-tile readers gate
+# the writer always emits the current version, cross-plugin readers gate
 # on it). See the sibling `state-schema.md` for the owner/reader contract.
 SCHEMA_VERSION = 1
 

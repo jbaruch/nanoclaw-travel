@@ -111,11 +111,11 @@ def _read_skips(*, for_write: bool) -> dict[str, str]:
     resurrect every skipped meeting as a nag).
 
     Schema version handling (per `coding-policy: stateful-artifacts`):
-      - newer than this tile, `for_write=False` (read-only) → "no usable
+      - newer than this plugin, `for_write=False` (read-only) → "no usable
         prior state": return an empty map. The reader is lagging, not
         awaiting migration; an empty map is the safe, non-disruptive
         fallback (worst case the sweep re-asks — it never escalates work).
-      - newer than this tile, `for_write=True` → raise. The no-prior-state
+      - newer than this plugin, `for_write=True` → raise. The no-prior-state
         fallback is read-only; a write that proceeded would rewrite the
         future-version file as v1 and clobber a newer writer's state. The
         write path refuses instead of downgrading.
@@ -145,8 +145,8 @@ def _read_skips(*, for_write: bool) -> dict[str, str]:
         if for_write:
             raise SkipStateError(
                 f"skip-state file {path} has schema_version {version}, newer than this "
-                f"tile supports ({SKIP_SCHEMA_VERSION}) — refusing to overwrite it; "
-                "upgrade the drive-planner tile before writing"
+                f"plugin supports ({SKIP_SCHEMA_VERSION}) — refusing to overwrite it; "
+                "upgrade the drive-planner plugin before writing"
             )
         return {}
     if version < SKIP_SCHEMA_VERSION:

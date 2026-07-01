@@ -7,10 +7,10 @@ This skill owns two cross-invocation JSON state artifacts under `/workspace/grou
 Compact day-indexed projection of upcoming trips.
 
 - **Owner skill:** `check-travel-bookings` (this skill)
-- **Writer:** `scripts/build-travel-db.py` (invoked by this tile's `nightly-travel-sync` Step 4 via the literal tile-mount path `/home/node/.claude/skills/tessl__check-travel-bookings/scripts/build-travel-db.py`)
+- **Writer:** `scripts/build-travel-db.py` (invoked by this plugin's `nightly-travel-sync` Step 4 via the literal plugin-mount path `/home/node/.claude/skills/tessl__check-travel-bookings/scripts/build-travel-db.py`)
 - **Readers:**
   - `scripts/check-travel-bookings.py` (owner; gates on `schema_version`)
-  - `nanoclaw-admin/morning-brief` (cross-tile, via the same script invoked as the reader)
+  - `nanoclaw-admin/morning-brief` (cross-plugin, via the same script invoked as the reader)
 - **Schema:**
 
 ```json
@@ -52,7 +52,7 @@ A `resolved` outcome is represented by removing the entry entirely (the next nig
 
 - The owner skill migrates on its own read: legacy data without `schema_version` is treated as implicit v1 (the schema was introduced at v1; no prior version exists). Subsequent writes stamp the field explicitly.
 - `schema_version` higher than the current constant (currently 1) is treated as forward-incompatible — `check-travel-bookings.py` returns no-prior-state and `build-travel-db.py` does not overwrite.
-- Non-owner readers (none today; reserved for future cross-tile reads) MUST treat schema_version mismatch as no-prior-state without rewriting.
+- Non-owner readers (none today; reserved for future cross-plugin reads) MUST treat schema_version mismatch as no-prior-state without rewriting.
 
 ## Schema-version constant
 

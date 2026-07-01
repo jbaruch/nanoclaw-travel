@@ -668,7 +668,7 @@ def run_airport_drive_pass(composio, *, now: datetime) -> dict:
     """The wake-cycle airport-drive reconcile: resolve inputs from env + state,
     then run `run_airport_drive_reconcile`.
 
-    Reads the tile config (`home_address`), resolves the live drive origin
+    Reads the plugin config (`home_address`), resolves the live drive origin
     (`state.resolve_live_origin` — the same ladder the precheck uses), constructs
     the byAir + Maps clients from the environment, loads the active flights'
     states, and reconciles their airport drive blocks on the primary calendar.

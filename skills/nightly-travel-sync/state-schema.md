@@ -1,6 +1,6 @@
 # Nightly Travel Sync — State Schema
 
-Per `coding-policy: stateful-artifacts`. This skill owns one cross-invocation, cross-tile JSON artifact: `travel-schedule.json`. (The day-indexed `travel-db.json` it rebuilds in Step 4 is owned by the sibling `check-travel-bookings` skill — see that skill's `state-schema.md`.)
+Per `coding-policy: stateful-artifacts`. This skill owns one cross-invocation, cross-plugin JSON artifact: `travel-schedule.json`. (The day-indexed `travel-db.json` it rebuilds in Step 4 is owned by the sibling `check-travel-bookings` skill — see that skill's `state-schema.md`.)
 
 ## `/workspace/group/travel-schedule.json`
 
@@ -9,9 +9,9 @@ Flat list of upcoming TripIt events, projected from the live ICS feed.
 - **Owner skill:** `nightly-travel-sync` (this skill)
 - **Writer:** `scripts/refresh-travel-schedule.py` (Step 2) — the sole writer
 - **Readers:**
-  - `tessl__check-travel-bookings/scripts/build-travel-db.py` (same tile, Step 4 rebuilds `travel-db.json` from this file)
-  - `scripts/check-travel-freshness.py` (same tile, Step 3 reads **mtime only**, never the body)
-  - `nanoclaw-admin`'s `morning-brief` and `check-cfps` (cross-tile via the shared `/workspace/group/` mount, reading Trip-type records for travel-conflict checks)
+  - `tessl__check-travel-bookings/scripts/build-travel-db.py` (same plugin, Step 4 rebuilds `travel-db.json` from this file)
+  - `scripts/check-travel-freshness.py` (same plugin, Step 3 reads **mtime only**, never the body)
+  - `nanoclaw-admin`'s `morning-brief` and `check-cfps` (cross-plugin via the shared `/workspace/group/` mount, reading Trip-type records for travel-conflict checks)
 
 ### Shape (schema_version 1)
 

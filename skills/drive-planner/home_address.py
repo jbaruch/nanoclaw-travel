@@ -4,12 +4,12 @@ Every home-anchored drive leg (outbound from home, return to home) starts or
 ends at the operator's current residence. That address has ONE canonical home
 (Epic #59 §4): the machine-readable `## Addresses` block in the owner profile
 `/workspace/trusted/user_profile.md`, owned by the `trusted-memory` skill in
-the `nanoclaw-trusted` tile. drive-planner is a READER of that block, never a
-writer — the trusted tile owns its shape and migration. (Epic #59 §4/§7 name
+the `nanoclaw-trusted` plugin. drive-planner is a READER of that block, never a
+writer — the trusted plugin owns its shape and migration. (Epic #59 §4/§7 name
 `nanoclaw-admin`; that is wrong — the skill has lived in `nanoclaw-trusted`
 since 2026-04-07, and its `state-schema.md` names this reader.)
 
-The block the trusted tile writes (Epic #59 §4):
+The block the trusted plugin writes (Epic #59 §4):
 
     ## Addresses
     <!-- canonical, machine-read by travel tile -->
@@ -25,7 +25,7 @@ This is the deterministic reader (per `coding-policy: script-delegation` — a
 fixed parse of a fixed block). It does NOT fall back to a guessed address: a
 silent wrong origin would route every drive from the wrong place and quietly
 mis-time every leave-by. A missing block raises with an actionable message
-pointing at the trusted tile.
+pointing at the trusted plugin.
 
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
@@ -74,7 +74,7 @@ def _addresses_section(text: str) -> str | None:
 class HomeAddressError(Exception):
     """Raised when the canonical home address cannot be read.
 
-    The fix is always "make the trusted tile's `## Addresses` block present and
+    The fix is always "make the trusted plugin's `## Addresses` block present and
     well-formed", not "retry" — the message says so. drive-planner refuses to
     guess an origin rather than route every drive from the wrong place.
     """
