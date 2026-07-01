@@ -1,5 +1,9 @@
 # Changelog
 
+### Fixed — correct owner tile for the `## Addresses` block: `nanoclaw-trusted`, not `nanoclaw-admin`
+
+`home_address.py`'s docstring and its three `HomeAddressError` messages named `nanoclaw-admin` as the owner of the canonical `## Addresses` block. The owner is the `trusted-memory` skill in **`nanoclaw-trusted`** (`tessl__trusted-memory`), whose `state-schema.md` documents the block (schema v1) and names this tile's `home_address.py` as its reader. The block is populated and correct on the NAS; only the attribution was wrong, so the reader worked but its "block missing" errors would have sent the operator to the wrong tile. Origin of the error is Epic #59 §4/§7 (`nanoclaw-admin`), carried into the reader and a prior CHANGELOG entry; both corrected. The legitimate `nanoclaw-admin` references (the `composio-fetch` calendar-fetch precedent, `check-travel-bookings`/`nightly-travel-sync` migrations) are unaffected.
+
 ## 0.2.4 — 2026-06-30
 
 ### Changed — drive-planner sweep notification is script-built, id-free, skip-by-number (`jbaruch/nanoclaw-travel`)
@@ -121,7 +125,7 @@ The two drive-planner skills that turn the deterministic core (scan / fetch / re
 
 **Recheck poll (`drive-planner-recheck`, ~15-min cadence).** `precheck.py` re-fetches the near-term window by direct API call, parses its own marked arrival-anchored blocks back off `extendedProperties`, re-routes each due leg, runs `evaluate_recheck`, and fires each condition once. It only *produces* the suppression patches (each carrying the block's full private map with the alert record updated); the recheck SKILL.md applies them via `apply.py suppress` AFTER the send confirms, so a failed send never permanently suppresses a leave-earlier / leave-now alert (a forgotten patch merely re-pings next poll — the safe direction). The SKILL.md composes the push, then records suppression. Outer-boundary prechecks fail closed; the leave-by alert is re-derived each poll, so one skipped cycle never loses it permanently.
 
-**Home address (§4).** `home_address.py` reads `current_home` from the canonical `## Addresses` block in `/workspace/trusted/user_profile.md` (owned by the `nanoclaw-admin` trusted-memory skill — a separate change there lands the block). It deliberately ignores `new_home_wip` and refuses to guess on a missing block — a silent wrong origin would mis-route every leg — raising an actionable error pointing at the admin tile.
+**Home address (§4).** `home_address.py` reads `current_home` from the canonical `## Addresses` block in `/workspace/trusted/user_profile.md` (owned by the `nanoclaw-trusted` trusted-memory skill — a separate change there lands the block). It deliberately ignores `new_home_wip` and refuses to guess on a missing block — a silent wrong origin would mis-route every leg — raising an actionable error pointing at the trusted tile.
 
 **Packaging.** Both skills registered in `tile.json`; `state-schema.md` documents the calendar-as-state block contract alongside the skip store; README skills + scripts tables updated. `maps_client` and `composio_client` are imported read-only from the co-located flight-assist bundle via the runtime-mount-with-dev-fallback pattern `sync-tripit` already uses — flight-assist's mission-critical leave-by path is untouched (zero flight-regression risk), so `maps_client` was not moved. Composio is mid-retirement (nanoclaw#638) — the API fetch + patch are the pieces that re-point later. ~50 new tests across the codec, home reader, suppression, sweep planner, apply step, and recheck poll (injected routers + a fake Composio client; no live calendar/maps). Live NAS verification + the admin address block are tracked separately under §7.
 
