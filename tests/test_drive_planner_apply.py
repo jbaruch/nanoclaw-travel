@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from helpers import must
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVE = REPO_ROOT / "skills" / "drive-planner"
 sys.path.insert(0, str(DRIVE))
@@ -560,7 +562,7 @@ def test_notification_single_block_never_includes_meeting_id():
         )
     ]
     created = [{"meeting_id": "ccc2067fqsb2qvf6hh6n1uvfk6", "direction": "outbound"}]
-    msg = apply.build_notification(meetings, created, [], [])
+    msg = must(apply.build_notification(meetings, created, [], []))
     assert "ccc2067fqsb2qvf6hh6n1uvfk6" not in msg
 
 
@@ -575,7 +577,7 @@ def test_notification_multiple_blocks_numbered_skip_by_number():
         {"meeting_id": "evt_1", "direction": "outbound"},
         {"meeting_id": "evt_2", "direction": "outbound"},
     ]
-    msg = apply.build_notification(meetings, created, [], [])
+    msg = must(apply.build_notification(meetings, created, [], []))
     lines = msg.split("\n")
     # Ordered by leave_by: Dentist (9:10) before Football (3:28 PM).
     assert lines[0] == "Added drive blocks:"
@@ -602,7 +604,7 @@ def test_notification_tolerates_unhashable_meeting_ids():
     ]
     created = [{"meeting_id": "evt_ok", "direction": "outbound"}, {"meeting_id": ["also", "bad"]}]
     failed = [{"meeting_id": {"unhashable": 1}, "error": "boom"}]
-    msg = apply.build_notification(meetings, created, [], failed)  # must not raise
+    msg = must(apply.build_notification(meetings, created, [], failed))  # must not raise
     assert "Added a drive block for Good" in msg  # the well-formed meeting renders
 
 
@@ -614,7 +616,7 @@ def test_notification_three_blocks_uses_skip_1_and_3():
         _meeting("evt_3", "C", leave_by="2026-05-13T10:00:00-05:00", drive_minutes=12),
     ]
     created = [{"meeting_id": m["meeting_id"], "direction": "outbound"} for m in meetings]
-    msg = apply.build_notification(meetings, created, [], [])
+    msg = must(apply.build_notification(meetings, created, [], []))
     assert msg.split("\n")[-1] == "Reply skip 1, or skip 1 and 3, to drop any."
 
 
@@ -660,7 +662,7 @@ def test_notification_fully_unplannable_offers_mute():
             unplannable=[{"direction": "outbound", "reason": "the operator likely flew"}],
         )
     ]
-    msg = apply.build_notification(meetings, [], [], [])
+    msg = must(apply.build_notification(meetings, [], [], []))
     assert "No outbound drive block for Offsite — the operator likely flew." in msg
     assert "Reply don't drive to Offsite to stop seeing it." in msg
 
@@ -675,7 +677,7 @@ def test_notification_surfaces_route_errors_and_failures():
             route_errors=[{"direction": "outbound", "error": "ZERO_RESULTS"}],
         ),
     ]
-    msg = apply.build_notification(meetings, [], [], [])
+    msg = must(apply.build_notification(meetings, [], [], []))
     assert "Couldn't compute drive time for Clinic (ZERO_RESULTS)" in msg
 
 
@@ -688,7 +690,7 @@ def test_notification_missing_direction_phrasing_no_double_drive():
         drive_minutes=None,
         unplannable=[{"reason": "no route"}],  # no direction key
     )
-    msg = apply.build_notification([unplannable_meeting], [], [], [])
+    msg = must(apply.build_notification([unplannable_meeting], [], [], []))
     assert "No drive block for Offsite — no route." in msg
     assert "drive drive block" not in msg
 
@@ -696,7 +698,7 @@ def test_notification_missing_direction_phrasing_no_double_drive():
         "evt_8", "Clinic", leave_by="2026-05-13T08:00:00-05:00", drive_minutes=12
     )
     failed = [{"meeting_id": "evt_8", "error": "boom"}]  # no direction
-    msg2 = apply.build_notification([failed_meeting], [], [], failed)
+    msg2 = must(apply.build_notification([failed_meeting], [], [], failed))
     assert "Couldn't create a drive block for Clinic (boom)" in msg2
     assert "drive drive block" not in msg2
 

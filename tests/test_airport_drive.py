@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -34,8 +35,8 @@ BE_AT_AIRPORT = DEP - timedelta(minutes=60)  # dep − domestic clearance
 LEAVE_BY = BE_AT_AIRPORT - timedelta(minutes=30)  # − 30-min drive
 
 
-def _dep_desired(**overrides) -> DesiredDriveBlock:
-    args = dict(
+def _dep_desired(**overrides: Any) -> DesiredDriveBlock:
+    args: dict[str, Any] = dict(
         direction="to_airport",
         summary="Drive: → BNA (DL123)",
         leg_start=LEAVE_BY,

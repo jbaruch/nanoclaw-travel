@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from helpers import must
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
@@ -105,7 +107,7 @@ def test_write_then_read_config_roundtrips(state_root: Path):
 def test_write_config_overrides_caller_supplied_schema_version(state_root: Path):
     """Caller-supplied schema_version is overridden by the canonical constant."""
     write_config({"home_address": "X", "schema_version": 99})
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
 
 
@@ -243,7 +245,8 @@ def test_write_flight_state_requires_flight_id(state_root: Path):
 
 def test_write_flight_state_requires_integer_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id"):
-        write_flight_state(_make_flight_state(flight_id="not-an-int"))
+        # deliberate wrong type: rejection is the behavior under test
+        write_flight_state(_make_flight_state(flight_id="not-an-int"))  # type: ignore[arg-type]
 
 
 def test_write_flight_state_rejects_bool_for_int_field(state_root: Path):
@@ -292,16 +295,19 @@ def test_write_flight_state_optional_fields_may_be_omitted(state_root: Path):
 
 def test_write_active_flights_rejects_non_list(state_root: Path):
     with pytest.raises(ValueError, match="must be a list"):
+        # deliberate wrong type: rejection is the behavior under test
         write_active_flights("123")  # type: ignore[arg-type]
 
 
 def test_write_active_flights_rejects_string_elements(state_root: Path):
     with pytest.raises(ValueError, match=r"flight_ids\[1\] is str"):
+        # deliberate wrong type: rejection is the behavior under test
         write_active_flights([1, "2", 3])  # type: ignore[list-item]
 
 
 def test_write_active_flights_rejects_bool_elements(state_root: Path):
     with pytest.raises(ValueError, match=r"flight_ids\[0\] is bool"):
+        # deliberate wrong type: rejection is the behavior under test
         write_active_flights([True, 2])  # type: ignore[list-item]
 
 
@@ -318,43 +324,50 @@ def test_delete_flight_state_returns_false_when_missing(state_root: Path):
 
 def test_read_flight_state_rejects_non_int_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id must be int"):
+        # deliberate wrong type: rejection is the behavior under test
         read_flight_state("12345")  # type: ignore[arg-type]
 
 
 def test_read_flight_state_rejects_bool_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id must be int"):
+        # deliberate wrong type: rejection is the behavior under test
         read_flight_state(True)  # type: ignore[arg-type]
 
 
 def test_delete_flight_state_rejects_non_int_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id must be int"):
+        # deliberate wrong type: rejection is the behavior under test
         delete_flight_state("12345")  # type: ignore[arg-type]
 
 
 def test_delete_flight_state_rejects_bool_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id must be int"):
+        # deliberate wrong type: rejection is the behavior under test
         delete_flight_state(False)  # type: ignore[arg-type]
 
 
 def test_write_config_rejects_non_string_home_address(state_root: Path):
     with pytest.raises(ValueError, match="home_address"):
+        # deliberate wrong type: rejection is the behavior under test
         write_config({"home_address": 12345})  # type: ignore[dict-item]
 
 
 def test_write_config_accepts_int_min_transfer_minutes(state_root: Path):
     write_config({"min_transfer_minutes": 60})
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["min_transfer_minutes"] == 60
 
 
 def test_write_config_rejects_string_min_transfer_minutes(state_root: Path):
     with pytest.raises(ValueError, match="min_transfer_minutes"):
+        # deliberate wrong type: rejection is the behavior under test
         write_config({"min_transfer_minutes": "45"})  # type: ignore[dict-item]
 
 
 def test_write_config_rejects_bool_min_transfer_minutes(state_root: Path):
     """bool is a subclass of int — must be explicitly rejected."""
     with pytest.raises(ValueError, match=r"min_transfer_minutes.*bool"):
+        # deliberate wrong type: rejection is the behavior under test
         write_config({"min_transfer_minutes": True})  # type: ignore[dict-item]
 
 
@@ -367,7 +380,7 @@ def test_write_config_rejects_negative_min_transfer_minutes(state_root: Path):
 def test_write_config_accepts_zero_min_transfer_minutes(state_root: Path):
     """Zero is the inclusive lower bound; non-negative means >= 0."""
     write_config({"min_transfer_minutes": 0})
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["min_transfer_minutes"] == 0
 
 
@@ -379,7 +392,7 @@ def test_write_config_rejects_unknown_key(state_root: Path):
 def test_write_config_drops_caller_schema_version_but_allows_it(state_root: Path):
     """Caller may supply schema_version; it's silently overridden, not rejected."""
     write_config({"home_address": "X", "schema_version": 999})
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
 
 
@@ -473,7 +486,7 @@ def test_write_flight_state_allows_optional_field_as_none(state_root: Path):
     """None is acceptable for any optional field per the schema."""
     state = _make_flight_state(last_wake_at=None, last_wake_reason=None, last_snapshot=None)
     write_flight_state(state)
-    loaded = read_flight_state(state["flight_id"])
+    loaded = must(read_flight_state(state["flight_id"]))
     assert loaded["last_wake_at"] is None
 
 
@@ -540,7 +553,7 @@ def test_v1_to_v2_migration_adds_connection_at_risk_marker(state_root: Path):
     }
     (state_root / "flight-12345.json").write_text(json.dumps(v1_state))
 
-    loaded = read_flight_state(12345)
+    loaded = must(read_flight_state(12345))
     assert loaded is not None
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
     assert loaded["phase_markers"]["connection_at_risk_fired"] is False
@@ -577,7 +590,7 @@ def test_v1_to_v2_migration_idempotent_when_marker_present(state_root: Path):
         "last_wake_reason": None,
     }
     (state_root / "flight-12345.json").write_text(json.dumps(v1_state))
-    loaded = read_flight_state(12345)
+    loaded = must(read_flight_state(12345))
     assert loaded["phase_markers"]["connection_at_risk_fired"] is True
 
 
@@ -587,7 +600,7 @@ def test_v1_config_migration_bumps_version_without_shape_change(state_root: Path
     (state_root / CONFIG_FILE).write_text(
         json.dumps({"schema_version": 1, "home_address": "1 Old Loop"})
     )
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
 
@@ -630,7 +643,7 @@ def test_v2_to_v3_migration_adds_calendar_events(state_root: Path):
     state_root.mkdir(parents=True)
     (state_root / "flight-12345.json").write_text(json.dumps(_v2_flight_state()))
 
-    loaded = read_flight_state(12345)
+    loaded = must(read_flight_state(12345))
     assert loaded is not None
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
     assert loaded["calendar_events"] == {}
@@ -654,7 +667,7 @@ def test_v2_to_v3_migration_idempotent_when_calendar_events_present(state_root: 
     (state_root / "flight-12345.json").write_text(
         json.dumps(_v2_flight_state(calendar_events=existing))
     )
-    loaded = read_flight_state(12345)
+    loaded = must(read_flight_state(12345))
     assert loaded["calendar_events"] == existing
 
 
@@ -664,7 +677,7 @@ def test_v2_config_migration_bumps_version_without_shape_change(state_root: Path
     (state_root / CONFIG_FILE).write_text(
         json.dumps({"schema_version": 2, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
     )
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
     assert "calendar_events" not in loaded
@@ -681,7 +694,7 @@ def test_v3_to_v4_config_migration_bumps_version_without_shape_change(state_root
     (state_root / CONFIG_FILE).write_text(
         json.dumps({"schema_version": 3, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
     )
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
     assert loaded["min_transfer_minutes"] == 60
@@ -699,7 +712,7 @@ def test_config_round_trips_byair_calendar_fields(state_root: Path):
             "byair_calendar_id": "c_abc123@group.calendar.google.com",
         }
     )
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["byair_calendar_name"] == "Flighty Flights"
     assert loaded["byair_calendar_id"] == "c_abc123@group.calendar.google.com"
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
@@ -722,7 +735,7 @@ def test_v4_to_v5_config_migration_bumps_version_without_shape_change(state_root
     (state_root / CONFIG_FILE).write_text(
         json.dumps({"schema_version": 4, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
     )
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
     assert loaded["min_transfer_minutes"] == 60
@@ -764,7 +777,7 @@ def test_v5_to_v6_migration_adds_gate_assignment_marker(state_root: Path):
     state_root.mkdir(parents=True)
     (state_root / "flight-12345.json").write_text(json.dumps(_v5_flight_state()))
 
-    loaded = read_flight_state(12345)
+    loaded = must(read_flight_state(12345))
     assert loaded is not None
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
     assert loaded["phase_markers"]["gate_assignment_fired"] is False
@@ -781,7 +794,7 @@ def test_v5_to_v6_migration_idempotent_when_marker_present(state_root: Path):
     record["phase_markers"]["gate_assignment_fired"] = True  # caller pre-set
     (state_root / "flight-12345.json").write_text(json.dumps(record))
 
-    loaded = read_flight_state(12345)
+    loaded = must(read_flight_state(12345))
     assert loaded["phase_markers"]["gate_assignment_fired"] is True
 
 
@@ -791,7 +804,7 @@ def test_v5_to_v6_config_migration_bumps_version_without_shape_change(state_root
     (state_root / CONFIG_FILE).write_text(
         json.dumps({"schema_version": 5, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
     )
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
     assert "gate_assignment_fired" not in loaded
@@ -823,7 +836,7 @@ def test_config_round_trips_airport_clearance_fields(state_root: Path):
             "airport_post_arrival_intl_abroad_minutes": 60,
         }
     )
-    loaded = read_config()
+    loaded = must(read_config())
     assert loaded["airport_clearance_domestic_minutes"] == 60
     assert loaded["airport_clearance_international_minutes"] == 120
     assert loaded["airport_post_arrival_domestic_minutes"] == 20
@@ -835,7 +848,7 @@ def test_config_round_trips_airport_clearance_fields(state_root: Path):
 def test_write_config_accepts_zero_airport_clearance(state_root: Path):
     state_root.mkdir(parents=True)
     write_config({"airport_clearance_domestic_minutes": 0})
-    assert read_config()["airport_clearance_domestic_minutes"] == 0
+    assert must(read_config())["airport_clearance_domestic_minutes"] == 0
 
 
 def test_write_config_rejects_negative_airport_clearance(state_root: Path):
@@ -894,7 +907,7 @@ def test_v1_to_v3_chained_migration_adds_both_keys(state_root: Path):
     }
     (state_root / "flight-12345.json").write_text(json.dumps(v1_state))
 
-    loaded = read_flight_state(12345)
+    loaded = must(read_flight_state(12345))
     assert loaded["schema_version"] == STATE_SCHEMA_VERSION
     assert loaded["phase_markers"]["connection_at_risk_fired"] is False
     assert loaded["calendar_events"] == {}
@@ -917,7 +930,7 @@ def test_write_then_read_flight_state_with_calendar_events_roundtrips(state_root
         },
     }
     write_flight_state(_make_flight_state(calendar_events=events))
-    loaded = read_flight_state(12345)
+    loaded = must(read_flight_state(12345))
     assert loaded["calendar_events"] == events
 
 
@@ -1033,8 +1046,8 @@ def test_state_files_use_separate_paths(state_root: Path):
     """Each flight gets its own file; writes to one don't disturb another."""
     write_flight_state(_make_flight_state(flight_id=100, code="A"))
     write_flight_state(_make_flight_state(flight_id=200, code="B"))
-    assert read_flight_state(100)["code"] == "A"
-    assert read_flight_state(200)["code"] == "B"
+    assert must(read_flight_state(100))["code"] == "A"
+    assert must(read_flight_state(200))["code"] == "B"
     files = sorted(p.name for p in state_root.iterdir())
     assert files == ["flight-100.json", "flight-200.json"]
 
@@ -1140,14 +1153,15 @@ def test_read_flight_state_snapshot_skips_old_schema_without_migrating(state_roo
     # File on disk unchanged — no v1→v2 migration performed by the reader.
     assert path.read_bytes() == before_bytes
     # Sanity: the owner-side reader would have migrated and rewritten.
-    assert read_flight_state(12345)["phase_markers"]["connection_at_risk_fired"] is False
+    assert must(read_flight_state(12345))["phase_markers"]["connection_at_risk_fired"] is False
     assert path.read_bytes() != before_bytes
 
 
 def test_read_flight_state_snapshot_rejects_non_int_flight_id(state_root: Path):
     """Same flight_id validation as the owner-side reader."""
     with pytest.raises(ValueError):
-        read_flight_state_snapshot("12345")
+        # deliberate wrong type: rejection is the behavior under test
+        read_flight_state_snapshot("12345")  # type: ignore[arg-type]
 
 
 def test_list_flight_state_ids_returns_empty_when_dir_missing(state_root: Path):

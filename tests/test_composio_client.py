@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 import urllib.error
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 
@@ -245,7 +246,7 @@ def test_http_error_propagates(client):
     it propagates as HTTPError without being wrapped in ComposioError."""
 
     def fake_urlopen(request, **kwargs):
-        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", Message(), None)
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
         with pytest.raises(urllib.error.HTTPError) as exc_info:

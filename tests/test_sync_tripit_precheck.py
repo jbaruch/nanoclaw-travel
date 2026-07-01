@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # independent module object.
 _precheck_path = REPO_ROOT / "skills" / "sync-tripit" / "precheck.py"
 _spec = importlib.util.spec_from_file_location("sync_tripit_precheck", _precheck_path)
+assert _spec is not None and _spec.loader is not None, f"failed to locate {_precheck_path}"
 precheck = importlib.util.module_from_spec(_spec)
 sys.modules["sync_tripit_precheck"] = precheck
 _spec.loader.exec_module(precheck)

@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from helpers import must
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
@@ -60,10 +62,10 @@ class FakeComposio:
         self.events_by_calendar = events_by_calendar or {}
         self.create_id = create_id
         self.delete_error = delete_error
-        self.calls: list[tuple[str, dict | None]] = []
+        self.calls: list[tuple[str, dict]] = []
 
     def list_calendars(self, arguments: dict | None = None) -> dict:
-        self.calls.append(("list_calendars", arguments))
+        self.calls.append(("list_calendars", arguments if arguments is not None else {}))
         # Live v3 LIST_CALENDARS returns the list under `calendars`.
         return {"calendars": self.calendars}
 
@@ -87,7 +89,7 @@ class FakeComposio:
             raise self.delete_error
         return {}
 
-    def calls_named(self, name: str) -> list[dict | None]:
+    def calls_named(self, name: str) -> list[dict]:
         return [args for called, args in self.calls if called == name]
 
 
@@ -251,7 +253,7 @@ def test_items_reads_calendars_and_double_nested_find():
 def test_resolve_uses_cached_id_without_listing(state_root: Path):
     write_config({"byair_calendar_id": BYAIR_CAL})
     client = FakeComposio()
-    resolved = cr.resolve_byair_calendar_id(client, read_config())
+    resolved = cr.resolve_byair_calendar_id(client, must(read_config()))
     assert resolved == BYAIR_CAL
     assert client.calls_named("list_calendars") == []  # cached → no lookup
 
@@ -264,29 +266,29 @@ def test_resolve_by_name_matches_and_caches(state_root: Path):
             {"id": BYAIR_CAL, "summary": "Flighty Flights"},
         ]
     )
-    resolved = cr.resolve_byair_calendar_id(client, read_config())
+    resolved = cr.resolve_byair_calendar_id(client, must(read_config()))
     assert resolved == BYAIR_CAL
     # Cached back to config so later cycles skip the lookup.
-    assert read_config()["byair_calendar_id"] == BYAIR_CAL
+    assert must(read_config())["byair_calendar_id"] == BYAIR_CAL
 
 
 def test_resolve_by_name_is_case_and_whitespace_insensitive(state_root: Path):
     write_config({"byair_calendar_name": "  flighty flights "})
     client = FakeComposio(calendars=[{"id": BYAIR_CAL, "summary": "Flighty Flights"}])
-    assert cr.resolve_byair_calendar_id(client, read_config()) == BYAIR_CAL
+    assert cr.resolve_byair_calendar_id(client, must(read_config())) == BYAIR_CAL
 
 
 def test_resolve_by_name_no_match_returns_none(state_root: Path):
     write_config({"byair_calendar_name": "Nonexistent"})
     client = FakeComposio(calendars=[{"id": BYAIR_CAL, "summary": "Flighty Flights"}])
-    assert cr.resolve_byair_calendar_id(client, read_config()) is None
-    assert "byair_calendar_id" not in read_config()  # nothing cached on a miss
+    assert cr.resolve_byair_calendar_id(client, must(read_config())) is None
+    assert "byair_calendar_id" not in must(read_config())  # nothing cached on a miss
 
 
 def test_resolve_no_config_returns_none(state_root: Path):
     write_config({"home_address": "1 Loop"})
     client = FakeComposio()
-    assert cr.resolve_byair_calendar_id(client, read_config()) is None
+    assert cr.resolve_byair_calendar_id(client, must(read_config())) is None
     assert client.calls_named("list_calendars") == []
 
 
@@ -323,7 +325,7 @@ def test_creates_boarding_block_and_writes_ledger(state_root: Path):
     created = client.calls_named("create_event")
     assert len(created) == 1
     assert created[0]["calendar_id"] == BYAIR_CAL
-    ledger = read_flight_state(1)["calendar_events"]
+    ledger = must(read_flight_state(1))["calendar_events"]
     assert ledger["boarding"]["event_id"] == "evt_boarding_new"
     assert ledger["boarding"]["managed"] == "created"
     assert ledger["boarding"]["synced_signature"]  # a non-empty <start>/<end>
@@ -367,7 +369,7 @@ def test_adopts_byair_flight_event_and_tags_it(state_root: Path):
 
     patched = client.calls_named("patch_event")
     assert any(a["event_id"] == "byair_flight_evt" for a in patched)
-    ledger = read_flight_state(1)["calendar_events"]
+    ledger = must(read_flight_state(1))["calendar_events"]
     assert ledger["flight"]["event_id"] == "byair_flight_evt"
     assert ledger["flight"]["managed"] == "adopted"
     assert ledger["flight"]["synced_signature"] == flight_sig
@@ -394,7 +396,7 @@ def test_teardown_deletes_managed_events_on_cancel(state_root: Path):
 
     deleted = client.calls_named("delete_event")
     assert any(a["event_id"] == "evt_boarding_1" for a in deleted)
-    assert "boarding" not in read_flight_state(1)["calendar_events"]
+    assert "boarding" not in must(read_flight_state(1))["calendar_events"]
     assert summary["failed"] == []
 
 
@@ -418,7 +420,7 @@ def test_delete_404_is_idempotent_success(state_root: Path):
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
     # 404 = already gone → success: ledger entry dropped, no failure recorded.
-    assert "boarding" not in read_flight_state(1)["calendar_events"]
+    assert "boarding" not in must(read_flight_state(1))["calendar_events"]
     assert summary["failed"] == []
 
 
@@ -444,7 +446,7 @@ def test_non_404_delete_failure_is_collected_and_ledger_kept(state_root: Path):
     # the next cycle retries the delete.
     assert len(summary["failed"]) == 1
     assert summary["failed"][0]["op"] == "delete"
-    assert read_flight_state(1)["calendar_events"]["boarding"] == entry
+    assert must(read_flight_state(1))["calendar_events"]["boarding"] == entry
 
 
 def test_deletes_reclaim_travel_block_in_same_airport_gap(state_root: Path):
