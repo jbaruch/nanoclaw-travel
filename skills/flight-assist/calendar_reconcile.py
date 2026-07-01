@@ -18,9 +18,9 @@ Responsibility split (the same discipline the planner enforces):
 Calendar grounding (settled in #55):
 
   - The flight events + the boarding block live on the operator's flight
-    calendar ("Flighty Flights" — the byAir calendar in tile terms). Its ID
+    calendar ("Flighty Flights" — the byAir calendar in plugin terms). Its ID
     is resolved at runtime from the operator-supplied `byair_calendar_name`
-    in config and cached as `byair_calendar_id`; never hardcoded in tile
+    in config and cached as `byair_calendar_id`; never hardcoded in plugin
     code per `rules/flight-data-locality.md`.
   - Reclaim writes its travel blocks onto the user's PRIMARY calendar
     interleaved with real meetings — there is no dedicated Reclaim calendar.
@@ -278,7 +278,7 @@ def resolve_byair_calendar_id(client, config: dict) -> str | None:
       3. Neither configured / no match — return None; the caller no-ops
          (there is no flight calendar to reconcile against).
 
-    Never writes "Flighty" into tile code — the name is operator-supplied
+    Never writes "Flighty" into plugin code — the name is operator-supplied
     config data per `rules/flight-data-locality.md`.
     """
     cached = config.get("byair_calendar_id")

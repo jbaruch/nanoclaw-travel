@@ -4,7 +4,7 @@
 
 Actionable travel assistance for NanoClaw — byAir-powered flight notifications, travel-booking gap checks, and nightly TripIt sync. Replaces generic "21 minutes to departure" reminders with alerts that change behavior. Powered by [byAir](https://byairapp.com/mcp/) for flight data and Google Maps Distance Matrix for traffic-aware time-to-leave.
 
-Per-chat overlay tile. Install via NanoClaw's `containerConfig.additionalTiles` mechanism.
+Per-chat overlay plugin. Install via NanoClaw's `containerConfig.additionalTiles` mechanism.
 
 ## Capabilities (V1.1 shipped)
 
@@ -59,7 +59,7 @@ Store both in OneCLI vault. Never commit. See [.env.example](.env.example) for t
 The skill bundle includes executable scripts the agent invokes via the SKILL.md actions:
 
 - `scripts/check-env.py` — verifies BYAIR_MCP_URL + GOOGLE_MAPS_API_KEY are set
-- `scripts/set-home-base.py` — persists home address to tile config for time-to-leave queries
+- `scripts/set-home-base.py` — persists home address to plugin config for time-to-leave queries
 - `scripts/get-flight-state.py` — fetches a flight's last-known snapshot to enrich notifications
 - `scripts/read-current-tz.py` — resolves the operator's `current_tz` from `tz_state` so surfaces phrase relative dates in the operator's local zone (see `operator-local-tz-phrasing` rule)
 

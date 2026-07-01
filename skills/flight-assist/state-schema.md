@@ -1,10 +1,10 @@
 # Flight-Assist State Schema
 
-Documents the on-disk state files the flight-assist tile reads and writes. Per `coding-policy: stateful-artifacts`.
+Documents the on-disk state files the flight-assist plugin reads and writes. Per `coding-policy: stateful-artifacts`.
 
 ## Owner Skill
 
-`flight-assist` (this tile) is the sole owner. Only this skill migrates `schema_version`. Reader skills (other tiles, agent-side composition, sync-tripit) call the snapshot reader API — `read_active_flights_snapshot` / `read_flight_state_snapshot` — which treats a `schema_version` strictly below the current `STATE_SCHEMA_VERSION` as "no usable prior state" and returns without rewriting the file. A `schema_version` ABOVE the current still raises `StateError` from any reader (forward incompatibility — operators must upgrade the consumer tile, not be told there's nothing on disk).
+`flight-assist` (this plugin) is the sole owner. Only this skill migrates `schema_version`. Reader skills (other plugins, agent-side composition, sync-tripit) call the snapshot reader API — `read_active_flights_snapshot` / `read_flight_state_snapshot` — which treats a `schema_version` strictly below the current `STATE_SCHEMA_VERSION` as "no usable prior state" and returns without rewriting the file. A `schema_version` ABOVE the current still raises `StateError` from any reader (forward incompatibility — operators must upgrade the consumer plugin, not be told there's nothing on disk).
 
 ## State Directory
 
@@ -15,7 +15,7 @@ Documents the on-disk state files the flight-assist tile reads and writes. Per `
 
 ### `config.json`
 
-Tile-wide configuration set during install via the `/setup` flow.
+Plugin-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
@@ -32,7 +32,7 @@ Fields:
 - `schema_version` (int, required) — currently `6`
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
-- `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in tile terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in tile code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)
+- `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in plugin terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in plugin code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)
 - `byair_calendar_id` (string, optional) — the resolved Google Calendar ID for the flight calendar, cached by `reconcile` after its first name match so later cycles skip the lookup. When present it is used directly and `byair_calendar_name` is not consulted. The Reclaim travel blocks live on the **primary** calendar (content-classified — there is no dedicated Reclaim calendar), so no config field tracks it
 - `airport_clearance_domestic_minutes` (int, optional, non-negative) — minutes before departure to be AT the airport for a domestic (incl. intra-Schengen) flight; overrides `airport_lead.BASE_CLEARANCE_DOMESTIC_MINUTES` (60). Airport drive blocks (#90)
 - `airport_clearance_international_minutes` (int, optional, non-negative) — same, international flight; overrides `airport_lead.BASE_CLEARANCE_INTERNATIONAL_MINUTES` (120)
@@ -175,7 +175,7 @@ Top-level fields:
 Each entry's fields:
 
 - `event_id` (string, required) — the Google Calendar event identifier
-- `calendar_id` (string, required) — the calendar the event lives in (the byAir calendar for both the boarding block and adopted flight events; byAir writes the flight events there and flight-assist places the boarding block alongside them). The byAir calendar's ID is resolved at runtime via Composio from the operator's flights calendar — never hardcoded in the tile
+- `calendar_id` (string, required) — the calendar the event lives in (the byAir calendar for both the boarding block and adopted flight events; byAir writes the flight events there and flight-assist places the boarding block alongside them). The byAir calendar's ID is resolved at runtime via Composio from the operator's flights calendar — never hardcoded in the plugin
 - `managed` (string, required) — `"created"` (flight-assist authored it) or `"adopted"` (flight-assist tagged a byAir-authored event). Drives delete semantics: `created` is freely deletable, `adopted` is deleted only on a true switch/cancel
 - `synced_signature` (string, required) — the `<start>/<end>` instant pair flight-assist last wrote, so the planner can no-op when the live event already matches byAir truth instead of re-writing every cycle
 
@@ -221,7 +221,7 @@ Today `STATE_SCHEMA_VERSION` is `6`.
 - Lower than current → run the owner-side migration in `_migrate`, rewrite at the current version, return the upgraded payload
 - Missing, wrong type (non-int, including `bool`) → `StateError` with actionable repair message
 
-Non-owner readers (sync-tripit, future cross-tile composition) call the dedicated snapshot entry points: `read_active_flights_snapshot()` and `read_flight_state_snapshot(flight_id)`. These mirror the owner-side functions' return shapes but treat a `schema_version` strictly LESS THAN `STATE_SCHEMA_VERSION` as "no usable prior state" (return `[]` / `None`) without invoking `_migrate`. A `schema_version` ABOVE the current still raises `StateError` from the snapshot path (forward incompatibility); so does corrupt JSON or a missing required field at the current schema. Only the owner skill (`flight-assist`, this tile, via `state.py:_migrate`) migrates.
+Non-owner readers (sync-tripit, future cross-plugin composition) call the dedicated snapshot entry points: `read_active_flights_snapshot()` and `read_flight_state_snapshot(flight_id)`. These mirror the owner-side functions' return shapes but treat a `schema_version` strictly LESS THAN `STATE_SCHEMA_VERSION` as "no usable prior state" (return `[]` / `None`) without invoking `_migrate`. A `schema_version` ABOVE the current still raises `StateError` from the snapshot path (forward incompatibility); so does corrupt JSON or a missing required field at the current schema. Only the owner skill (`flight-assist`, this plugin, via `state.py:_migrate`) migrates.
 
 Migrations chain: `state.py:_migrate` steps a record through every intermediate version in one call (a v1 record runs v1→v2→v3 before returning), so an old file lands at the current version on its first owner-side read.
 
@@ -251,7 +251,7 @@ When adding or renaming a field:
 
 1. Bump `STATE_SCHEMA_VERSION` in `state.py` and document the new shape in this file
 2. Add migration logic to `state.py` that reads old `schema_version` and rewrites the upgraded shape via the owner-skill code path (the precheck, the agent on wake, sync-tripit — every entry point that uses `read_flight_state` from inside `flight-assist`)
-3. Non-owner reader skills (other tiles, future cross-tile composition) call `read_active_flights_snapshot` / `read_flight_state_snapshot` instead of the owner-side helpers; the snapshot readers treat any mismatched `schema_version` as "no usable prior state" and return without rewriting. Migration happens exclusively on the owner-skill's next read
+3. Non-owner reader skills (other plugins, future cross-plugin composition) call `read_active_flights_snapshot` / `read_flight_state_snapshot` instead of the owner-side helpers; the snapshot readers treat any mismatched `schema_version` as "no usable prior state" and return without rewriting. Migration happens exclusively on the owner-skill's next read
 4. CHANGELOG entry describing the version bump and the owner-side migration path — an un-headed `### ` block at the top of `CHANGELOG.md`; the publish stamp step adds the `## <version> — <date>` heading (no `## Unreleased` section — that heading is forbidden per `coding-policy: context-artifacts` CHANGELOG Hygiene)
 
 ## Calendar-as-State: Airport Drive Blocks

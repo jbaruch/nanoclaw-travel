@@ -7,7 +7,7 @@ alwaysApply: true
 ## Single Upstream
 
 - byAir is the source of truth for flight status, gate, delay, baggage carousel, and inbound aircraft chain
-- A second flight-data API is forbidden. AeroAPI, Flighty, FlightAware direct, and airline-specific APIs do not enter the tile
+- A second flight-data API is forbidden. AeroAPI, Flighty, FlightAware direct, and airline-specific APIs do not enter the plugin
 - Missing fields are reported upstream or descoped. A second API is not the remedy
 
 ## Out of Scope

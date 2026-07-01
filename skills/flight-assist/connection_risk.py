@@ -83,7 +83,7 @@ def detect_connection_risks(
     int — `bool` is rejected (it's a subclass of `int` in Python so
     `True` would silently behave as `1 min`), matching the validator
     discipline applied to schema_version / flight_id / config fields
-    elsewhere in this tile.
+    elsewhere in this plugin.
     """
     if (
         not isinstance(min_transfer_minutes, int)

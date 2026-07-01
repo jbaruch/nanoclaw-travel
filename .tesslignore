@@ -1,8 +1,8 @@
-# Exclude repo-only files from the published Tessl tile per
+# Exclude repo-only files from the published Tessl plugin per
 # `jbaruch/coding-policy: context-artifacts` ("Use `.tileignore` to
-# exclude build artifacts and CI files from the published tile").
+# exclude build artifacts and CI files from the published plugin").
 #
-# The tile ships: tile.json, README.md, CHANGELOG.md, LICENSE,
+# The plugin ships: tile.json, README.md, CHANGELOG.md, LICENSE,
 # rules/, skills/. Everything below is dev / CI / runtime state
 # that has no place in the published artifact.
 

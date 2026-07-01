@@ -153,7 +153,7 @@ def main():
     # Atomic write: same-dir `.tmp` sibling + `os.replace`. Matches the
     # `_atomic_write_json` pattern in `skills/flight-assist/state.py`.
     # Uses normal `open(...)` so file mode follows the process umask
-    # (the cross-tile readers — `morning-brief`, `check-travel-bookings`
+    # (the cross-plugin readers — `morning-brief`, `check-travel-bookings`
     # — share the group volume but may run under different UIDs at
     # times; `tempfile.mkstemp`'s 0o600 default would break those reads).
     tmp_path = DB_PATH + ".tmp"
@@ -181,7 +181,7 @@ def main():
     # Structured JSON output per `coding-policy: script-delegation`
     # (Script Requirements: JSON-producing). Operators reading the
     # logs see the same shape regardless of trip count; downstream
-    # consumers (host-side audits, future cross-tile checks) can
+    # consumers (host-side audits, future cross-plugin checks) can
     # parse without ad-hoc prose-line regexes.
     print(
         json.dumps(

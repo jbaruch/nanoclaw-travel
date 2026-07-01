@@ -1,6 +1,6 @@
 ---
 name: flight-assist
-description: On a byAir precheck wake event, reconciles the operator's managed calendar events (boarding block, adopted byAir flight event, Reclaim travel-block cleanup, switched-away teardown) and composes a user-facing flight notification — delay, gate change, cancellation, boarding, connection risk, inbound-delay, time-to-leave, baggage carousel, day-before check, or arrival logistics. Also configures the tile (verify credentials, set home base). Use when a tracked-flight wake event needs a notification, or when setting up or diagnosing flight-assist. Triggers - "check flight-assist env", "diagnose flight-assist", "set flight-assist home base", "set home address", "configure flight-assist", "flight delay notification", "gate change notification", "cancellation notification", "boarding alert", "time to leave alert", "inbound delay notification", "baggage carousel", "arrival logistics", "day before sanity check", "flight removed upstream", "connection at risk", "tight connection alert", "reconcile calendar".
+description: On a byAir precheck wake event, reconciles the operator's managed calendar events (boarding block, adopted byAir flight event, Reclaim travel-block cleanup, switched-away teardown) and composes a user-facing flight notification — delay, gate change, cancellation, boarding, connection risk, inbound-delay, time-to-leave, baggage carousel, day-before check, or arrival logistics. Also configures the plugin (verify credentials, set home base). Use when a tracked-flight wake event needs a notification, or when setting up or diagnosing flight-assist. Triggers - "check flight-assist env", "diagnose flight-assist", "set flight-assist home base", "set home address", "configure flight-assist", "flight delay notification", "gate change notification", "cancellation notification", "boarding alert", "time to leave alert", "inbound delay notification", "baggage carousel", "arrival logistics", "day before sanity check", "flight removed upstream", "connection at risk", "tight connection alert", "reconcile calendar".
 cadence: "*/2 * * * *"
 agentModel: "claude-haiku-4-5-20251001"
 script: "precheck.py"
@@ -36,7 +36,7 @@ Finish here.
 
 ## Step 2 — Set home base
 
-When the user provides their home address (e.g., "set my home base to 1 Infinite Loop, Cupertino, CA"), invoke the `set-home-base.py` script to persist it to the tile-wide config the precheck reads for `time_to_leave` queries as the fallback origin when no fresh live-location snapshot is available (see Step 3's `time_to_leave` row for the origin-resolution ladder).
+When the user provides their home address (e.g., "set my home base to 1 Infinite Loop, Cupertino, CA"), invoke the `set-home-base.py` script to persist it to the plugin-wide config the precheck reads for `time_to_leave` queries as the fallback origin when no fresh live-location snapshot is available (see Step 3's `time_to_leave` row for the origin-resolution ladder).
 
 ```bash
 python3 /home/node/.claude/skills/tessl__flight-assist/scripts/set-home-base.py "<address from user>"

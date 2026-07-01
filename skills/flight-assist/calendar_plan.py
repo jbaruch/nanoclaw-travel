@@ -12,7 +12,7 @@ back into the ledger.
 Everything deterministic lives here so it is unit-testable in CI without
 any external service, per `coding-policy: script-delegation`.
 
-byAir is the tile's single flight-data upstream and also the app that
+byAir is the plugin's single flight-data upstream and also the app that
 writes the flight events onto the user's writable calendar (per
 `rules/flight-data-locality.md`). TripIt's iCal feed is read-only and
 never touched. Reclaim layers travel-time blocks on top.

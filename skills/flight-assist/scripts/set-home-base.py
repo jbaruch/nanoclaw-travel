@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persist the user's home address to the flight-assist tile config.
+"""Persist the user's home address to the flight-assist plugin config.
 
 Read by the precheck script for `time_to_leave` Distance Matrix
 queries (the leave-by deadline is computed against current traffic

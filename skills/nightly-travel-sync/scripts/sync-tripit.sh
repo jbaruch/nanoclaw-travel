@@ -1,7 +1,7 @@
 #!/bin/bash
 # Host-op wrapper for `mcp__nanoclaw__sync_tripit()`. Runs in the
 # orchestrator, where `reclaim-tripit-timezones-sync` is installed
-# globally by `Dockerfile.orchestrator` (jbaruch/nanoclaw). This tile
+# globally by `Dockerfile.orchestrator` (jbaruch/nanoclaw). This plugin
 # is a skill bundle and can't declare that npm global itself, so the
 # wrapper depends on the orchestrator providing it — and checks for it,
 # failing with an actionable message instead of a bare `cd` error when

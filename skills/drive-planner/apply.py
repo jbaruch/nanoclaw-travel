@@ -54,7 +54,7 @@ Modes (subcommand on argv[1]):
 This script is NOT a scheduler precheck — it is invoked by the agent and its
 exit code is read directly: exit 0 on success, non-zero with a `{"error": ...}`
 stderr line on a usage error or an unrecovered Composio failure (the agent
-surfaces that to the user). stdlib-only (plus in-tile modules).
+surfaces that to the user). stdlib-only (plus in-plugin modules).
 """
 
 from __future__ import annotations
@@ -110,7 +110,7 @@ _DEFAULT_SKIP_HORIZON = timedelta(days=30)
 
 
 def _load_composio():
-    """Construct the in-tile ComposioClient from env (cross-bundle path set above)."""
+    """Construct the in-plugin ComposioClient from env (cross-bundle path set above)."""
     return ComposioClient.from_env()
 
 

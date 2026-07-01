@@ -4,7 +4,7 @@ Documents the on-disk state files the drive-planner skill reads and writes. Per 
 
 ## Owner Skill
 
-`drive-planner` (this tile) is the sole owner. Only this skill migrates `schema_version`. The sweep is both writer and reader; no other skill reads or writes these files.
+`drive-planner` (this plugin) is the sole owner. Only this skill migrates `schema_version`. The sweep is both writer and reader; no other skill reads or writes these files.
 
 ## State Directory
 
@@ -40,12 +40,12 @@ Tolerance:
 
 - A **missing** file is not an error — it is indistinguishable from "no skips yet" and reads as an empty map.
 - A **present but corrupt** file (unparseable JSON, non-object root, missing/invalid `schema_version`, or a `schema_version` below the current floor) raises `SkipStateError` rather than being silently treated as "no skips" — silently resetting would resurrect every skipped meeting as a nag.
-- A `schema_version` **newer** than this tile reads as **"no usable prior state"** (an empty map) on the **read** path (`load_active_skips`), per `coding-policy: stateful-artifacts` — the reader is lagging, not awaiting migration, and an empty map is the safe, non-disruptive fallback (worst case the sweep re-asks; it never escalates work). The fix is to update the tile to accept the new version. On the **write** path (`add_skip` / `clear_skip` / `prune`) a newer file is **refused** with `SkipStateError` — the no-prior-state fallback is read-only, and writing would downgrade the future-version file to v1 and clobber a newer writer's state.
+- A `schema_version` **newer** than this plugin reads as **"no usable prior state"** (an empty map) on the **read** path (`load_active_skips`), per `coding-policy: stateful-artifacts` — the reader is lagging, not awaiting migration, and an empty map is the safe, non-disruptive fallback (worst case the sweep re-asks; it never escalates work). The fix is to update the plugin to accept the new version. On the **write** path (`add_skip` / `clear_skip` / `prune`) a newer file is **refused** with `SkipStateError` — the no-prior-state fallback is read-only, and writing would downgrade the future-version file to v1 and clobber a newer writer's state.
 - Malformed individual entries (non-string id or expiry, unparseable/naive expiry) are dropped, not fatal.
 
 Migration:
 
-- `schema_version` `1` is the initial version; no migration exists yet. A future shape change bumps the version and adds the owner-side upgrade-on-read per `coding-policy: stateful-artifacts`. A version below the current floor has no migration path (v1 is first) and is refused; a version above is treated as no-usable-prior-state until the tile is updated to accept it.
+- `schema_version` `1` is the initial version; no migration exists yet. A future shape change bumps the version and adds the owner-side upgrade-on-read per `coding-policy: stateful-artifacts`. A version below the current floor has no migration path (v1 is first) and is refused; a version above is treated as no-usable-prior-state until the plugin is updated to accept it.
 
 ## Calendar-as-State: Drive Blocks
 
@@ -74,7 +74,7 @@ Writer / reader contract:
 
 Migration (per `coding-policy: stateful-artifacts`):
 
-- `v` `2` is the current version. `v` `1` was the original `extendedProperties.private` string-map shape — defunct: the live v3 toolkit has no writable extendedProperties, so no v1 record was ever written, and the description-based parser cannot read that shape anyway (it carries no `<!--dp:-->` comment). Bump on any further shape change to the description state JSON and add the owner-side upgrade in `parse_block`. A record stamped NEWER than this tile supports — or carrying a non-int `v` — parses to `None` (no-usable-prior-state, the safe non-disruptive fallback). A missing `v` is treated as the current shape for back-compat.
+- `v` `2` is the current version. `v` `1` was the original `extendedProperties.private` string-map shape — defunct: the live v3 toolkit has no writable extendedProperties, so no v1 record was ever written, and the description-based parser cannot read that shape anyway (it carries no `<!--dp:-->` comment). Bump on any further shape change to the description state JSON and add the owner-side upgrade in `parse_block`. A record stamped NEWER than this plugin supports — or carrying a non-int `v` — parses to `None` (no-usable-prior-state, the safe non-disruptive fallback). A missing `v` is treated as the current shape for back-compat.
 
 Tolerance:
 
