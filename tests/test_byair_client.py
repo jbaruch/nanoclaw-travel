@@ -11,6 +11,7 @@ import io
 import json
 import sys
 import urllib.error
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 
@@ -297,7 +298,7 @@ def test_session_expired_triggers_reinit_and_retry(client):
         # second invocation (after re-init) succeeds.
         if call_count["n"] == 3:
             raise urllib.error.HTTPError(
-                SYNTH_URL, 400, "Bad Request", {}, io.BytesIO(b"session expired")
+                SYNTH_URL, 400, "Bad Request", Message(), io.BytesIO(b"session expired")
             )
         return _tool_response(payload)
 
@@ -317,7 +318,7 @@ def test_session_expired_second_failure_propagates(client):
         if method == "notifications/initialized":
             return _initialized_notification_ack()
         raise urllib.error.HTTPError(
-            SYNTH_URL, 400, "Bad Request", {}, io.BytesIO(b"session expired")
+            SYNTH_URL, 400, "Bad Request", Message(), io.BytesIO(b"session expired")
         )
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
@@ -335,7 +336,7 @@ def test_non_session_http_error_propagates_immediately(client):
         if method == "notifications/initialized":
             return _initialized_notification_ack()
         raise urllib.error.HTTPError(
-            SYNTH_URL, 500, "Internal Server Error", {}, io.BytesIO(b"oops")
+            SYNTH_URL, 500, "Internal Server Error", Message(), io.BytesIO(b"oops")
         )
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):

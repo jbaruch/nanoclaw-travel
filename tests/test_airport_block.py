@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
@@ -246,8 +247,8 @@ def test_parse_block_none_when_marker_missing():
     assert parse_block({"id": "e", "description": desc}) is None
 
 
-def _desc(**overrides):
-    args = dict(
+def _desc(**overrides: Any):
+    args: dict[str, Any] = dict(
         summary="Drive: → BNA",
         flight_id="1",
         direction="to_airport",

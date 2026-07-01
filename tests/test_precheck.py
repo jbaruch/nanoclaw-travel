@@ -19,6 +19,8 @@ from unittest.mock import patch
 
 import pytest
 
+from helpers import must
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
@@ -395,7 +397,7 @@ def test_gate_change_suppressed_before_readout_window(state_root: Path):
     assert "gate_change" not in reasons
     assert "gate_assignment" not in reasons  # window not open yet
     # State still records the latest gate.
-    persisted = read_flight_state(12345)
+    persisted = must(read_flight_state(12345))
     assert persisted["last_snapshot"]["dep_gate"] == "D1"
 
 
@@ -433,7 +435,7 @@ def test_gate_assignment_readout_fires_in_window(state_root: Path):
     assert by_reason["gate_assignment"]["dep_terminal"] == "1"
     assert "gate_change" not in by_reason  # muted on the readout cycle
     # Marker persisted so the next gate move surfaces as gate_change.
-    persisted = read_flight_state(12345)
+    persisted = must(read_flight_state(12345))
     assert persisted["phase_markers"]["gate_assignment_fired"] is True
 
 
@@ -733,7 +735,7 @@ def test_seeded_state_with_no_snapshot_forces_poll(state_root: Path):
 
     reasons = [e["event"]["reason"] for e in events]
     assert "day_before" in reasons
-    persisted = read_flight_state(12345)
+    persisted = must(read_flight_state(12345))
     assert persisted["last_snapshot"] is not None
     assert persisted["phase_markers"]["day_before_fired"] is True
 
@@ -802,7 +804,7 @@ def test_poll_horizon_skips_flight_departing_beyond_24h(state_root: Path):
         # Beyond the horizon → no byAir poll at all.
         assert mock_byair_from_env.return_value.get_flight.call_count == 0
     assert events == []
-    persisted = read_flight_state(12345)
+    persisted = must(read_flight_state(12345))
     assert persisted["last_snapshot"] is None
     assert persisted["last_polled_at"] == "2026-05-18T16:00:00Z"
 
@@ -831,7 +833,7 @@ def test_poll_horizon_polls_flight_just_inside_24h(state_root: Path):
         mock_byair_from_env.return_value.get_flight.return_value = fake_flight
         precheck._run_cycle(now_utc=fake_now)
         assert mock_byair_from_env.return_value.get_flight.call_count == 1
-    persisted = read_flight_state(12345)
+    persisted = must(read_flight_state(12345))
     assert persisted["last_snapshot"] is not None
 
 
@@ -981,7 +983,7 @@ def test_connection_risk_pass_fires_and_persists_marker(state_root: Path):
     assert risk_events[0]["event"]["min_transfer_minutes"] == 45
 
     # Marker persisted: next cycle should not re-fire
-    leg2_after = read_flight_state(2)
+    leg2_after = must(read_flight_state(2))
     assert leg2_after["phase_markers"]["connection_at_risk_fired"] is True
 
     with patch("precheck.ByAirClient.from_env"):
@@ -1265,7 +1267,7 @@ def test_connection_risk_excludes_budget_deferred_flights(state_root: Path):
     assert not any(e["event"]["reason"] == "connection_at_risk" for e in events)
     # Both legs untouched: last_polled_at unchanged, marker not flipped.
     for fid in (1, 2):
-        after = read_flight_state(fid)
+        after = must(read_flight_state(fid))
         assert after["last_polled_at"] == "2026-05-18T16:29:30Z"
         assert after["phase_markers"]["connection_at_risk_fired"] is False
 
@@ -1322,6 +1324,6 @@ def test_connection_risk_fires_when_leg2_is_beyond_poll_horizon(state_root: Path
     assert risk_events[0]["flight_id"] == 2
     assert risk_events[0]["event"]["transfer_minutes_remaining"] == 30
     # leg-2 marker flipped by the risk pass, but it was never polled.
-    leg2_after = read_flight_state(2)
+    leg2_after = must(read_flight_state(2))
     assert leg2_after["phase_markers"]["connection_at_risk_fired"] is True
     assert leg2_after["last_snapshot"] is None

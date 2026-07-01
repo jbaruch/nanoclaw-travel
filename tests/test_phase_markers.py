@@ -58,6 +58,7 @@ def test_day_before_fires_at_exact_threshold():
         scheduled_dep_time=SCHED_DEP, phase_markers=_markers(), now_utc=now
     )
     assert fired is True
+    assert event is not None
     assert event["reason"] == "day_before"
     assert event["hours_until_dep"] == DAY_BEFORE_HOURS
 
@@ -130,6 +131,7 @@ def test_time_to_leave_fires_at_leave_by():
         now_utc=now,
     )
     assert fired is True
+    assert event is not None
     assert event["reason"] == "time_to_leave"
     assert event["travel_time_minutes"] == travel_minutes
 
@@ -246,6 +248,7 @@ def test_time_to_leave_fires_pre_boarding_with_scheduled_snapshot():
         snapshot={"computed_status": "scheduled", "dep_gate": None},
     )
     assert fired is True
+    assert event is not None
     assert event["reason"] == "time_to_leave"
 
 
@@ -268,6 +271,7 @@ def test_arrival_logistics_fires_at_threshold():
         scheduled_arr_time=SCHED_ARR, phase_markers=_markers(), now_utc=now
     )
     assert fired is True
+    assert event is not None
     assert event["reason"] == "arrival_logistics"
     assert event["minutes_until_arr"] == ARRIVAL_LOGISTICS_LEAD_MINUTES
 
@@ -335,6 +339,7 @@ def test_gate_assignment_fires_when_window_opens_with_gate():
         now_utc=now,
     )
     assert fired is True
+    assert event is not None
     assert event["reason"] == "gate_assignment"
     assert event["dep_gate"] == "E16"
     assert event["dep_terminal"] == "2"
@@ -361,6 +366,7 @@ def test_gate_assignment_defers_until_gate_appears_in_window():
         now_utc=later,
     )
     assert fired_gate is True
+    assert event is not None
     assert event["dep_gate"] == "C2"
     assert event["dep_terminal"] is None  # no terminal published yet
 
@@ -441,6 +447,7 @@ def test_gate_assignment_not_suppressed_by_premature_boarding_label():
         now_utc=now,
     )
     assert fired is True
+    assert event is not None
     assert event["dep_gate"] == "E16"
 
 

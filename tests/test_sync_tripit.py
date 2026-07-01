@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
+from helpers import must
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
@@ -142,7 +144,7 @@ def test_sync_retains_removed_flight_with_calendar_ledger_as_tombstone(state_roo
     sync_tripit.initialize_flight_from_byair(flight=_flight(100), now_utc=fake_now)
     sync_tripit.initialize_flight_from_byair(flight=_flight(200), now_utc=fake_now)
     # Flight 200 has carried a calendar ledger forward.
-    state_200 = read_flight_state(200)
+    state_200 = must(read_flight_state(200))
     state_200["calendar_events"] = _ledger_entry()
     write_flight_state(state_200)
 
@@ -249,9 +251,9 @@ def test_sync_handles_multi_trip_payload(state_root: Path):
         mock_byair.return_value.list_trips.return_value = payload
         diff = sync_tripit._run_sync(now_utc=fake_now)
     assert [e["flight_id"] for e in diff["added"]] == [100, 200, 300]
-    assert read_flight_state(100)["trip_id"] == 1
-    assert read_flight_state(200)["trip_id"] == 2
-    assert read_flight_state(300)["trip_id"] == 2
+    assert must(read_flight_state(100))["trip_id"] == 1
+    assert must(read_flight_state(200))["trip_id"] == 2
+    assert must(read_flight_state(300))["trip_id"] == 2
 
 
 # ---------------------------------------------------------------------------

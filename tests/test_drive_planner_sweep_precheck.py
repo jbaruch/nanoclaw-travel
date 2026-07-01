@@ -68,7 +68,9 @@ def _scan(events):
 
 
 def _dir(create_arg: dict) -> str:
-    return parse_marker(create_arg["description"])[1]
+    marker = parse_marker(create_arg["description"])
+    assert marker is not None, "created event carries no drive-block marker"
+    return marker[1]
 
 
 def _leg(create_args: list[dict], direction: str) -> dict:
