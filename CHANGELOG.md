@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.5 — 2026-07-01
+
 ### Fixed — correct owner tile for the `## Addresses` block: `nanoclaw-trusted`, not `nanoclaw-admin`
 
 `home_address.py`'s docstring and its three `HomeAddressError` messages named `nanoclaw-admin` as the owner of the canonical `## Addresses` block. The owner is the `trusted-memory` skill in **`nanoclaw-trusted`** (`tessl__trusted-memory`), whose `state-schema.md` documents the block (schema v1) and names this tile's `home_address.py` as its reader. The block is populated and correct on the NAS; only the attribution was wrong, so the reader worked but its "block missing" errors would have sent the operator to the wrong tile. Origin of the error is Epic #59 §4/§7 (`nanoclaw-admin`), carried into the reader and a prior CHANGELOG entry; both corrected. The legitimate `nanoclaw-admin` references (the `composio-fetch` calendar-fetch precedent, `check-travel-bookings`/`nightly-travel-sync` migrations) are unaffected.
