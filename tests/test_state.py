@@ -50,7 +50,7 @@ def state_root(tmp_path: Path, monkeypatch) -> Path:
     return root
 
 
-def _make_flight_state(flight_id: int | str = 12345, **overrides) -> dict:
+def _make_flight_state(flight_id: int = 12345, **overrides) -> dict:
     """Build a minimum-valid flight-state dict for write_flight_state.
 
     Returns every required field per `state-schema.md`. Tests that want
@@ -245,7 +245,7 @@ def test_write_flight_state_requires_flight_id(state_root: Path):
 
 def test_write_flight_state_requires_integer_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id"):
-        write_flight_state(_make_flight_state(flight_id="not-an-int"))
+        write_flight_state(_make_flight_state(flight_id="not-an-int"))  # type: ignore[arg-type]
 
 
 def test_write_flight_state_rejects_bool_for_int_field(state_root: Path):
