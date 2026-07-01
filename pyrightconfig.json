@@ -1,0 +1,11 @@
+{
+  "executionEnvironments": [
+    { "root": "skills/drive-planner", "extraPaths": ["skills/drive-planner", "skills/flight-assist"] },
+    { "root": "skills/drive-planner-recheck", "extraPaths": ["skills/drive-planner-recheck", "skills/drive-planner", "skills/flight-assist"] },
+    { "root": "skills/flight-assist", "extraPaths": ["skills/flight-assist"] },
+    { "root": "skills/check-travel-bookings", "extraPaths": ["skills/check-travel-bookings"] },
+    { "root": "skills/nightly-travel-sync", "extraPaths": ["skills/nightly-travel-sync", "skills/flight-assist"] },
+    { "root": "skills/sync-tripit", "extraPaths": ["skills/sync-tripit", "skills/flight-assist"] },
+    { "root": "tests", "extraPaths": ["skills/flight-assist", "skills/drive-planner", "skills/drive-planner-recheck", "skills/check-travel-bookings", "skills/nightly-travel-sync", "skills/sync-tripit"] }
+  ]
+}
