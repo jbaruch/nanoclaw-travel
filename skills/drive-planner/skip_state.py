@@ -145,8 +145,8 @@ def _read_skips(*, for_write: bool) -> dict[str, str]:
         if for_write:
             raise SkipStateError(
                 f"skip-state file {path} has schema_version {version}, newer than this "
-                f"tile supports ({SKIP_SCHEMA_VERSION}) — refusing to overwrite it; "
-                "upgrade the drive-planner tile before writing"
+                f"plugin supports ({SKIP_SCHEMA_VERSION}) — refusing to overwrite it; "
+                "upgrade the drive-planner plugin before writing"
             )
         return {}
     if version < SKIP_SCHEMA_VERSION:

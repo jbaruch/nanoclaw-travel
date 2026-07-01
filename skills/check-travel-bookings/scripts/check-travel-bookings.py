@@ -286,7 +286,7 @@ def _diagnose_db_failure(db_path: str) -> str:
             return (
                 f"has forward-incompatible schema_version={version}; "
                 f"this skill supports v{SCHEMA_VERSION} — upgrade the "
-                "`tessl__check-travel-bookings` tile"
+                "`tessl__check-travel-bookings` plugin"
             )
     return "missing, unreadable, or structurally invalid"
 

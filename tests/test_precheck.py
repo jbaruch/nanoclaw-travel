@@ -148,7 +148,7 @@ def _write_current_location(
     state dir. Stamps the canonical `schema_version` so the non-owner
     reader gate in `state.read_current_location` accepts the payload —
     host-side writes carry this field per state-schema.md. Filename is
-    sourced from the production constant so a tile-side rename can't
+    sourced from the production constant so a plugin-side rename can't
     leave these fixtures pointing at the old path."""
     state_root.mkdir(parents=True, exist_ok=True)
     (state_root / CURRENT_LOCATION_FILE).write_text(
