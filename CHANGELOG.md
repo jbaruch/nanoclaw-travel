@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.6 — 2026-07-01
+
 ### Changed — migrate manifest from legacy `tile.json` to `.tessl-plugin/plugin.json`
 
 Ran `tessl plugin migrate`: the manifest moved to `.tessl-plugin/plugin.json`, `.tileignore` was renamed to `.tesslignore`, and the obsolete `tile.json` was removed. `tessl plugin lint` passes on a clean tree (the local-only, git-ignored `.mcp.json` is absent in CI). This unblocks #77 (drive-planner evals, which require the plugin-manifest form). Package-sense "tile" wording throughout the prose and docstrings is reconciled to "plugin" per `jbaruch/coding-policy: migrate-to-plugin`; NanoClaw config identifiers (`additionalTiles`), `v1/tiles/...` API routes, and the CI publish workflow (still `tessl tile lint`, which works via the alias — a separate CI-scoped change) are intentionally left as-is.
