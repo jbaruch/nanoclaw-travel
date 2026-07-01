@@ -245,6 +245,7 @@ def test_write_flight_state_requires_flight_id(state_root: Path):
 
 def test_write_flight_state_requires_integer_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id"):
+        # deliberate wrong type: rejection is the behavior under test
         write_flight_state(_make_flight_state(flight_id="not-an-int"))  # type: ignore[arg-type]
 
 
@@ -294,16 +295,19 @@ def test_write_flight_state_optional_fields_may_be_omitted(state_root: Path):
 
 def test_write_active_flights_rejects_non_list(state_root: Path):
     with pytest.raises(ValueError, match="must be a list"):
+        # deliberate wrong type: rejection is the behavior under test
         write_active_flights("123")  # type: ignore[arg-type]
 
 
 def test_write_active_flights_rejects_string_elements(state_root: Path):
     with pytest.raises(ValueError, match=r"flight_ids\[1\] is str"):
+        # deliberate wrong type: rejection is the behavior under test
         write_active_flights([1, "2", 3])  # type: ignore[list-item]
 
 
 def test_write_active_flights_rejects_bool_elements(state_root: Path):
     with pytest.raises(ValueError, match=r"flight_ids\[0\] is bool"):
+        # deliberate wrong type: rejection is the behavior under test
         write_active_flights([True, 2])  # type: ignore[list-item]
 
 
@@ -320,26 +324,31 @@ def test_delete_flight_state_returns_false_when_missing(state_root: Path):
 
 def test_read_flight_state_rejects_non_int_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id must be int"):
+        # deliberate wrong type: rejection is the behavior under test
         read_flight_state("12345")  # type: ignore[arg-type]
 
 
 def test_read_flight_state_rejects_bool_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id must be int"):
+        # deliberate wrong type: rejection is the behavior under test
         read_flight_state(True)  # type: ignore[arg-type]
 
 
 def test_delete_flight_state_rejects_non_int_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id must be int"):
+        # deliberate wrong type: rejection is the behavior under test
         delete_flight_state("12345")  # type: ignore[arg-type]
 
 
 def test_delete_flight_state_rejects_bool_flight_id(state_root: Path):
     with pytest.raises(ValueError, match="flight_id must be int"):
+        # deliberate wrong type: rejection is the behavior under test
         delete_flight_state(False)  # type: ignore[arg-type]
 
 
 def test_write_config_rejects_non_string_home_address(state_root: Path):
     with pytest.raises(ValueError, match="home_address"):
+        # deliberate wrong type: rejection is the behavior under test
         write_config({"home_address": 12345})  # type: ignore[dict-item]
 
 
@@ -351,12 +360,14 @@ def test_write_config_accepts_int_min_transfer_minutes(state_root: Path):
 
 def test_write_config_rejects_string_min_transfer_minutes(state_root: Path):
     with pytest.raises(ValueError, match="min_transfer_minutes"):
+        # deliberate wrong type: rejection is the behavior under test
         write_config({"min_transfer_minutes": "45"})  # type: ignore[dict-item]
 
 
 def test_write_config_rejects_bool_min_transfer_minutes(state_root: Path):
     """bool is a subclass of int — must be explicitly rejected."""
     with pytest.raises(ValueError, match=r"min_transfer_minutes.*bool"):
+        # deliberate wrong type: rejection is the behavior under test
         write_config({"min_transfer_minutes": True})  # type: ignore[dict-item]
 
 
@@ -1149,6 +1160,7 @@ def test_read_flight_state_snapshot_skips_old_schema_without_migrating(state_roo
 def test_read_flight_state_snapshot_rejects_non_int_flight_id(state_root: Path):
     """Same flight_id validation as the owner-side reader."""
     with pytest.raises(ValueError):
+        # deliberate wrong type: rejection is the behavior under test
         read_flight_state_snapshot("12345")  # type: ignore[arg-type]
 
 

@@ -354,6 +354,7 @@ def test_bad_baseline_seconds_rejected():
             arr_instant=ARR,
             origin="LGA",
             destination="home",
+            # deliberate wrong type: rejection is the behavior under test
             baseline_seconds=12.5,  # type: ignore[arg-type]
         )
 
