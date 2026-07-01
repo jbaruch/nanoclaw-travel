@@ -4,10 +4,12 @@ Every home-anchored drive leg (outbound from home, return to home) starts or
 ends at the operator's current residence. That address has ONE canonical home
 (Epic #59 §4): the machine-readable `## Addresses` block in the owner profile
 `/workspace/trusted/user_profile.md`, owned by the `trusted-memory` skill in
-the `nanoclaw-admin` tile. drive-planner is a READER of that block, never a
-writer — the admin tile owns its shape and migration.
+the `nanoclaw-trusted` tile. drive-planner is a READER of that block, never a
+writer — the trusted tile owns its shape and migration. (Epic #59 §4/§7 name
+`nanoclaw-admin`; that is wrong — the skill has lived in `nanoclaw-trusted`
+since 2026-04-07, and its `state-schema.md` names this reader.)
 
-The block the admin tile writes (Epic #59 §4):
+The block the trusted tile writes (Epic #59 §4):
 
     ## Addresses
     <!-- canonical, machine-read by travel tile -->
@@ -23,7 +25,7 @@ This is the deterministic reader (per `coding-policy: script-delegation` — a
 fixed parse of a fixed block). It does NOT fall back to a guessed address: a
 silent wrong origin would route every drive from the wrong place and quietly
 mis-time every leave-by. A missing block raises with an actionable message
-pointing at the admin tile.
+pointing at the trusted tile.
 
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
@@ -72,7 +74,7 @@ def _addresses_section(text: str) -> str | None:
 class HomeAddressError(Exception):
     """Raised when the canonical home address cannot be read.
 
-    The fix is always "make the admin tile's `## Addresses` block present and
+    The fix is always "make the trusted tile's `## Addresses` block present and
     well-formed", not "retry" — the message says so. drive-planner refuses to
     guess an origin rather than route every drive from the wrong place.
     """
@@ -96,7 +98,7 @@ def read_current_home(*, path: Path | None = None) -> str:
         HomeAddressError: when the profile file is missing, carries no
             `## Addresses` block, or that block carries no non-empty
             `current_home:` entry — each with a message pointing at the
-            `nanoclaw-admin` trusted-memory Addresses block to fix. A
+            `nanoclaw-trusted` trusted-memory Addresses block to fix. A
             `current_home:` outside the block is deliberately not read.
     """
     target = path if path is not None else profile_path()
@@ -105,7 +107,7 @@ def read_current_home(*, path: Path | None = None) -> str:
     except FileNotFoundError as exc:
         raise HomeAddressError(
             f"owner profile not found at {target} — the canonical home address lives in the "
-            "`## Addresses` block of user_profile.md, owned by the nanoclaw-admin trusted-memory "
+            "`## Addresses` block of user_profile.md, owned by the nanoclaw-trusted trusted-memory "
             "skill; add the block (current_home: <address>) and redeploy"
         ) from exc
     except OSError as exc:
@@ -115,13 +117,13 @@ def read_current_home(*, path: Path | None = None) -> str:
     if section is None:
         raise HomeAddressError(
             f"no `## Addresses` block in {target} — the canonical home address lives in that "
-            "block of user_profile.md (nanoclaw-admin trusted-memory); add it with a "
+            "block of user_profile.md (nanoclaw-trusted trusted-memory); add it with a "
             "`- current_home: <address>` line and redeploy"
         )
     match = _CURRENT_HOME_RE.search(section)
     if match is None:
         raise HomeAddressError(
             f"no `current_home:` entry in the `## Addresses` block of {target} — add "
-            "`- current_home: <address>` to the canonical block (nanoclaw-admin trusted-memory)"
+            "`- current_home: <address>` to the canonical block (nanoclaw-trusted trusted-memory)"
         )
     return match["value"].strip()
