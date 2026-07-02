@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.2.11 — 2026-07-02
+
+### Changed — backfill CHANGELOG entries for released versions 0.2.7–0.2.10
+
+Versions 0.2.7–0.2.10 shipped without CHANGELOG entries. Every released version now has a heading; the entries are reconstructed from the merge commits that produced each release. No code change.
+
+## 0.2.10 — 2026-07-02
+
+### Added — wire pyright into CI as a zero-findings gate (`jbaruch/nanoclaw-travel#115`)
+
+Add a `python -m pyright --warnings skills/ tests/` step in CI after ruff and before pytest (`--warnings` fails on warnings, not just errors), completing the diagnostics gate whose config landed in 0.2.8. The tree was already clean (0 findings); no source changes.
+
+## 0.2.9 — 2026-07-02
+
+### Changed — refresh coding-policy PR review workflows (`jbaruch/nanoclaw-travel#117`)
+
+Upgrade the gh-aw `jbaruch/coding-policy` PR review workflow templates to the latest published version.
+
+## 0.2.8 — 2026-07-01
+
+### Added — pyright config and test-suite strictness (`jbaruch/nanoclaw-travel#116`)
+
+Land `pyrightconfig.json` (per-bundle `executionEnvironments` for the skill-bundle `sys.path` layout) and bring `pyright skills/ tests/` to zero findings, tightening test-side typing. Pins `pyright` in `requirements-dev.txt`. The CI gate that enforces this lands in 0.2.10 (#115).
+
+## 0.2.7 — 2026-07-01
+
+### Changed — refresh coding-policy PR review workflows (`jbaruch/nanoclaw-travel#114`)
+
+Upgrade the gh-aw `jbaruch/coding-policy` PR review workflow templates to the latest published version.
+
 ## 0.2.6 — 2026-07-01
 
 ### Changed — migrate manifest from legacy `tile.json` to `.tessl-plugin/plugin.json`
