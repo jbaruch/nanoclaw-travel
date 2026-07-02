@@ -32,9 +32,10 @@ jobs:
           python -m ruff format --check tests/ skills/
 
       # Type check runs before tests per `jbaruch/coding-policy:
-      # language-diagnostics` — gates at zero pyright findings.
+      # language-diagnostics` — gates at zero pyright findings. `--warnings`
+      # makes warnings (not just errors) fail the step's exit code.
       - name: Type check (pyright)
-        run: python -m pyright skills/ tests/
+        run: python -m pyright --warnings skills/ tests/
 
       - name: Pytest
         run: python -m pytest
