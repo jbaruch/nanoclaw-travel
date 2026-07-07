@@ -163,9 +163,14 @@ def _wall_clock_in(dt: datetime, tz_name: str | None) -> datetime:
     leg computed in one offset but created with a different `timezone` lands
     shifted by the delta (#131 — same class as drive-planner's 6h-early UK
     block; here the airport tz vs the offset `leg_start` happens to carry).
-    When `tz_name` is absent or not a resolvable zone key, `dt` is returned
-    as-is — its own offset is already the correct instant and the CREATE
-    carries no conflicting `timezone`.
+
+    `dt` is returned as-is in two cases: `tz_name` absent (the caller then
+    omits the CREATE's `timezone` arg entirely, and `dt`'s own offset is
+    the correct instant), or `tz_name` not a resolvable zone key
+    (defensive). In the unresolvable case the caller still passes `tz_name`
+    through as the `timezone` arg, preserving the pre-#131 behavior for
+    that path: no conversion this helper could do would be more correct
+    than the wall-clock `dt` already carries.
     """
     if not tz_name:
         return dt

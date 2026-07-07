@@ -173,11 +173,16 @@ def _wall_clock_in(dt: datetime, tz_name: str | None) -> datetime:
     The Composio `GOOGLECALENDAR_CREATE_EVENT` adapter ignores the offset in
     `start_datetime` and re-reads its wall-clock in the `timezone` arg, so a
     leg computed in the home offset but created with the venue tz lands
-    shifted by the home↔venue delta (#131 — 6h early on a UK trip). When
-    `tz_name` is absent or not a resolvable zone key (real IANA names and
-    `_extract_timezone`'s `Etc/GMT±N` fallback both resolve), `dt` is
-    returned as-is — its own offset is already the correct instant and the
-    CREATE carries no conflicting `timezone`.
+    shifted by the home↔venue delta (#131 — 6h early on a UK trip).
+
+    `dt` is returned as-is in two cases: `tz_name` absent (the caller then
+    omits the CREATE's `timezone` arg entirely, and `dt`'s own offset is
+    the correct instant), or `tz_name` not a resolvable zone key (real IANA
+    names and `_extract_timezone`'s `Etc/GMT±N` fallback both resolve —
+    this is defensive). In the unresolvable case the caller still passes
+    `tz_name` through as the `timezone` arg, preserving the pre-#131
+    behavior for that path: no conversion this helper could do would be
+    more correct than the wall-clock `dt` already carries.
     """
     if not tz_name:
         return dt
