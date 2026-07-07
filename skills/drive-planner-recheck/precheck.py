@@ -82,11 +82,12 @@ def _ensure_drive_planner_on_path() -> None:
     try block and from `evaluate_blocks` — instead of at module import, so
     a missing co-deployment raises inside the outer-boundary handler and
     surfaces as the safe no-wake payload rather than a raw import-time
-    crash. Idempotent: repeated `sys.path.insert(0, ...)` of the same
-    prefix is a no-op for module resolution, and re-imports are
-    `sys.modules` dict lookups.
+    crash. Idempotent: the prefix is inserted only when absent, and
+    re-imports are `sys.modules` dict lookups.
     """
-    sys.path.insert(0, str(_resolve(_DRIVE_PLANNER_RUNTIME, _DRIVE_PLANNER_DEV, "drive-planner")))
+    bundle = str(_resolve(_DRIVE_PLANNER_RUNTIME, _DRIVE_PLANNER_DEV, "drive-planner"))
+    if bundle not in sys.path:
+        sys.path.insert(0, bundle)
 
 
 # How far back / ahead the poll fetches to catch every block whose recheck
@@ -102,7 +103,11 @@ _RECHECK_DIRECTIONS = ("outbound", "bridge")
 
 
 def evaluate_blocks(events: list, *, now: datetime, route) -> dict:
-    """Decide which due blocks should ping, and the suppression patches. Pure.
+    """Decide which due blocks should ping, and the suppression patches.
+
+    Deterministic in its inputs — no I/O beyond the injected `route`
+    callable and the lazy (idempotent) sibling-bundle import below; it
+    never touches the calendar or the network itself.
 
     `route(origin, destination)` returns live drive seconds or raises on a
     routing failure. For each fetched event that parses as a due, arrival-
