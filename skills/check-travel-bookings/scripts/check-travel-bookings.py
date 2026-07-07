@@ -94,8 +94,14 @@ def build_lodging_ranges(lodging_items: list[dict]) -> list[tuple]:
     return ranges
 
 
-def classify_trip(items: list[dict], trip_start: date, trip_end: date) -> dict:
-    """Return classification flags and per-night gap list for a trip."""
+def classify_trip(items: list[dict], trip_start: date, trip_end: date, today: date) -> dict:
+    """Return classification flags and per-night gap list for a trip.
+
+    `today` is injected by the caller (not read from the clock) so the
+    classifier stays pure and testable. The night scan is floored at
+    `today`: elapsed nights are un-bookable, so they never surface as
+    gaps for a trip already underway (jbaruch/nanoclaw-travel#120).
+    """
     if not items:
         return {
             "is_empty": True,
@@ -125,7 +131,7 @@ def classify_trip(items: list[dict], trip_start: date, trip_end: date) -> dict:
                     if d and trip_start <= d < trip_end:
                         trip_transport_dates.add(d)
 
-        night = trip_start
+        night = max(trip_start, today)
         while night < trip_end:
             covered = any(ci <= night < co for ci, co in lodging_ranges)
             is_travel_night = night in trip_transport_dates
@@ -342,7 +348,7 @@ def main():
         if trip_end < today:
             continue
 
-        classification = classify_trip(items, trip_start, trip_end)
+        classification = classify_trip(items, trip_start, trip_end, today)
 
         issue = None
         uncovered = classification.get("uncovered_nights", [])
