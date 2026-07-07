@@ -194,3 +194,28 @@ def test_should_wake_only_when_alerts_or_route_errors():
     assert poll.should_wake({"alerts": [], "route_errors": []}) is False
     assert poll.should_wake({"alerts": [{"x": 1}], "route_errors": []}) is True
     assert poll.should_wake({"alerts": [], "route_errors": [{"e": 1}]}) is True
+
+
+# --- outer-boundary JSON contract -----------------------------------------
+
+
+def test_missing_sibling_bundle_emits_no_wake_payload(monkeypatch, capsys):
+    """A missing / mis-mounted co-shipped drive-planner bundle must surface
+    through the outer-boundary JSON contract — `{"wake_agent": false, ...}`
+    on stdout with exit 0 — never a raw crash before `main()` enters its
+    try block (#126). The resolver is patched to raise the same
+    FileNotFoundError a missing skill mount produces."""
+    import json
+
+    def _raise(runtime, dev, what):
+        raise FileNotFoundError(f"cannot locate the co-shipped {what} skill")
+
+    monkeypatch.setattr(poll, "_resolve", _raise)
+    code = poll.main()
+    out, err = capsys.readouterr()
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["wake_agent"] is False
+    assert payload["data"]["reason"] == "recheck_precheck_internal_error"
+    # The fault is still diagnosable: the traceback lands on stderr.
+    assert "FileNotFoundError" in err

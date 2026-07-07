@@ -29,7 +29,10 @@ forgotten patch merely re-pings next poll (the safe direction).
 
 Cross-bundle: `fetch_events` / `block_props` / `recheck` ship in the co-located
 drive-planner skill; `maps_client` in flight-assist. All imported read-only via
-the runtime-mount-with-dev-fallback pattern.
+the runtime-mount-with-dev-fallback pattern, resolved lazily inside `main()`'s
+try block (same as sync-tripit's `_load_flight_assist`) — a missing
+co-deployment surfaces as the safe no-wake payload, never an import-time crash
+before the JSON contract is in force.
 
 Outer-boundary precheck: the scheduler reads non-zero exit OR malformed stdout
 as wake_agent=false. The sole catch-all in `main()` fails CLOSED (no wake) on
@@ -70,14 +73,21 @@ def _resolve(runtime: Path, dev: Path, what: str) -> Path:
     )
 
 
-# drive-planner ships the shared scan/codec/gate; add its bundle to the path
-# before importing them by bare name (same cross-bundle pattern as sync-tripit).
-sys.path.insert(0, str(_resolve(_DRIVE_PLANNER_RUNTIME, _DRIVE_PLANNER_DEV, "drive-planner")))
+def _ensure_drive_planner_on_path() -> None:
+    """Resolve the co-shipped drive-planner bundle and put it on sys.path.
 
-from block_props import next_alerts, parse_block  # noqa: E402
-from fetch_events import CalendarFetcher  # noqa: E402
-from recheck import evaluate_recheck  # noqa: E402
-from route_error import RouteError  # noqa: E402
+    drive-planner ships the shared scan/codec/gate (`block_props`,
+    `fetch_events`, `recheck`, `route_error`), imported by bare name (same
+    cross-bundle pattern as sync-tripit). Called lazily — from `main()`'s
+    try block and from `evaluate_blocks` — instead of at module import, so
+    a missing co-deployment raises inside the outer-boundary handler and
+    surfaces as the safe no-wake payload rather than a raw import-time
+    crash. Idempotent: repeated `sys.path.insert(0, ...)` of the same
+    prefix is a no-op for module resolution, and re-imports are
+    `sys.modules` dict lookups.
+    """
+    sys.path.insert(0, str(_resolve(_DRIVE_PLANNER_RUNTIME, _DRIVE_PLANNER_DEV, "drive-planner")))
+
 
 # How far back / ahead the poll fetches to catch every block whose recheck
 # window is open now. The window opens 45 min before a block's leave-by and
@@ -107,6 +117,11 @@ def evaluate_blocks(events: list, *, now: datetime, route) -> dict:
         alerted record) so a later poll does not re-ping the same condition.
       - route_errors: blocks that were due but could not be priced this poll.
     """
+    _ensure_drive_planner_on_path()
+    from block_props import next_alerts, parse_block
+    from recheck import evaluate_recheck
+    from route_error import RouteError
+
     alerts: list = []
     patches: list = []
     route_errors: list = []
@@ -207,8 +222,11 @@ def _load_maps_client():
 def _route_seconds(client, origin: str, destination: str) -> int:
     # Translate the provider's MapsError / transport failure into a RouteError
     # so evaluate_blocks catches one specific type (per `coding-policy:
-    # error-handling`). maps_client is on sys.path — _load_maps_client ran first.
+    # error-handling`). Both bundles are on sys.path by the time this runs —
+    # _load_maps_client and evaluate_blocks (via _ensure_drive_planner_on_path)
+    # ran first.
     from maps_client import MapsError
+    from route_error import RouteError
 
     try:
         result = client.travel_time(origin=origin, destination=destination)
@@ -230,6 +248,9 @@ def main() -> int:
     # leave-by alert is re-derived each poll so it is never lost permanently.
     # See `coding-policy: error-handling`. Sole catch-all in the file.
     try:
+        _ensure_drive_planner_on_path()
+        from fetch_events import CalendarFetcher
+
         now = datetime.now(timezone.utc)
         fetcher = CalendarFetcher.from_env()
         events = fetcher.fetch_window(
