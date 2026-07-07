@@ -42,13 +42,15 @@ Public API:
 
 Non-owner reader contract: any plugin that reads (but does not own) this
 state — sync-tripit, future agent-side composition, other plugins — MUST
-use the `*_snapshot` entry points. They treat a schema_version BELOW
-the current `STATE_SCHEMA_VERSION` as "no usable prior state" (return
-None / []) without rewriting the file, satisfying `coding-policy:
-stateful-artifacts`'s single-owner migration rule. A schema_version
-ABOVE the current still raises `StateError` (forward incompatibility,
-not an old-state case) — operators need to upgrade the consumer plugin,
-not be told there's nothing on disk.
+use the `*_snapshot` entry points. They treat ANY schema_version other
+than the current `STATE_SCHEMA_VERSION` as "no usable prior state"
+(return None / []) without rewriting the file, satisfying
+`coding-policy: stateful-artifacts`'s single-owner migration rule:
+BELOW, the next owner-skill invocation upgrades the file; ABOVE, the
+reading plugin is lagging behind the owner mid-rollout and degrades
+safely instead of wedging until upgraded. Owner-side reads stay strict
+— a schema_version above the current raises `StateError` from the
+owner path only (the owner must never run behind its own state files).
 """
 
 from __future__ import annotations
@@ -138,22 +140,23 @@ def _read_json_with_version(path: Path, *, migrate: bool = True) -> dict | None:
     """Read a JSON file, validate schema_version. Return None if missing.
 
     Raises StateError on any of: JSON corruption, non-object payload,
-    missing schema_version, schema_version of a non-int type
-    (including bool, since `bool` is a subclass of `int` in Python),
-    or schema_version higher than the current module constant.
+    missing schema_version, or schema_version of a non-int type
+    (including bool, since `bool` is a subclass of `int` in Python).
 
     schema_version equal to STATE_SCHEMA_VERSION returns the payload.
-    schema_version HIGHER than current raises StateError regardless of
-    the `migrate` kwarg (forward incompatibility is never an old-state
-    case). schema_version LOWER than the current is handled per the
-    `migrate` kwarg:
-    - `migrate=True` (owner path): runs `_migrate`, which upgrade-and-
-      rewrites the file before returning. Unknown lower versions raise
-      StateError.
-    - `migrate=False` (non-owner reader path): returns None per
-      `coding-policy: stateful-artifacts` — non-owner readers must NOT
-      migrate. Treat as "no usable prior state" and let the next
-      owner-skill invocation perform the upgrade.
+    Any OTHER version is handled per the `migrate` kwarg:
+    - `migrate=True` (owner path): a LOWER version runs `_migrate`,
+      which upgrade-and-rewrites the file before returning; unknown
+      lower versions raise StateError. A HIGHER version raises
+      StateError — the owner is authoritative for its schema and must
+      never run behind its own state files.
+    - `migrate=False` (non-owner reader path): both LOWER and HIGHER
+      versions return None per `coding-policy: stateful-artifacts` —
+      "no usable prior state". Non-owner readers must NOT migrate
+      (lower: the next owner-skill invocation upgrades the file) and
+      a newer record means the reader is lagging, not that the state
+      is broken (higher: escalating would wedge every consumer for
+      the whole cross-pipeline rollout window).
     """
     if not path.exists():
         return None
@@ -178,6 +181,8 @@ def _read_json_with_version(path: Path, *, migrate: bool = True) -> dict | None:
             f"({version!r}), expected int — remove the file and let the owner skill rewrite it"
         )
     if version > STATE_SCHEMA_VERSION:
+        if not migrate:
+            return None
         raise StateError(
             f"state file {path} has schema_version {version}, this module is at "
             f"{STATE_SCHEMA_VERSION} — upgrade flight-assist, or remove the file"
@@ -195,7 +200,9 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
     Migrations are additive only — non-owner readers see the latest
     schema after the owner skill (this module) reads any older file.
     Per `coding-policy: stateful-artifacts`, only the owner skill
-    migrates; readers from other plugins get `StateError` on mismatch.
+    migrates; readers from other plugins use the `*_snapshot` entry
+    points, which treat any version mismatch as "no usable prior
+    state" and never invoke this function.
 
     Each branch handles one version transition and they chain: a v1
     record steps 1→2→3 in a single call. Re-running a migration on
@@ -531,20 +538,20 @@ def read_active_flights() -> list[int]:
 def read_active_flights_snapshot() -> list[int]:
     """Non-owner reader entry point for the active-flights index.
 
-    Same return shape as `read_active_flights`, but a schema_version
-    strictly LESS THAN `STATE_SCHEMA_VERSION` is treated as "no usable
-    prior state" (returns `[]`) instead of invoking `_migrate`. Per
-    `coding-policy: stateful-artifacts`, only the owner skill
+    Same return shape as `read_active_flights`, but any schema_version
+    OTHER THAN `STATE_SCHEMA_VERSION` is treated as "no usable prior
+    state" (returns `[]`) instead of invoking `_migrate` or raising.
+    Per `coding-policy: stateful-artifacts`, only the owner skill
     (flight-assist) may migrate; non-owner skills (sync-tripit, other
     plugins) call this function on every read so they never trigger an
-    owner-side rewrite.
+    owner-side rewrite. Lower version: the next owner-skill invocation
+    upgrades the file. Higher version: this reader is lagging behind
+    the owner mid-rollout; it degrades to no-prior-state instead of
+    wedging until the consumer plugin is upgraded.
 
     StateError is still raised on integrity failures: JSON corruption,
-    non-object payload, missing schema_version, schema_version of a
-    non-int type, or schema_version HIGHER than current
-    `STATE_SCHEMA_VERSION` (forward incompatibility — operators must
-    upgrade the consumer plugin). The snapshot reader's "no usable prior
-    state" semantics apply ONLY to older versions.
+    non-object payload, missing schema_version, or schema_version of a
+    non-int type.
     """
     payload = _read_json_with_version(state_dir() / ACTIVE_FLIGHTS_FILE, migrate=False)
     if payload is None:
@@ -620,19 +627,20 @@ def read_flight_state(flight_id: int) -> dict | None:
 def read_flight_state_snapshot(flight_id: int) -> dict | None:
     """Non-owner reader entry point for per-flight state.
 
-    Same shape as `read_flight_state`, but a schema_version strictly
-    LESS THAN `STATE_SCHEMA_VERSION` is treated as "no usable prior
-    state" (returns `None`) instead of invoking `_migrate`. Per
+    Same shape as `read_flight_state`, but any schema_version OTHER
+    THAN `STATE_SCHEMA_VERSION` is treated as "no usable prior state"
+    (returns `None`) instead of invoking `_migrate` or raising. Per
     `coding-policy: stateful-artifacts`, only the owner skill
     (flight-assist) may migrate; non-owner skills call this so they
-    never trigger an owner-side rewrite. The next owner-skill
-    invocation upgrades the file on its own read.
+    never trigger an owner-side rewrite. Lower version: the next
+    owner-skill invocation upgrades the file on its own read. Higher
+    version: this reader is lagging behind the owner mid-rollout; it
+    degrades to no-prior-state instead of wedging until the consumer
+    plugin is upgraded.
 
     StateError still raises on integrity failures: corrupt JSON,
-    missing required field at the current schema, schema_version
-    HIGHER than `STATE_SCHEMA_VERSION` (forward incompatibility —
-    operators must upgrade the consumer plugin). The snapshot reader's
-    "no usable prior state" semantics apply ONLY to older versions.
+    non-object payload, missing schema_version, schema_version of a
+    non-int type, or a missing required field at the current schema.
     """
     _validate_flight_id(flight_id, fn_name="read_flight_state_snapshot")
     payload = _read_json_with_version(_flight_file(flight_id), migrate=False)

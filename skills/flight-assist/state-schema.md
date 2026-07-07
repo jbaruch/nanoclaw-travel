@@ -4,7 +4,7 @@ Documents the on-disk state files the flight-assist plugin reads and writes. Per
 
 ## Owner Skill
 
-`flight-assist` (this plugin) is the sole owner. Only this skill migrates `schema_version`. Reader skills (other plugins, agent-side composition, sync-tripit) call the snapshot reader API — `read_active_flights_snapshot` / `read_flight_state_snapshot` — which treats a `schema_version` strictly below the current `STATE_SCHEMA_VERSION` as "no usable prior state" and returns without rewriting the file. A `schema_version` ABOVE the current still raises `StateError` from any reader (forward incompatibility — operators must upgrade the consumer plugin, not be told there's nothing on disk).
+`flight-assist` (this plugin) is the sole owner. Only this skill migrates `schema_version`. Reader skills (other plugins, agent-side composition, sync-tripit) call the snapshot reader API — `read_active_flights_snapshot` / `read_flight_state_snapshot` — which treats ANY `schema_version` other than the current `STATE_SCHEMA_VERSION` as "no usable prior state" and returns without rewriting the file: below, the owner hasn't migrated the file yet; above, the reading plugin is lagging behind the owner mid-rollout and degrades safely instead of wedging. Owner-side reads stay strict — a `schema_version` above the current raises `StateError` from the owner path only (the owner must never run behind its own state files). See Migration Policy below.
 
 ## State Directory
 
@@ -214,14 +214,14 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 Today `STATE_SCHEMA_VERSION` is `6`.
 
-`state.py`'s read helpers enforce these rules on `schema_version`:
+`state.py`'s owner-side read helpers (`read_config`, `read_active_flights`, `read_flight_state`) enforce these rules on `schema_version`:
 
 - Equal to current → return the payload
-- Higher than current → `StateError` (forward incompatibility; never silently downgrade)
+- Higher than current → `StateError` (the owner is authoritative for its schema and must never run behind its own state files; never silently downgrade)
 - Lower than current → run the owner-side migration in `_migrate`, rewrite at the current version, return the upgraded payload
 - Missing, wrong type (non-int, including `bool`) → `StateError` with actionable repair message
 
-Non-owner readers (sync-tripit, future cross-plugin composition) call the dedicated snapshot entry points: `read_active_flights_snapshot()` and `read_flight_state_snapshot(flight_id)`. These mirror the owner-side functions' return shapes but treat a `schema_version` strictly LESS THAN `STATE_SCHEMA_VERSION` as "no usable prior state" (return `[]` / `None`) without invoking `_migrate`. A `schema_version` ABOVE the current still raises `StateError` from the snapshot path (forward incompatibility); so does corrupt JSON or a missing required field at the current schema. Only the owner skill (`flight-assist`, this plugin, via `state.py:_migrate`) migrates.
+Non-owner readers (sync-tripit, future cross-plugin composition) call the dedicated snapshot entry points: `read_active_flights_snapshot()` and `read_flight_state_snapshot(flight_id)`. These mirror the owner-side functions' return shapes but treat ANY `schema_version` other than `STATE_SCHEMA_VERSION` as "no usable prior state" (return `[]` / `None`) without invoking `_migrate` — lower means the owner hasn't migrated the file yet; higher means the reading plugin is lagging behind the owner mid-rollout and degrades safely instead of wedging until upgraded (per `coding-policy: stateful-artifacts`, Cross-Pipeline Schema Bumps). Corrupt JSON, a missing/non-int `schema_version`, or a missing required field at the current schema still raises `StateError` from the snapshot path. Only the owner skill (`flight-assist`, this plugin, via `state.py:_migrate`) migrates.
 
 Migrations chain: `state.py:_migrate` steps a record through every intermediate version in one call (a v1 record runs v1→v2→v3 before returning), so an old file lands at the current version on its first owner-side read.
 
