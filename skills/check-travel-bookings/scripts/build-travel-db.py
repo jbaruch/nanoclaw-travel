@@ -75,12 +75,14 @@ def main():
         sys.exit(1)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         # Corrupt, non-UTF-8, or partially-written schedule (the writer
-        # crashed mid-flight, disk hiccup). The file exists but can't be
-        # trusted; the fix is a rewrite, not a retry of this script.
+        # crashed mid-flight), or an access-level failure (permissions,
+        # I/O error). The named exception tells the operator which; the
+        # rewrite path fixes content problems, not access problems.
         print(
-            f"ERROR: {SCHEDULE_PATH} is unreadable or not valid JSON "
-            f"({type(exc).__name__}: {exc}) — re-run refresh-travel-schedule.py "
-            "to rewrite it",
+            f"ERROR: cannot read {SCHEDULE_PATH} as JSON "
+            f"({type(exc).__name__}: {exc}) — for a corrupt or partial file, "
+            "re-run refresh-travel-schedule.py to rewrite it; for an access "
+            "error, fix the file's permissions/mount first",
             file=sys.stderr,
         )
         sys.exit(1)
