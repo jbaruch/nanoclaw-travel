@@ -76,6 +76,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -135,8 +136,13 @@ class TransitLeg:
     Fields:
         direction: "outbound" (home/prior venue → meeting), "return"
             (meeting → home), or "bridge" (prior venue → meeting, tight gap)
-        origin: where the leg starts (home address or the prior venue)
-        destination: where the leg ends (the meeting venue or home)
+        origin: where the leg starts (the anchor — home or, on a trip, the
+            current lodging — or the prior venue). None when the anchor
+            resolver could not produce a drivable anchor (on a trip before
+            any lodging is known, #122) — the leg is unroutable and the
+            planner must surface it, never route it from home.
+        destination: where the leg ends (the meeting venue or the anchor).
+            None under the same unresolved-anchor condition as `origin`.
         arrive_by: hard arrival deadline (meeting start) for legs that must
             land before the meeting; None for a return leg
         depart_after: earliest departure (meeting end) for a return leg;
@@ -144,14 +150,17 @@ class TransitLeg:
         gap_seconds: for a bridge, seconds between the prior meeting's end
             and this meeting's start — the budget the drive must fit inside;
             None for non-bridge legs
+        anchor_note: human-readable reason the anchor is unresolved when
+            `origin`/`destination` is None; None on a resolvable leg
     """
 
     direction: str
-    origin: str
-    destination: str
+    origin: str | None
+    destination: str | None
     arrive_by: datetime | None = None
     depart_after: datetime | None = None
     gap_seconds: int | None = None
+    anchor_note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -413,6 +422,7 @@ def scan(
     home_address: str,
     skip_state: dict[str, str] | None = None,
     tight_gap_seconds: int = DEFAULT_TIGHT_GAP_SECONDS,
+    anchor_for: Callable[[datetime], tuple[str | None, str | None]] | None = None,
 ) -> list[MeetingClass]:
     """Classify every event into a drive-planner bucket.
 
@@ -433,6 +443,15 @@ def scan(
         tight_gap_seconds: gap at or below which two consecutive meetings
             are "tight" (bridge / back_to_back). Defaults to
             DEFAULT_TIGHT_GAP_SECONDS.
+        anchor_for: per-meeting anchor resolver (#122) — called with the
+            meeting's start and returns `(address, note)`. `address` replaces
+            the home address on the meeting's home-side endpoints (outbound
+            origin, return destination); on a trip that's the current
+            lodging. `address=None` means no drivable anchor exists (on a
+            trip before any lodging) — the legs come back with None endpoints
+            and `anchor_note=note` so the caller surfaces them instead of
+            routing from home. Defaults to a constant `(home_address, None)`
+            — the pre-#122 behavior.
 
     Returns:
         list[MeetingClass] in the input order.
@@ -460,6 +479,8 @@ def scan(
         )
 
     skip_state = skip_state or {}
+    if anchor_for is None:
+        anchor_for = lambda _at: (home_address, None)  # noqa: E731 — trivial constant default
     parsed = [_parse_event(raw) for raw in events]
 
     # Pass 1: every meeting referenced by ANY planner marker is "handled"
@@ -487,7 +508,7 @@ def scan(
             _classify(
                 event,
                 now=now,
-                home_address=home_address,
+                anchor_for=anchor_for,
                 skip_state=skip_state,
                 handled_directions=handled_directions,
                 candidates=candidates,
@@ -525,7 +546,7 @@ def _classify(
     event: _Event,
     *,
     now: datetime,
-    home_address: str,
+    anchor_for: Callable[[datetime], tuple[str | None, str | None]],
     skip_state: dict[str, str],
     handled_directions: dict[str, list[str]],
     candidates: list[_Event],
@@ -581,7 +602,7 @@ def _classify(
     # 8. A routable meeting — read neighbours and emit legs.
     return _classify_transit(
         event,
-        home_address=home_address,
+        anchor_for=anchor_for,
         candidates=candidates,
         order=order,
         tight_gap_seconds=tight_gap_seconds,
@@ -591,7 +612,7 @@ def _classify(
 def _classify_transit(
     event: _Event,
     *,
-    home_address: str,
+    anchor_for: Callable[[datetime], tuple[str | None, str | None]],
     candidates: list[_Event],
     order: dict[int, int],
     tight_gap_seconds: int,
@@ -600,14 +621,26 @@ def _classify_transit(
 
     Outbound: skipped when the previous meeting is the SAME venue with a
     tight gap (back_to_back — you're already there); a bridge when the
-    previous meeting is a DIFFERENT venue with a tight gap; otherwise a
-    home→venue leg. Return is the mirror on the next meeting. Anchoring
+    previous meeting is a DIFFERENT venue with a tight gap; otherwise an
+    anchor→venue leg. Return is the mirror on the next meeting. Anchoring
     outbound on the first of a same-venue run and return on the last falls
     out of this naturally.
+
+    The anchor (home off-trip, the current lodging on-trip, #122) is
+    resolved once per meeting at its start time — one moment, one answer;
+    a return leg after a same-day lodging change re-anchors on the next
+    sweep once the schedule reflects it. An unresolved anchor (None) flows
+    into the leg endpoints with `anchor_note` set so the planner surfaces
+    the meeting instead of silently routing it from the wrong continent.
     """
     index = order[id(event)]
     prev_event = candidates[index - 1] if index > 0 else None
     next_event = candidates[index + 1] if index + 1 < len(candidates) else None
+
+    # event.start is non-None here — step 4 filtered missing times before
+    # any event reaches transit classification.
+    assert event.start is not None
+    anchor_address, anchor_note = anchor_for(event.start)
 
     legs: list[TransitLeg] = []
     is_bridge = False
@@ -620,13 +653,14 @@ def _classify_transit(
             # Same venue, tight gap: you never left — no inbound leg.
             is_back_to_back = True
         else:
-            # Different venue, tight gap: drive straight across, not via home.
+            # Different venue, tight gap: drive straight across, not via the
+            # anchor. Venue→venue, so an unresolved anchor doesn't gate it.
             is_bridge = True
             legs.append(
                 TransitLeg(
                     direction="bridge",
-                    origin=prev_event.location or home_address,
-                    destination=event.location or home_address,
+                    origin=prev_event.location or anchor_address,
+                    destination=event.location or anchor_address,
                     arrive_by=event.start,
                     gap_seconds=prev_gap,
                 )
@@ -635,25 +669,27 @@ def _classify_transit(
         legs.append(
             TransitLeg(
                 direction="outbound",
-                origin=home_address,
-                destination=event.location or home_address,
+                origin=anchor_address,
+                destination=event.location or anchor_address,
                 arrive_by=event.start,
+                anchor_note=anchor_note if anchor_address is None else None,
             )
         )
 
-    # --- return side: how do we get home AFTER this meeting? ---
-    # A tight gap to ANY next meeting cancels the return-home leg: same
-    # venue means you stay put, different venue means the next meeting owns
-    # the bridge leg in (lombot #14/#7) — either way you don't drive home.
+    # --- return side: how do we get back to the anchor AFTER this meeting? ---
+    # A tight gap to ANY next meeting cancels the return leg: same venue
+    # means you stay put, different venue means the next meeting owns the
+    # bridge leg in (lombot #14/#7) — either way you don't drive back.
     next_gap = _gap_seconds(event, next_event)
     skip_return = next_event is not None and next_gap is not None and next_gap <= tight_gap_seconds
     if not skip_return:
         legs.append(
             TransitLeg(
                 direction="return",
-                origin=event.location or home_address,
-                destination=home_address,
+                origin=event.location or anchor_address,
+                destination=anchor_address,
                 depart_after=event.end,
+                anchor_note=anchor_note if anchor_address is None else None,
             )
         )
 
@@ -706,6 +742,7 @@ def _leg_to_dict(leg: TransitLeg) -> dict:
         "arrive_by": leg.arrive_by.isoformat() if leg.arrive_by else None,
         "depart_after": leg.depart_after.isoformat() if leg.depart_after else None,
         "gap_seconds": leg.gap_seconds,
+        "anchor_note": leg.anchor_note,
     }
 
 
@@ -739,6 +776,10 @@ def main() -> int:
     The pure `scan()` stays importable for unit tests; this is the
     deterministic-operation-as-script surface per `coding-policy:
     script-delegation` / `file-hygiene`.
+
+    This CLI is anchor-static: legs anchor at `home_address` only. The
+    trip-aware per-meeting anchor (#122) is a callable and doesn't cross a
+    JSON boundary — the sweep precheck uses the Python API's `anchor_for`.
     """
     try:
         request = json.load(sys.stdin)

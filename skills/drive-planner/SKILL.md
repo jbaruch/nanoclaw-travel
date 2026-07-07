@@ -1,6 +1,6 @@
 ---
 name: drive-planner
-description: "Ground-transit drive planner for in-person meetings. On a ~2h precheck sweep it creates a traffic-aware Free drive block (home → venue → home) for each in-person meeting that lacks one and tells the user, who can reply to skip; the recheck poll then watches each block for traffic growth. Use on a drive-planner sweep wake event, or when the user replies to skip a drive block. Triggers - 'drive block', 'plan my drive', 'skip', 'skip 1', 'skip 1 and 3', 'cancel 2', 'cancel that drive', 'don't drive to that meeting', 'remove drive block', 'drive to my meeting', 'leave-by for a meeting'."
+description: "Ground-transit drive planner for in-person meetings. On a ~2h precheck sweep it creates a traffic-aware Free drive block (home → venue → home; while a TripIt trip is active the current lodging stands in for home) for each in-person meeting that lacks one and tells the user, who can reply to skip; the recheck poll then watches each block for traffic growth. Use on a drive-planner sweep wake event, or when the user replies to skip a drive block. Triggers - 'drive block', 'plan my drive', 'skip', 'skip 1', 'skip 1 and 3', 'cancel 2', 'cancel that drive', 'don't drive to that meeting', 'remove drive block', 'drive to my meeting', 'leave-by for a meeting'."
 cadence: "0 */2 * * *"
 agentModel: "claude-haiku-4-5-20251001"
 script: "precheck.py"
@@ -16,7 +16,7 @@ Available actions:
 
 Never put an internal calendar event/meeting id in a user-facing message, and never require the user to type one. The user refers to a block by its list number or the meeting name; the skill maps that to the id itself.
 
-Skill bundle scripts run from the runtime mount `/home/node/.claude/skills/tessl__drive-planner/`. Routing and the canonical home address are resolved by the precheck; `maps_client` ships in the co-located `tessl__flight-assist` bundle and is imported by the scripts, not invoked here.
+Skill bundle scripts run from the runtime mount `/home/node/.claude/skills/tessl__drive-planner/`. Routing and the per-meeting drive anchor (the canonical home address off-trip, the current trip lodging while traveling — see `trip_origin.py` in the co-located `tessl__flight-assist` bundle) are resolved by the precheck; `maps_client` also ships in that bundle and is imported by the scripts, not invoked here.
 
 ## Step 1 — Handle a sweep wake cycle
 

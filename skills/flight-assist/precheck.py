@@ -69,6 +69,7 @@ from state import (  # noqa: E402
     resolve_live_origin,
     write_flight_state,
 )
+from trip_origin import resolve_effective_home  # noqa: E402
 from wake_rules import detect_wake_events  # noqa: E402
 
 # Cadence ladder (minutes). Keyed by `computed_status`; the
@@ -181,7 +182,12 @@ def _run_cycle(
     """
     active_flight_ids = read_active_flights()
     config = read_config() or {}
-    home_address = config.get("home_address")
+    # Trip-aware (#122): "home" for this cycle is the static residence
+    # off-trip, but the current lodging while a TripIt trip is active —
+    # routing a time-to-leave from a residence an ocean away is worse than
+    # not routing at all. None mid-trip (no lodging yet) disables routing
+    # via the existing no-home handling.
+    home_address = resolve_effective_home(config.get("home_address"), now=now_utc)
     min_transfer_minutes = _resolve_min_transfer_minutes(config)
 
     # Resolve the time-to-leave origin once per cycle so every flight
@@ -573,7 +579,9 @@ def _resolve_time_to_leave_origin(
     Delegates to `state.resolve_live_origin` — the single ladder shared with the
     airport-drive reconcile (fresh `current-location.json` → `home_address` →
     None), so the two never disagree on where the user is. Issue
-    `jbaruch/nanoclaw-flight-assist#18`.
+    `jbaruch/nanoclaw-flight-assist#18`. The `home_address` rung is the
+    trip-aware effective home resolved at cycle start (#122): the static
+    residence off-trip, the current lodging on-trip.
     """
     return resolve_live_origin(home_address, now=now_utc)
 

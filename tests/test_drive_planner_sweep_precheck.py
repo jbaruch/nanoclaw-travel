@@ -247,3 +247,78 @@ def test_bridge_gate_includes_arrival_buffer():
     payload = precheck.plan_meetings(_scan(events), route=_fixed_router(58 * 60), home_address=HOME)
     by_id = {m["meeting_id"]: m for m in payload["meetings"]}
     assert any(u["direction"] == "bridge" for u in by_id["b"]["unplannable"])
+
+
+# --- trip-aware anchors (#122) ---------------------------------------------
+
+LODGING = "1 Seaside Lane, Hastings, UK"
+
+
+def test_unresolved_anchor_leg_is_unplannable_never_routed():
+    """A leg with a None endpoint (on a trip, no lodging known) must reach
+    the operator via `unplannable` with the scan's reason — and the router
+    must never be asked to price it from home."""
+    events = [_meeting("m1", 14, location="Rye Waterworks, Rye, UK")]
+    note = "on 'UK trip' with no lodging event at or before the meeting"
+    results = scan(events, now=NOW, home_address=HOME, anchor_for=lambda _at: (None, note))
+
+    def exploding_router(origin, destination):
+        raise AssertionError(
+            f"router must not be called for an unresolved anchor ({origin} → {destination})"
+        )
+
+    payload = precheck.plan_meetings(results, route=exploding_router, home_address=HOME)
+    [m] = payload["meetings"]
+    assert m["create_args"] == []
+    assert m["route_errors"] == []
+    assert [u["reason"] for u in m["unplannable"]] == [note, note]
+
+
+def test_on_trip_meeting_routes_from_lodging_end_to_end(tmp_path, monkeypatch):
+    """The full sweep pipeline against a real schedule file: the anchor
+    resolver built by `_build_anchor_resolver` (over trip_origin) hands the
+    lodging to scan, and the created blocks route lodging→venue→lodging."""
+    import json
+
+    import trip_origin
+
+    schedule = [
+        {
+            "schema_version": 1,
+            "summary": "UK offsite 2026",
+            "start": "2026-06-26",
+            "end": "2026-07-13",
+            "location": "United Kingdom",
+            "type": "Trip",
+            "uid": "uid-trip",
+        },
+        {
+            "schema_version": 1,
+            "summary": "Check-in: Seaside Airbnb",
+            "start": "2026-06-27T15:00:00Z",
+            "end": "2026-06-27T16:00:00Z",
+            "location": LODGING,
+            "type": "Lodging",
+            "uid": "uid-lodging-in",
+        },
+    ]
+    schedule_path = tmp_path / "travel-schedule.json"
+    schedule_path.write_text(json.dumps(schedule))
+    monkeypatch.setattr(trip_origin, "SCHEDULE_PATH", str(schedule_path))
+    anchor_for = precheck._build_anchor_resolver(HOME)
+
+    events = [_meeting("m_uk", 14, location="Rye Waterworks, Rye, UK")]
+    results = scan(events, now=NOW, home_address=HOME, anchor_for=anchor_for)
+    payload = precheck.plan_meetings(results, route=_fixed_router(1500), home_address=HOME)
+    [m] = payload["meetings"]
+    outbound = _leg(m["create_args"], "outbound")
+    ret = _leg(m["create_args"], "return")
+    block_out = parse_block(
+        {"id": "b1", "summary": outbound["summary"], "description": outbound["description"]}
+    )
+    block_ret = parse_block(
+        {"id": "b2", "summary": ret["summary"], "description": ret["description"]}
+    )
+    assert block_out is not None and block_ret is not None
+    assert block_out.origin == LODGING
+    assert block_ret.destination == LODGING

@@ -1,5 +1,13 @@
 # Changelog
 
+### Fixed — trip-aware drive origins: lodging over static home while traveling (`jbaruch/nanoclaw-travel#122`)
+
+The drive planners had no trip awareness: drive-planner routed every meeting leg from the static home (live case 2026-07-07: a UK dinner drew a "leave by 6:16 PM — 39-min drive" block computed from the Tennessee residence via a mis-geocoded venue), and flight-assist's origin ladder fell back to the same static home when the live-location snapshot was stale. New shared `skills/flight-assist/trip_origin.py` resolves the anchor from `travel-schedule.json` (TripIt truth): off-trip → home, unchanged; on an active Trip → the `location` of the latest Lodging event (check-in or check-out) within the trip span at or before the anchor time, which also resolves check-out→check-in gaps; before the trip's first lodging → the Trip's own location, else unresolved — home is never used mid-trip. drive-planner's scan resolves the anchor per meeting (`anchor_for`) so a 14-day sweep window can span on- and off-trip meetings; an unresolved anchor surfaces the leg as `unplannable` instead of routing it. flight-assist's time-to-leave origin and drive-home destination use the trip-aware effective home per cycle.
+
+### Fixed — correct stale plugin-home claim in `home_address.py` docstring (`jbaruch/nanoclaw-travel#122` comment)
+
+The docstring claimed drive-planner lives in `nanoclaw-trusted`; it lives in this plugin. The `trusted-memory` ownership references (which genuinely point at `nanoclaw-trusted`) are untouched.
+
 ## 0.2.13 — 2026-07-07
 
 ### Fixed — stop flagging elapsed nights as lodging gaps (`jbaruch/nanoclaw-travel#120`)
