@@ -33,8 +33,17 @@ additionalTiles: ["jbaruch/nanoclaw-travel"]
 |----------|---------|--------------|
 | `BYAIR_MCP_URL` | byAir streamable-HTTP MCP endpoint (includes API key) | https://byairapp.com/mcp/ — Pro subscription, personal MCP link |
 | `GOOGLE_MAPS_API_KEY` | Distance Matrix API key for time-to-leave | https://console.cloud.google.com/apis/credentials |
+| `COMPOSIO_API_KEY` | Composio project API key — Google Calendar actions (boarding-block reconciliation, drive-block create/remove, calendar fetches) | https://app.composio.dev — project settings |
+| `COMPOSIO_USER_ID` | Composio user/entity the Google Calendar account is connected under; scopes every tool execution | https://app.composio.dev — connected accounts |
 
-Store both in OneCLI vault. Never commit. See [.env.example](.env.example) for the contract; GitHub Actions secrets configuration link is in its file header.
+Optional:
+
+| Variable | Purpose |
+|----------|---------|
+| `COMPOSIO_BASE_URL` | Override of the Composio REST endpoint; unset uses the public v3 backend |
+| `TOMTOM_API_KEY` | Backup routing provider, used only when the Google Distance Matrix call fails; absent it, a Google failure propagates |
+
+Store all required credentials in OneCLI vault. Never commit. See [.env.example](.env.example) for the contract; GitHub Actions secrets configuration link is in its file header.
 
 ## Rules
 
@@ -58,7 +67,7 @@ Store both in OneCLI vault. Never commit. See [.env.example](.env.example) for t
 
 The skill bundle includes executable scripts the agent invokes via the SKILL.md actions:
 
-- `scripts/check-env.py` — verifies BYAIR_MCP_URL + GOOGLE_MAPS_API_KEY are set
+- `scripts/check-env.py` — verifies BYAIR_MCP_URL, GOOGLE_MAPS_API_KEY, COMPOSIO_API_KEY, and COMPOSIO_USER_ID are set
 - `scripts/set-home-base.py` — persists home address to plugin config for time-to-leave queries
 - `scripts/get-flight-state.py` — fetches a flight's last-known snapshot to enrich notifications
 - `scripts/read-current-tz.py` — resolves the operator's `current_tz` from `tz_state` so surfaces phrase relative dates in the operator's local zone (see `operator-local-tz-phrasing` rule)
