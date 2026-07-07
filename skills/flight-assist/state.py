@@ -42,13 +42,15 @@ Public API:
 
 Non-owner reader contract: any plugin that reads (but does not own) this
 state — sync-tripit, future agent-side composition, other plugins — MUST
-use the `*_snapshot` entry points. They treat a schema_version BELOW
-the current `STATE_SCHEMA_VERSION` as "no usable prior state" (return
-None / []) without rewriting the file, satisfying `coding-policy:
-stateful-artifacts`'s single-owner migration rule. A schema_version
-ABOVE the current still raises `StateError` (forward incompatibility,
-not an old-state case) — operators need to upgrade the consumer plugin,
-not be told there's nothing on disk.
+use the `*_snapshot` entry points. They treat ANY schema_version other
+than the current `STATE_SCHEMA_VERSION` as "no usable prior state"
+(return None / []) without rewriting the file, satisfying
+`coding-policy: stateful-artifacts`'s single-owner migration rule:
+BELOW, the next owner-skill invocation upgrades the file; ABOVE, the
+reading plugin is lagging behind the owner mid-rollout and degrades
+safely instead of wedging until upgraded. Owner-side reads stay strict
+— a schema_version above the current raises `StateError` from the
+owner path only (the owner must never run behind its own state files).
 """
 
 from __future__ import annotations
@@ -198,7 +200,9 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
     Migrations are additive only — non-owner readers see the latest
     schema after the owner skill (this module) reads any older file.
     Per `coding-policy: stateful-artifacts`, only the owner skill
-    migrates; readers from other plugins get `StateError` on mismatch.
+    migrates; readers from other plugins use the `*_snapshot` entry
+    points, which treat any version mismatch as "no usable prior
+    state" and never invoke this function.
 
     Each branch handles one version transition and they chain: a v1
     record steps 1→2→3 in a single call. Re-running a migration on

@@ -4,7 +4,7 @@ Documents the on-disk state files the flight-assist plugin reads and writes. Per
 
 ## Owner Skill
 
-`flight-assist` (this plugin) is the sole owner. Only this skill migrates `schema_version`. Reader skills (other plugins, agent-side composition, sync-tripit) call the snapshot reader API — `read_active_flights_snapshot` / `read_flight_state_snapshot` — which treats a `schema_version` strictly below the current `STATE_SCHEMA_VERSION` as "no usable prior state" and returns without rewriting the file. A `schema_version` ABOVE the current still raises `StateError` from any reader (forward incompatibility — operators must upgrade the consumer plugin, not be told there's nothing on disk).
+`flight-assist` (this plugin) is the sole owner. Only this skill migrates `schema_version`. Reader skills (other plugins, agent-side composition, sync-tripit) call the snapshot reader API — `read_active_flights_snapshot` / `read_flight_state_snapshot` — which treats ANY `schema_version` other than the current `STATE_SCHEMA_VERSION` as "no usable prior state" and returns without rewriting the file: below, the owner hasn't migrated the file yet; above, the reading plugin is lagging behind the owner mid-rollout and degrades safely instead of wedging. Owner-side reads stay strict — a `schema_version` above the current raises `StateError` from the owner path only (the owner must never run behind its own state files). See Migration Policy below.
 
 ## State Directory
 
