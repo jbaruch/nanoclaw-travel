@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.17 — 2026-07-07
+
 ### Fixed — harden build-travel-db against malformed travel-schedule input (`jbaruch/nanoclaw-travel#127`)
 
 `build-travel-db.py` handled only a missing `travel-schedule.json`; a corrupt, non-UTF-8, partially-written, or wrong-root-shape file produced a raw traceback instead of the documented Step 4 failure surface. The schedule read now catches `OSError` / `UnicodeDecodeError` / `json.JSONDecodeError` and validates the root is a JSON array of event objects, exiting 1 with a stderr diagnostic that names the recovery path (re-run `refresh-travel-schedule.py`). Tests cover truncated JSON, non-UTF-8 bytes, object root, and array-of-non-objects.
