@@ -283,11 +283,13 @@ def test_on_trip_meeting_routes_from_lodging_end_to_end(tmp_path, monkeypatch):
     import trip_origin
 
     schedule = [
+        # Dates are fixed PAST dates anchored to this file's frozen NOW
+        # (2026-07-01) per `coding-policy: testing-standards`.
         {
             "schema_version": 1,
             "summary": "UK offsite 2026",
             "start": "2026-06-26",
-            "end": "2026-07-13",
+            "end": "2026-07-02",
             "location": "United Kingdom",
             "type": "Trip",
             "uid": "uid-trip",

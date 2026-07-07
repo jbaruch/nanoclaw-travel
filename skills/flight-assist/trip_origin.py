@@ -55,10 +55,10 @@ SCHEDULE_PATH = "/workspace/group/travel-schedule.json"
 # Highest travel-schedule.json record schema this reader accepts. Bump in
 # lock-step with refresh-travel-schedule.py's SCHEMA_VERSION per
 # `coding-policy: stateful-artifacts`. Records without a schema_version are
-# legacy v1 (the field was introduced at v1); any record carrying a HIGHER
-# version marks the whole file forward-incompatible — this reader is
-# lagging, so it takes the no-usable-schedule path rather than guessing at
-# a shape it doesn't know.
+# legacy pre-versioned records (written before the field existed) that this
+# reader treats as v1; any record carrying a HIGHER version marks the whole
+# file forward-incompatible — this reader is lagging, so it takes the
+# no-usable-schedule path rather than guessing at a shape it doesn't know.
 SCHEDULE_SCHEMA_VERSION = 1
 
 
@@ -115,7 +115,7 @@ def load_travel_schedule(path: str | None = None) -> list[dict] | None:
     for record in records:
         version = record.get("schema_version")
         if version is None:
-            continue  # legacy v1
+            continue  # legacy pre-versioned record — read as v1
         if not isinstance(version, int) or isinstance(version, bool):
             continue  # malformed version on one record — the record set still reads
         if version > SCHEDULE_SCHEMA_VERSION:

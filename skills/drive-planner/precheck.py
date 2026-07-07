@@ -92,7 +92,7 @@ def _flight_assist_on_path() -> None:
     Raises FileNotFoundError when neither the runtime mount nor the dev sibling
     holds flight-assist (both skills ship from the same plugin) — main()'s
     outer-boundary handler converts that into the safe no-wake payload.
-    Idempotent: a duplicate sys.path entry is harmless.
+    Idempotent: an already-present entry is not re-inserted.
     """
     if _FLIGHT_ASSIST_RUNTIME.is_dir():
         flight_assist_dir = _FLIGHT_ASSIST_RUNTIME
@@ -104,7 +104,8 @@ def _flight_assist_on_path() -> None:
             f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev) — maps_client "
             "and trip_origin ship there; both skills are part of jbaruch/nanoclaw-travel"
         )
-    sys.path.insert(0, str(flight_assist_dir))
+    if str(flight_assist_dir) not in sys.path:
+        sys.path.insert(0, str(flight_assist_dir))
 
 
 def _load_maps_client():
