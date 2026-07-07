@@ -17,6 +17,8 @@ Locks down the documented contract per `coding-policy: testing-standards`:
         non-travel-night without lodging coverage AND with at least
         one future transport date — the "no future transport = home"
         guard prevents tail-end home-nights from being flagged
+      * the night scan is floored at the injected `today` — elapsed
+        nights of a trip already underway are never flagged (#120)
   - `build_lodging_ranges` pairs `Check-in:` / `Check-out:` events by
     hotel name; an orphan check-in defaults to a 1-day stay
   - Issue derivation prioritizes empty > transport-without-lodging >
@@ -228,7 +230,10 @@ def test_build_lodging_ranges_orphan_earlier_checkin_not_stealing_later_stay(che
 def test_classify_trip_empty(check_travel_bookings):
     module, *_ = check_travel_bookings
     out = module.classify_trip(
-        items=[], trip_start=_FROZEN_TODAY, trip_end=_FROZEN_TODAY + timedelta(days=3)
+        items=[],
+        trip_start=_FROZEN_TODAY,
+        trip_end=_FROZEN_TODAY + timedelta(days=3),
+        today=_FROZEN_TODAY,
     )
     assert out["is_empty"] is True
     assert out["has_transport"] is False
@@ -255,7 +260,7 @@ def test_classify_trip_transport_without_lodging(check_travel_bookings):
             "dtend": trip_start + timedelta(days=3),
         },
     ]
-    out = module.classify_trip(items, trip_start, trip_end)
+    out = module.classify_trip(items, trip_start, trip_end, today=_FROZEN_TODAY)
     assert out["has_transport"] is True
     assert out["has_lodging"] is False
     # Nights at indices 1, 2 are uncovered (between outbound day-0
@@ -299,7 +304,7 @@ def test_classify_trip_full_coverage(check_travel_bookings):
             "dtend": trip_start + timedelta(days=4),
         },
     ]
-    out = module.classify_trip(items, trip_start, trip_end)
+    out = module.classify_trip(items, trip_start, trip_end, today=_FROZEN_TODAY)
     assert out["uncovered_nights"] == []
 
 
@@ -322,7 +327,7 @@ def test_classify_trip_tail_home_night_not_flagged(check_travel_bookings):
             "dtend": trip_start,
         },
     ]
-    out = module.classify_trip(items, trip_start, trip_end)
+    out = module.classify_trip(items, trip_start, trip_end, today=_FROZEN_TODAY)
     # No future transport after night 0 → no uncovered flagged.
     assert out["uncovered_nights"] == []
 
@@ -350,10 +355,95 @@ def test_classify_trip_same_day_round_trip_no_uncovered(check_travel_bookings):
             "dtend": trip_end,  # arrival slips past UTC midnight
         },
     ]
-    out = module.classify_trip(items, trip_start, trip_end)
+    out = module.classify_trip(items, trip_start, trip_end, today=_FROZEN_TODAY)
     assert out["has_transport"] is True
     assert out["has_lodging"] is False
     assert out["uncovered_nights"] == []
+
+
+def test_classify_trip_past_nights_not_flagged(check_travel_bookings):
+    """Trip already underway: nights before `today` are elapsed and
+    un-bookable, so they are never flagged even without lodging
+    coverage. Lodging covering today onward → zero uncovered.
+    Regression guard for #120 (Scotland trip, 2026-07-07: 10 phantom
+    past-night gaps buried the correctly-matched current Airbnb)."""
+    module, *_ = check_travel_bookings
+    trip_start = _FROZEN_TODAY - timedelta(days=11)
+    trip_end = _FROZEN_TODAY + timedelta(days=6)
+    items = [
+        {
+            "item_type": "Flight",
+            "summary": "Outbound",
+            "dtstart": trip_start,
+            "dtend": trip_start,
+        },
+        {
+            "item_type": "Lodging",
+            "summary": "Check-in: Airbnb - Jane",
+            "dtstart": _FROZEN_TODAY - timedelta(days=1),
+            "dtend": _FROZEN_TODAY - timedelta(days=1),
+        },
+        {
+            "item_type": "Lodging",
+            "summary": "Check-out: Airbnb - Jane",
+            "dtstart": _FROZEN_TODAY + timedelta(days=4),
+            "dtend": _FROZEN_TODAY + timedelta(days=4),
+        },
+        {
+            "item_type": "Lodging",
+            "summary": "Check-in: Airport Hotel",
+            "dtstart": _FROZEN_TODAY + timedelta(days=4),
+            "dtend": _FROZEN_TODAY + timedelta(days=4),
+        },
+        {
+            "item_type": "Lodging",
+            "summary": "Check-out: Airport Hotel",
+            "dtstart": _FROZEN_TODAY + timedelta(days=5),
+            "dtend": _FROZEN_TODAY + timedelta(days=5),
+        },
+        {
+            # Departs the day before trip_end so it lands inside the
+            # [trip_start, trip_end) transport window — without a
+            # future transport date the home-guard alone would hide
+            # the past-night bug this test exists to catch.
+            "item_type": "Flight",
+            "summary": "Return",
+            "dtstart": trip_end - timedelta(days=1),
+            "dtend": trip_end - timedelta(days=1),
+        },
+    ]
+    out = module.classify_trip(items, trip_start, trip_end, today=_FROZEN_TODAY)
+    assert out["uncovered_nights"] == []
+
+
+def test_classify_trip_future_uncovered_still_flagged_mid_trip(check_travel_bookings):
+    """The today-floor only drops elapsed nights — a genuinely
+    uncovered FUTURE night of an underway trip still surfaces."""
+    module, *_ = check_travel_bookings
+    trip_start = _FROZEN_TODAY - timedelta(days=3)
+    trip_end = _FROZEN_TODAY + timedelta(days=3)
+    items = [
+        {
+            "item_type": "Flight",
+            "summary": "Outbound",
+            "dtstart": trip_start,
+            "dtend": trip_start,
+        },
+        {
+            "item_type": "Flight",
+            "summary": "Return",
+            "dtstart": trip_end - timedelta(days=1),
+            "dtend": trip_end - timedelta(days=1),
+        },
+    ]
+    out = module.classify_trip(items, trip_start, trip_end, today=_FROZEN_TODAY)
+    # Elapsed nights (trip_start..yesterday) are dropped; tonight and
+    # tomorrow remain uncovered ahead of the return leg.
+    expected = [
+        _FROZEN_TODAY.isoformat(),
+        (_FROZEN_TODAY + timedelta(days=1)).isoformat(),
+    ]
+    assert out["uncovered_nights"] == expected
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,9 @@
 # Changelog
 
+### Fixed — stop flagging elapsed nights as lodging gaps (`jbaruch/nanoclaw-travel#120`)
+
+`classify_trip` in `check-travel-bookings.py` scanned trip nights from `trip_start` with no floor at today, so a trip already underway reported every un-booked past night as a gap (live case 2026-07-07: the Scotland trip surfaced 10 phantom past-night gaps that buried the correctly-matched current Airbnb). The night scan now starts at `max(trip_start, today)`; `today` is threaded in from `main()` as a parameter so the classifier stays pure and testable. Future-night gaps of underway trips and future-trip flags are unaffected.
+
 ## 0.2.11 — 2026-07-02
 
 ### Changed — backfill CHANGELOG entries for released versions 0.2.7–0.2.10
