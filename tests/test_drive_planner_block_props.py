@@ -128,6 +128,42 @@ def test_create_args_omit_timezone_when_absent():
     assert "timezone" not in args
 
 
+def test_create_wall_clock_expressed_in_target_timezone():
+    """#131 live case: a leg computed in the home offset (−05:00) but created
+    with the venue tz (Europe/London) must carry the London wall-clock. The
+    Composio adapter drops the offset in `start_datetime` and re-reads the
+    wall-clock in `timezone`, so a Chicago wall-clock landed the Rye block
+    6h early."""
+    args = _build_args(
+        leg_start=datetime(2026, 7, 10, 9, 15, 46, tzinfo=CT),
+        arrive_by=datetime(2026, 7, 10, 9, 45, 0, tzinfo=CT),
+        timezone="Europe/London",
+    )
+    assert args["start_datetime"] == "2026-07-10T15:15:46+01:00"
+    assert args["timezone"] == "Europe/London"
+
+
+def test_create_wall_clock_converts_etc_gmt_fallback_zone():
+    """`_extract_timezone`'s offset fallback (`Etc/GMT±N`) is a resolvable
+    zone key and converts like a real IANA name (Etc/GMT-1 == UTC+1)."""
+    args = _build_args(
+        leg_start=datetime(2026, 7, 10, 9, 15, 0, tzinfo=CT),
+        arrive_by=datetime(2026, 7, 10, 9, 45, 0, tzinfo=CT),
+        timezone="Etc/GMT-1",
+    )
+    assert args["start_datetime"] == "2026-07-10T15:15:00+01:00"
+
+
+def test_create_wall_clock_left_alone_for_unresolvable_timezone():
+    """A tz string ZoneInfo can't resolve (defensive — raw offset strings
+    never come out of `_extract_timezone`, but a future caller could pass
+    one) leaves leg_start's own offset untouched: that offset is already
+    the correct instant."""
+    args = _build_args(timezone="+01:00")
+    assert args["start_datetime"] == LEG_START.isoformat()
+    assert args["timezone"] == "+01:00"
+
+
 def test_description_state_round_trips_via_parse_block():
     state = parse_block(_event_from_args(_build_args()))
     assert isinstance(state, BlockState)

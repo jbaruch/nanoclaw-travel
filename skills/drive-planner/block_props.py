@@ -53,6 +53,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Marker token stamped into the block description so the planner (and `scan.py`)
 # recognize their own work. MUST stay byte-compatible with `scan._MARKER_RE`;
@@ -166,6 +167,32 @@ def _duration_minutes(leg_start: datetime, leg_end: datetime) -> int:
     return max(minutes, 1)
 
 
+def _wall_clock_in(dt: datetime, tz_name: str | None) -> datetime:
+    """Express `dt` in the CREATE's `timezone` arg so wall-clock and tz agree.
+
+    The Composio `GOOGLECALENDAR_CREATE_EVENT` adapter ignores the offset in
+    `start_datetime` and re-reads its wall-clock in the `timezone` arg, so a
+    leg computed in the home offset but created with the venue tz lands
+    shifted by the home↔venue delta (#131 — 6h early on a UK trip).
+
+    `dt` is returned as-is in two cases: `tz_name` absent (the caller then
+    omits the CREATE's `timezone` arg entirely, and `dt`'s own offset is
+    the correct instant), or `tz_name` not a resolvable zone key (real IANA
+    names and `_extract_timezone`'s `Etc/GMT±N` fallback both resolve —
+    this is defensive). In the unresolvable case the caller still passes
+    `tz_name` through as the `timezone` arg, preserving the pre-#131
+    behavior for that path: no conversion this helper could do would be
+    more correct than the wall-clock `dt` already carries.
+    """
+    if not tz_name:
+        return dt
+    try:
+        zone = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return dt
+    return dt.astimezone(zone)
+
+
 def build_block_args(
     *,
     calendar_id: str,
@@ -252,7 +279,7 @@ def build_block_args(
         "summary": summary,
         "description": description,
         "location": destination,
-        "start_datetime": leg_start.isoformat(),
+        "start_datetime": _wall_clock_in(leg_start, timezone).isoformat(),
         "event_duration_hour": total_minutes // 60,
         "event_duration_minutes": total_minutes % 60,
         "transparency": "opaque" if busy else "transparent",
@@ -260,7 +287,9 @@ def build_block_args(
     # The live CREATE needs an explicit IANA `timezone`, or it reads the
     # wall-clock as UTC and the block lands hours off (#83). When the meeting
     # carries no timeZone, omit it rather than guess — the caller anchors the
-    # block to the same instant either way.
+    # block to the same instant either way. The wall-clock above is expressed
+    # in this same zone (#131) — the adapter drops the offset and re-reads the
+    # wall-clock in `timezone`, so the two must agree.
     if timezone:
         args["timezone"] = timezone
     return args
