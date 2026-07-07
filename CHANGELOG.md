@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.20 — 2026-07-07
+
 ### Fixed — CREATE wall-clock expressed in the event's timezone arg (`jbaruch/nanoclaw-travel#131`)
 
 Drive blocks landed ~6h early while traveling (live case 2026-07-07: the Fletchers House Rye outbound block sat at 09:15 BST for a 15:45 reservation). PR #87 passed an explicit venue `timezone` to `GOOGLECALENDAR_CREATE_EVENT` but left `start_datetime`'s wall-clock in whatever offset `leg_start` carried (the home −05:00); the Composio adapter ignores the offset and re-reads the wall-clock in the `timezone` arg, shifting the block by the home↔venue delta — invisible at home where the two zones agree. `build_block_args` (drive-planner `block_props.py` and flight-assist `airport_block.py`, same latent bug) now converts `leg_start` to the target zone via a `_wall_clock_in` helper before formatting; an absent or unresolvable `timezone` (raw offset strings — `_extract_timezone`'s `Etc/GMT±N` fallback resolves fine) leaves the datetime untouched, preserving prior behavior. Tests pin the Chicago→London 6h case, the `Etc/GMT±N` fallback, the unresolvable-tz guard, and the airport-block UTC→Chicago case. The deeper question of normalizing internal `arrive_by` to the venue tz at parse time stays open in #131.
