@@ -99,6 +99,30 @@ def test_build_block_args_to_airport_free_with_timezone():
     assert "[flight-assist:flight=12345:dir=to_airport]" in args["description"]
 
 
+def test_build_block_args_wall_clock_expressed_in_airport_timezone():
+    """#131 (same class as drive-planner's 6h-early UK block): a leg_start
+    carrying a non-airport offset must be re-expressed in the CREATE's
+    `timezone` — the Composio adapter drops the offset and re-reads the
+    wall-clock in that zone. A UTC leg_start with a Chicago airport tz
+    would otherwise land the block 5h late."""
+    leave_by_utc = LEAVE_BY.astimezone(timezone.utc)
+    args = build_block_args(
+        calendar_id="primary",
+        flight_id="12345",
+        direction="to_airport",
+        summary="Drive: → BNA (DL123)",
+        leg_start=leave_by_utc,
+        anchor=BE_AT_AIRPORT,
+        baseline_seconds=1800,
+        origin="<live location>",
+        destination="BNA",
+        timezone="America/Chicago",
+    )
+    # Same instant, Chicago wall-clock (CDT −05:00 on 2026-07-02).
+    assert args["start_datetime"] == "2026-07-02T12:30:00-05:00"
+    assert args["timezone"] == "America/Chicago"
+
+
 def test_build_block_args_from_airport_uses_explicit_leg_end():
     arr_anchor = datetime(2026, 7, 2, 18, 40, tzinfo=CT)  # actual_arr + post-arrival
     home_eta = arr_anchor + timedelta(minutes=45)

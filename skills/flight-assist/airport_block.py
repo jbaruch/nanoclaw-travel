@@ -53,6 +53,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Self-marker stamped into the description so flight-assist recognizes its own
 # airport drive blocks (idempotent create — never duplicate a block for the
@@ -154,6 +155,27 @@ def build_description(
     return f"{summary}\n{marker}\n<!--fadrive:{blob}-->"
 
 
+def _wall_clock_in(dt: datetime, tz_name: str | None) -> datetime:
+    """Express `dt` in the CREATE's `timezone` arg so wall-clock and tz agree.
+
+    The Composio `GOOGLECALENDAR_CREATE_EVENT` adapter ignores the offset in
+    `start_datetime` and re-reads its wall-clock in the `timezone` arg, so a
+    leg computed in one offset but created with a different `timezone` lands
+    shifted by the delta (#131 — same class as drive-planner's 6h-early UK
+    block; here the airport tz vs the offset `leg_start` happens to carry).
+    When `tz_name` is absent or not a resolvable zone key, `dt` is returned
+    as-is — its own offset is already the correct instant and the CREATE
+    carries no conflicting `timezone`.
+    """
+    if not tz_name:
+        return dt
+    try:
+        zone = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return dt
+    return dt.astimezone(zone)
+
+
 def _duration_minutes(leg_start: datetime, leg_end: datetime) -> int:
     """Whole-minute duration for the create call (always at least 1 minute)."""
     minutes = round((leg_end - leg_start).total_seconds() / 60)
@@ -243,11 +265,13 @@ def build_block_args(
         "summary": summary,
         "description": description,
         "location": destination,
-        "start_datetime": leg_start.isoformat(),
+        "start_datetime": _wall_clock_in(leg_start, timezone).isoformat(),
         "event_duration_hour": total_minutes // 60,
         "event_duration_minutes": total_minutes % 60,
         "transparency": "opaque" if busy else "transparent",
     }
+    # The wall-clock above is expressed in this same zone (#131) — the adapter
+    # drops the offset and re-reads the wall-clock in `timezone`.
     if timezone:
         args["timezone"] = timezone
     return args
