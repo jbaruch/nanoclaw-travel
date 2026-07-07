@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.19 — 2026-07-07
+
 ### Fixed — move drive-planner-recheck sibling imports inside the precheck JSON boundary (`jbaruch/nanoclaw-travel#126`)
 
 `drive-planner-recheck/precheck.py` resolved and imported the co-shipped drive-planner bundle at module import time, before `main()`'s outer-boundary try block — a missing or mis-mounted sibling skill raised `FileNotFoundError` as a raw process crash instead of the scheduled-task JSON contract's `{"wake_agent": false, ...}` payload. The bundle is now resolved lazily via `_ensure_drive_planner_on_path()` (idempotent, same pattern as sync-tripit's `_load_flight_assist`), called from `main()`'s try block and from `evaluate_blocks`; the shared-module imports moved to function scope. A new test patches the resolver to raise and asserts the no-wake payload with exit 0.
