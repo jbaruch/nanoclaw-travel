@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.16 — 2026-07-07
+
 ### Fixed — document Composio credentials in the README environment contract (`jbaruch/nanoclaw-travel#128`)
 
 The README required-environment table listed only `BYAIR_MCP_URL` and `GOOGLE_MAPS_API_KEY`, while `.env.example`, `check-env.py`, and the runtime clients also require `COMPOSIO_API_KEY` and `COMPOSIO_USER_ID` — a fresh install following the README got flight data working with calendar reconciliation and drive-block operations silently broken. The table now lists all four required credentials, a separate optional table covers `COMPOSIO_BASE_URL` and the `TOMTOM_API_KEY` routing fallback, and the `check-env.py` description names everything the script actually checks.
