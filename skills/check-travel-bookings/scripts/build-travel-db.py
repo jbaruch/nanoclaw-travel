@@ -73,6 +73,26 @@ def main():
             file=sys.stderr,
         )
         sys.exit(1)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # Corrupt, non-UTF-8, or partially-written schedule (the writer
+        # crashed mid-flight, disk hiccup). The file exists but can't be
+        # trusted; the fix is a rewrite, not a retry of this script.
+        print(
+            f"ERROR: {SCHEDULE_PATH} is unreadable or not valid JSON "
+            f"({type(exc).__name__}: {exc}) — re-run refresh-travel-schedule.py "
+            "to rewrite it",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not isinstance(events, list) or not all(isinstance(e, dict) for e in events):
+        print(
+            f"ERROR: {SCHEDULE_PATH} root must be a JSON array of event objects "
+            "(the refresh-travel-schedule.py output contract) — re-run "
+            "refresh-travel-schedule.py to rewrite it",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     today = date.today()
 

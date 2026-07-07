@@ -12,7 +12,9 @@ Locks down the documented contract per `coding-policy: testing-standards`:
   - `schema_version` is stamped on every write, matching the module
     constant; existing forward-versioned DBs are not overwritten
   - Exit 1 on missing schedule (with stderr diagnostic naming the
-    expected path); exit 2 on attempted forward-schema downgrade
+    expected path); exit 1 on unreadable / invalid-JSON / wrong-root-shape
+    schedule (stderr names the rewrite path); exit 2 on attempted
+    forward-schema downgrade
 """
 
 import json
@@ -70,6 +72,42 @@ def test_missing_schedule_exits_1(build_travel_db, monkeypatch, capsys):
     assert code == 1
     assert str(schedule_path) in err
     assert "run refresh-travel-schedule.py first" in err
+
+
+def test_invalid_json_exits_1_with_diagnostic(build_travel_db, monkeypatch, capsys):
+    """A partially-written or corrupt schedule (truncated JSON) exits 1
+    with an actionable stderr message instead of a raw traceback."""
+    module, schedule_path, db_path = build_travel_db
+    schedule_path.write_text('[{"uid": "trip-1", "summary": "Trunc')
+    code, _, err = _run(module, monkeypatch, capsys)
+    assert code == 1
+    assert str(schedule_path) in err
+    assert "re-run refresh-travel-schedule.py" in err
+    assert not db_path.exists()
+
+
+def test_non_utf8_schedule_exits_1_with_diagnostic(build_travel_db, monkeypatch, capsys):
+    """Non-UTF-8 bytes in the schedule exit 1 with the rewrite
+    diagnostic, not a UnicodeDecodeError traceback."""
+    module, schedule_path, db_path = build_travel_db
+    schedule_path.write_bytes(b"\xff\xfe[]")
+    code, _, err = _run(module, monkeypatch, capsys)
+    assert code == 1
+    assert "re-run refresh-travel-schedule.py" in err
+    assert not db_path.exists()
+
+
+def test_wrong_root_shape_exits_1_with_diagnostic(build_travel_db, monkeypatch, capsys):
+    """Valid JSON with the wrong root shape (object instead of the
+    documented event array, or an array of non-objects) exits 1 with
+    the contract named in stderr."""
+    module, schedule_path, db_path = build_travel_db
+    for bad_root in ({"trips": []}, ["not-an-event", 42]):
+        schedule_path.write_text(json.dumps(bad_root))
+        code, _, err = _run(module, monkeypatch, capsys)
+        assert code == 1
+        assert "root must be a JSON array of event objects" in err
+        assert not db_path.exists()
 
 
 def test_writes_db_with_trips_and_items(build_travel_db, monkeypatch, capsys):
