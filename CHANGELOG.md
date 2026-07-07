@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.18 — 2026-07-07
+
 ### Fixed — snapshot readers treat newer flight state as no usable prior state (`jbaruch/nanoclaw-travel#125`)
 
 `state.py`'s non-owner snapshot readers (`read_active_flights_snapshot`, `read_flight_state_snapshot`) raised `StateError` on a `schema_version` above the module's own, contradicting `coding-policy: stateful-artifacts` (a reader seeing a newer record is lagging, not looking at broken state). During a cross-pipeline rollout where flight-assist bumps its schema first, `sync-tripit/precheck.py` — a non-owner reader — hit that `StateError` and emitted `wake_agent:false` with `precheck_internal_error` every poll until the consumer plugin upgraded. The `migrate=False` snapshot path now returns `[]` / `None` (no usable prior state) for newer versions, which degrades to the bounded mtime-based stale-state gate instead of wedging. Owner-side reads stay strict — the owner must never run behind its own state files. `state-schema.md` documents the split; the future-version snapshot tests are inverted to assert the fallback and that the file is never rewritten.
