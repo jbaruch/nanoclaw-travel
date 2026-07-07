@@ -1057,9 +1057,11 @@ def test_state_files_use_separate_paths(state_root: Path):
 # read_flight_state_snapshot.  These functions exist so non-owner skills
 # (sync-tripit, future cross-plugin readers) can consult the latest
 # snapshot without triggering owner-side schema migrations. Contract
-# per `coding-policy: stateful-artifacts`: schema_version mismatch
-# returns "no usable prior state" instead of migrating; the next
-# owner-skill invocation performs the upgrade.
+# per `coding-policy: stateful-artifacts`: schema_version mismatch in
+# EITHER direction returns "no usable prior state" instead of migrating
+# or raising — lower means the next owner-skill invocation performs the
+# upgrade; higher means the reading plugin is lagging mid-rollout and
+# degrades safely instead of wedging until upgraded.
 # --------------------------------------------------------------------
 
 
@@ -1089,21 +1091,42 @@ def test_read_active_flights_snapshot_skips_old_schema_without_migrating(state_r
 
 
 def test_read_active_flights_snapshot_raises_state_error_on_corruption(state_root: Path):
-    """Integrity failures (corrupt JSON, future schema_version) still
-    raise — the snapshot reader only short-circuits old-schema cases."""
+    """Integrity failures (corrupt JSON) still raise — the snapshot
+    reader only short-circuits version-mismatch cases."""
     state_root.mkdir(parents=True)
     (state_root / ACTIVE_FLIGHTS_FILE).write_text("{not valid json")
     with pytest.raises(StateError):
         read_active_flights_snapshot()
 
 
-def test_read_active_flights_snapshot_raises_on_future_schema_version(state_root: Path):
+def test_read_active_flights_snapshot_treats_future_schema_as_no_prior_state(state_root: Path):
+    """Non-owner reader contract for a NEWER record: the reader is
+    lagging behind the owner mid-rollout, not looking at broken state.
+    Returns [] (no usable prior state) without raising and without
+    touching the file — a StateError here would wedge every consumer
+    (e.g. sync-tripit's precheck) for the whole rollout window."""
     state_root.mkdir(parents=True)
-    (state_root / ACTIVE_FLIGHTS_FILE).write_text(
-        json.dumps({"schema_version": STATE_SCHEMA_VERSION + 1, "flight_ids": []})
-    )
-    with pytest.raises(StateError):
-        read_active_flights_snapshot()
+    future_payload = {"schema_version": STATE_SCHEMA_VERSION + 1, "flight_ids": [999]}
+    path = state_root / ACTIVE_FLIGHTS_FILE
+    path.write_text(json.dumps(future_payload))
+    before_bytes = path.read_bytes()
+
+    assert read_active_flights_snapshot() == []
+    # File on disk unchanged — never downgraded or rewritten.
+    assert path.read_bytes() == before_bytes
+
+
+def test_read_flight_state_snapshot_treats_future_schema_as_no_prior_state(state_root: Path):
+    """Per-flight mirror of the future-schema contract: a newer record
+    returns None without raising; the file is untouched."""
+    state_root.mkdir(parents=True)
+    future_state = {"schema_version": STATE_SCHEMA_VERSION + 1, "flight_id": 12345}
+    path = state_root / "flight-12345.json"
+    path.write_text(json.dumps(future_state))
+    before_bytes = path.read_bytes()
+
+    assert read_flight_state_snapshot(12345) is None
+    assert path.read_bytes() == before_bytes
 
 
 def test_read_flight_state_snapshot_returns_none_when_missing(state_root: Path):
