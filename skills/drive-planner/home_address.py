@@ -6,8 +6,9 @@ ends at the operator's current residence. That address has ONE canonical home
 `/workspace/trusted/user_profile.md`, owned by the `trusted-memory` skill in
 the `nanoclaw-trusted` plugin. drive-planner is a READER of that block, never a
 writer — the trusted plugin owns its shape and migration. (Epic #59 §4/§7 name
-`nanoclaw-admin`; that is wrong — the skill has lived in `nanoclaw-trusted`
-since 2026-04-07, and its `state-schema.md` names this reader.)
+`nanoclaw-admin`; that is stale — the owning `trusted-memory` skill lives in
+`nanoclaw-trusted` (whose `state-schema.md` names this reader), and
+drive-planner itself lives in the `jbaruch/nanoclaw-travel` plugin.)
 
 The block the trusted plugin writes (Epic #59 §4):
 

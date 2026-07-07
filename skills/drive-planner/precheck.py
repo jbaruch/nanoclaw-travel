@@ -86,12 +86,13 @@ DEFAULT_CALENDAR_ID = "primary"
 MAX_REASONABLE_DRIVE_SECONDS = 3 * 60 * 60
 
 
-def _load_maps_client():
-    """Import and construct the in-plugin MapsClient from env, cross-bundle.
+def _flight_assist_on_path() -> None:
+    """Put the co-shipped flight-assist bundle on sys.path, cross-bundle.
 
     Raises FileNotFoundError when neither the runtime mount nor the dev sibling
     holds flight-assist (both skills ship from the same plugin) — main()'s
     outer-boundary handler converts that into the safe no-wake payload.
+    Idempotent: an already-present entry is not re-inserted.
     """
     if _FLIGHT_ASSIST_RUNTIME.is_dir():
         flight_assist_dir = _FLIGHT_ASSIST_RUNTIME
@@ -101,12 +102,39 @@ def _load_maps_client():
         raise FileNotFoundError(
             "drive-planner sweep: cannot locate the co-shipped flight-assist skill at "
             f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev) — maps_client "
-            "ships there; both skills are part of jbaruch/nanoclaw-travel"
+            "and trip_origin ship there; both skills are part of jbaruch/nanoclaw-travel"
         )
-    sys.path.insert(0, str(flight_assist_dir))
+    if str(flight_assist_dir) not in sys.path:
+        sys.path.insert(0, str(flight_assist_dir))
+
+
+def _load_maps_client():
+    """Import and construct the in-plugin MapsClient from env, cross-bundle."""
+    _flight_assist_on_path()
     from maps_client import MapsClient
 
     return MapsClient.from_env()
+
+
+def _build_anchor_resolver(home_address: str):
+    """The per-meeting anchor resolver for scan() — TripIt truth over home (#122).
+
+    Loads travel-schedule.json once per sweep via the co-shipped
+    `trip_origin` module and closes over it, so every meeting in the sweep
+    resolves against the same snapshot. A missing or unusable schedule
+    resolves every anchor to home (trip_origin's degraded mode — the
+    pre-#122 behavior, with the cause on stderr).
+    """
+    _flight_assist_on_path()
+    from trip_origin import load_travel_schedule, resolve_anchor
+
+    schedule = load_travel_schedule()
+
+    def anchor_for(at):
+        anchor = resolve_anchor(schedule, at=at, home_address=home_address)
+        return anchor.address, anchor.detail
+
+    return anchor_for
 
 
 def _route_seconds(client, origin: str, destination: str) -> int:
@@ -212,6 +240,23 @@ def plan_meetings(
         leave_by: str | None = None
         drive_minutes: int | None = None
         for leg in meeting.legs:
+            # An unresolved anchor (#122): the operator is on a trip with no
+            # lodging known at the meeting time, so the scan emitted a None
+            # endpoint rather than home. Never route it — from home the leg
+            # is nonsense (the UK-dinner-from-Tennessee block). Surface it
+            # as unplannable with the scan's reason.
+            if leg.origin is None or leg.destination is None:
+                unplannable.append(
+                    {
+                        "direction": leg.direction,
+                        "origin": leg.origin,
+                        "destination": leg.destination,
+                        "drive_minutes": None,
+                        "reason": leg.anchor_note
+                        or "no drivable origin — on a trip with no lodging booked yet",
+                    }
+                )
+                continue
             origin = leg.origin or home_address
             destination = leg.destination or home_address
             try:
@@ -316,7 +361,13 @@ def main() -> int:
         fetcher = CalendarFetcher.from_env()
         events = fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
         skips = load_active_skips(now)
-        results = scan(events, now=now, home_address=home_address, skip_state=skips)
+        results = scan(
+            events,
+            now=now,
+            home_address=home_address,
+            skip_state=skips,
+            anchor_for=_build_anchor_resolver(home_address),
+        )
         client = _load_maps_client()
         payload_data = plan_meetings(
             results,

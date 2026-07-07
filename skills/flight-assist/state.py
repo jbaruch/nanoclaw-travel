@@ -373,7 +373,10 @@ def resolve_live_origin(home_address: str | None, *, now: datetime) -> str | Non
     1. `current-location.json` (orchestrator-written) when present and fresh —
        `0 <= now - captured_at <= MAX_LIVE_ORIGIN_AGE_MINUTES`. Returned as
        `"<lat>,<lng>"`, which Distance Matrix accepts as a numeric origin.
-    2. `home_address` from `config.json` (the static fallback).
+    2. `home_address` — the caller-supplied fallback. Both production
+       callers pass the trip-aware effective home (#122,
+       `trip_origin.resolve_effective_home`): the config's static residence
+       off-trip, the current lodging while a trip is active.
     3. `None` — neither available; the caller skips routing.
 
     `now` must be timezone-aware (UTC) — a `now` with no usable offset (no

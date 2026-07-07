@@ -699,3 +699,116 @@ def test_cli_malformed_tight_gap_exits_nonzero(monkeypatch, capsys, bad):
     )
     assert code == 1
     assert "tight_gap_seconds" in json.loads(err)["error"]
+
+
+# ---------------------------------------------------------------------------
+# Per-meeting anchor resolution (#122)
+# ---------------------------------------------------------------------------
+
+LODGING = "1 Seaside Lane, Hastings, UK"
+
+
+def test_anchor_for_replaces_home_on_outbound_and_return():
+    """On a trip, the home-side endpoints of both legs are the resolved
+    anchor (the current lodging) — never the static home (#122)."""
+    event = _meeting(
+        "evt_trip",
+        start=NOW + timedelta(days=1),
+        end=NOW + timedelta(days=1, hours=1),
+        location="Rye Waterworks, Rye, UK",
+    )
+    results = scan(
+        [event],
+        now=NOW,
+        home_address=HOME,
+        anchor_for=lambda _at: (LODGING, None),
+    )
+    (outbound, ret) = results[0].legs
+    assert outbound.origin == LODGING
+    assert outbound.destination == "Rye Waterworks, Rye, UK"
+    assert ret.origin == "Rye Waterworks, Rye, UK"
+    assert ret.destination == LODGING
+    assert outbound.anchor_note is None
+
+
+def test_anchor_for_is_resolved_per_meeting_start():
+    """A 14-day sweep window spans on-trip and off-trip meetings — each
+    meeting anchors at its OWN start time, not one global answer."""
+    on_trip_day = NOW + timedelta(days=1)
+    home_day = NOW + timedelta(days=10)
+    events = [
+        _meeting("evt_uk", start=on_trip_day, end=on_trip_day + timedelta(hours=1)),
+        _meeting("evt_home", start=home_day, end=home_day + timedelta(hours=1)),
+    ]
+
+    def anchor_for(at):
+        return (LODGING, None) if at < NOW + timedelta(days=5) else (HOME, None)
+
+    results = scan(events, now=NOW, home_address=HOME, anchor_for=anchor_for)
+    by_id = {r.meeting_id: r for r in results}
+    assert by_id["evt_uk"].legs[0].origin == LODGING
+    assert by_id["evt_home"].legs[0].origin == HOME
+
+
+def test_unresolved_anchor_emits_none_endpoints_with_note():
+    """On a trip before any lodging is known: the legs carry None
+    home-side endpoints plus the resolver's note — surfaced, never routed
+    from home."""
+    event = _meeting(
+        "evt_early",
+        start=NOW + timedelta(days=1),
+        end=NOW + timedelta(days=1, hours=1),
+    )
+    note = "on 'UK trip' with no lodging event at or before the meeting"
+    results = scan(
+        [event],
+        now=NOW,
+        home_address=HOME,
+        anchor_for=lambda _at: (None, note),
+    )
+    (outbound, ret) = results[0].legs
+    assert results[0].bucket == "needs_decision"
+    assert outbound.origin is None
+    assert outbound.anchor_note == note
+    assert ret.destination is None
+    assert ret.anchor_note == note
+
+
+def test_bridge_leg_is_venue_to_venue_regardless_of_anchor():
+    """A bridge never touches the anchor — venue→venue survives even an
+    unresolved anchor."""
+    first = _meeting(
+        "evt_first",
+        start=NOW + timedelta(hours=2),
+        end=NOW + timedelta(hours=3),
+        location="Venue A, Rye, UK",
+    )
+    second = _meeting(
+        "evt_second",
+        start=NOW + timedelta(hours=3, minutes=15),
+        end=NOW + timedelta(hours=4),
+        location="Venue B, Hastings, UK",
+    )
+    results = scan(
+        [first, second],
+        now=NOW,
+        home_address=HOME,
+        anchor_for=lambda _at: (None, "no anchor"),
+    )
+    by_id = {r.meeting_id: r for r in results}
+    bridge = by_id["evt_second"].legs[0]
+    assert bridge.direction == "bridge"
+    assert bridge.origin == "Venue A, Rye, UK"
+    assert bridge.destination == "Venue B, Hastings, UK"
+
+
+def test_default_anchor_is_home():
+    """Without anchor_for the scan behaves exactly as before #122."""
+    event = _meeting(
+        "evt_plain",
+        start=NOW + timedelta(days=1),
+        end=NOW + timedelta(days=1, hours=1),
+    )
+    results = scan([event], now=NOW, home_address=HOME)
+    assert results[0].legs[0].origin == HOME
+    assert results[0].legs[-1].destination == HOME

@@ -91,6 +91,7 @@ from state import (  # noqa: E402
     read_flight_state,
     resolve_live_origin,
 )
+from trip_origin import resolve_effective_home  # noqa: E402
 
 # A re-routed leave-by that drifts less than this from the block already on the
 # calendar is left in place — traffic jitter under it must not rewrite the event
@@ -668,7 +669,9 @@ def run_airport_drive_pass(composio, *, now: datetime) -> dict:
     """The wake-cycle airport-drive reconcile: resolve inputs from env + state,
     then run `run_airport_drive_reconcile`.
 
-    Reads the plugin config (`home_address`), resolves the live drive origin
+    Reads the plugin config (`home_address`), resolves it to the trip-aware
+    effective home (`trip_origin.resolve_effective_home`, #122 — lodging
+    while a trip is active), resolves the live drive origin
     (`state.resolve_live_origin` — the same ladder the precheck uses), constructs
     the byAir + Maps clients from the environment, loads the active flights'
     states, and reconciles their airport drive blocks on the primary calendar.
@@ -684,7 +687,12 @@ def run_airport_drive_pass(composio, *, now: datetime) -> dict:
         return _idle_summary()
 
     config = read_config() or {}
-    home_address = config.get("home_address")
+    # Trip-aware (#122): the "drive home" destination and the origin
+    # fallback are the current lodging while a TripIt trip is active, the
+    # static residence otherwise — landing at a destination airport should
+    # route to the hotel, not across the ocean. None mid-trip (no lodging
+    # yet) keeps the pass's existing no-home dormancy.
+    home_address = resolve_effective_home(config.get("home_address"), now=now)
     origin = resolve_live_origin(home_address, now=now)
 
     states = [
