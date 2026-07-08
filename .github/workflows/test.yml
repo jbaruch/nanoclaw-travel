@@ -16,6 +16,13 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
+          # Mirrors the NanoClaw agent container's interpreter (nanoclaw-agent,
+          # node:24-slim / Debian bookworm -> Python 3.11.2) where the skill
+          # scripts execute. Scanner-untracked by design: renovate.json disables
+          # the github-actions python dep so CI never tests ahead of production.
+          # Renewal: when the container's Dockerfile base image moves, re-verify
+          # with `docker run --rm --entrypoint python3 nanoclaw-agent:latest
+          # --version` and bump this pin + the renovate.json rule description.
           python-version: '3.11'
           cache: pip
           cache-dependency-path: requirements-dev.txt
