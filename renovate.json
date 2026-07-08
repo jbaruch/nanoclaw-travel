@@ -5,7 +5,8 @@
   ],
   "packageRules": [
     {
-      "description": "The CI python-version pin mirrors the NanoClaw agent container's interpreter (nanoclaw-agent, node:24-slim / Debian bookworm → Python 3.11), not upstream releases. Bump it manually when the container's base image moves.",
+      "description": "The CI python-version pin mirrors the NanoClaw agent container's interpreter (nanoclaw-agent, node:24-slim / Debian bookworm → Python 3.11), not upstream releases. Bump it manually when the container's base image moves. Scoped to the github-actions manager so a future python dep in another manager (Dockerfile, pyproject) still gets update PRs.",
+      "matchManagers": ["github-actions"],
       "matchDepNames": ["python"],
       "enabled": false
     }
