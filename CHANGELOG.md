@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.30 — 2026-07-08
+
 ### Changed — consolidate dependency automation on Renovate; retire Dependabot
 
 Both scanners ran after Renovate onboarded (#109), so every upstream release arrived as two PRs and each merge published a version — the github/gh-aw-actions patch stream alone shipped two published bumps in one day (0.82.3 via Dependabot #138, 0.82.4 via Renovate #141) plus a third still-open PR for 0.82.6 (Renovate #145). Removed `.github/dependabot.yml`; Renovate's `config:recommended` already covers both managers Dependabot tracked — `pip` (`requirements-dev.txt`) and `github-actions` — so no coverage is lost. Ported Dependabot's `dependencies` label to `renovate.json` to preserve PR filtering. GitHub-native Dependabot **security** alerts are a repo setting, not this file, and are unaffected.
