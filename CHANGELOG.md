@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.29 — 2026-07-08
+
 ### Changed — renovate: stop proposing CI Python bumps past the container runtime
 
 Renovate's onboarding config treated the CI `python-version` pin as a dependency to chase upstream (its first sweep filed a 3.11 → 3.14 bump, closed unmerged). The pin exists to mirror the NanoClaw agent container's interpreter — `nanoclaw-agent` builds on `node:24-slim` (Debian bookworm), whose python3 is 3.11.2, verified against the live image. Testing on a newer interpreter than production executes would let 3.12+ syntax and stdlib usage pass CI and fail in the container's prechecks. A `packageRules` entry disables renovate's `python` dep updates; the pin moves manually when the container's base image does.
