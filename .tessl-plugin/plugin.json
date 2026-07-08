@@ -1,6 +1,6 @@
 {
   "name": "jbaruch/nanoclaw-travel",
-  "version": "0.2.21",
+  "version": "0.2.22",
   "description": "Travel assistant for NanoClaw: byAir flight notifications (delay, gate, connection risk, inbound aircraft delay, time-to-leave, arrival logistics), traffic-aware drive planning for in-person meetings (auto drive blocks + leave-by traffic rechecks), travel-booking gap checks, and nightly TripIt sync. Per-chat overlay plugin.",
   "private": false,
   "skills": [
