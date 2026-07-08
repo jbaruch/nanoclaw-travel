@@ -2,5 +2,12 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "packageRules": [
+    {
+      "description": "The CI python-version pin mirrors the NanoClaw agent container's interpreter (nanoclaw-agent, node:24-slim / Debian bookworm → Python 3.11), not upstream releases. Bump it manually when the container's base image moves.",
+      "matchDepNames": ["python"],
+      "enabled": false
+    }
   ]
 }
