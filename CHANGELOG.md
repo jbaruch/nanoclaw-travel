@@ -1,5 +1,41 @@
 # Changelog
 
+### Changed — renovate: stop proposing CI Python bumps past the container runtime
+
+Renovate's onboarding config treated the CI `python-version` pin as a dependency to chase upstream (its first sweep filed a 3.11 → 3.14 bump, closed unmerged). The pin exists to mirror the NanoClaw agent container's interpreter — `nanoclaw-agent` builds on `node:24-slim` (Debian bookworm), whose python3 is 3.11.2, verified against the live image. Testing on a newer interpreter than production executes would let 3.12+ syntax and stdlib usage pass CI and fail in the container's prechecks. A `packageRules` entry disables renovate's `python` dep updates; the pin moves manually when the container's base image does.
+
+## 0.2.28 — 2026-07-08
+
+### Changed — bump github/gh-aw-actions/setup to v0.82.4 (renovate, PR #141)
+
+## 0.2.27 — 2026-07-08
+
+### Changed — update jbaruch/coding-policy action digest to 759e589 (renovate, PR #140)
+
+## 0.2.26 — 2026-07-08
+
+### Added — Renovate onboarding config (`renovate.json`, PR #109)
+
+## 0.2.25 — 2026-07-08
+
+### Changed — bump github/gh-aw-actions/setup from 0.81.6 to 0.82.3 (dependabot, PR #138)
+
+## 0.2.24 — 2026-07-08
+
+### Changed — bump actions/cache/save from 5.0.5 to 6.1.0 (dependabot, PR #139)
+
+## 0.2.23 — 2026-07-08
+
+### Changed — bump actions/cache/restore from 5.0.5 to 6.1.0 (dependabot, PR #136)
+
+## 0.2.22 — 2026-07-08
+
+### Changed — bump ruff from 0.15.19 to 0.15.20 (dependabot, PR #111)
+
+## 0.2.21 — 2026-07-08
+
+### Changed — bump pyright from 1.1.408 to 1.1.411 (dependabot, PR #137)
+
 ## 0.2.20 — 2026-07-07
 
 ### Fixed — CREATE wall-clock expressed in the event's timezone arg (`jbaruch/nanoclaw-travel#131`)
