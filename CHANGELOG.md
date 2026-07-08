@@ -6,7 +6,7 @@ Renovate's onboarding config treated the CI `python-version` pin as a dependency
 
 ## 0.2.28 — 2026-07-08
 
-### Changed — bump github/gh-aw-actions/setup to v0.82.4 (renovate, PR #141)
+### Changed — bump github/gh-aw-actions/setup to 0.82.4 (renovate, PR #141)
 
 ## 0.2.27 — 2026-07-08
 
