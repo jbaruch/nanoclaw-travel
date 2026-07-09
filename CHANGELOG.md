@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed — drive-planner: filter TripIt flight events out of ground-meeting classification (#85)
+
+TripIt syncs each flight segment onto the primary calendar as its own event ("Flight to Nashville (DL 4908)", location = an airport). The sweep fetches every primary event and `scan.py` classified these flights as routable ground meetings, so the precheck tried to drive between airports — Stansted hotel → JFK for a layover, an ocean apart. Ocean routes return `ZERO_RESULTS` and woke the agent with "Couldn't compute drive time"; layover bridges surfaced as "doesn't fit the gap" noise. This is the unbuilt half of #85: its downstream sanity gates (`MAX_REASONABLE_DRIVE_SECONDS`, bridge>gap) catch implausible *drives* but never stopped a flight *event* from being treated as a meeting; the #122 anchor fix handled the restaurant-origin case but not this one.
+
+`scan()` now takes `flight_windows` — the UTC spans of the TripIt schedule's `Flight` segments (new `trip_origin.flight_windows()`, read from the same `travel-schedule.json` the #122 anchor resolver already loads). Any event overlapping a flight window is bucketed `filtered` ("air travel — TripIt flight segment") and excluded as a routing neighbour, so a flight's airport location never draws a cross-continent drive and never bridges an adjacent real meeting. Matching is interval overlap (the calendar event and its schedule twin derive from the same TripIt data); only timed flight segments produce a window, so a date-only artifact can't suppress a real same-day meeting. Empty windows (no schedule, or the flight-unaware `scan.py` CLI) preserve the pre-#85 behavior — a real meeting is never suppressed. Also fixed a pre-existing duplicate `# 4.` step number in `_classify`.
+
 ## 0.2.30 — 2026-07-08
 
 ### Changed — consolidate dependency automation on Renovate; retire Dependabot

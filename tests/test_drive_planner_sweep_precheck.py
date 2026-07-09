@@ -324,3 +324,52 @@ def test_on_trip_meeting_routes_from_lodging_end_to_end(tmp_path, monkeypatch):
     assert block_out is not None and block_ret is not None
     assert block_out.origin == LODGING
     assert block_ret.destination == LODGING
+
+
+# --- #85: flight events filtered out of the sweep, never ground-routed ------
+
+
+def test_flight_event_is_filtered_and_never_woken(tmp_path, monkeypatch):
+    """The full sweep pipeline: a TripIt flight event whose span matches a
+    Flight segment in travel-schedule.json is filtered by scan (via the windows
+    `_build_flight_windows` reads), so it produces no meeting and the router is
+    never asked to drive between airports across an ocean."""
+    import json
+
+    import trip_origin
+
+    # A flight segment JFK→BNA on the trip; the calendar event mirrors its span.
+    flight_start = datetime(2026, 7, 1, 14, 0, tzinfo=CT)
+    flight_end = datetime(2026, 7, 1, 16, 0, tzinfo=CT)
+    schedule = [
+        {
+            "schema_version": 1,
+            "summary": "JFK to BNA",
+            "start": flight_start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": flight_end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "location": "John F. Kennedy International Airport (JFK), Queens, NY 11430, USA",
+            "type": "Flight",
+            "uid": "uid-flight",
+        },
+    ]
+    schedule_path = tmp_path / "travel-schedule.json"
+    schedule_path.write_text(json.dumps(schedule))
+    monkeypatch.setattr(trip_origin, "SCHEDULE_PATH", str(schedule_path))
+
+    windows = precheck._build_flight_windows()
+    flight_event = {
+        "id": "flt",
+        "summary": "Flight to Nashville (DL 4908)",
+        "location": "John F. Kennedy International Airport (JFK), Queens, NY 11430, USA",
+        "start": {"dateTime": flight_start.isoformat(), "timeZone": "America/Chicago"},
+        "end": {"dateTime": flight_end.isoformat()},
+        "description": "",
+    }
+    results = scan([flight_event], now=NOW, home_address=HOME, flight_windows=windows)
+    assert [r.bucket for r in results] == ["filtered"]
+
+    def exploding_router(origin, destination):
+        raise AssertionError(f"router must not be called for a flight ({origin} → {destination})")
+
+    payload = precheck.plan_meetings(results, route=exploding_router, home_address=HOME)
+    assert payload["meetings"] == []

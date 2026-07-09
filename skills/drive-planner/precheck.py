@@ -137,6 +137,22 @@ def _build_anchor_resolver(home_address: str):
     return anchor_for
 
 
+def _build_flight_windows():
+    """Known TripIt flight (start, end) windows for scan()'s flight filter (#85).
+
+    Reads the same travel-schedule.json the anchor resolver reads and returns
+    the UTC span of every Flight segment, so scan() filters TripIt flight
+    events out of ground-meeting classification instead of routing a cross-
+    continent "drive" between airports (the London-hotel→JFK layover). A
+    missing / unusable schedule yields no windows — the pre-#85 flight-unaware
+    behavior, so a real meeting is never suppressed.
+    """
+    _flight_assist_on_path()
+    from trip_origin import flight_windows, load_travel_schedule
+
+    return flight_windows(load_travel_schedule())
+
+
 def _route_seconds(client, origin: str, destination: str) -> int:
     """Live drive seconds for one leg, preferring the in-traffic estimate.
 
@@ -367,6 +383,7 @@ def main() -> int:
             home_address=home_address,
             skip_state=skips,
             anchor_for=_build_anchor_resolver(home_address),
+            flight_windows=_build_flight_windows(),
         )
         client = _load_maps_client()
         payload_data = plan_meetings(

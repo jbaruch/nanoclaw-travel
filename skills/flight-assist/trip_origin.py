@@ -34,12 +34,15 @@ cross-bundle the same way it already imports `maps_client` from this skill.
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
 Public API:
-    from trip_origin import TripAnchor, load_travel_schedule, resolve_anchor
+    from trip_origin import (
+        TripAnchor, flight_windows, load_travel_schedule, resolve_anchor,
+    )
 
     schedule = load_travel_schedule()            # list | None, tolerant
     anchor = resolve_anchor(schedule, at=meeting_start, home_address=home)
     anchor.address    # drivable anchor, or None (unresolved mid-trip)
     anchor.source     # "home" | "lodging" | "trip_location" | "unresolved"
+    flight_windows(schedule)  # [(start, end), ...] — flight spans to filter (#85)
 """
 
 from __future__ import annotations
@@ -260,6 +263,42 @@ def resolve_anchor(
             f"{at_utc.isoformat()} and no trip location — no drivable anchor"
         ),
     )
+
+
+def flight_windows(schedule: list[dict] | None) -> list[tuple[datetime, datetime]]:
+    """UTC (start, end) spans for every timed `Flight` segment in the schedule.
+
+    drive-planner's `scan` uses these to filter TripIt flight events out of
+    ground-meeting classification (#85): a calendar event overlapping a flight
+    window is air travel — owned by flight-assist — never a ground meeting to
+    draw a drive block for (the London-hotel→JFK-layover "drive"). A None /
+    empty schedule yields no windows (the pre-#85 flight-unaware behavior — no
+    windows means no filtering, so a real meeting is never suppressed).
+
+    Only a segment whose `start` and `end` both parse to instants AND both
+    carry a time-of-day (`T` in the raw value) produces a window. A date-only
+    or unparseable segment is skipped: a date-only "flight" would span whole
+    calendar days and could suppress a real same-day meeting, so the safe
+    direction is to emit no window for it. A non-positive span is skipped too.
+    """
+    if not schedule:
+        return []
+    windows: list[tuple[datetime, datetime]] = []
+    for record in schedule:
+        if record.get("type") != "Flight":
+            continue
+        raw_start = record.get("start")
+        raw_end = record.get("end")
+        if not (isinstance(raw_start, str) and "T" in raw_start):
+            continue
+        if not (isinstance(raw_end, str) and "T" in raw_end):
+            continue
+        start = _parse_when(raw_start)
+        end = _parse_when(raw_end)
+        if start is None or end is None or end <= start:
+            continue
+        windows.append((start, end))
+    return windows
 
 
 def resolve_effective_home(home_address: str | None, *, now: datetime) -> str | None:

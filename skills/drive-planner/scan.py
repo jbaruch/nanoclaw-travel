@@ -32,8 +32,9 @@ Buckets (Epic #59 §3, §5):
     past            start ≤ now (small tolerance) — never plan into the
                     past (lombot #28).
     filtered        Not a routable ground meeting: the operator declined it
-                    (or it's cancelled), all-day, virtual location, the
-                    planner's own block, or an unparseable / missing time.
+                    (or it's cancelled), all-day, virtual location, a TripIt
+                    flight segment (#85 — air travel, owned by flight-assist),
+                    the planner's own block, or an unparseable / missing time.
                     Returned (not dropped) so the sweep can audit and clean
                     up — the meta-lesson is "no silent miss".
 
@@ -393,14 +394,38 @@ def _is_past(event: _Event, now: datetime) -> bool:
     return event.start is not None and event.start <= now - PAST_TOLERANCE
 
 
-def _is_routable_candidate(event: _Event, now: datetime) -> bool:
+def _during_flight(event: _Event, flight_windows: tuple[tuple[datetime, datetime], ...]) -> bool:
+    """True when the event's time span overlaps a known TripIt flight window (#85).
+
+    A TripIt flight segment lands on the primary calendar as its own event
+    ("Flight to Nashville (DL 4908)", location = an airport). The event and
+    the flight window both derive from the same TripIt data, so a flight's
+    calendar event and its schedule segment overlap near-exactly — plain
+    interval overlap is enough (no padding). Such an event is air travel,
+    owned by flight-assist, and must never be classified as a ground meeting:
+    routing between its airports draws a cross-continent "drive" (London hotel
+    → JFK for a layover). An event with no parsed start/end can't overlap and
+    returns False (it is filtered elsewhere as unparseable). Empty
+    `flight_windows` (no schedule / flight-unaware) returns False — the
+    pre-#85 behavior, so a real meeting is never suppressed.
+    """
+    if event.start is None or event.end is None:
+        return False
+    return any(event.start < end and start < event.end for start, end in flight_windows)
+
+
+def _is_routable_candidate(
+    event: _Event, now: datetime, flight_windows: tuple[tuple[datetime, datetime], ...]
+) -> bool:
     """True when the event can act as a real-meeting neighbour for §5 #14/#7.
 
-    A routable candidate is a future, timed, in-person, non-block meeting
-    with a usable location. Excluding past meetings here is the fix for the
-    cross of lombot #28 and #14/#7: a stale same-venue meeting must not turn
+    A routable candidate is a future, timed, in-person, non-block, non-flight
+    meeting with a usable location. Excluding past meetings here is the fix for
+    the cross of lombot #28 and #14/#7: a stale same-venue meeting must not turn
     a future meeting into back_to_back and strip its outbound-from-home leg.
-    `end` is required too, so a half-parsed event never skews a gap.
+    `end` is required too, so a half-parsed event never skews a gap. Excluding
+    flight events (#85) keeps a TripIt flight from acting as a bridge neighbour
+    that a real meeting drives to/from across an ocean.
     """
     return (
         event.marker is None
@@ -412,6 +437,7 @@ def _is_routable_candidate(event: _Event, now: datetime) -> bool:
         and event.location is not None
         and not _is_virtual(event.location)
         and not _is_past(event, now)
+        and not _during_flight(event, flight_windows)
     )
 
 
@@ -423,6 +449,7 @@ def scan(
     skip_state: dict[str, str] | None = None,
     tight_gap_seconds: int = DEFAULT_TIGHT_GAP_SECONDS,
     anchor_for: Callable[[datetime], tuple[str | None, str | None]] | None = None,
+    flight_windows: list[tuple[datetime, datetime]] | None = None,
 ) -> list[MeetingClass]:
     """Classify every event into a drive-planner bucket.
 
@@ -452,6 +479,12 @@ def scan(
             and `anchor_note=note` so the caller surfaces them instead of
             routing from home. Defaults to a constant `(home_address, None)`
             — the pre-#122 behavior.
+        flight_windows: known TripIt flight (start, end) UTC spans (#85). Any
+            event overlapping one is a flight segment (air travel, owned by
+            flight-assist), bucketed `filtered` and excluded as a routing
+            neighbour, so a flight's airport location never draws a cross-
+            continent drive. Defaults to none — the pre-#85 flight-unaware
+            behavior; the sweep passes the schedule's flight windows.
 
     Returns:
         list[MeetingClass] in the input order.
@@ -481,6 +514,7 @@ def scan(
     skip_state = skip_state or {}
     if anchor_for is None:
         anchor_for = lambda _at: (home_address, None)  # noqa: E731 — trivial constant default
+    windows = tuple(flight_windows or ())
     parsed = [_parse_event(raw) for raw in events]
 
     # Pass 1: every meeting referenced by ANY planner marker is "handled"
@@ -498,7 +532,7 @@ def scan(
     # same-venue meeting must never make a future meeting back_to_back and
     # strip its outbound-from-home leg. A non-candidate still gets classified,
     # it just can't act as a neighbour.
-    candidates = [event for event in parsed if _is_routable_candidate(event, now)]
+    candidates = [event for event in parsed if _is_routable_candidate(event, now, windows)]
     candidates.sort(key=lambda e: e.start)  # type: ignore[arg-type,return-value]
     order = {id(event): index for index, event in enumerate(candidates)}
 
@@ -513,6 +547,7 @@ def scan(
                 handled_directions=handled_directions,
                 candidates=candidates,
                 order=order,
+                flight_windows=windows,
                 tight_gap_seconds=tight_gap_seconds,
             )
         )
@@ -551,6 +586,7 @@ def _classify(
     handled_directions: dict[str, list[str]],
     candidates: list[_Event],
     order: dict[int, int],
+    flight_windows: tuple[tuple[datetime, datetime], ...],
     tight_gap_seconds: int,
 ) -> MeetingClass:
     """Assign one event to a bucket. Precedence matters — see inline order."""
@@ -574,17 +610,25 @@ def _classify(
     if event.start is None or event.end is None:
         return _make_class(event, "filtered", "missing or unparseable time")
 
-    # 4. Virtual / no location — never ask (lombot #49).
+    # 5. TripIt flight segment (#85) — air travel, owned by flight-assist,
+    #    never a ground meeting. Filtered before the location/routable checks
+    #    so its airport location never draws a cross-continent "drive" (the
+    #    London-hotel→JFK layover). Overlap-matched against the sweep's known
+    #    flight windows; needs start/end, so it sits after the time guard.
+    if _during_flight(event, flight_windows):
+        return _make_class(event, "filtered", "air travel — TripIt flight segment")
+
+    # 6. Virtual / no location — never ask (lombot #49).
     if event.location is None:
         return _make_class(event, "filtered", "no location")
     if _is_virtual(event.location):
         return _make_class(event, "filtered", "virtual location")
 
-    # 5. Past guard (lombot #28) — never plan into the past.
+    # 7. Past guard (lombot #28) — never plan into the past.
     if _is_past(event, now):
         return _make_class(event, "past", "meeting already started")
 
-    # 6. Already handled — ANY marker counts (lombot #50). Wins over
+    # 8. Already handled — ANY marker counts (lombot #50). Wins over
     #    needs_decision so the planner never re-asks or double-books.
     if event.raw_id in handled_directions:
         present = tuple(dict.fromkeys(handled_directions[event.raw_id]))
@@ -595,11 +639,11 @@ def _classify(
             present_directions=present,
         )
 
-    # 7. Live skip (lombot #49) — the user said no; don't ask again.
+    # 9. Live skip (lombot #49) — the user said no; don't ask again.
     if _skip_active(skip_state, event.raw_id, now):
         return _make_class(event, "skipped", "user-skipped, not expired")
 
-    # 8. A routable meeting — read neighbours and emit legs.
+    # 10. A routable meeting — read neighbours and emit legs.
     return _classify_transit(
         event,
         anchor_for=anchor_for,
@@ -777,9 +821,11 @@ def main() -> int:
     deterministic-operation-as-script surface per `coding-policy:
     script-delegation` / `file-hygiene`.
 
-    This CLI is anchor-static: legs anchor at `home_address` only. The
-    trip-aware per-meeting anchor (#122) is a callable and doesn't cross a
-    JSON boundary — the sweep precheck uses the Python API's `anchor_for`.
+    This CLI is anchor-static and flight-unaware: legs anchor at
+    `home_address` only, and no flight windows are supplied. The trip-aware
+    per-meeting anchor (#122) and the flight filter (#85) are Python-side
+    inputs that don't cross this JSON boundary — the sweep precheck uses the
+    Python API's `anchor_for` and `flight_windows`.
     """
     try:
         request = json.load(sys.stdin)
