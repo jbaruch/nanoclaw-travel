@@ -35,6 +35,7 @@ import trip_origin  # noqa: E402
 from trip_origin import (  # noqa: E402
     SCHEDULE_SCHEMA_VERSION,
     TripAnchor,
+    flight_windows,
     load_travel_schedule,
     resolve_anchor,
     resolve_effective_home,
@@ -330,3 +331,49 @@ def test_effective_home_mid_trip_unresolved_is_none_not_home(tmp_path, monkeypat
     path.write_text(json.dumps(schedule))
     monkeypatch.setattr(trip_origin, "SCHEDULE_PATH", str(path))
     assert resolve_effective_home(HOME, now=_at("2025-06-28T12:00:00Z")) is None
+
+
+# ---------------------------------------------------------------------------
+# flight_windows — flight spans for drive-planner's scan filter (#85)
+# ---------------------------------------------------------------------------
+
+
+def test_flight_windows_none_or_empty_schedule_is_empty():
+    assert flight_windows(None) == []
+    assert flight_windows([]) == []
+
+
+def test_flight_windows_extracts_flight_segments_only():
+    # The UK fixture has one Flight (BNA→LHR) plus a Trip and Lodging records.
+    windows = flight_windows(_uk_trip_schedule())
+    assert windows == [
+        (_at("2025-06-26T19:00:00Z"), _at("2025-06-27T07:30:00Z")),
+    ]
+
+
+def test_flight_windows_skips_date_only_flight():
+    # A date-only "flight" would span whole calendar days and could suppress a
+    # real same-day meeting — no window is emitted for it (the safe direction).
+    schedule = [
+        _record(
+            type="Flight",
+            summary="Date-only flight",
+            start="2025-06-26",
+            end="2025-06-27",
+            location="Somewhere",
+        ),
+    ]
+    assert flight_windows(schedule) == []
+
+
+def test_flight_windows_skips_non_positive_span():
+    schedule = [
+        _record(
+            type="Flight",
+            summary="Zero-length flight",
+            start="2025-06-26T19:00:00Z",
+            end="2025-06-26T19:00:00Z",
+            location="Somewhere",
+        ),
+    ]
+    assert flight_windows(schedule) == []

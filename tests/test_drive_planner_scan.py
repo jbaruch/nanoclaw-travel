@@ -363,6 +363,106 @@ def test_lombot28_past_neighbour_does_not_suppress_future_outbound():
     assert [leg.direction for leg in by_id["future"].legs] == ["outbound", "return"]
 
 
+# --- #85: TripIt flight segments are filtered, never ground-routed --------
+
+
+def test_flight_event_overlapping_window_is_filtered():
+    # A TripIt flight event lands on the primary calendar with an airport
+    # location; its span overlaps a known flight window, so it is air travel,
+    # not a ground meeting to drive to.
+    start = NOW + timedelta(hours=3)
+    end = start + timedelta(hours=2)
+    flight = _meeting(
+        "flt1",
+        start=start,
+        end=end,
+        location="John F. Kennedy International Airport (JFK), Queens, NY 11430, USA",
+        summary="Flight to Nashville (DL 4908)",
+    )
+    result = scan(
+        [flight],
+        now=NOW,
+        home_address=HOME,
+        flight_windows=[(start, end)],
+    )[0]
+    assert result.bucket == "filtered"
+    assert result.reason == "air travel — TripIt flight segment"
+    assert result.legs == ()
+
+
+def test_flight_window_partial_overlap_still_filters():
+    # The calendar event and its schedule twin need not align exactly — any
+    # interval overlap marks it a flight (both derive from the same TripIt data).
+    start = NOW + timedelta(hours=3)
+    end = start + timedelta(hours=2)
+    window = (start + timedelta(minutes=30), end + timedelta(minutes=30))
+    result = scan(
+        [_meeting("flt1", start=start, end=end, summary="Flight to X")],
+        now=NOW,
+        home_address=HOME,
+        flight_windows=[window],
+    )[0]
+    assert result.bucket == "filtered"
+    assert result.reason == "air travel — TripIt flight segment"
+
+
+def test_meeting_outside_flight_windows_is_not_suppressed():
+    # A real meeting that does not overlap any flight window plans normally —
+    # the filter must never suppress a genuine ground meeting.
+    start = NOW + timedelta(hours=3)
+    end = start + timedelta(hours=1)
+    far_window = (NOW + timedelta(days=1), NOW + timedelta(days=1, hours=2))
+    result = scan(
+        [_meeting("m1", start=start, end=end)],
+        now=NOW,
+        home_address=HOME,
+        flight_windows=[far_window],
+    )[0]
+    assert result.bucket == "needs_decision"
+    assert [leg.direction for leg in result.legs] == ["outbound", "return"]
+
+
+def test_flight_neighbour_does_not_bridge_real_meeting():
+    # The #85 symptom: a flight event tight against a real meeting must not act
+    # as a bridge neighbour the real meeting drives to/from across an ocean.
+    flight_start = NOW + timedelta(hours=3)
+    flight_end = flight_start + timedelta(hours=2)
+    meeting_start = flight_end + timedelta(minutes=30)  # tight gap to the flight
+    meeting_end = meeting_start + timedelta(hours=1)
+    events = [
+        _meeting(
+            "flt",
+            start=flight_start,
+            end=flight_end,
+            location="John F. Kennedy International Airport (JFK), Queens, NY 11430, USA",
+            summary="Flight to Nashville (DL 4908)",
+        ),
+        _meeting(
+            "mtg", start=meeting_start, end=meeting_end, location="100 Broadway, Nashville, TN"
+        ),
+    ]
+    by_id = _by_id(
+        scan(events, now=NOW, home_address=HOME, flight_windows=[(flight_start, flight_end)])
+    )
+    assert by_id["flt"].bucket == "filtered"
+    # The real meeting is standalone — it never bridges from the flight.
+    assert by_id["mtg"].bucket == "needs_decision"
+    assert [leg.direction for leg in by_id["mtg"].legs] == ["outbound", "return"]
+
+
+def test_no_flight_windows_is_flight_unaware():
+    # Without flight windows (the pre-#85 / CLI default), a flight-shaped event
+    # is classified like any meeting — the filter is opt-in via the sweep.
+    start = NOW + timedelta(hours=3)
+    end = start + timedelta(hours=2)
+    result = scan(
+        [_meeting("flt1", start=start, end=end, summary="Flight to Nashville (DL 4908)")],
+        now=NOW,
+        home_address=HOME,
+    )[0]
+    assert result.bucket == "needs_decision"
+
+
 # --- lombot #37: multiline location normalized ---------------------------
 
 
