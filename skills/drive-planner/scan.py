@@ -409,7 +409,8 @@ def _during_flight(event: _Event, flight_windows: tuple[tuple[datetime, datetime
     one flight, and a copy whose offset is wrong ends before the true window
     starts, so it misses the overlap and slips through as a ground meeting
     (the Stansted→New-York transatlantic "drive"). `_is_flight_event` pairs
-    this with two schedule-independent signals below.
+    this with a schedule-independent summary-template signal and a
+    time-independent flight-code signal (schedule-backed) below.
     """
     if event.start is None or event.end is None:
         return False
