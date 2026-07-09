@@ -693,8 +693,10 @@ def _classify(
     #    airport location never draws a cross-continent "drive" (the London-
     #    hotel→JFK layover). Caught by time overlap, a flight-template summary,
     #    OR a scheduled flight code — so a duplicate Gmail flight with a
-    #    corrupted time is caught too. Sits after the time guard (overlap needs
-    #    start/end; the summary/code signals do not).
+    #    corrupted (but parseable) time is caught too. Placed after the
+    #    missing-time guard: an event with no parseable start/end already left
+    #    above as "missing or unparseable time", so every event reaching here
+    #    has times and the overlap signal always has the start/end it needs.
     if _is_flight_event(event, flight_windows, scheduled_codes):
         return _make_class(event, "filtered", "air travel — flight event")
 
