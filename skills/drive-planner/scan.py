@@ -32,9 +32,9 @@ Buckets (Epic #59 §3, §5):
     past            start ≤ now (small tolerance) — never plan into the
                     past (lombot #28).
     filtered        Not a routable ground meeting: the operator declined it
-                    (or it's cancelled), all-day, virtual location, a TripIt
-                    flight segment (#85 — air travel, owned by flight-assist),
-                    the planner's own block, or an unparseable / missing time.
+                    (or it's cancelled), all-day, virtual location, a flight
+                    event (#85 — air travel, owned by flight-assist), the
+                    planner's own block, or an unparseable / missing time.
                     Returned (not dropped) so the sweep can audit and clean
                     up — the meta-lesson is "no silent miss".
 
@@ -401,21 +401,89 @@ def _during_flight(event: _Event, flight_windows: tuple[tuple[datetime, datetime
     ("Flight to Nashville (DL 4908)", location = an airport). The event and
     the flight window both derive from the same TripIt data, so a flight's
     calendar event and its schedule segment overlap near-exactly — plain
-    interval overlap is enough (no padding). Such an event is air travel,
-    owned by flight-assist, and must never be classified as a ground meeting:
-    routing between its airports draws a cross-continent "drive" (London hotel
-    → JFK for a layover). An event with no parsed start/end can't overlap and
-    returns False (it is filtered elsewhere as unparseable). Empty
-    `flight_windows` (no schedule / flight-unaware) returns False — the
-    pre-#85 behavior, so a real meeting is never suppressed.
+    interval overlap is enough (no padding). An event with no parsed start/end
+    can't overlap and returns False. Empty `flight_windows` returns False.
+
+    This time match alone is defeated by a duplicate flight event with a
+    corrupted timezone: Google "events from Gmail" creates several copies of
+    one flight, and a copy whose offset is wrong ends before the true window
+    starts, so it misses the overlap and slips through as a ground meeting
+    (the Stansted→New-York transatlantic "drive"). `_is_flight_event` pairs
+    this with a schedule-independent summary-template signal and a
+    time-independent flight-code signal (schedule-backed) below.
     """
     if event.start is None or event.end is None:
         return False
     return any(event.start < end and start < event.end for start, end in flight_windows)
 
 
+# Summary prefixes that mark an event as air travel, from the sources that
+# auto-create flight events on the primary calendar: Google "events from
+# Gmail" and TripIt both title a flight "Flight to <city> (<code>)"; Flighty
+# uses a "✈" prefix. A fixed, enumerable set of machine-generated templates
+# (not free-text parsing per `coding-policy: script-delegation`), so a summary
+# match is a reliable "this is a flight" signal that holds even when the
+# event's time is corrupted — the duplicate Gmail flights the time match misses.
+_FLIGHT_SUMMARY_PREFIXES = ("flight to ", "✈")
+
+# IATA flight-designator pattern: a 2-char airline code (the IATA set allows
+# letter-letter, letter-digit, or digit-letter) then 1-4 digits — "DL 4908",
+# "U2 123", "9W 456". A bounded, fully-enumerable format (not the free-text
+# regex trap), used to match a calendar flight event to a scheduled flight by
+# identity when their times disagree.
+_FLIGHT_CODE_RE = re.compile(r"\b([A-Z]{2}|[A-Z]\d|\d[A-Z])\s?(\d{1,4})\b")
+
+
+def _looks_like_flight_summary(summary: str | None) -> bool:
+    """True when the summary matches a known auto-created flight template."""
+    if not summary:
+        return False
+    lowered = summary.strip().casefold()
+    return any(lowered.startswith(prefix) for prefix in _FLIGHT_SUMMARY_PREFIXES)
+
+
+def flight_codes(text: str | None) -> frozenset[str]:
+    """Normalized IATA flight designators in `text` (e.g. {"DL4908"}), or empty.
+
+    Case-insensitive; the space in "DL 4908" is dropped so "DL 4908" and
+    "DL4908" normalize alike. Used on both a calendar event's summary and a
+    scheduled flight's summary so the two can be matched by identity.
+    """
+    if not text:
+        return frozenset()
+    return frozenset(f"{m.group(1)}{m.group(2)}" for m in _FLIGHT_CODE_RE.finditer(text.upper()))
+
+
+def _is_flight_event(
+    event: _Event,
+    flight_windows: tuple[tuple[datetime, datetime], ...],
+    scheduled_codes: frozenset[str],
+) -> bool:
+    """True when the event is air travel, by any of three independent signals.
+
+    1. time overlap with a scheduled flight window (`_during_flight`);
+    2. a flight-template summary ("Flight to …" / "✈…") — schedule-independent,
+       so it catches duplicate Gmail flight events whose corrupted time misses
+       signal 1;
+    3. an IATA flight code in its summary that matches a scheduled flight —
+       identity, not instant, so it too survives a corrupted time.
+
+    Any one suffices. Air travel is owned by flight-assist and never a ground
+    meeting; a false positive at worst withholds a drive block from a meeting
+    improbably titled like a flight — the safe direction.
+    """
+    return (
+        _during_flight(event, flight_windows)
+        or _looks_like_flight_summary(event.summary)
+        or bool(flight_codes(event.summary) & scheduled_codes)
+    )
+
+
 def _is_routable_candidate(
-    event: _Event, now: datetime, flight_windows: tuple[tuple[datetime, datetime], ...]
+    event: _Event,
+    now: datetime,
+    flight_windows: tuple[tuple[datetime, datetime], ...],
+    scheduled_codes: frozenset[str],
 ) -> bool:
     """True when the event can act as a real-meeting neighbour for §5 #14/#7.
 
@@ -424,8 +492,8 @@ def _is_routable_candidate(
     the cross of lombot #28 and #14/#7: a stale same-venue meeting must not turn
     a future meeting into back_to_back and strip its outbound-from-home leg.
     `end` is required too, so a half-parsed event never skews a gap. Excluding
-    flight events (#85) keeps a TripIt flight from acting as a bridge neighbour
-    that a real meeting drives to/from across an ocean.
+    flight events (#85) keeps a flight from acting as a bridge neighbour that a
+    real meeting drives to/from across an ocean.
     """
     return (
         event.marker is None
@@ -437,7 +505,7 @@ def _is_routable_candidate(
         and event.location is not None
         and not _is_virtual(event.location)
         and not _is_past(event, now)
-        and not _during_flight(event, flight_windows)
+        and not _is_flight_event(event, flight_windows, scheduled_codes)
     )
 
 
@@ -450,6 +518,7 @@ def scan(
     tight_gap_seconds: int = DEFAULT_TIGHT_GAP_SECONDS,
     anchor_for: Callable[[datetime], tuple[str | None, str | None]] | None = None,
     flight_windows: list[tuple[datetime, datetime]] | None = None,
+    flight_summaries: list[str] | None = None,
 ) -> list[MeetingClass]:
     """Classify every event into a drive-planner bucket.
 
@@ -479,12 +548,16 @@ def scan(
             and `anchor_note=note` so the caller surfaces them instead of
             routing from home. Defaults to a constant `(home_address, None)`
             — the pre-#122 behavior.
-        flight_windows: known TripIt flight (start, end) UTC spans (#85). Any
-            event overlapping one is a flight segment (air travel, owned by
-            flight-assist), bucketed `filtered` and excluded as a routing
-            neighbour, so a flight's airport location never draws a cross-
-            continent drive. Defaults to none — the pre-#85 flight-unaware
-            behavior; the sweep passes the schedule's flight windows.
+        flight_windows: known TripIt flight (start, end) UTC spans (#85). An
+            event overlapping one is air travel — bucketed `filtered` and
+            excluded as a routing neighbour, so a flight's airport location
+            never draws a cross-continent drive. Defaults to none.
+        flight_summaries: scheduled flight segment summaries (#85). Their IATA
+            codes are matched against each event's summary so a flight whose
+            corrupted time misses `flight_windows` is still caught by identity.
+            A flight-template summary ("Flight to …" / "✈…") is caught with
+            neither input — that signal is intrinsic. Defaults to none; the
+            sweep passes both from the schedule.
 
     Returns:
         list[MeetingClass] in the input order.
@@ -515,6 +588,7 @@ def scan(
     if anchor_for is None:
         anchor_for = lambda _at: (home_address, None)  # noqa: E731 — trivial constant default
     windows = tuple(flight_windows or ())
+    scheduled_codes = frozenset().union(*(flight_codes(s) for s in (flight_summaries or ())))
     parsed = [_parse_event(raw) for raw in events]
 
     # Pass 1: every meeting referenced by ANY planner marker is "handled"
@@ -532,7 +606,9 @@ def scan(
     # same-venue meeting must never make a future meeting back_to_back and
     # strip its outbound-from-home leg. A non-candidate still gets classified,
     # it just can't act as a neighbour.
-    candidates = [event for event in parsed if _is_routable_candidate(event, now, windows)]
+    candidates = [
+        event for event in parsed if _is_routable_candidate(event, now, windows, scheduled_codes)
+    ]
     candidates.sort(key=lambda e: e.start)  # type: ignore[arg-type,return-value]
     order = {id(event): index for index, event in enumerate(candidates)}
 
@@ -548,6 +624,7 @@ def scan(
                 candidates=candidates,
                 order=order,
                 flight_windows=windows,
+                scheduled_codes=scheduled_codes,
                 tight_gap_seconds=tight_gap_seconds,
             )
         )
@@ -587,6 +664,7 @@ def _classify(
     candidates: list[_Event],
     order: dict[int, int],
     flight_windows: tuple[tuple[datetime, datetime], ...],
+    scheduled_codes: frozenset[str],
     tight_gap_seconds: int,
 ) -> MeetingClass:
     """Assign one event to a bucket. Precedence matters — see inline order."""
@@ -610,13 +688,17 @@ def _classify(
     if event.start is None or event.end is None:
         return _make_class(event, "filtered", "missing or unparseable time")
 
-    # 5. TripIt flight segment (#85) — air travel, owned by flight-assist,
-    #    never a ground meeting. Filtered before the location/routable checks
-    #    so its airport location never draws a cross-continent "drive" (the
-    #    London-hotel→JFK layover). Overlap-matched against the sweep's known
-    #    flight windows; needs start/end, so it sits after the time guard.
-    if _during_flight(event, flight_windows):
-        return _make_class(event, "filtered", "air travel — TripIt flight segment")
+    # 5. Flight event (#85) — air travel, owned by flight-assist, never a
+    #    ground meeting. Filtered before the location/routable checks so its
+    #    airport location never draws a cross-continent "drive" (the London-
+    #    hotel→JFK layover). Caught by time overlap, a flight-template summary,
+    #    OR a scheduled flight code — so a duplicate Gmail flight with a
+    #    corrupted (but parseable) time is caught too. Placed after the
+    #    missing-time guard: an event with no parseable start/end already left
+    #    above as "missing or unparseable time", so every event reaching here
+    #    has times and the overlap signal always has the start/end it needs.
+    if _is_flight_event(event, flight_windows, scheduled_codes):
+        return _make_class(event, "filtered", "air travel — flight event")
 
     # 6. Virtual / no location — never ask (lombot #49).
     if event.location is None:
@@ -821,11 +903,12 @@ def main() -> int:
     deterministic-operation-as-script surface per `coding-policy:
     script-delegation` / `file-hygiene`.
 
-    This CLI is anchor-static and flight-unaware: legs anchor at
-    `home_address` only, and no flight windows are supplied. The trip-aware
-    per-meeting anchor (#122) and the flight filter (#85) are Python-side
-    inputs that don't cross this JSON boundary — the sweep precheck uses the
-    Python API's `anchor_for` and `flight_windows`.
+    This CLI is anchor-static and schedule-unaware: legs anchor at
+    `home_address` only, and no flight windows / summaries are supplied. The
+    trip-aware anchor (#122) and the schedule-backed flight signals (#85) are
+    Python-side inputs that don't cross this JSON boundary — the sweep precheck
+    passes `anchor_for`, `flight_windows`, `flight_summaries`. The intrinsic
+    flight-template summary signal still fires here (it needs no schedule).
     """
     try:
         request = json.load(sys.stdin)

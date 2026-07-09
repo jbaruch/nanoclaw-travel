@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed — drive-planner: catch flight events by content, not only by schedule time (#85 follow-up)
+
+The 0.2.32 flight filter matched a calendar event to a scheduled flight by time overlap alone, and that was defeated by garbage in the calendar. Google "events from Gmail" auto-created three copies of one flight ("Flight to Nashville (DL 4908)"); two carried a corrupted timezone (span 19:55–22:01Z) that ended before the true flight window (22:59–01:46Z) began, so they missed the overlap, slipped through as ordinary New-York meetings, and drew a Stansted→New-York transatlantic "drive" (`ALL_PROVIDERS_FAILED`). The filter wasn't broken — the time-only match was too narrow for duplicate, time-corrupted input.
+
+`scan()` now treats an event as air travel by **any** of three independent signals: (1) time overlap with a scheduled flight window (the 0.2.32 behavior); (2) a flight-template summary — `Flight to …` or a `✈` prefix — which is intrinsic to `scan` and needs no schedule, so it catches the corrupted duplicates; (3) an IATA flight designator (e.g. `DL 4908`) in the summary matching a scheduled flight's identity (new `trip_origin.flight_summaries()`), which survives a corrupted time. The precheck loads windows and summaries in one schedule read (`_build_flight_context`). The template signal is deliberately narrow (`Flight to `/`✈` prefix) so a real ground meeting is not silently withheld; a Gmail restaurant reservation ("Reservation at Fletchers House") stays a valid drive target. The filtered reason generalizes to "air travel — flight event".
+
 ## 0.2.32 — 2026-07-09
 
 ### Fixed — drive-planner: filter TripIt flight events out of ground-meeting classification (#85)
