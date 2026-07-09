@@ -330,15 +330,17 @@ def test_on_trip_meeting_routes_from_lodging_end_to_end(tmp_path, monkeypatch):
 
 
 def test_flight_event_is_filtered_and_never_woken(tmp_path, monkeypatch):
-    """The full sweep pipeline: a duplicate Gmail flight event whose timezone is
-    corrupted (its span misses the true flight window) is still filtered by scan
-    via the flight-summary signal `_build_flight_context` enables, so it produces
-    no meeting and the router is never asked to drive between airports."""
+    """The full sweep pipeline exercising the schedule-backed identity signal
+    that `_build_flight_context` supplies: a flight event with a NON-template
+    summary and a corrupted time (so neither the intrinsic summary rule nor the
+    time-overlap window can fire) is still filtered because its flight code
+    matches a scheduled Flight segment — so it produces no meeting and the
+    router is never asked to drive between airports."""
     import json
 
     import trip_origin
 
-    # The true flight segment JFK→BNA on the trip.
+    # The true flight segment JFK→BNA on the trip; its summary carries DL 4908.
     flight_start = datetime(2026, 7, 1, 14, 0, tzinfo=CT)
     flight_end = datetime(2026, 7, 1, 16, 0, tzinfo=CT)
     schedule = [
@@ -357,13 +359,15 @@ def test_flight_event_is_filtered_and_never_woken(tmp_path, monkeypatch):
     monkeypatch.setattr(trip_origin, "SCHEDULE_PATH", str(schedule_path))
 
     flight_windows, flight_summaries = precheck._build_flight_context()
-    # A corrupted duplicate: its span is two hours before the true window, so
-    # the time-overlap signal misses it — the summary/code signals must catch it.
+    # Non-template summary carrying the code, plus a corrupted time two hours
+    # before the true window: the summary rule and the window both miss, so
+    # ONLY the schedule-backed code match (via _build_flight_context) can catch
+    # it. The test fails if flight_summaries are not threaded through correctly.
     corrupt_start = datetime(2026, 7, 1, 11, 0, tzinfo=CT)
     corrupt_end = datetime(2026, 7, 1, 13, 0, tzinfo=CT)
     flight_event = {
         "id": "flt",
-        "summary": "Flight to Nashville (DL 4908)",
+        "summary": "DL 4908 (Gmail duplicate, wrong tz)",
         "location": "New York, NY, USA",
         "start": {"dateTime": corrupt_start.isoformat(), "timeZone": "America/Chicago"},
         "end": {"dateTime": corrupt_end.isoformat()},
@@ -377,6 +381,10 @@ def test_flight_event_is_filtered_and_never_woken(tmp_path, monkeypatch):
         flight_summaries=flight_summaries,
     )
     assert [r.bucket for r in results] == ["filtered"]
+    # Guard the guard: with the schedule context dropped, this non-template,
+    # off-window event would slip through — proving the assertion above is the
+    # code-match path, not the intrinsic summary rule.
+    assert scan([flight_event], now=NOW, home_address=HOME)[0].bucket == "needs_decision"
 
     def exploding_router(origin, destination):
         raise AssertionError(f"router must not be called for a flight ({origin} → {destination})")

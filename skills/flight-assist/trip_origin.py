@@ -281,8 +281,9 @@ def flight_windows(schedule: list[dict] | None) -> list[tuple[datetime, datetime
     ground-meeting classification (#85): a calendar event overlapping a flight
     window is air travel — owned by flight-assist — never a ground meeting to
     draw a drive block for (the London-hotel→JFK-layover "drive"). A None /
-    empty schedule yields no windows (the pre-#85 flight-unaware behavior — no
-    windows means no filtering, so a real meeting is never suppressed).
+    empty schedule yields no windows, so this time-overlap signal goes quiet;
+    `scan` still applies its intrinsic flight-template summary rule, and a real
+    (non-flight) meeting is never suppressed by an absent schedule.
 
     Only a segment whose `start` and `end` both parse to instants AND both
     carry a time-of-day (`T` in the raw value) produces a window. A date-only
