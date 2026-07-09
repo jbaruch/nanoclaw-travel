@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.32 — 2026-07-09
+
 ### Fixed — drive-planner: filter TripIt flight events out of ground-meeting classification (#85)
 
 TripIt syncs each flight segment onto the primary calendar as its own event ("Flight to Nashville (DL 4908)", location = an airport). The sweep fetches every primary event and `scan.py` classified these flights as routable ground meetings, so the precheck tried to drive between airports — Stansted hotel → JFK for a layover, an ocean apart. Ocean routes return `ZERO_RESULTS` and woke the agent with "Couldn't compute drive time"; layover bridges surfaced as "doesn't fit the gap" noise. This is the unbuilt half of #85: its downstream sanity gates (`MAX_REASONABLE_DRIVE_SECONDS`, bridge>gap) catch implausible *drives* but never stopped a flight *event* from being treated as a meeting; the #122 anchor fix handled the restaurant-origin case but not this one.
