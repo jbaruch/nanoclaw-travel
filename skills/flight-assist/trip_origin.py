@@ -35,14 +35,16 @@ stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
 Public API:
     from trip_origin import (
-        TripAnchor, flight_windows, load_travel_schedule, resolve_anchor,
+        TripAnchor, flight_summaries, flight_windows, load_travel_schedule,
+        resolve_anchor,
     )
 
     schedule = load_travel_schedule()            # list | None, tolerant
     anchor = resolve_anchor(schedule, at=meeting_start, home_address=home)
     anchor.address    # drivable anchor, or None (unresolved mid-trip)
     anchor.source     # "home" | "lodging" | "trip_location" | "unresolved"
-    flight_windows(schedule)  # [(start, end), ...] — flight spans to filter (#85)
+    flight_windows(schedule)    # [(start, end), ...] — flight spans to filter (#85)
+    flight_summaries(schedule)  # ["DL 4908 ...", ...] — flight identities to filter (#85)
 """
 
 from __future__ import annotations
@@ -265,6 +267,13 @@ def resolve_anchor(
     )
 
 
+def _flight_records(schedule: list[dict] | None) -> list[dict]:
+    """The `Flight`-type records from the schedule (dicts only), else empty."""
+    if not schedule:
+        return []
+    return [r for r in schedule if isinstance(r, dict) and r.get("type") == "Flight"]
+
+
 def flight_windows(schedule: list[dict] | None) -> list[tuple[datetime, datetime]]:
     """UTC (start, end) spans for every timed `Flight` segment in the schedule.
 
@@ -280,13 +289,14 @@ def flight_windows(schedule: list[dict] | None) -> list[tuple[datetime, datetime
     or unparseable segment is skipped: a date-only "flight" would span whole
     calendar days and could suppress a real same-day meeting, so the safe
     direction is to emit no window for it. A non-positive span is skipped too.
+
+    The time-overlap match this feeds is defeated by a duplicate flight event
+    whose timezone is corrupted (its span misses the true window); `scan`
+    pairs these windows with a schedule-independent summary-template match and
+    the `flight_summaries` code match below to catch those too.
     """
-    if not schedule:
-        return []
     windows: list[tuple[datetime, datetime]] = []
-    for record in schedule:
-        if record.get("type") != "Flight":
-            continue
+    for record in _flight_records(schedule):
         raw_start = record.get("start")
         raw_end = record.get("end")
         if not (isinstance(raw_start, str) and "T" in raw_start):
@@ -299,6 +309,24 @@ def flight_windows(schedule: list[dict] | None) -> list[tuple[datetime, datetime
             continue
         windows.append((start, end))
     return windows
+
+
+def flight_summaries(schedule: list[dict] | None) -> list[str]:
+    """Summaries of every `Flight` segment in the schedule (non-empty strings).
+
+    `scan` extracts IATA flight designators (e.g. "DL 4908") from these to
+    match a calendar flight event to a scheduled flight by identity, catching
+    duplicate flight events whose corrupted times miss the `flight_windows`
+    overlap (#85 follow-up). Unlike the windows, this ignores the segment's
+    time entirely — identity, not instant. A None / empty schedule yields no
+    summaries.
+    """
+    summaries: list[str] = []
+    for record in _flight_records(schedule):
+        summary = record.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            summaries.append(summary)
+    return summaries
 
 
 def resolve_effective_home(home_address: str | None, *, now: datetime) -> str | None:

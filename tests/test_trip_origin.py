@@ -35,6 +35,7 @@ import trip_origin  # noqa: E402
 from trip_origin import (  # noqa: E402
     SCHEDULE_SCHEMA_VERSION,
     TripAnchor,
+    flight_summaries,
     flight_windows,
     load_travel_schedule,
     resolve_anchor,
@@ -377,3 +378,53 @@ def test_flight_windows_skips_non_positive_span():
         ),
     ]
     assert flight_windows(schedule) == []
+
+
+# ---------------------------------------------------------------------------
+# flight_summaries — flight identities for scan's code match (#85)
+# ---------------------------------------------------------------------------
+
+
+def test_flight_summaries_none_or_empty_schedule_is_empty():
+    assert flight_summaries(None) == []
+    assert flight_summaries([]) == []
+
+
+def test_flight_summaries_returns_flight_segment_summaries_only():
+    # The UK fixture has one Flight (BNA to LHR); Trip and Lodging are excluded.
+    assert flight_summaries(_uk_trip_schedule()) == ["BNA to LHR"]
+
+
+def test_flight_summaries_skips_blank_summary():
+    schedule = [
+        _record(
+            type="Flight",
+            summary="",
+            start="2025-06-26T19:00:00Z",
+            end="2025-06-26T22:00:00Z",
+            location="x",
+        ),
+        _record(
+            type="Flight",
+            summary="DL 4908 BNA to LHR",
+            start="2025-06-27T19:00:00Z",
+            end="2025-06-27T22:00:00Z",
+            location="y",
+        ),
+    ]
+    assert flight_summaries(schedule) == ["DL 4908 BNA to LHR"]
+
+
+def test_flight_summaries_includes_date_only_flight_segments():
+    # Unlike flight_windows (which needs a timed span), the summary match is
+    # time-agnostic — a date-only flight still contributes its identity.
+    schedule = [
+        _record(
+            type="Flight",
+            summary="DL 4908 BNA to LHR",
+            start="2025-06-26",
+            end="2025-06-27",
+            location="x",
+        ),
+    ]
+    assert flight_summaries(schedule) == ["DL 4908 BNA to LHR"]

@@ -137,20 +137,23 @@ def _build_anchor_resolver(home_address: str):
     return anchor_for
 
 
-def _build_flight_windows():
-    """Known TripIt flight (start, end) windows for scan()'s flight filter (#85).
+def _build_flight_context():
+    """`(flight_windows, flight_summaries)` for scan()'s flight filter (#85).
 
-    Reads the same travel-schedule.json the anchor resolver reads and returns
-    the UTC span of every Flight segment, so scan() filters TripIt flight
-    events out of ground-meeting classification instead of routing a cross-
-    continent "drive" between airports (the London-hotel→JFK layover). A
-    missing / unusable schedule yields no windows — the pre-#85 flight-unaware
-    behavior, so a real meeting is never suppressed.
+    Reads the same travel-schedule.json the anchor resolver reads, once, and
+    returns both the timed flight windows (time-overlap match) and the flight
+    segment summaries (flight-code identity match). scan() filters a flight
+    event by time OR by identity OR by its own flight-template summary, so a
+    duplicate Gmail flight event whose corrupted timezone misses the window is
+    still caught. A missing / unusable schedule yields empty for both — the
+    time/identity signals go quiet and only the intrinsic summary signal
+    remains, so a real meeting is never suppressed.
     """
     _flight_assist_on_path()
-    from trip_origin import flight_windows, load_travel_schedule
+    from trip_origin import flight_summaries, flight_windows, load_travel_schedule
 
-    return flight_windows(load_travel_schedule())
+    schedule = load_travel_schedule()
+    return flight_windows(schedule), flight_summaries(schedule)
 
 
 def _route_seconds(client, origin: str, destination: str) -> int:
@@ -377,13 +380,15 @@ def main() -> int:
         fetcher = CalendarFetcher.from_env()
         events = fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
         skips = load_active_skips(now)
+        flight_windows, flight_summaries = _build_flight_context()
         results = scan(
             events,
             now=now,
             home_address=home_address,
             skip_state=skips,
             anchor_for=_build_anchor_resolver(home_address),
-            flight_windows=_build_flight_windows(),
+            flight_windows=flight_windows,
+            flight_summaries=flight_summaries,
         )
         client = _load_maps_client()
         payload_data = plan_meetings(

@@ -330,21 +330,21 @@ def test_on_trip_meeting_routes_from_lodging_end_to_end(tmp_path, monkeypatch):
 
 
 def test_flight_event_is_filtered_and_never_woken(tmp_path, monkeypatch):
-    """The full sweep pipeline: a TripIt flight event whose span matches a
-    Flight segment in travel-schedule.json is filtered by scan (via the windows
-    `_build_flight_windows` reads), so it produces no meeting and the router is
-    never asked to drive between airports across an ocean."""
+    """The full sweep pipeline: a duplicate Gmail flight event whose timezone is
+    corrupted (its span misses the true flight window) is still filtered by scan
+    via the flight-summary signal `_build_flight_context` enables, so it produces
+    no meeting and the router is never asked to drive between airports."""
     import json
 
     import trip_origin
 
-    # A flight segment JFK→BNA on the trip; the calendar event mirrors its span.
+    # The true flight segment JFK→BNA on the trip.
     flight_start = datetime(2026, 7, 1, 14, 0, tzinfo=CT)
     flight_end = datetime(2026, 7, 1, 16, 0, tzinfo=CT)
     schedule = [
         {
             "schema_version": 1,
-            "summary": "JFK to BNA",
+            "summary": "DL 4908 JFK to BNA",
             "start": flight_start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "end": flight_end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "location": "John F. Kennedy International Airport (JFK), Queens, NY 11430, USA",
@@ -356,16 +356,26 @@ def test_flight_event_is_filtered_and_never_woken(tmp_path, monkeypatch):
     schedule_path.write_text(json.dumps(schedule))
     monkeypatch.setattr(trip_origin, "SCHEDULE_PATH", str(schedule_path))
 
-    windows = precheck._build_flight_windows()
+    flight_windows, flight_summaries = precheck._build_flight_context()
+    # A corrupted duplicate: its span is two hours before the true window, so
+    # the time-overlap signal misses it — the summary/code signals must catch it.
+    corrupt_start = datetime(2026, 7, 1, 11, 0, tzinfo=CT)
+    corrupt_end = datetime(2026, 7, 1, 13, 0, tzinfo=CT)
     flight_event = {
         "id": "flt",
         "summary": "Flight to Nashville (DL 4908)",
-        "location": "John F. Kennedy International Airport (JFK), Queens, NY 11430, USA",
-        "start": {"dateTime": flight_start.isoformat(), "timeZone": "America/Chicago"},
-        "end": {"dateTime": flight_end.isoformat()},
+        "location": "New York, NY, USA",
+        "start": {"dateTime": corrupt_start.isoformat(), "timeZone": "America/Chicago"},
+        "end": {"dateTime": corrupt_end.isoformat()},
         "description": "",
     }
-    results = scan([flight_event], now=NOW, home_address=HOME, flight_windows=windows)
+    results = scan(
+        [flight_event],
+        now=NOW,
+        home_address=HOME,
+        flight_windows=flight_windows,
+        flight_summaries=flight_summaries,
+    )
     assert [r.bucket for r in results] == ["filtered"]
 
     def exploding_router(origin, destination):

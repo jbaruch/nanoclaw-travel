@@ -27,6 +27,7 @@ from scan import (  # noqa: E402
     ScanError,
     TransitLeg,
     actionable,
+    flight_codes,
     main,
     scan,
 )
@@ -363,13 +364,12 @@ def test_lombot28_past_neighbour_does_not_suppress_future_outbound():
     assert [leg.direction for leg in by_id["future"].legs] == ["outbound", "return"]
 
 
-# --- #85: TripIt flight segments are filtered, never ground-routed --------
+# --- #85: flight events filtered by three signals, never ground-routed -----
 
 
 def test_flight_event_overlapping_window_is_filtered():
-    # A TripIt flight event lands on the primary calendar with an airport
-    # location; its span overlaps a known flight window, so it is air travel,
-    # not a ground meeting to drive to.
+    # Signal 1: a flight event whose span overlaps a known flight window. Give
+    # it a non-flight-template summary so this isolates the time-overlap signal.
     start = NOW + timedelta(hours=3)
     end = start + timedelta(hours=2)
     flight = _meeting(
@@ -377,38 +377,134 @@ def test_flight_event_overlapping_window_is_filtered():
         start=start,
         end=end,
         location="John F. Kennedy International Airport (JFK), Queens, NY 11430, USA",
-        summary="Flight to Nashville (DL 4908)",
+        summary="DL4908 segment",  # no "Flight to"/✈ prefix, no scheduled code
     )
-    result = scan(
-        [flight],
-        now=NOW,
-        home_address=HOME,
-        flight_windows=[(start, end)],
-    )[0]
+    result = scan([flight], now=NOW, home_address=HOME, flight_windows=[(start, end)])[0]
     assert result.bucket == "filtered"
-    assert result.reason == "air travel — TripIt flight segment"
+    assert result.reason == "air travel — flight event"
     assert result.legs == ()
 
 
 def test_flight_window_partial_overlap_still_filters():
-    # The calendar event and its schedule twin need not align exactly — any
-    # interval overlap marks it a flight (both derive from the same TripIt data).
+    # Any interval overlap marks it a flight; again a non-template summary so
+    # only the window signal can fire.
     start = NOW + timedelta(hours=3)
     end = start + timedelta(hours=2)
     window = (start + timedelta(minutes=30), end + timedelta(minutes=30))
     result = scan(
-        [_meeting("flt1", start=start, end=end, summary="Flight to X")],
+        [_meeting("flt1", start=start, end=end, summary="airport transfer")],
         now=NOW,
         home_address=HOME,
         flight_windows=[window],
     )[0]
     assert result.bucket == "filtered"
-    assert result.reason == "air travel — TripIt flight segment"
+    assert result.reason == "air travel — flight event"
+
+
+def test_flight_template_summary_filtered_without_any_schedule():
+    # Signal 2 (intrinsic): a "Flight to …" summary is air travel even with NO
+    # flight windows or summaries — this is what catches the duplicate Gmail
+    # flight events whose corrupted timezone misses the window.
+    start = NOW + timedelta(hours=3)
+    end = start + timedelta(hours=2)
+    for summary in ("Flight to Nashville (DL 4908)", "✈ BNA→YYZ • UA 8018"):
+        result = scan(
+            [_meeting("flt", start=start, end=end, location="New York, NY, USA", summary=summary)],
+            now=NOW,
+            home_address=HOME,
+        )[0]
+        assert result.bucket == "filtered", summary
+        assert result.reason == "air travel — flight event"
+
+
+def test_corrupted_duplicate_flight_still_filtered_by_summary():
+    # The exact recurrence: three "Flight to Nashville (DL 4908)" Gmail copies,
+    # two with a corrupted timezone whose span (19:55–22:01Z) ends before the
+    # true flight window (22:59–01:46Z) starts. Signal 1 misses the corrupt
+    # copies; the template summary (signal 2) catches all three.
+    good_start = datetime(2026, 7, 1, 22, 59, tzinfo=timezone.utc)
+    good_end = datetime(2026, 7, 2, 1, 46, tzinfo=timezone.utc)
+    bad_start = datetime(2026, 7, 1, 19, 55, tzinfo=timezone.utc)
+    bad_end = datetime(2026, 7, 1, 22, 1, tzinfo=timezone.utc)
+    events = [
+        _meeting(
+            "good",
+            start=good_start,
+            end=good_end,
+            location="New York, NY, USA",
+            summary="Flight to Nashville (DL 4908)",
+        ),
+        _meeting(
+            "bad1",
+            start=bad_start,
+            end=bad_end,
+            location="New York, NY, USA",
+            summary="Flight to Nashville (DL 4908)",
+        ),
+        _meeting(
+            "bad2",
+            start=bad_start,
+            end=bad_end,
+            location="New York, NY, USA",
+            summary="Flight to Nashville (DL 4908)",
+        ),
+    ]
+    results = scan(
+        events,
+        now=good_start - timedelta(hours=2),
+        home_address=HOME,
+        flight_windows=[(good_start, good_end)],
+    )
+    assert {r.bucket for r in results} == {"filtered"}
+
+
+def test_flight_code_matches_schedule_when_time_and_template_miss():
+    # Signal 3: a flight event with a non-template summary and a corrupted time
+    # that misses the window is still caught when its IATA code matches a
+    # scheduled flight's summary.
+    start = NOW + timedelta(hours=3)
+    end = start + timedelta(hours=2)
+    far_window = (NOW + timedelta(days=1), NOW + timedelta(days=1, hours=2))
+    flight = _meeting(
+        "flt", start=start, end=end, location="New York, NY, USA", summary="DL 4908 NYC"
+    )
+    result = scan(
+        [flight],
+        now=NOW,
+        home_address=HOME,
+        flight_windows=[far_window],
+        flight_summaries=["DL 4908 London Stansted to New York JFK"],
+    )[0]
+    assert result.bucket == "filtered"
+    assert result.reason == "air travel — flight event"
+
+
+def test_gmail_reservation_is_not_filtered_as_flight():
+    # A Gmail-auto-created restaurant reservation is a legitimate drive target —
+    # it must NOT be filtered. Only flight-shaped events are air travel.
+    start = NOW + timedelta(hours=3)
+    end = start + timedelta(hours=2)
+    result = scan(
+        [
+            _meeting(
+                "res",
+                start=start,
+                end=end,
+                location="Fletchers House, Rye, UK",
+                summary="Reservation at Fletchers House",
+            )
+        ],
+        now=NOW,
+        home_address=HOME,
+        flight_summaries=["DL 4908 London to New York"],
+    )[0]
+    assert result.bucket == "needs_decision"
+    assert [leg.direction for leg in result.legs] == ["outbound", "return"]
 
 
 def test_meeting_outside_flight_windows_is_not_suppressed():
-    # A real meeting that does not overlap any flight window plans normally —
-    # the filter must never suppress a genuine ground meeting.
+    # A real meeting that overlaps no window, has no flight template, and no
+    # matching code plans normally — the filter never suppresses a real meeting.
     start = NOW + timedelta(hours=3)
     end = start + timedelta(hours=1)
     far_window = (NOW + timedelta(days=1), NOW + timedelta(days=1, hours=2))
@@ -417,6 +513,7 @@ def test_meeting_outside_flight_windows_is_not_suppressed():
         now=NOW,
         home_address=HOME,
         flight_windows=[far_window],
+        flight_summaries=["DL 4908 to New York"],
     )[0]
     assert result.bucket == "needs_decision"
     assert [leg.direction for leg in result.legs] == ["outbound", "return"]
@@ -450,13 +547,30 @@ def test_flight_neighbour_does_not_bridge_real_meeting():
     assert [leg.direction for leg in by_id["mtg"].legs] == ["outbound", "return"]
 
 
-def test_no_flight_windows_is_flight_unaware():
-    # Without flight windows (the pre-#85 / CLI default), a flight-shaped event
-    # is classified like any meeting — the filter is opt-in via the sweep.
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Flight to Nashville (DL 4908)", {"DL4908"}),
+        ("DL 4908 London to New York", {"DL4908"}),
+        ("dl4908 lower", {"DL4908"}),  # case-insensitive, no space
+        ("U2 123 and 9W 456", {"U2123", "9W456"}),  # letter-digit / digit-letter codes
+        ("Customer sync at 3pm", set()),  # no designator
+        ("Reservation at Fletchers House", set()),  # a real ground meeting
+        ("", set()),
+        (None, set()),
+    ],
+)
+def test_flight_codes_extraction(text, expected):
+    assert set(flight_codes(text)) == expected
+
+
+def test_non_flight_meeting_without_schedule_still_plans():
+    # Without any flight context, an ordinary meeting (no flight template, no
+    # window, no code) plans normally — the intrinsic summary signal is narrow.
     start = NOW + timedelta(hours=3)
     end = start + timedelta(hours=2)
     result = scan(
-        [_meeting("flt1", start=start, end=end, summary="Flight to Nashville (DL 4908)")],
+        [_meeting("m1", start=start, end=end, summary="Customer sync")],
         now=NOW,
         home_address=HOME,
     )[0]
