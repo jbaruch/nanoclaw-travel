@@ -1,5 +1,13 @@
 # Changelog
 
+### Added — travel-core shared library bundle (#156)
+
+Extracted `trip_origin.py` (TripIt-over-home position/anchor resolution) and `airport_lead.py` (airport clearance / post-arrival buffer policy) out of `flight-assist` into a new `travel-core` skill bundle, so flight-assist, drive-planner, and the incoming unified drive engine import one source of truth instead of reaching cross-bundle into flight-assist for shared logic. `travel-core` is a background library skill (`user-invocable: false`, `disable-model-invocation: true`) — no workflow, just hosted modules the consumers put on `sys.path` via the runtime-mount / dev-sibling pattern already used for `maps_client`. Consumers (flight-assist `precheck` / `airport_drive_reconcile` / `airport_drive_inputs`, drive-planner `precheck`) and the pyright execution-environment config were repointed accordingly; behavior is unchanged.
+
+### Added — unified drive engine foundations (#156)
+
+First two pure, deterministic modules of the leg-based drive engine that will replace the flight-assist / drive-planner two-engine patchwork. `flight_identity.py` unions the byAir and TripIt flight sources on a canonical identity of `(dep_airport, arr_airport, scheduled_dep_instant ± tolerance)` that excludes the designator — so a single physical flight tracked under two byAir ids / codeshare codes (FR7382 / MW7382) collapses to one flight instead of storming the calendar with duplicate drive blocks. `chain.py` classifies each consecutive flight pair (overnight / different-airport transfer / same-airport connection) and plans the ground legs a trip yields: same-airport connections default to airside silence and interior connections are suppressed, so a drive is never routed to an airport the operator reaches by a prior flight. Not yet wired into a running skill — foundations land first, behind the still-open engine work.
+
 ## 0.2.35 — 2026-07-09
 
 ### Fixed — drive-planner: catch flight events by content, not only by schedule time (#85 follow-up)

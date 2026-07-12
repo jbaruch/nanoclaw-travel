@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVE = REPO_ROOT / "skills" / "drive-planner"
 sys.path.insert(0, str(DRIVE))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))  # maps_client for _route_seconds
+sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))  # trip_origin
 
 from block_props import parse_block, parse_marker  # noqa: E402
 from route_error import RouteError  # noqa: E402

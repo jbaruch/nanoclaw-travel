@@ -1,4 +1,4 @@
-"""Tests for skills/flight-assist/trip_origin.py (#122).
+"""Tests for skills/travel-core/trip_origin.py (#122).
 
 Locks the anchor-resolution contract:
 
@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
+sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 
 import trip_origin  # noqa: E402
 from trip_origin import (  # noqa: E402
