@@ -1,6 +1,6 @@
 {
   "executionEnvironments": [
-    { "root": "skills/drive-engine", "extraPaths": ["skills/drive-engine"] },
+    { "root": "skills/drive-engine", "extraPaths": ["skills/drive-engine", "skills/travel-core"] },
     { "root": "skills/drive-planner", "extraPaths": ["skills/drive-planner", "skills/flight-assist", "skills/travel-core"] },
     { "root": "skills/drive-planner-recheck", "extraPaths": ["skills/drive-planner-recheck", "skills/drive-planner", "skills/flight-assist", "skills/travel-core"] },
     { "root": "skills/flight-assist", "extraPaths": ["skills/flight-assist", "skills/travel-core"] },
