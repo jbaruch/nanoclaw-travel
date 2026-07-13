@@ -60,6 +60,8 @@ class AirportFacts:
     dep_flag: str | None = None
     arr_flag: str | None = None
     delay_index: str | None = None
+    dep_timezone: str | None = None  # IANA tz of the departure airport
+    arr_timezone: str | None = None  # IANA tz of the arrival airport
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,7 @@ class ConcreteLeg:
     window_start: datetime | None = None
     window_end: datetime | None = None
     partner_flight: MergedFlight | None = None
+    timezone: str | None = None  # IANA tz to create the block in (the airport's)
 
 
 def _clearance(facts: AirportFacts, ov: BufferOverrides) -> timedelta:
@@ -155,6 +158,7 @@ def resolve_leg_anchor(
             flight=flight,
             dest_airport=flight.dep_airport,
             anchor=flight.effective_dep - _clearance(facts, overrides),
+            timezone=facts.dep_timezone,
         )
 
     if leg.kind is LegKind.AIRPORT_ARRIVAL:
@@ -166,6 +170,7 @@ def resolve_leg_anchor(
             flight=flight,
             origin_airport=flight.arr_airport,
             anchor=_require_arr(flight) + _post_arrival(facts, overrides),
+            timezone=facts.arr_timezone,
         )
 
     if leg.kind is LegKind.AIRPORT_TRANSFER:
@@ -182,6 +187,7 @@ def resolve_leg_anchor(
             dest_airport=later.dep_airport,
             window_start=_require_arr(earlier) + _post_arrival(facts, overrides),
             window_end=later.effective_dep - _clearance(partner_facts, overrides),
+            timezone=facts.arr_timezone,
         )
 
     raise ValueError(f"resolve_leg_anchor does not handle leg kind {leg.kind}")

@@ -55,6 +55,7 @@ class ResolvedAirport:
     iata: str | None
     flag: str | None = None
     delay_index: str | None = None
+    timezone: str | None = None
 
 
 @dataclass(frozen=True)
@@ -98,8 +99,12 @@ def build_plan(
         except ValueError as exc:
             skipped.append(str(exc))
             continue
-        airport_info[dep.iata] = AirportInfo(flag=dep.flag, delay_index=dep.delay_index)
-        airport_info[arr.iata] = AirportInfo(flag=arr.flag, delay_index=arr.delay_index)
+        airport_info[dep.iata] = AirportInfo(
+            flag=dep.flag, delay_index=dep.delay_index, timezone=dep.timezone
+        )
+        airport_info[arr.iata] = AirportInfo(
+            flag=arr.flag, delay_index=arr.delay_index, timezone=arr.timezone
+        )
 
     result = build_reconcile_plan(
         flights=flights,
@@ -241,7 +246,10 @@ def main() -> int:
             if airport_id not in airport_cache:
                 ctx = airport_context(byair.get_airport(airport_id))
                 airport_cache[airport_id] = ResolvedAirport(
-                    iata=ctx.code, flag=ctx.flag, delay_index=ctx.delay_index
+                    iata=ctx.code,
+                    flag=ctx.flag,
+                    delay_index=ctx.delay_index,
+                    timezone=ctx.timezone,
                 )
             return airport_cache[airport_id]
 

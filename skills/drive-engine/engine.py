@@ -56,6 +56,7 @@ class AirportInfo:
 
     flag: str | None = None
     delay_index: str | None = None
+    timezone: str | None = None  # IANA tz — the airport block's local display tz
 
 
 @dataclass(frozen=True)
@@ -67,7 +68,13 @@ class EngineResult:
 def _facts_for(flight: MergedFlight, airport_info: dict[str, AirportInfo]) -> AirportFacts:
     dep = airport_info.get(flight.dep_airport, AirportInfo())
     arr = airport_info.get(flight.arr_airport, AirportInfo())
-    return AirportFacts(dep_flag=dep.flag, arr_flag=arr.flag, delay_index=dep.delay_index)
+    return AirportFacts(
+        dep_flag=dep.flag,
+        arr_flag=arr.flag,
+        delay_index=dep.delay_index,
+        dep_timezone=dep.timezone,
+        arr_timezone=arr.timezone,
+    )
 
 
 def _dest_label(planned) -> str:
@@ -142,6 +149,7 @@ def _build_departure(
             destination=leg.dest_airport,
             baseline_seconds=int(drive.total_seconds()),
             anchor=anchor,
+            timezone=leg.timezone,
             legacy_keys=_legacy_keys(leg),
         ),
         None,
@@ -177,6 +185,7 @@ def _build_arrival(
             destination=planned.address,
             baseline_seconds=int(drive.total_seconds()),
             anchor=anchor,
+            timezone=leg.timezone,
             legacy_keys=_legacy_keys(leg),
         ),
         None,
@@ -202,6 +211,7 @@ def _build_transfer(leg: ConcreteLeg, *, route: RouteFn) -> tuple[DesiredBlock |
             baseline_seconds=int(drive.total_seconds()),
             anchor=leg.window_start,
             window_end=leg.window_end,
+            timezone=leg.timezone,
         ),
         None,
     )

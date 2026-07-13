@@ -40,6 +40,7 @@ if not _FA.is_dir():
 if str(_FA) not in sys.path:
     sys.path.insert(0, str(_FA))
 
+from calendar_reconcile import _created_event_id  # noqa: E402
 from composio_client import ComposioError  # noqa: E402
 
 _WRITE_ERRORS = (ComposioError, urllib.error.URLError)
@@ -106,15 +107,14 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
 
 
 def _created_id(created: object) -> str | None:
-    if isinstance(created, dict):
-        for key in ("id", "event_id"):
-            val = created.get(key)
-            if isinstance(val, str):
-                return val
-        data = created.get("data")
-        if isinstance(data, dict) and isinstance(data.get("id"), str):
-            return data["id"]
-    return None
+    """Extract the new event id from a Composio create response.
+
+    Delegates to flight-assist's `_created_event_id`, the live-verified extractor
+    that handles Composio's real (nested `data.response_data.id`) shape — a
+    hand-rolled subset would miss it and leave a rollback unable to delete the
+    replacement, so both writers use the same extractor.
+    """
+    return _created_event_id(created)
 
 
 def _delete(composio, *, calendar_id: str, event_id: str | None, result: ApplyResult) -> bool:
