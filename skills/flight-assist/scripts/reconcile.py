@@ -30,30 +30,24 @@ cycle. Exit 0 when a cycle ran (even with collected per-op failures); exit 1
 on a setup failure that makes the run meaningless (missing credentials,
 unreadable state).
 
-`airport_drive` carries the parallel reconcile of the airport drive blocks
-(#90) on the primary calendar — independent of the byAir flight calendar, so it
-runs even when `status` is `no_calendar`. It stays a dormant idle summary when
-routing inputs are absent (no Maps key / byAir URL / tracked flights), and a
-transient byAir/Maps/Composio failure during it is logged and recorded as
-`{"status": "error"}` without failing the rest of the cycle.
+`airport_drive` is now a dormant `{"status": "retired", "engine": "drive-engine"}`
+marker: airport drive blocks are owned by the unified drive-engine (#156), which
+plans and applies them from its own precheck. flight-assist no longer reconciles
+them here; the key is retained only so the summary shape stays stable.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
 _BUNDLE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_BUNDLE_DIR))
 
-from airport_drive_reconcile import run_airport_drive_pass  # noqa: E402
-from byair_client import ByAirError  # noqa: E402
 from calendar_reconcile import run_reconcile  # noqa: E402
-from composio_client import ComposioClient, ComposioError  # noqa: E402
-from maps_client import MapsError  # noqa: E402
+from composio_client import ComposioClient  # noqa: E402
 from state import StateError  # noqa: E402
 
 
@@ -86,34 +80,11 @@ def main() -> int:
     # failure under its real cause, per `coding-policy: error-handling`
     # (catch specific types; let unexpected exceptions propagate).
 
-    # Airport drive blocks (#90) reconcile on the PRIMARY calendar, independent
-    # of the byAir flight calendar above — run them even when that returned
-    # no_calendar. A transient byAir / Maps / Composio failure, or a StateError
-    # from reading active-flights / per-flight state, is caught here, logged, and
-    # recorded on the airport_drive sub-result without failing the rest of the
-    # cycle's single-line JSON.
-    try:
-        summary["airport_drive"] = run_airport_drive_pass(client, now=now)
-    except StateError as exc:
-        # The pass reads active-flights / per-flight state, so a corrupt file
-        # raises StateError here — after run_reconcile already produced a summary.
-        # Record it on the airport_drive sub-result and keep the cycle's
-        # single-line JSON intact, rather than letting it escape past the
-        # credentials/state handler above and surface as a raw traceback.
-        print(
-            f"flight-assist reconcile: airport-drive state error — drive blocks skipped this "
-            f"cycle. Check active-flights.json / flight-*.json for corruption. Cause: {exc}",
-            file=sys.stderr,
-        )
-        summary["airport_drive"] = {"status": "error", "error": "state"}
-    except (ComposioError, ByAirError, MapsError, urllib.error.URLError) as exc:
-        print(
-            f"flight-assist reconcile: airport-drive pass failed — deferred, retried next cycle. "
-            f"If it repeats, check Composio / byAir / Maps connectivity and credentials. "
-            f"Cause: {exc}",
-            file=sys.stderr,
-        )
-        summary["airport_drive"] = {"status": "error"}
+    # Airport drive blocks are now owned by the unified drive-engine (#156).
+    # flight-assist no longer reconciles them here (the two-engine patchwork is
+    # retired); the drive-engine's own precheck plans and applies airport drives.
+    # A dormant marker keeps the summary shape stable for the SKILL's reader.
+    summary["airport_drive"] = {"status": "retired", "engine": "drive-engine"}
 
     print(json.dumps(summary, separators=(",", ":")))
     return 0

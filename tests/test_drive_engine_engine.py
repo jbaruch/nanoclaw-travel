@@ -48,7 +48,21 @@ def flight(dep, arr, sdep, sarr, *, fid, trip_id=None, code=None):
 
 
 def _us_info(*codes):
-    return {c: AirportInfo(flag=US, delay_index="low") for c in codes}
+    return {c: AirportInfo(flag=US, delay_index="low", timezone="America/Chicago") for c in codes}
+
+
+def test_airport_blocks_carry_airport_timezone():
+    f = flight("BNA", "JFK", _dt(9), _dt(11), fid=1)
+    result = build_reconcile_plan(
+        flights=[f],
+        airport_info=_us_info("BNA", "JFK"),
+        current_blocks=[],
+        route=const_route(30),
+        home_address=HOME,
+        now=NOW,
+    )
+    for c in result.plan.creates:
+        assert c.desired.timezone == "America/Chicago"  # not None / UTC-defaulted
 
 
 def const_route(minutes):

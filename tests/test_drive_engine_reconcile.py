@@ -56,6 +56,7 @@ def unified_block(identity, kind="airport_departure", *, event_id, anchor=None, 
         anchor=anchor or _dt(8),
         origin=origin,
         destination="APT",
+        baseline_seconds=1800,  # matches desired()'s baseline so "unchanged" is a no-op
     )
 
 
@@ -92,6 +93,36 @@ def test_changed_block_is_an_update():
         [desired(ident, anchor=_dt(8, 30), origin="Hotel")],
         [unified_block(ident, event_id="e1", anchor=_dt(8), origin="X")],
     )
+    assert len(plan.updates) == 1
+    assert plan.updates[0].event_id == "e1"
+
+
+def test_route_duration_change_alone_triggers_update():
+    # Traffic grew: same anchor/origin/dest, but the routed drive changed. The
+    # block's leave-by moved, so it must update — not silently keep a stale block.
+    ident = "STN-CPH-20200712T0900Z"
+    current = ParsedBlock(
+        generation=GEN_UNIFIED,
+        event_id="e1",
+        identity=ident,
+        kind="airport_departure",
+        anchor=_dt(8),
+        origin="X",
+        destination="APT",
+        baseline_seconds=1200,
+    )
+    d = DesiredBlock(
+        identity=ident,
+        kind="airport_departure",
+        summary="Drive",
+        start=_dt(7, 30),
+        end=_dt(8),
+        origin="X",
+        destination="APT",
+        baseline_seconds=1800,  # traffic grew: 20min -> 30min
+        anchor=_dt(8),
+    )
+    plan = plan_reconcile([d], [current])
     assert len(plan.updates) == 1
     assert plan.updates[0].event_id == "e1"
 

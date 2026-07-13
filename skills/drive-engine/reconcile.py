@@ -60,6 +60,7 @@ class DesiredBlock:
     baseline_seconds: int
     anchor: datetime
     window_end: datetime | None = None
+    timezone: str | None = None  # IANA tz the block is created in (local display)
     legacy_keys: frozenset[tuple[str, str, str]] = field(default_factory=frozenset)
 
 
@@ -124,12 +125,16 @@ def _legacy_key(block: ParsedBlock) -> tuple[str, str, str] | None:
 
 def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:
     """Whether a matched unified block differs from the desired leg on the fields
-    that drive a shift (anchor / endpoints / window)."""
+    that drive a shift: anchor, endpoints, window, OR the routed drive duration
+    (`baseline_seconds`). A route-duration change alone (traffic grew) moves the
+    block's leave-by even when the anchor is unchanged, so it must trigger an
+    update — otherwise the live writer would leave a stale block."""
     return (
         current.anchor != desired.anchor
         or current.origin != desired.origin
         or current.destination != desired.destination
         or current.window_end != desired.window_end
+        or current.baseline_seconds != desired.baseline_seconds
     )
 
 
