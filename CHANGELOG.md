@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.36 — 2026-07-13
+
 ### Added — travel-core shared library bundle (#156)
 
 Extracted `trip_origin.py` (TripIt-over-home position/anchor resolution) and `airport_lead.py` (airport clearance / post-arrival buffer policy) out of `flight-assist` into a new `travel-core` skill bundle, so flight-assist, drive-planner, and the incoming unified drive engine import one source of truth instead of reaching cross-bundle into flight-assist for shared logic. `travel-core` is a background library skill (`user-invocable: false`, `disable-model-invocation: true`) — no workflow, just hosted modules the consumers put on `sys.path` via the runtime-mount / dev-sibling pattern already used for `maps_client`. Consumers (flight-assist `precheck` / `airport_drive_reconcile` / `airport_drive_inputs`, drive-planner `precheck`) and the pyright execution-environment config were repointed accordingly; behavior is unchanged.
