@@ -31,8 +31,32 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from block_codec import GEN_LEGACY_DP  # noqa: E402
+from block_codec import GEN_LEGACY_DP, parse_block  # noqa: E402
 from reconcile import DesiredBlock  # noqa: E402
+
+# A drive block's human summary always starts with this. The scan input must
+# exclude the engine's OWN Drive: blocks, or a later sweep would treat one as a
+# meeting and plan a drive TO the drive block (a self-referential duplicate).
+_DRIVE_SUMMARY_PREFIX = "Drive:"
+
+
+def exclude_drive_block_events(events: list[dict]) -> list[dict]:
+    """Drop drive blocks from the meeting scan input (#156 — calendar-as-output).
+
+    An event is a drive block if its summary starts with `Drive:` OR it parses as
+    any drive-block codec (new dengine, legacy dp / fadrive). Everything else — the
+    genuine meetings — passes through.
+    """
+    kept: list[dict] = []
+    for event in events:
+        summary = event.get("summary") if isinstance(event, dict) else None
+        if isinstance(summary, str) and summary.strip().startswith(_DRIVE_SUMMARY_PREFIX):
+            continue
+        if parse_block(event) is not None:
+            continue
+        kept.append(event)
+    return kept
+
 
 RouteFn = Callable[[str, str], "timedelta | None"]
 

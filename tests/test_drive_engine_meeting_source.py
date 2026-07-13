@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
-from meeting_source import meeting_desired_blocks  # noqa: E402
+from meeting_source import exclude_drive_block_events, meeting_desired_blocks  # noqa: E402
 
 UTC = timezone.utc
 
@@ -140,3 +140,32 @@ def test_meeting_with_no_legs_yields_nothing():
     m = FakeMeeting("m1", "Virtual standup", ())
     blocks, skipped = meeting_desired_blocks([m], route=const_route(20))
     assert blocks == [] and skipped == []
+
+
+# --- self-ingestion guard: drop the engine's own Drive: blocks from scan input ---
+
+
+def test_exclude_drive_block_events_by_summary_prefix():
+    events = [
+        {"id": "e1", "summary": "Swimming Practice", "location": "Pool"},
+        {"id": "d1", "summary": "Drive: Swimming Practice", "location": "Pool"},
+        {"id": "e2", "summary": "Dentist"},
+    ]
+    kept = exclude_drive_block_events(events)
+    assert [e["id"] for e in kept] == ["e1", "e2"]  # the Drive: block is dropped
+
+
+def test_exclude_drive_block_events_by_marker():
+    # A drive block recognized by its codec marker is dropped even if some tool
+    # renamed the summary — no self-referential re-ingestion.
+    events = [
+        {
+            "id": "d1",
+            "summary": "renamed somehow",
+            "description": "x\n[drive-engine:leg=BNA-JFK-20200712T0900Z:kind=airport_departure]\n"
+            '<!--dengine:{"schema_version":1,"a":"2020-07-12T08:00:00+00:00"}-->',
+        },
+        {"id": "e1", "summary": "Real meeting"},
+    ]
+    kept = exclude_drive_block_events(events)
+    assert [e["id"] for e in kept] == ["e1"]

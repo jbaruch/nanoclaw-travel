@@ -36,7 +36,7 @@ if str(_BUNDLE_DIR) not in sys.path:
 from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
 from engine import AirportInfo, build_reconcile_plan  # noqa: E402
-from meeting_source import meeting_desired_blocks  # noqa: E402
+from meeting_source import exclude_drive_block_events, meeting_desired_blocks  # noqa: E402
 from normalize import flight_from_byair  # noqa: E402
 from reconcile import DesiredBlock, ReconcilePlan  # noqa: E402
 
@@ -206,7 +206,11 @@ def main() -> int:
 
         # --- meeting side: fetch calendar, scan, build meeting blocks ---
         fetcher = CalendarFetcher.from_env()
-        events = fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
+        # Exclude the engine's own Drive: blocks so the scan never treats one as a
+        # meeting and plans a drive to it (self-referential duplicate).
+        events = exclude_drive_block_events(
+            fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
+        )
         skips = load_active_skips(now)
 
         def anchor_for(at: datetime) -> tuple[str | None, str | None]:
