@@ -71,14 +71,17 @@ def _parse_db_date(value: object) -> datetime | None:
     """Parse a `travel-db.json` `start`/`end` value to a UTC instant, or None.
 
     The documented shape is a bare `YYYY-MM-DD` (read as UTC midnight, matching
-    the host's `Date.parse`). A full ISO datetime is tolerated. Anything else —
-    non-string, unparseable — returns None so the caller skips that trip, exactly
-    as the host skips a trip whose dates don't parse.
+    the host's `Date.parse`). A full ISO datetime is tolerated, including a
+    trailing `Z` (normalized to `+00:00` so a `Z`-stamped writer never falls out
+    of window on Python builds whose `fromisoformat` predates `Z` support).
+    Anything else — non-string, unparseable — returns None so the caller skips
+    that trip, exactly as the host skips a trip whose dates don't parse.
     """
     if not isinstance(value, str):
         return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
     if parsed.tzinfo is None:

@@ -166,12 +166,10 @@ def main() -> int:
         # agree. Fail-open on a corrupt file never blinds an active trip.
         window = evaluate_trip_window(now_utc=now_utc)
         if not window.in_window:
-            _emit(
-                {
-                    "wake_agent": False,
-                    "data": {"reason": "outside_trip_window", "detail": window.reason},
-                }
-            )
+            # Keep stdout to the documented contract; the human-readable
+            # rationale goes to stderr for debug, not into the JSON payload.
+            print(f"flight-assist precheck: {window.reason}", file=sys.stderr)
+            _emit({"wake_agent": False, "data": {"reason": "outside_trip_window"}})
             return 0
         events = _run_cycle(now_utc=now_utc)
         _emit({"wake_agent": bool(events), "data": {"events": events}})

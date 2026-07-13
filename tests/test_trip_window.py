@@ -17,8 +17,9 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
 from trip_window import evaluate_trip_window  # noqa: E402
 
-# A fixed reference instant for every case (UTC).
-NOW = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
+# A fixed reference instant for every case (UTC) — a fixed PAST date so the
+# suite never depends on the run date (testing-standards).
+NOW = datetime(2020, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _write_db(tmp_path: Path, payload) -> str:
@@ -28,26 +29,36 @@ def _write_db(tmp_path: Path, payload) -> str:
 
 
 def _db(trips: dict) -> dict:
-    return {"schema_version": 1, "generated_at": "2026-07-01T00:00:00Z", "trips": trips}
+    return {"schema_version": 1, "generated_at": "2020-07-01T00:00:00Z", "trips": trips}
 
 
 # --- in / out of window -----------------------------------------------------
 
 
 def test_now_inside_a_trip_is_in_window(tmp_path: Path):
-    path = _write_db(tmp_path, _db({"osl": {"start": "2026-07-15", "end": "2026-07-20"}}))
+    path = _write_db(tmp_path, _db({"osl": {"start": "2020-07-15", "end": "2020-07-20"}}))
+    assert evaluate_trip_window(now_utc=NOW, path=path).in_window is True
+
+
+def test_trip_with_z_suffixed_iso_dates_is_parsed(tmp_path: Path):
+    """A `Z`-stamped full-ISO date is normalized and evaluated, not skipped — a
+    future travel-db writer using `Z` must never fall out of window mid-trip."""
+    path = _write_db(
+        tmp_path,
+        _db({"osl": {"start": "2020-07-15T00:00:00Z", "end": "2020-07-20T00:00:00Z"}}),
+    )
     assert evaluate_trip_window(now_utc=NOW, path=path).in_window is True
 
 
 def test_future_trip_beyond_24h_lead_is_out(tmp_path: Path):
-    # Trip starts 2026-07-17 → window opens 2026-07-16T00:00Z, after NOW.
-    path = _write_db(tmp_path, _db({"osl": {"start": "2026-07-17", "end": "2026-07-20"}}))
+    # Trip starts 2020-07-17 → window opens 2020-07-16T00:00Z, after NOW.
+    path = _write_db(tmp_path, _db({"osl": {"start": "2020-07-17", "end": "2020-07-20"}}))
     assert evaluate_trip_window(now_utc=NOW, path=path).in_window is False
 
 
 def test_past_trip_beyond_24h_trail_is_out(tmp_path: Path):
-    # Trip ended 2026-07-13 → window closes 2026-07-14T00:00Z, before NOW.
-    path = _write_db(tmp_path, _db({"osl": {"start": "2026-07-08", "end": "2026-07-13"}}))
+    # Trip ended 2020-07-13 → window closes 2020-07-14T00:00Z, before NOW.
+    path = _write_db(tmp_path, _db({"osl": {"start": "2020-07-08", "end": "2020-07-13"}}))
     assert evaluate_trip_window(now_utc=NOW, path=path).in_window is False
 
 
@@ -55,29 +66,29 @@ def test_past_trip_beyond_24h_trail_is_out(tmp_path: Path):
 
 
 def test_exactly_24h_before_start_is_in_window(tmp_path: Path):
-    # start 2026-07-16 → window opens exactly 2026-07-15T00:00Z.
-    at_open = datetime(2026, 7, 15, 0, 0, 0, tzinfo=timezone.utc)
-    path = _write_db(tmp_path, _db({"osl": {"start": "2026-07-16", "end": "2026-07-20"}}))
+    # start 2020-07-16 → window opens exactly 2020-07-15T00:00Z.
+    at_open = datetime(2020, 7, 15, 0, 0, 0, tzinfo=timezone.utc)
+    path = _write_db(tmp_path, _db({"osl": {"start": "2020-07-16", "end": "2020-07-20"}}))
     assert evaluate_trip_window(now_utc=at_open, path=path).in_window is True
 
 
 def test_one_second_before_24h_lead_is_out(tmp_path: Path):
-    just_before = datetime(2026, 7, 14, 23, 59, 59, tzinfo=timezone.utc)
-    path = _write_db(tmp_path, _db({"osl": {"start": "2026-07-16", "end": "2026-07-20"}}))
+    just_before = datetime(2020, 7, 14, 23, 59, 59, tzinfo=timezone.utc)
+    path = _write_db(tmp_path, _db({"osl": {"start": "2020-07-16", "end": "2020-07-20"}}))
     assert evaluate_trip_window(now_utc=just_before, path=path).in_window is False
 
 
 def test_last_day_before_end_plus_24h_is_in_window(tmp_path: Path):
-    # end 2026-07-14 → window closes 2026-07-15T00:00Z; 23:59:59 the day before is in.
-    late_final_day = datetime(2026, 7, 14, 23, 59, 59, tzinfo=timezone.utc)
-    path = _write_db(tmp_path, _db({"osl": {"start": "2026-07-10", "end": "2026-07-14"}}))
+    # end 2020-07-14 → window closes 2020-07-15T00:00Z; 23:59:59 the day before is in.
+    late_final_day = datetime(2020, 7, 14, 23, 59, 59, tzinfo=timezone.utc)
+    path = _write_db(tmp_path, _db({"osl": {"start": "2020-07-10", "end": "2020-07-14"}}))
     assert evaluate_trip_window(now_utc=late_final_day, path=path).in_window is True
 
 
 def test_exactly_end_plus_24h_is_out(tmp_path: Path):
-    # end 2026-07-14 → window closes exactly 2026-07-15T00:00Z (exclusive).
-    at_close = datetime(2026, 7, 15, 0, 0, 0, tzinfo=timezone.utc)
-    path = _write_db(tmp_path, _db({"osl": {"start": "2026-07-10", "end": "2026-07-14"}}))
+    # end 2020-07-14 → window closes exactly 2020-07-15T00:00Z (exclusive).
+    at_close = datetime(2020, 7, 15, 0, 0, 0, tzinfo=timezone.utc)
+    path = _write_db(tmp_path, _db({"osl": {"start": "2020-07-10", "end": "2020-07-14"}}))
     assert evaluate_trip_window(now_utc=at_close, path=path).in_window is False
 
 
@@ -89,9 +100,9 @@ def test_now_in_one_of_several_trips_is_in_window(tmp_path: Path):
         tmp_path,
         _db(
             {
-                "past": {"start": "2026-06-01", "end": "2026-06-05"},
-                "current": {"start": "2026-07-14", "end": "2026-07-18"},
-                "future": {"start": "2026-09-01", "end": "2026-09-05"},
+                "past": {"start": "2020-06-01", "end": "2020-06-05"},
+                "current": {"start": "2020-07-14", "end": "2020-07-18"},
+                "future": {"start": "2020-09-01", "end": "2020-09-05"},
             }
         ),
     )
@@ -148,7 +159,7 @@ def test_trip_with_unparseable_dates_is_skipped(tmp_path: Path):
         _db(
             {
                 "broken": {"start": "not-a-date", "end": "also-bad"},
-                "valid": {"start": "2026-07-14", "end": "2026-07-18"},
+                "valid": {"start": "2020-07-14", "end": "2020-07-18"},
             }
         ),
     )
