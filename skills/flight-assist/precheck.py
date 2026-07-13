@@ -720,6 +720,14 @@ def _build_flight_state(
         trip_id = prior_state["trip_id"]
         dep_airport_id = prior_state["dep_airport_id"]
         arr_airport_id = prior_state["arr_airport_id"]
+        # #159 Bug 1: `code` is the MARKETING designator (e.g. DL4908), a
+        # seed-time identity field sync_tripit captures from byAir list_trips.
+        # The poll uses get_flight, whose top-level `code` is the OPERATING
+        # designator (9E4908) — get_flight carries no structured marketing code
+        # (only the free-text `note`). So `code` is preserved from the seed
+        # alongside the other identity fields above, never overwritten by the
+        # poll. Absent a prior seed, the poll's code is the best available.
+        code = prior_state["code"]
     else:
         scheduled_dep_time = raw_flight["scheduledDepTime"]
         scheduled_arr_time = raw_flight["scheduledArrTime"]
@@ -727,9 +735,13 @@ def _build_flight_state(
         trip_id = raw_flight.get("trip_id") or raw_flight.get("tripId") or 0
         dep_airport_id = raw_flight.get("depAirport", {}).get("id", 0)
         arr_airport_id = raw_flight.get("arrAirport", {}).get("id", 0)
+        code = raw_flight.get("code", "")
+    # Keep the persisted snapshot's `code` aligned with the canonical display
+    # code so no downstream reader can ever surface the operating designator.
+    new_snapshot = {**new_snapshot, "code": code}
     new_state = {
         "flight_id": flight_id,
-        "code": raw_flight.get("code", ""),
+        "code": code,
         "ownership": ownership,
         "trip_id": trip_id,
         "scheduled_dep_time": scheduled_dep_time,

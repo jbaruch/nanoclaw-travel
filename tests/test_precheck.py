@@ -138,6 +138,63 @@ def test_trim_to_snapshot_airports_absent_tolerant():
     assert snapshot["arr_airport_name"] is None
 
 
+def _phase_markers() -> dict:
+    return {
+        "day_before_fired": False,
+        "time_to_leave_fired": False,
+        "boarding_fired": False,
+        "arrival_logistics_fired": False,
+        "landed_acknowledged": False,
+        "connection_at_risk_fired": False,
+        "gate_assignment_fired": False,
+    }
+
+
+def test_build_flight_state_preserves_marketing_code_over_operating_designator():
+    """#159 Bug 1: sync_tripit seeds the marketing designator (DL4908) from
+    byAir list_trips; the poll's get_flight returns the operating designator
+    (9E4908) for a codeshare. The poll must preserve the seeded marketing code —
+    on both the top-level record and the persisted snapshot — never overwrite it
+    with the operating code."""
+    prior = _make_state(flight_id=7175544, code="DL4908")
+    raw_flight = _byair_flight(flight_id=7175544)
+    raw_flight["code"] = "9E4908"  # get_flight's operating designator
+    new_snapshot = precheck._trim_to_snapshot(raw_flight)
+    assert new_snapshot["code"] == "9E4908"  # the raw slice mirrors get_flight...
+
+    state = precheck._build_flight_state(
+        flight_id=7175544,
+        prior_state=prior,
+        raw_flight=raw_flight,
+        new_snapshot=new_snapshot,
+        phase_markers=_phase_markers(),
+        now_utc=datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert state["code"] == "DL4908"  # ...but the record keeps the marketing code
+    assert state["last_snapshot"]["code"] == "DL4908"  # and the snapshot is realigned
+
+
+def test_build_flight_state_seeds_code_from_poll_when_no_prior():
+    """With no prior seed (flight first seen via the poll), the poll's code is
+    the best available — used for both the record and the snapshot."""
+    raw_flight = _byair_flight(flight_id=7175544)
+    raw_flight["code"] = "9E4908"
+    new_snapshot = precheck._trim_to_snapshot(raw_flight)
+
+    state = precheck._build_flight_state(
+        flight_id=7175544,
+        prior_state=None,
+        raw_flight=raw_flight,
+        new_snapshot=new_snapshot,
+        phase_markers=_phase_markers(),
+        now_utc=datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert state["code"] == "9E4908"
+    assert state["last_snapshot"]["code"] == "9E4908"
+
+
 def _make_state(flight_id: int = 12345, **overrides) -> dict:
     base = {
         "flight_id": flight_id,
