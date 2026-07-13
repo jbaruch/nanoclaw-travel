@@ -154,13 +154,23 @@ def apply_plan(plan: ReconcilePlan, *, composio, calendar_id: str = "primary") -
 
     for cv in plan.converts:
         try:
-            composio.create_event(build_create_args(cv.desired, calendar_id=calendar_id))
+            created = composio.create_event(build_create_args(cv.desired, calendar_id=calendar_id))
         except _WRITE_ERRORS as exc:
             result.errors.append(f"convert-create {cv.desired.identity}: {exc}")
             continue
-        for event_id in cv.legacy_event_ids:
+        # Delete EVERY legacy event (list comp — no short-circuit, so a mid-list
+        # failure doesn't skip the rest). Only count the convert when all legacy
+        # blocks are gone; if any survived, the new block would duplicate it, so
+        # roll the replacement back (same treatment as a failed update delete).
+        deletes_ok = [
             _delete(composio, calendar_id=calendar_id, event_id=event_id, result=result)
-        result.converted += 1
+            for event_id in cv.legacy_event_ids
+        ]
+        if all(deletes_ok):
+            result.converted += 1
+        else:
+            new_id = _created_id(created)
+            _delete(composio, calendar_id=calendar_id, event_id=new_id, result=result)
 
     for u in plan.updates:
         try:

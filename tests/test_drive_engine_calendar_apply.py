@@ -131,6 +131,18 @@ def test_convert_creates_new_and_deletes_all_legacy():
     assert set(comp.deleted) == {"leg1", "leg2"}
 
 
+def test_convert_rolls_back_new_when_a_legacy_delete_fails():
+    # If any legacy block survives, new + legacy would duplicate — roll back the
+    # new block and don't count the convert (retried next cycle).
+    plan = ReconcilePlan(converts=(Convert(_desired(), ("leg1", "leg2")),))
+    comp = FakeComposio(delete_fail={"leg2"})
+    result = apply_plan(plan, composio=comp, calendar_id="primary")
+    assert result.converted == 0
+    assert "leg1" in comp.deleted  # the deletable legacy was still removed
+    assert "new1" in comp.deleted  # replacement rolled back (no duplicate left)
+    assert any("leg2" in e for e in result.errors)
+
+
 def test_update_recreates_then_deletes_old():
     plan = ReconcilePlan(updates=(Update("old1", _desired()),))
     comp = FakeComposio()
