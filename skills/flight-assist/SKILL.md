@@ -80,7 +80,7 @@ The reason → notification mapping for the documented events:
 | `connection_at_risk` | When `missed_connection` is true (transfer window has hit zero or gone negative): "Connection structurally missed: `<leg1_code>` projected to arrive at or after `<leg2_code>` departs. Rebook required." Otherwise: "Tight connection: `<leg2_code>` boards in `<transfer_minutes_remaining>` min after `<leg1_code>` arrives — below the `<min_transfer_minutes>`-min buffer. Consider rebooking now." `flight_id` on this event refers to leg-2 (the downstream leg) |
 | `boarding_started` | "Boarding now: `<code>`. Gate `<dep_gate>`, terminal `<dep_terminal>`." |
 | `carousel_revealed` | "Baggage carousel for `<code>`: `<baggage>`." |
-| `day_before` | Day-before sanity check: read the user's calendar via MCP if available, list any events that overlap the flight window (T-3h before dep through T+3h after arr), and summarize. Read flight state via `read_flight_state(flight_id)` for context. Label the day per `rules/operator-local-tz-phrasing.md` |
+| `day_before` | Day-before sanity check: read the user's calendar via MCP if available, list any events that overlap the flight window (T-3h before dep through T+3h after arr), and summarize. Read flight state via `read_flight_state(flight_id)` for context. When the summary names the departure/arrival airport, render it from `last_snapshot.dep_airport_code`/`dep_airport_name` and `last_snapshot.arr_airport_code`/`arr_airport_name` for THIS flight — never free-type an airport name off the numeric `dep_airport_id`/`arr_airport_id` or off other legs of the trip (that is how a Nashville arrival became "Stansted", #159 Bug 2). Label the day per `rules/operator-local-tz-phrasing.md` |
 | `time_to_leave` | "Leave by `<leave_by>` to make `<code>` (`<travel_time_minutes>` min drive with current traffic)." Origin resolution ladder lives in `state-schema.md` under `current-location.json` |
 | `arrival_logistics` | Surface baggage carousel (read from `last_snapshot.baggage`), suggest a rideshare ETA if location is available, and note lounge access if connecting. Read flight state for context |
 | `removed_upstream` | "Flight `<code>` no longer tracked upstream — remove from active trips if intentional." Don't auto-delete; let the user confirm |
@@ -93,7 +93,7 @@ For each event, fetch the per-flight state to enrich the notification (gate, ter
 python3 /home/node/.claude/skills/tessl__flight-assist/scripts/get-flight-state.py <flight_id>
 ```
 
-Outputs the full state record as single-line JSON on stdout, or `{"error": "..."}` when the flight has no state on disk. Use the `last_snapshot.dep_gate`, `last_snapshot.arr_gate`, `dep_terminal`, etc. to fill in the notification template.
+Outputs the full state record as single-line JSON on stdout, or `{"error": "..."}` when the flight has no state on disk. Use the `last_snapshot.dep_gate`, `last_snapshot.arr_gate`, `dep_terminal`, etc. to fill in the notification template. When a template names an airport, render it from `last_snapshot.dep_airport_code`/`dep_airport_name` / `arr_airport_code`/`arr_airport_name` — the resolved airport captured at poll time. Never free-type an airport name from a numeric id or from memory of the trip.
 
 If multiple events share the same `flight_id` (e.g., `gate_change` + `delay` in one cycle), compose ONE notification per flight that merges them, ordered: cancel/divert first, then time-sensitive (boarding, time_to_leave), then info (gate, delay, inbound), then logistics (carousel, arrival).
 

@@ -102,6 +102,10 @@ Per-flight state record. One file per tracked flight.
   "last_polled_at": "2026-05-17T18:42:11Z",
   "last_snapshot": {
     "code": "AA2414",
+    "dep_airport_code": "PHX",
+    "dep_airport_name": "Phoenix Sky Harbor International Airport",
+    "arr_airport_code": "SFO",
+    "arr_airport_name": "San Francisco International Airport",
     "computed_status": "boarding",
     "computed_status_detail": "Boarding starts in 36min",
     "computed_phase_progress": 0,
@@ -182,6 +186,8 @@ Each entry's fields:
 `last_snapshot` fields (mirrors the post-filter byAir slice — see `byair_client.py`'s `get_flight()` output; this dict is what `wake_rules.py` will diff against in PR #6):
 
 - `code` — flight number
+- `dep_airport_code`, `arr_airport_code` (string, optional) — the departure/arrival airport IATA/display code (e.g. `"JFK"`, `"BNA"`), captured off the byAir flight payload's `depAirport`/`arrAirport`. The compose step renders the airport from these resolved values rather than free-typing a name off the numeric `dep_airport_id`/`arr_airport_id` alone (#159 Bug 2)
+- `dep_airport_name`, `arr_airport_name` (string, optional) — the departure/arrival airport display name (e.g. `"Nashville International Airport"`), captured off the same payload. Paired with the codes so the compose has a human name without a second lookup
 - `computed_status` — enum: `"scheduled"`, `"check_in_open"`, `"boarding"`, `"departed"`, `"en_route"`, `"landed"`, `"cancelled"`, `"diverted"`
 - `computed_status_detail` — human-readable phase prose ("Departing in 3h 20min")
 - `computed_phase_progress` (float 0..1, optional) — elapsed fraction of the current phase

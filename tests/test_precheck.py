@@ -106,6 +106,38 @@ def _scheduled_snapshot(*, code: str = "XX123") -> dict:
     }
 
 
+def test_trim_to_snapshot_captures_resolved_airports():
+    """#159 Bug 2: the snapshot persists the resolved dep/arr airport code+name
+    off the byAir payload, so the day-before compose renders the airport instead
+    of free-typing a name from the numeric id."""
+    raw = _byair_flight()
+    raw["depAirport"] = {"id": 12, "code": "JFK", "name": "John F. Kennedy International Airport"}
+    raw["arrAirport"] = {"id": 98, "code": "BNA", "name": "Nashville International Airport"}
+
+    snapshot = precheck._trim_to_snapshot(raw)
+
+    assert snapshot["dep_airport_code"] == "JFK"
+    assert snapshot["dep_airport_name"] == "John F. Kennedy International Airport"
+    assert snapshot["arr_airport_code"] == "BNA"
+    assert snapshot["arr_airport_name"] == "Nashville International Airport"
+
+
+def test_trim_to_snapshot_airports_absent_tolerant():
+    """A payload missing the airport dicts (or their code/name) yields None for
+    the resolved fields rather than raising — the compose degrades, the poll
+    survives."""
+    raw = _byair_flight()
+    raw.pop("depAirport", None)
+    raw["arrAirport"] = {"id": 98}  # id only, no code/name
+
+    snapshot = precheck._trim_to_snapshot(raw)
+
+    assert snapshot["dep_airport_code"] is None
+    assert snapshot["dep_airport_name"] is None
+    assert snapshot["arr_airport_code"] is None
+    assert snapshot["arr_airport_name"] is None
+
+
 def _make_state(flight_id: int = 12345, **overrides) -> dict:
     base = {
         "flight_id": flight_id,

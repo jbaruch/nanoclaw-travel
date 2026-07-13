@@ -662,8 +662,19 @@ def _trim_to_snapshot(raw_flight: dict) -> dict:
         "predicted_delay_minutes": _extract_predicted_delay_minutes(inbound_raw),
     }
     position = raw_flight.get("position", {}).get("currentPosition", {})
+    dep_airport = raw_flight.get("depAirport") or {}
+    arr_airport = raw_flight.get("arrAirport") or {}
     return {
         "code": raw_flight.get("code"),
+        # Resolved airport identity captured off the same byAir payload the poll
+        # already fetched (the airport dict carries `code`/`name` — see the
+        # time-to-leave path's `depAirport.get("name")`). Persisted so the
+        # day-before / arrival compose renders the airport deterministically
+        # instead of free-typing a name off the numeric id alone (#159 Bug 2).
+        "dep_airport_code": dep_airport.get("code"),
+        "dep_airport_name": dep_airport.get("name"),
+        "arr_airport_code": arr_airport.get("code"),
+        "arr_airport_name": arr_airport.get("name"),
         "computed_status": raw_flight.get("computed_status"),
         "computed_status_detail": raw_flight.get("computed_status_detail"),
         "computed_phase_progress": raw_flight.get("computed_phase_progress"),
