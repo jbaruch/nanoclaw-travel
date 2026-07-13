@@ -230,8 +230,12 @@ def main() -> int:
         def route(origin: str, destination: str) -> timedelta | None:
             try:
                 tt = maps.travel_time(origin, destination)
-            except (MapsError, urllib.error.URLError):
-                return None  # a route failure degrades one leg, not the whole run
+            except (MapsError, urllib.error.URLError, TimeoutError):
+                # A route failure — including a socket/maps timeout, which can
+                # surface as a bare TimeoutError rather than wrapped in URLError —
+                # degrades this one leg (skipped with a diagnostic), never the
+                # whole preview cycle.
+                return None
             seconds = (
                 tt.in_traffic_seconds if tt.in_traffic_seconds is not None else tt.duration_seconds
             )
