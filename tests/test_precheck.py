@@ -106,6 +106,16 @@ def _scheduled_snapshot(*, code: str = "XX123") -> dict:
     }
 
 
+def _write_open_travel_db(tmp_path: Path) -> str:
+    """Write a travel-db that is in-window deterministically via the fail-open
+    path (a missing `trips` key → the #147 gate fails open), so a subprocess run
+    on the real clock reaches the poll path without a rot-prone date fixture.
+    Returns the path as a string for the child env."""
+    p = tmp_path / "travel-db.json"
+    p.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    return str(p)
+
+
 def _make_state(flight_id: int = 12345, **overrides) -> dict:
     base = {
         "flight_id": flight_id,
@@ -847,8 +857,13 @@ def test_script_emits_single_line_json_with_no_active_flights(tmp_path: Path):
     state = tmp_path / "state" / "flight-assist"
     state.mkdir(parents=True)
     (state / "active-flights.json").write_text(json.dumps({"schema_version": 1, "flight_ids": []}))
+    # Put the run in-window so the #147 trip-window gate doesn't short-circuit
+    # before the poll path under test. A fail-open travel-db (missing `trips`)
+    # is in-window deterministically, with no rot-prone date fixture.
+    travel_db = _write_open_travel_db(tmp_path)
     env = {
         "FLIGHT_ASSIST_STATE_DIR": str(state),
+        "FLIGHT_ASSIST_TRAVEL_DB": travel_db,
         "BYAIR_MCP_URL": "https://api.byairapp.example/mcp?api_key=test",
         "PATH": "/usr/bin:/bin",
     }
@@ -895,6 +910,9 @@ def test_script_safe_shape_on_byair_misconfig(tmp_path: Path):
     )
     env = {
         "FLIGHT_ASSIST_STATE_DIR": str(state),
+        # In-window (fail-open travel-db) so the #147 gate lets the run reach
+        # the byAir-misconfig path this test exercises.
+        "FLIGHT_ASSIST_TRAVEL_DB": _write_open_travel_db(tmp_path),
         # BYAIR_MCP_URL deliberately unset
         "PATH": "/usr/bin:/bin",
     }
