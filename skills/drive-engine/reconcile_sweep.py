@@ -3,10 +3,14 @@
 
 The one engine that manages every `Drive:` block. On each ~30-min sweep it:
 
-1. builds the airport drive legs from the byAir itinerary (storms suppressed,
-   connections handled, origins resolved at the right instant);
-2. builds the meeting drive legs from the calendar (drive-planner's proven scan,
-   with travel-away suppression so a home drive is never invented while abroad);
+1. builds the airport drive legs from the byAir ∪ TripIt itinerary (R2 union, so a
+   flight tracked by either source survives; storms suppressed, connections
+   handled, origins resolved at the right instant), suppressing a trivial leg only
+   when its boarding block exists on the byAir calendar (V3);
+2. builds the meeting drive legs from the calendar (drive-planner's proven scan),
+   masking flight events out by IDENTITY only (R5 — a ground meeting overlapping a
+   redeye survives), with travel-away suppression so a home drive is never invented
+   while abroad;
 3. diffs both against the calendar's current blocks in ONE reconcile; and
 4. APPLIES the plan — creating, updating, and deleting its own blocks.
 
@@ -36,9 +40,11 @@ if str(_BUNDLE_DIR) not in sys.path:
 from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
 from engine import AirportInfo, build_reconcile_plan  # noqa: E402
+from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
 from meeting_source import exclude_drive_block_events, meeting_desired_blocks  # noqa: E402
 from normalize import flight_from_byair  # noqa: E402
 from reconcile import DesiredBlock, ReconcilePlan  # noqa: E402
+from tripit_flights import flights_from_schedule  # noqa: E402
 
 RouteFn = Callable[[str, str], "timedelta | None"]
 
@@ -75,14 +81,19 @@ def build_plan(
     schedule: list[dict] | None = None,
     home_address: str | None = None,
     live_origin: str | None = None,
+    tripit_flights: list | None = None,
+    boarding_present: Callable | None = None,
 ) -> PlanResult:
     """Assemble the combined (airport + meeting) reconcile plan. Pure over inputs.
 
     Airport legs are built from the byAir records (airports resolved via
-    `resolve_airport`); the pre-built `meeting_blocks` are folded in as extra
-    desired blocks so both diff against the calendar in one reconcile.
+    `resolve_airport`) UNIONED with `tripit_flights` (already-normalized TripIt
+    segments, R2) so a flight tracked by either source survives; the pre-built
+    `meeting_blocks` are folded in as extra desired blocks so both diff against
+    the calendar in one reconcile. `boarding_present` gates trivial-leg
+    suppression (V3).
     """
-    flights = []
+    flights = list(tripit_flights or [])
     airport_info: dict[str, AirportInfo] = {}
     skipped: list[str] = []
 
@@ -115,6 +126,7 @@ def build_plan(
         home_address=home_address,
         now=now,
         live_origin=live_origin,
+        boarding_present=boarding_present,
         extra_desired=meeting_blocks,
         managed_legacy=_MANAGED_LEGACY,
     )
@@ -129,6 +141,52 @@ def _on_path(name: str) -> None:
     target = runtime if runtime.is_dir() else _BUNDLE_DIR.parent / name
     if str(target) not in sys.path:
         sys.path.insert(0, str(target))
+
+
+def _event_end(event: dict) -> datetime | None:
+    end = event.get("end")
+    raw = end.get("dateTime") if isinstance(end, dict) else None
+    if not isinstance(raw, str):
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _boarding_block_end_times(composio, find_events_args, items, byair_calendar_id, now):
+    """End instants of boarding blocks on the byAir calendar, for trivial-leg
+    suppression (V3 — the presence check lives on the byAir calendar, not primary).
+
+    Returns [] when no byAir calendar is configured or the fetch fails — so a
+    trivial leg is NOT suppressed without a confirmed boarding block (R6: never
+    suppress the only 'head to the gate' signal silently)."""
+    if not byair_calendar_id:
+        return []
+    import urllib.error
+
+    from composio_client import ComposioError
+
+    try:
+        raw = composio.find_events(
+            find_events_args(
+                calendar_id=byair_calendar_id,
+                time_min=(now - timedelta(hours=6)).isoformat(),
+                time_max=(now + timedelta(days=21)).isoformat(),
+            )
+        )
+    except (ComposioError, urllib.error.URLError):
+        return []
+    ends: list[datetime] = []
+    for event in items(raw):
+        if not isinstance(event, dict):
+            continue
+        summary = event.get("summary")
+        if isinstance(summary, str) and summary.strip().lower().startswith("boarding"):
+            end = _event_end(event)
+            if end is not None:
+                ends.append(end)
+    return ends
 
 
 def _fresh_live_origin(now: datetime, max_age_minutes: int) -> str | None:
@@ -186,7 +244,6 @@ def main() -> int:
         )
         from trip_origin import (
             flight_summaries,
-            flight_windows,
             load_travel_schedule,
             resolve_anchor,
         )
@@ -209,13 +266,47 @@ def main() -> int:
             )
             return timedelta(seconds=seconds)
 
-        # --- meeting side: fetch calendar, scan, build meeting blocks ---
+        # --- flight sources: byAir records + TripIt segments (R2 union) ---
+        records = [
+            record
+            for fid in read_active_flights()
+            if (record := read_flight_state(fid)) is not None
+        ]
+        tripit_flights = flights_from_schedule(schedule)
+
+        # Known flight designators from the whole itinerary (both sources) — the
+        # identity mask (R5) that keeps flight events out of the meeting scan.
+        known_codes = known_flight_codes(
+            [r.get("code") for r in records] + [f.code for f in tripit_flights]
+        )
+        for summary in flight_summaries(schedule):
+            known_codes |= flight_codes(summary)
+
+        composio = ComposioClient.from_env()
+
+        # --- V3: boarding-block presence on the byAir calendar ---
+        boarding_ends = _boarding_block_end_times(
+            composio, _find_events_args, _items, config.get("byair_calendar_id"), now
+        )
+
+        def boarding_present(flight) -> bool:
+            # A boarding block ends at ~departure; match it to this flight by time.
+            dep = flight.effective_dep
+            return any(abs((be - dep).total_seconds()) < 1800 for be in boarding_ends)
+
+        # --- meeting side: fetch calendar, mask flights by IDENTITY (R5), scan ---
         fetcher = CalendarFetcher.from_env()
-        # Exclude the engine's own Drive: blocks so the scan never treats one as a
-        # meeting and plans a drive to it (self-referential duplicate).
         events = exclude_drive_block_events(
             fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
         )
+        # Drop flight events by identity only (R5 — never by time overlap, so a
+        # ground meeting overlapping a redeye window survives). scan then runs with
+        # an EMPTY flight context, since masking already happened here.
+        events = [
+            e
+            for e in events
+            if not (isinstance(e, dict) and is_flight_event(e.get("summary"), known_codes))
+        ]
         skips = load_active_skips(now)
 
         def anchor_for(at: datetime) -> tuple[str | None, str | None]:
@@ -228,17 +319,12 @@ def main() -> int:
             home_address=home or "",
             skip_state=skips,
             anchor_for=anchor_for,
-            flight_windows=flight_windows(schedule),
-            flight_summaries=flight_summaries(schedule),
+            flight_windows=[],
+            flight_summaries=[],
         )
         meeting_blocks, meeting_skipped = meeting_desired_blocks(meetings, route=route)
 
-        # --- airport side: flights + airport facts ---
-        records = [
-            record
-            for fid in read_active_flights()
-            if (record := read_flight_state(fid)) is not None
-        ]
+        # --- airport facts ---
         byair = ByAirClient.from_env()
         airport_cache: dict[int, ResolvedAirport] = {}
 
@@ -254,7 +340,6 @@ def main() -> int:
             return airport_cache[airport_id]
 
         # --- current blocks ---
-        composio = ComposioClient.from_env()
         raw = composio.find_events(
             _find_events_args(
                 calendar_id="primary",
@@ -272,6 +357,8 @@ def main() -> int:
             meeting_blocks=meeting_blocks,
             current_blocks=current_blocks,
             route=route,
+            tripit_flights=tripit_flights,
+            boarding_present=boarding_present,
             now=now,
             schedule=schedule,
             home_address=home,

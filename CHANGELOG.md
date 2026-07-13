@@ -1,5 +1,23 @@
 # Changelog
 
+### Changed — wire the drive-engine's remaining designed features live (#156)
+
+Three refinements the earlier live cutover built but left unwired are now active in
+`reconcile_sweep.py`:
+
+- **R2 byAir ∪ TripIt union** — the sweep now also parses the travel-schedule's
+  `Flight` segments (new `tripit_flights.py`, a bounded `<DEP> to <ARR>` iCal parse)
+  and unions them with the byAir records, so a flight tracked by only one source
+  still produces legs. `build_plan` gains `tripit_flights`.
+- **R5 identity flight-mask** — flight events are now dropped from the meeting scan
+  input by `flight_mask.is_flight_event` (identity only, never time overlap, so a
+  ground meeting overlapping a redeye window survives), and `scan` runs with an
+  empty flight context.
+- **V3 boarding-block presence** — trivial-leg suppression is gated on a real
+  boarding block on the byAir calendar; absent one, the trivial airport drive is
+  kept (R6 — never silently drop the only "head to the gate" signal). `build_plan`
+  gains `boarding_present`.
+
 ## 0.2.37 — 2026-07-13
 
 ### Changed — drive-engine goes live; drive-planner and flight-assist airport drives retired (#156)
