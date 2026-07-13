@@ -134,7 +134,7 @@ def test_tripit_only_connection_groups_no_interior_legs():
         tripit_flights=legs,
     )
     created = {(c.desired.kind, c.desired.destination) for c in result.plan.creates}
-    assert created == {("airport_departure", "STN"), ("airport_arrival", HOME)}
+    assert created == {("airport_departure", "STN airport"), ("airport_arrival", HOME)}
 
 
 def test_boarding_present_gates_trivial_suppression():

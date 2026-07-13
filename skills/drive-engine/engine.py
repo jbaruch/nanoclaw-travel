@@ -77,6 +77,24 @@ def _facts_for(flight: MergedFlight, airport_info: dict[str, AirportInfo]) -> Ai
     )
 
 
+def _airport_place(iata: str) -> str:
+    """A geocodable place string for an airport IATA code. The maps route can't
+    reliably resolve a bare 3-letter code (`STN`) — meeting legs route because they
+    carry full addresses — so feed it the form MapsClient documents, `"STN airport"`
+    (#165)."""
+    return f"{iata} airport"
+
+
+def _leg_past(kind: LegKind, concrete: ConcreteLeg, now: datetime) -> bool:
+    """True when a leg's drive window has already closed. A departed/completed
+    flight needs no drive, and routing the operator's current home to a faraway,
+    already-past airport (e.g. home in TN → a London departure that flew last week)
+    has no driving route and just fails — so filter these before building instead
+    of letting each fail routing with noise (#165)."""
+    instant = concrete.window_end if kind is LegKind.AIRPORT_TRANSFER else concrete.anchor
+    return instant is not None and instant < now
+
+
 def _dest_label(planned) -> str:
     """A human label for a resolved drive-home destination: 'home' only when it
     really is the static home, else the lodging/anchor address (never a lie)."""
@@ -118,10 +136,11 @@ def _build_departure(
 ) -> tuple[DesiredBlock | None, str | None]:
     anchor = leg.anchor
     assert anchor is not None and leg.dest_airport is not None
+    dest = _airport_place(leg.dest_airport)
     planned = position_at(schedule, anchor, home_address=home_address)
     if planned.address is None:
         return None, f"departure {leg_identity(leg)}: no origin (position_at unresolved)"
-    approx = route(planned.address, leg.dest_airport)
+    approx = route(planned.address, dest)
     if approx is None:
         return None, f"departure {leg_identity(leg)}: origin route failed"
     leave_by = anchor - approx
@@ -129,7 +148,7 @@ def _build_departure(
         planned, now=now, leave_by=leave_by, drive=approx, live_origin=live_origin
     )
     origin = resolved.address or planned.address
-    drive = route(origin, leg.dest_airport)
+    drive = route(origin, dest)
     if drive is None:
         return None, f"departure {leg_identity(leg)}: route failed"
     if is_trivial_leg(drive, presence_block_present=boarding_present(leg.flight)):
@@ -146,7 +165,7 @@ def _build_departure(
             start=leave_by,
             end=anchor,
             origin=origin,
-            destination=leg.dest_airport,
+            destination=dest,
             baseline_seconds=int(drive.total_seconds()),
             anchor=anchor,
             timezone=leg.timezone,
@@ -166,10 +185,11 @@ def _build_arrival(
 ) -> tuple[DesiredBlock | None, str | None]:
     anchor = leg.anchor
     assert anchor is not None and leg.origin_airport is not None
+    origin = _airport_place(leg.origin_airport)
     planned = position_at(schedule, anchor, home_address=home_address)
     if planned.address is None:
         return None, f"arrival {leg_identity(leg)}: no destination (position_at unresolved)"
-    drive = route(leg.origin_airport, planned.address)
+    drive = route(origin, planned.address)
     if drive is None:
         return None, f"arrival {leg_identity(leg)}: route failed"
     if is_trivial_leg(drive, presence_block_present=boarding_present(leg.flight)):
@@ -181,7 +201,7 @@ def _build_arrival(
             summary=f"Drive: {leg.origin_airport} → {_dest_label(planned)}",
             start=anchor,
             end=anchor + drive,
-            origin=leg.origin_airport,
+            origin=origin,
             destination=planned.address,
             baseline_seconds=int(drive.total_seconds()),
             anchor=anchor,
@@ -195,7 +215,9 @@ def _build_arrival(
 def _build_transfer(leg: ConcreteLeg, *, route: RouteFn) -> tuple[DesiredBlock | None, str | None]:
     assert leg.origin_airport is not None and leg.dest_airport is not None
     assert leg.window_start is not None and leg.window_end is not None
-    drive = route(leg.origin_airport, leg.dest_airport)
+    origin = _airport_place(leg.origin_airport)
+    dest = _airport_place(leg.dest_airport)
+    drive = route(origin, dest)
     if drive is None:
         return None, f"transfer {leg_identity(leg)}: route failed"
     leave_by = leg.window_end - drive
@@ -206,8 +228,8 @@ def _build_transfer(leg: ConcreteLeg, *, route: RouteFn) -> tuple[DesiredBlock |
             summary=_summary(leg),
             start=leave_by,
             end=leg.window_end,
-            origin=leg.origin_airport,
-            destination=leg.dest_airport,
+            origin=origin,
+            destination=dest,
             baseline_seconds=int(drive.total_seconds()),
             anchor=leg.window_start,
             window_end=leg.window_end,
@@ -269,6 +291,9 @@ def build_reconcile_plan(
                     partner_facts=_facts_for(later, airport_info),
                     overrides=overrides,
                 )
+                if _leg_past(planned.kind, concrete, now):
+                    skipped.append(f"transfer {leg_identity(concrete)}: past, skipped")
+                    continue
                 block, diag = _build_transfer(concrete, route=route)
             elif planned.kind is LegKind.AIRPORT_DEPARTURE:
                 flight = planned.to_flight
@@ -278,6 +303,9 @@ def build_reconcile_plan(
                 concrete = resolve_leg_anchor(
                     planned, facts=_facts_for(flight, airport_info), overrides=overrides
                 )
+                if _leg_past(planned.kind, concrete, now):
+                    skipped.append(f"departure {leg_identity(concrete)}: past, skipped")
+                    continue
                 block, diag = _build_departure(
                     concrete,
                     schedule=schedule,
@@ -295,6 +323,9 @@ def build_reconcile_plan(
                 concrete = resolve_leg_anchor(
                     planned, facts=_facts_for(flight, airport_info), overrides=overrides
                 )
+                if _leg_past(planned.kind, concrete, now):
+                    skipped.append(f"arrival {leg_identity(concrete)}: past, skipped")
+                    continue
                 block, diag = _build_arrival(
                     concrete,
                     schedule=schedule,

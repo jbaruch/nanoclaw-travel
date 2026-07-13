@@ -97,7 +97,8 @@ def test_single_domestic_flight_creates_departure_and_arrival():
     # anchor = 09:00 − 60 clearance = 08:00; leave_by = 08:00 − 30 drive = 07:30
     assert dep.anchor == _dt(8)
     assert dep.start == _dt(7, 30)
-    assert dep.origin == HOME and dep.destination == "BNA"
+    # airport endpoint is geocodable ("BNA airport"), not a bare IATA code (#165)
+    assert dep.origin == HOME and dep.destination == "BNA airport"
 
 
 # --- same-airport connection chain -----------------------------------------
@@ -120,8 +121,27 @@ def test_connection_chain_yields_only_ground_endpoints():
     )
     created = {(c.desired.kind, c.desired.destination) for c in result.plan.creates}
     # exactly the opening departure (to STN) and the closing arrival (from BNA)
-    assert created == {("airport_departure", "STN"), ("airport_arrival", HOME)}
+    assert created == {("airport_departure", "STN airport"), ("airport_arrival", HOME)}
     assert len(result.plan.creates) == 2
+
+
+def test_past_flight_builds_no_legs_and_is_skipped():
+    """#165: a flight whose drive windows are already in the past (a completed
+    trip — the operator is home again) produces NO airport legs. It's skipped
+    cleanly, never routed from the current home to a faraway, already-flown
+    airport (which has no drive route and just fails with noise). `const_route`
+    would happily route it, so this pins the past-filter, not a route failure."""
+    f = flight("BNA", "JFK", _dt(9, day=8), _dt(11, day=8), fid=1)  # 2 days before NOW
+    result = build_reconcile_plan(
+        flights=[f],
+        airport_info=_us_info("BNA", "JFK"),
+        current_blocks=[],
+        route=const_route(30),
+        home_address=HOME,
+        now=NOW,
+    )
+    assert result.plan.creates == ()
+    assert any("past" in s for s in result.skipped)
 
 
 def test_jul12_itinerary_converges_storm_and_deletes_connection_orphans():

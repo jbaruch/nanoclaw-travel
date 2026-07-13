@@ -1,5 +1,23 @@
 # Changelog
 
+### Fixed — drive-engine airport legs never produced ('origin route failed') (#165)
+
+Every airport drive leg failed routing while meeting legs built fine. Two causes:
+
+- **Past/completed segments weren't filtered.** The engine built airport legs for
+  *every* flight in the schedule, including a trip that already flew — so it tried to
+  route the operator's current home (Tennessee) to a departure airport abroad that flew
+  last week (London Stansted). There's no driving route across the Atlantic, so Maps
+  returned nothing and the leg "failed." The pipeline now skips any leg whose drive
+  window is already in the past (`anchor`/`window_end` < now) before routing it — a
+  completed trip correctly produces no drives, cleanly, with a `past, skipped` diagnostic
+  instead of a route-failure.
+- **Airport endpoints were bare IATA codes.** Airport legs fed the maps route a bare
+  3-letter code (`"STN"`), which Distance Matrix can't reliably geocode (meeting legs
+  route because they carry full addresses). They now use the geocodable form the
+  `MapsClient` documents (`"STN airport"`), so future flights route reliably instead of
+  the airport half being silently dead while meeting drives work.
+
 ## 0.2.42 — 2026-07-13
 
 ### Fixed — drive-engine duplicate storm + apply timeout (#164)
