@@ -220,6 +220,8 @@ def build_reconcile_plan(
     boarding_present: BoardingPresentFn | None = None,
     left_terminal: LeftTerminalFn | None = None,
     overrides: BufferOverrides | None = None,
+    extra_desired: list[DesiredBlock] | None = None,
+    managed_legacy: frozenset[str] | None = None,
 ) -> EngineResult:
     """Run the full engine pipeline and return the reconcile plan + diagnostics.
 
@@ -227,7 +229,10 @@ def build_reconcile_plan(
     route skips the leg with a diagnostic, never a blind block). `boarding_present`
     reports whether a flight's boarding block exists (for trivial suppression);
     default assumes present. `left_terminal` supplies same-airport "did you leave"
-    geofence evidence.
+    geofence evidence. `extra_desired` folds in blocks from another source (the
+    meeting-leg source) so both are diffed against the calendar in one reconcile.
+    `managed_legacy`, when given, is passed through to `plan_reconcile` to scope
+    which legacy generations the engine may converge / orphan-delete.
     """
     boarding_present = boarding_present or (lambda _flight: True)
     if overrides is None:
@@ -292,4 +297,9 @@ def build_reconcile_plan(
             if diag is not None:
                 skipped.append(diag)
 
-    return EngineResult(plan=plan_reconcile(desired, current_blocks), skipped=tuple(skipped))
+    if extra_desired:
+        desired.extend(extra_desired)
+
+    reconcile_kwargs = {} if managed_legacy is None else {"managed_legacy": managed_legacy}
+    plan = plan_reconcile(desired, current_blocks, **reconcile_kwargs)
+    return EngineResult(plan=plan, skipped=tuple(skipped))

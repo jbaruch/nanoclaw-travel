@@ -60,6 +60,7 @@ class DesiredBlock:
     baseline_seconds: int
     anchor: datetime
     window_end: datetime | None = None
+    timezone: str | None = None  # IANA tz the block is created in (local display)
     legacy_keys: frozenset[tuple[str, str, str]] = field(default_factory=frozenset)
 
 
