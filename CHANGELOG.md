@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.41 — 2026-07-13
+
 ### Added — flight-assist trip-window defense-in-depth (#147)
 
 The host now owns the primary control: a pre-spawn gate (jbaruch/nanoclaw#754) that
