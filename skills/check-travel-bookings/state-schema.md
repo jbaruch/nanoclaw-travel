@@ -53,7 +53,7 @@ A `resolved` outcome is represented by removing the entry entirely (the next nig
 
 - The owner skill migrates on its own read: legacy data without `schema_version` is treated as implicit v1 (the schema was introduced at v1; no prior version exists). Subsequent writes stamp the field explicitly.
 - `schema_version` higher than the current constant (currently 1) is treated as forward-incompatible — `check-travel-bookings.py` returns no-prior-state and `build-travel-db.py` does not overwrite.
-- Non-owner readers (none today; reserved for future cross-plugin reads) MUST treat schema_version mismatch as no-prior-state without rewriting.
+- Non-owner readers MUST treat a `schema_version` mismatch as no-prior-state without rewriting. Today's cross-plugin non-owner reader is `flight-assist/trip_window.py` (the #147 trip-window gate; see the `travel-db.json` readers list above) — it accepts only version `1` and fails open on any other stamp, so a bump here runs mixed versions until `trip_window._ACCEPTED_TRAVEL_DB_SCHEMA_VERSION` (and the host gate `src/spawn-gates.ts` in jbaruch/nanoclaw) are advanced in lock-step.
 
 ## Schema-version constant
 
