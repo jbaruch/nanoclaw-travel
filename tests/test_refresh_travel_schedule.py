@@ -247,6 +247,10 @@ def test_timed_event_emits_iso_datetime(refresh_travel_schedule, monkeypatch, ca
     events = json.loads(output_path.read_text())
     assert events[0]["start"] == "2026-05-22T07:00:00Z"
     assert events[0]["end"] == "2026-05-22T14:00:00Z"
+    # v2: the writer persists DESCRIPTION verbatim — the `[Flight] <DEP> to <ARR>`
+    # route line drive-engine's TripIt-union parser reads (#156 R2). Locks the
+    # writer↔parser contract so a real Flight row is never silently unparseable.
+    assert events[0]["description"] == "[Flight] MUC to DTW"
 
 
 def test_date_only_event_stays_date_only(refresh_travel_schedule, monkeypatch, capsys):
