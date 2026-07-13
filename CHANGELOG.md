@@ -14,7 +14,10 @@ underlying tracking was correct:
   cycle. `code` is now preserved across polls as a seed-time identity field (alongside
   scheduled times / airport ids), and the persisted snapshot is realigned to it, so no
   reader can surface the operating code. No structured marketing field exists in
-  `get_flight` to read, so preservation — not re-extraction — is the fix.
+  `get_flight` to read, so preservation — not re-extraction — is the fix. Because
+  preservation would also keep an already-corrupted value, `sync_tripit` now repairs the
+  `code` on every retained flight from `list_trips` (the marketing-code authority) each
+  daily run, healing records poisoned by pre-fix polls.
 - **Bug 2 — arrival airport free-typed.** State carried only numeric `dep_airport_id` /
   `arr_airport_id`, so the LLM composer invented "Stansted" (the trip's origin) for a
   JFK→Nashville arrival. The poll now captures the resolved airport `code` + `name` off the

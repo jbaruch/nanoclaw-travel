@@ -159,7 +159,7 @@ Top-level fields:
 
 - `schema_version` (int, required) — `7`
 - `flight_id` (int, required) — byAir's flight identifier
-- `code` (string, required) — the **marketing** flight designator like `"AA2414"` / `"DL4908"` — what the operator booked and recognizes. Seeded by `sync_tripit` from byAir `list_trips` (whose top-level `code` is the marketing designator) and preserved across polls: the precheck poll uses byAir `get_flight`, whose top-level `code` is the **operating** designator for a codeshare (e.g. `9E4908`, Endeavor operating DL4908), so the poll never overwrites this field (#159 Bug 1)
+- `code` (string, required) — the **marketing** flight designator like `"AA2414"` / `"DL4908"` — what the operator booked and recognizes. Seeded by `sync_tripit` from byAir `list_trips` (whose top-level `code` is the marketing designator) and preserved across polls: the precheck poll uses byAir `get_flight`, whose top-level `code` is the **operating** designator for a codeshare (e.g. `9E4908`, Endeavor operating DL4908), so the poll never overwrites this field. `sync_tripit` also refreshes it from `list_trips` on every retained flight each daily run, healing records a pre-fix poll may have poisoned with the operating designator (#159 Bug 1)
 - `ownership` (string, required) — `"mine"` or `"friend"`
 - `trip_id` (int, required) — byAir's trip identifier (groups multi-leg trips)
 - `scheduled_dep_time`, `scheduled_arr_time` (RFC 3339 with offset, required)
