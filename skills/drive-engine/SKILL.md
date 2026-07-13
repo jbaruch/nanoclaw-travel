@@ -12,9 +12,9 @@ Process steps in order. Do not skip ahead.
 
 The precheck (`reconcile_sweep.py`) plans and applies every `Drive:` block change — airport and meeting drives — every ~30 minutes, diffing against the calendar and touching only its own blocks. It leaves legacy drive-planner / flight-assist blocks alone (you clean those up), and the two old engines are retired so they no longer write.
 
-## Step 1 — Report what changed
+## Step 1 — Report what changed, then finish
 
-The precheck already applied the plan and returned a payload with `data.applied` (created / updated / deleted / converted counts). If it woke you (`wake_agent: true`), tell the operator briefly what changed — e.g. "added 2 drive blocks, removed 1 stale one." If nothing changed, proceed silently and finish here.
+The precheck already applied the plan and returned a payload with `data.applied` (created / updated / deleted / converted counts). If it woke you (`wake_agent: true`), send the operator one brief message via `mcp__nanoclaw__send_message` naming what changed — e.g. "added 2 drive blocks, removed 1 stale one" — then **finish here**. If nothing changed, proceed silently and **finish here**. Either way this is the end of a normal run; do not continue to Step 2.
 
 The precheck's contract — its inputs, the apply counts, the always-fail-closed no-wake payload on error — lives in `reconcile_sweep.py` (module docstring, `build_plan`, and `calendar_apply.apply_plan`). Do not restate its logic here.
 
