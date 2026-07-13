@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.40 — 2026-07-13
+
 ### Fixed — drive blocks show as accepted, not an unconfirmed invite (#158)
 
 Drive blocks were created with a `needsAction` self-attendee, so they rendered as
