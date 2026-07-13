@@ -62,7 +62,12 @@ def flight_from_byair(record: dict, *, dep_iata: str, arr_iata: str) -> Flight:
 
 
 def flight_from_tripit_segment(
-    segment: dict, *, dep_iata: str, arr_iata: str, code: str | None = None
+    segment: dict,
+    *,
+    dep_iata: str,
+    arr_iata: str,
+    code: str | None = None,
+    trip_id: int | None = None,
 ) -> Flight:
     """Build a TripIt `Flight` from a travel-schedule.json `Flight` segment.
 
@@ -87,4 +92,5 @@ def flight_from_tripit_segment(
         code=code,
         source=TRIPIT,
         tripit_segment_id=uid,
+        trip_id=trip_id,
     )

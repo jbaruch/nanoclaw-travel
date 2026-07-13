@@ -81,3 +81,32 @@ def test_missing_uid_skipped():
 
 def test_none_schedule():
     assert flights_from_schedule(None) == []
+
+
+def test_trip_id_groups_legs_and_is_negated():
+    # Two segments of one TripIt trip (same trip URL) get the SAME trip_id, so the
+    # chain planner groups them as a connection rather than independent flights.
+    # The id is negated to avoid colliding with byAir's positive trip_ids.
+    trip_url = "https://www.tripit.com/trip/show/id/98765"
+    leg1 = _seg(
+        uid="item-1@tripit.com",
+        summary="AA1 STN to CPH",
+        description=f"[Flight] STN to CPH {trip_url}",
+        start="2020-07-12T09:00:00Z",
+        end="2020-07-12T11:00:00Z",
+    )
+    leg2 = _seg(
+        uid="item-2@tripit.com",
+        summary="AA2 CPH to JFK",
+        description=f"[Flight] CPH to JFK {trip_url}",
+        start="2020-07-12T13:00:00Z",
+        end="2020-07-12T20:00:00Z",
+    )
+    flights = flights_from_schedule([leg1, leg2])
+    assert len(flights) == 2
+    assert flights[0].trip_id == flights[1].trip_id == -98765
+
+
+def test_no_trip_url_leaves_trip_id_none():
+    flights = flights_from_schedule([_seg(description="[Flight] ATL to SJO (no trip url here)")])
+    assert flights[0].trip_id is None

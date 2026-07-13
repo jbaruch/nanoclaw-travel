@@ -30,6 +30,10 @@ from normalize import flight_from_tripit_segment  # noqa: E402
 _ROUTE_RE = re.compile(r"\b([A-Z]{3})\s+to\s+([A-Z]{3})\b")
 # A leading IATA flight designator in the summary, e.g. "DL 4908", "FR7382".
 _CODE_RE = re.compile(r"\b([A-Z]{2}|[A-Z]\d|\d[A-Z])\s?(\d{1,4})\b")
+# TripIt's per-item DESCRIPTION carries the trip URL "trip/show/id/<n>"; the id
+# groups a trip's legs so the chain planner sees connections (#156 §D). Stored
+# NEGATED so a TripIt trip id can never collide with a byAir (positive) trip_id.
+_TRIP_ID_RE = re.compile(r"trip/show/id/(\d+)")
 
 
 def _route(segment: dict) -> tuple[str, str] | None:
@@ -51,6 +55,16 @@ def _code(segment: dict) -> str | None:
     return None
 
 
+def _trip_id(segment: dict) -> int | None:
+    """The trip's grouping id, negated to avoid colliding with byAir trip_ids."""
+    description = segment.get("description")
+    if isinstance(description, str):
+        m = _TRIP_ID_RE.search(description)
+        if m:
+            return -int(m.group(1))
+    return None
+
+
 def flights_from_schedule(schedule: list[dict] | None) -> list[Flight]:
     """Normalize the schedule's `Flight` segments into TripIt-source `Flight`s.
 
@@ -69,7 +83,11 @@ def flights_from_schedule(schedule: list[dict] | None) -> list[Flight]:
         try:
             flights.append(
                 flight_from_tripit_segment(
-                    segment, dep_iata=dep_iata, arr_iata=arr_iata, code=_code(segment)
+                    segment,
+                    dep_iata=dep_iata,
+                    arr_iata=arr_iata,
+                    code=_code(segment),
+                    trip_id=_trip_id(segment),
                 )
             )
         except ValueError:

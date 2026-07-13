@@ -70,7 +70,7 @@ def _meeting_block(identity="mtg1"):
     )
 
 
-def _tripit_flight(dep, arr, sdep, sarr, *, seg="seg-1"):
+def _tripit_flight(dep, arr, sdep, sarr, *, seg="seg-1", trip_id=7):
     return Flight(
         dep_airport=dep,
         arr_airport=arr,
@@ -79,7 +79,7 @@ def _tripit_flight(dep, arr, sdep, sarr, *, seg="seg-1"):
         code="AA1",
         source=TRIPIT,
         tripit_segment_id=seg,
-        trip_id=7,
+        trip_id=trip_id,
     )
 
 
@@ -99,6 +99,42 @@ def test_tripit_only_flight_is_unioned_and_produces_legs():
     )
     kinds = sorted(c.desired.kind for c in result.plan.creates)
     assert "airport_departure" in kinds and "airport_arrival" in kinds
+
+
+def test_tripit_only_connection_groups_no_interior_legs():
+    # Two TripIt-only legs of ONE trip (shared trip_id) with a same-airport
+    # connection (CPH) must be recognized as a connection — only the opening
+    # departure (STN) and closing arrival (JFK), NOT independent per-leg drives.
+    legs = [
+        _tripit_flight(
+            "STN",
+            "CPH",
+            "2020-07-12T09:00:00+00:00",
+            "2020-07-12T11:00:00+00:00",
+            seg="s1",
+            trip_id=-98765,
+        ),
+        _tripit_flight(
+            "CPH",
+            "JFK",
+            "2020-07-12T13:00:00+00:00",
+            "2020-07-12T20:00:00+00:00",
+            seg="s2",
+            trip_id=-98765,
+        ),
+    ]
+    result = build_plan(
+        flight_records=[],
+        resolve_airport=_resolve_airport,
+        meeting_blocks=[],
+        current_blocks=[],
+        route=_route,
+        now=NOW,
+        home_address=HOME,
+        tripit_flights=legs,
+    )
+    created = {(c.desired.kind, c.desired.destination) for c in result.plan.creates}
+    assert created == {("airport_departure", "STN"), ("airport_arrival", HOME)}
 
 
 def test_boarding_present_gates_trivial_suppression():
