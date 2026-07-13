@@ -126,11 +126,13 @@ def _legacy_key(block: ParsedBlock) -> tuple[str, str, str] | None:
 # A matched block is only shifted when its routed drive duration changed by at
 # least this much. The maps route returns a slightly different `baseline_seconds`
 # on every sweep (traffic recomputation jitter — observed 1–46s swings for an
-# unchanged leg), and each update is a recreate-then-delete; comparing exactly
-# made every sweep re-shift all ~15 legs, and a sweep killed mid-write (after the
-# recreates, before the deletes) left a duplicate every cycle — the #164 storm.
-# 2 min is well above the jitter yet still catches a real traffic change (which
-# moves the leave-by enough to matter).
+# unchanged leg); comparing exactly made every sweep re-shift all ~15 legs. That
+# churn drove the #164 duplicate storm back when a shift was a recreate-then-
+# delete (a sweep killed between the create and the delete duplicated the leg).
+# Shifts are now an in-place PATCH (calendar_apply) so they can no longer
+# duplicate, but re-patching every leg every sweep for sub-minute noise is still
+# pointless churn — so ignore it. 2 min is well above the jitter yet still
+# catches a real traffic change (which moves the leave-by enough to matter).
 _BASELINE_SHIFT_TOLERANCE_SECONDS = 120
 
 
