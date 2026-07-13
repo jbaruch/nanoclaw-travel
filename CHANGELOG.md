@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.37 — 2026-07-13
+
 ### Changed — drive-engine goes live; drive-planner and flight-assist airport drives retired (#156)
 
 The unified drive-engine now WRITES: `reconcile_sweep.py` plans airport drives from the byAir itinerary and meeting drives from the calendar (reusing drive-planner's proven `scan` for meeting detection), diffs both against the primary calendar in one reconcile, and applies the result — creating / updating / deleting its own unified-codec blocks. Meeting drives gain travel-awareness (a drive whose routed time is implausible — the operator is abroad while the meeting is at home — is suppressed, not invented) and render in the meeting's local timezone. The engine touches ONLY its own blocks (`managed_legacy` empty): existing drive-planner blocks are left for the operator to remove.
