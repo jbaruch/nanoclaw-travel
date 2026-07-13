@@ -18,7 +18,7 @@ OUTPUT_PATH = "/workspace/group/travel-schedule.json"
 # in full from the live TripIt ICS every run (no in-place migration —
 # the writer always emits the current version, cross-plugin readers gate
 # on it). See the sibling `state-schema.md` for the owner/reader contract.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def lodging_pair_key(summary, description):
@@ -228,6 +228,11 @@ def main():
                 "location": ev["location"],
                 "type": ev["type"],
                 "uid": ev["uid"],
+                # v2: persist DESCRIPTION — the iCal `[Type] <DEP> to <ARR>` line
+                # is the only reliable source of a Flight segment's route (both
+                # airports), consumed by drive-engine's TripIt-union parser (#156
+                # R2). Additive; readers that don't use it are unaffected.
+                "description": ev["description"],
             }
         )
 
