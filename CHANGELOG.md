@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.43 — 2026-07-13
+
 ### Fixed — drive-engine airport legs never produced ('origin route failed') (#165)
 
 Every airport drive leg failed routing while meeting legs built fine. Two causes:
