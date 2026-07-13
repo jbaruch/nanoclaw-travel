@@ -20,8 +20,11 @@ underlying tracking was correct:
   JFK→Nashville arrival. The poll now captures the resolved airport `code` + `name` off the
   byAir payload it already fetches (`depAirport` / `arrAirport`) into `last_snapshot`, and
   the compose step renders the airport strictly from those fields — never free-typing from
-  an id. Additive snapshot fields on the byair-owned, rebuilt-each-poll slice, so no
-  schema-version bump.
+  an id.
+
+State schema bumped **v6 → v7** for the new `last_snapshot` airport slice and the realigned
+`code` semantics. The airport fields are byair-owned and repopulated by the next poll, so the
+owner-side `state.py:_migrate` v6→v7 step is a schema_version bump only (no backfill).
 
 ## 0.2.38 — 2026-07-13
 

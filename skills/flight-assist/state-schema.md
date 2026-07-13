@@ -19,7 +19,7 @@ Plugin-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
   "min_transfer_minutes": 45,
   "byair_calendar_name": "Flighty Flights",
@@ -29,7 +29,7 @@ Plugin-wide configuration set during install via the `/setup` flow.
 
 Fields:
 
-- `schema_version` (int, required) — currently `6`
+- `schema_version` (int, required) — currently `7`
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
 - `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in plugin terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in plugin code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)
@@ -46,14 +46,14 @@ Index of currently-tracked flight IDs. Refreshed daily by the sync-tripit script
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "flight_ids": [12345, 67890, 11111]
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `6`
+- `schema_version` (int, required) — currently `7`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
 ### `current-location.json`
@@ -90,7 +90,7 @@ Per-flight state record. One file per tracked flight.
 
 ```json
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "flight_id": 12345,
   "code": "AA2414",
   "ownership": "mine",
@@ -157,7 +157,7 @@ Per-flight state record. One file per tracked flight.
 
 Top-level fields:
 
-- `schema_version` (int, required) — `6`
+- `schema_version` (int, required) — `7`
 - `flight_id` (int, required) — byAir's flight identifier
 - `code` (string, required) — the **marketing** flight designator like `"AA2414"` / `"DL4908"` — what the operator booked and recognizes. Seeded by `sync_tripit` from byAir `list_trips` (whose top-level `code` is the marketing designator) and preserved across polls: the precheck poll uses byAir `get_flight`, whose top-level `code` is the **operating** designator for a codeshare (e.g. `9E4908`, Endeavor operating DL4908), so the poll never overwrites this field (#159 Bug 1)
 - `ownership` (string, required) — `"mine"` or `"friend"`
@@ -218,7 +218,7 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Today `STATE_SCHEMA_VERSION` is `6`.
+Today `STATE_SCHEMA_VERSION` is `7`.
 
 `state.py`'s owner-side read helpers (`read_config`, `read_active_flights`, `read_flight_state`) enforce these rules on `schema_version`:
 
@@ -250,6 +250,10 @@ Config: gains five optional airport-clearance fields, `airport_clearance_domesti
 ### v5 → v6
 
 Per-flight state: `phase_markers` gains `gate_assignment_fired: false`. The owner-side migration in `state.py:_migrate` adds the missing key on first read — scoped to the `flight-<id>.json` files — and rewrites the file at v6. Config and active-flights files have no shape change at v6 — they receive a schema_version bump only.
+
+### v6 → v7
+
+Per-flight state: `last_snapshot` gains the resolved airport slice (`dep_airport_code`, `dep_airport_name`, `arr_airport_code`, `arr_airport_name`) and its `code` is realigned to the marketing designator (#159). `last_snapshot` is a byair-owned, rebuilt-each-poll slice whose fields are all optional and absent-tolerant, so there is no shape to backfill on migration — the owner-side `state.py:_migrate` only bumps the `schema_version`, and the next precheck poll repopulates the snapshot. Config and active-flights files have no shape change at v7 — they receive a schema_version bump only.
 
 ## Bump Procedure
 
