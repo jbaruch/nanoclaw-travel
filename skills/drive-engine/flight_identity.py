@@ -165,6 +165,14 @@ def _merge_cluster(cluster: list[Flight]) -> MergedFlight:
     time_source = byair_members[0] if byair_members else tripit_members[0]
     display = next((f for f in cluster if f.code), None)
 
+    # trip_id groups a trip's legs. byAir and TripIt use DIFFERENT id namespaces
+    # (byAir positive; TripIt negated to avoid collision), so a fused byAir+TripIt
+    # twin must prefer the byAir id — otherwise the twin would carry the negated
+    # TripIt id and fail to group with the trip's byAir-only legs.
+    trip_id = next((f.trip_id for f in byair_members if f.trip_id is not None), None)
+    if trip_id is None:
+        trip_id = next((f.trip_id for f in tripit_members if f.trip_id is not None), None)
+
     return MergedFlight(
         dep_airport=time_source.dep_airport,
         arr_airport=time_source.arr_airport,
@@ -179,7 +187,7 @@ def _merge_cluster(cluster: list[Flight]) -> MergedFlight:
         tripit_segment_ids=frozenset(
             f.tripit_segment_id for f in tripit_members if f.tripit_segment_id is not None
         ),
-        trip_id=next((f.trip_id for f in cluster if f.trip_id is not None), None),
+        trip_id=trip_id,
     )
 
 
