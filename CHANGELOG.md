@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.42 — 2026-07-13
+
 ### Fixed — drive-engine duplicate storm + apply timeout (#164)
 
 Every ~30-min sweep was killed mid-write past the host's ~33s precheck budget and left
