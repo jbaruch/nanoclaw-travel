@@ -34,26 +34,34 @@ if str(_BUNDLE_DIR) not in sys.path:
 from block_codec import GEN_LEGACY_DP, parse_block  # noqa: E402
 from reconcile import DesiredBlock  # noqa: E402
 
-# A drive block's human summary always starts with this. The scan input must
-# exclude the engine's OWN Drive: blocks, or a later sweep would treat one as a
-# meeting and plan a drive TO the drive block (a self-referential duplicate).
+# A drive block's human summary always starts with this.
 _DRIVE_SUMMARY_PREFIX = "Drive:"
 
 
 def exclude_drive_block_events(events: list[dict]) -> list[dict]:
-    """Drop drive blocks from the meeting scan input (#156 — calendar-as-output).
+    """Filter the meeting scan input (#156 — calendar-as-output), keeping dp blocks.
 
-    An event is a drive block if its summary starts with `Drive:` OR it parses as
-    any drive-block codec (new dengine, legacy dp / fadrive). Everything else — the
-    genuine meetings — passes through.
+    Drops the drive blocks the reused `scan` CANNOT classify — the engine's own
+    unified (dengine) blocks and legacy flight-assist (fadrive) airport blocks —
+    so a later sweep never treats one as a meeting and plans a drive TO the drive
+    block (self-referential duplicate).
+
+    KEEPS legacy drive-planner (dp) blocks: `scan` recognizes those and uses them
+    to bucket a meeting as already-handled (`has_block`). Hiding them would make
+    `scan` re-plan that meeting and the engine would create a dengine block on top
+    of the existing dp block — a duplicate. A `Drive:`-prefixed block with an
+    unreadable marker is dropped too (it can't be a genuine meeting).
     """
     kept: list[dict] = []
     for event in events:
+        parsed = parse_block(event)
+        if parsed is not None:
+            if parsed.generation == GEN_LEGACY_DP:
+                kept.append(event)  # scan needs dp blocks for has_block detection
+            continue  # dengine / fadrive — scan can't classify them; drop
         summary = event.get("summary") if isinstance(event, dict) else None
         if isinstance(summary, str) and summary.strip().startswith(_DRIVE_SUMMARY_PREFIX):
-            continue
-        if parse_block(event) is not None:
-            continue
+            continue  # a Drive: block with an unreadable marker — not a meeting
         kept.append(event)
     return kept
 
