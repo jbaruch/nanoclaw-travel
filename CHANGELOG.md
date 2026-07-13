@@ -13,6 +13,37 @@ no Composio Google Calendar action (create / update / patch / quick-add) exposes
 colour field in the deployed toolkit, so it cannot be set through the current write path.
 Tracked separately, blocked on the Composio retirement / workspace-MCP migration.
 
+## 0.2.39 — 2026-07-13
+
+### Fixed — flight-assist day-before notification: wrong flight code + hallucinated airport (#159)
+
+Two independent defects in the day-before notification, both trust-eroding though the
+underlying tracking was correct:
+
+- **Bug 1 — operating designator shown instead of marketing.** For a codeshare, byAir's
+  two endpoints describe the same flight from opposite sides: `list_trips` (what
+  `sync_tripit` seeds from) carries the marketing code `DL4908` with `operator.code` =
+  `9E4908`, while `get_flight` (the poll) carries the operating code `9E4908` at top level
+  and exposes the marketing code only in free-text `note`. The precheck poll was
+  overwriting the sync-seeded marketing code with `get_flight`'s operating designator every
+  cycle. `code` is now preserved across polls as a seed-time identity field (alongside
+  scheduled times / airport ids), and the persisted snapshot is realigned to it, so no
+  reader can surface the operating code. No structured marketing field exists in
+  `get_flight` to read, so preservation — not re-extraction — is the fix. Because
+  preservation would also keep an already-corrupted value, `sync_tripit` now repairs the
+  `code` on every retained flight from `list_trips` (the marketing-code authority) each
+  daily run, healing records poisoned by pre-fix polls.
+- **Bug 2 — arrival airport free-typed.** State carried only numeric `dep_airport_id` /
+  `arr_airport_id`, so the LLM composer invented "Stansted" (the trip's origin) for a
+  JFK→Nashville arrival. The poll now captures the resolved airport `code` + `name` off the
+  byAir payload it already fetches (`depAirport` / `arrAirport`) into `last_snapshot`, and
+  the compose step renders the airport strictly from those fields — never free-typing from
+  an id.
+
+State schema bumped **v6 → v7** for the new `last_snapshot` airport slice and the realigned
+`code` semantics. The airport fields are byair-owned and repopulated by the next poll, so the
+owner-side `state.py:_migrate` v6→v7 step is a schema_version bump only (no backfill).
+
 ## 0.2.38 — 2026-07-13
 
 ### Changed — wire the drive-engine's remaining designed features live (#156)

@@ -101,6 +101,49 @@ def test_sync_with_unchanged_upstream_no_diff(state_root: Path):
     assert diff["removed"] == []
 
 
+def test_sync_repairs_poisoned_marketing_code_on_retained_flight(state_root: Path):
+    """#159: a codeshare whose `code` was overwritten with the operating
+    designator (9E4908) by a prior poll is healed from list_trips' marketing
+    designator (DL4908) on the next sync — on both the record and the snapshot
+    mirror. Preservation alone would keep the corrupted value; nothing else
+    heals it."""
+    write_active_flights([100])
+    sync_tripit.initialize_flight_from_byair(
+        flight=_flight(100, code="9E4908"),
+        now_utc=datetime(2026, 5, 18, 4, 0, 0, tzinfo=timezone.utc),
+    )
+    poisoned = must(read_flight_state(100))
+    poisoned["last_snapshot"] = {"code": "9E4908", "computed_status": "scheduled"}
+    write_flight_state(poisoned)
+
+    payload = _trips_payload([_flight(100, code="DL4908")])
+    with patch("sync_tripit.ByAirClient.from_env") as mock_byair:
+        mock_byair.return_value.list_trips.return_value = payload
+        diff = sync_tripit._run_sync(now_utc=datetime(2026, 5, 18, 4, 5, 0, tzinfo=timezone.utc))
+
+    assert [e["flight_id"] for e in diff["repaired"]] == [100]
+    healed = must(read_flight_state(100))
+    assert healed["code"] == "DL4908"
+    assert healed["last_snapshot"]["code"] == "DL4908"
+
+
+def test_sync_does_not_repair_when_code_already_marketing(state_root: Path):
+    """A retained flight whose stored code already matches upstream is left
+    untouched — no needless rewrite, no repair entry."""
+    write_active_flights([100])
+    sync_tripit.initialize_flight_from_byair(
+        flight=_flight(100, code="DL4908"),
+        now_utc=datetime(2026, 5, 18, 4, 0, 0, tzinfo=timezone.utc),
+    )
+    payload = _trips_payload([_flight(100, code="DL4908")])
+    with patch("sync_tripit.ByAirClient.from_env") as mock_byair:
+        mock_byair.return_value.list_trips.return_value = payload
+        diff = sync_tripit._run_sync(now_utc=datetime(2026, 5, 18, 4, 5, 0, tzinfo=timezone.utc))
+
+    assert diff["repaired"] == []
+    assert must(read_flight_state(100))["code"] == "DL4908"
+
+
 def test_sync_removes_expired_flights(state_root: Path):
     # Initial state: tracking 100 and 200
     write_active_flights([100, 200])

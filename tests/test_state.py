@@ -824,6 +824,44 @@ def test_v5_to_v6_migration_scopes_phase_markers_by_filename(state_root: Path):
     assert "gate_assignment_fired" not in raw["phase_markers"]
 
 
+def _v6_flight_state(**overrides) -> dict:
+    """Build a raw on-disk v6 per-flight record (pre-airport-slice snapshot)."""
+    base = _v5_flight_state()
+    base["schema_version"] = 6
+    base["phase_markers"]["gate_assignment_fired"] = False
+    # A v6 snapshot predates the resolved airport slice added at v7.
+    base["last_snapshot"] = {"code": "AA2414", "computed_status": "scheduled"}
+    base.update(overrides)
+    return base
+
+
+def test_v6_to_v7_flight_migration_bumps_version_snapshot_untouched(state_root: Path):
+    """v6 per-flight state migrates to v7 with a schema_version bump only — the
+    v7 airport slice is byair-owned and repopulated by the next poll, so the
+    migration must not synthesize fields into the old snapshot or crash on one
+    that lacks them."""
+    state_root.mkdir(parents=True)
+    (state_root / "flight-12345.json").write_text(json.dumps(_v6_flight_state()))
+
+    loaded = must(read_flight_state(12345))
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    # Snapshot carried through verbatim — no airport fields injected on migration.
+    assert loaded["last_snapshot"] == {"code": "AA2414", "computed_status": "scheduled"}
+    raw = json.loads((state_root / "flight-12345.json").read_text())
+    assert raw["schema_version"] == STATE_SCHEMA_VERSION
+
+
+def test_v6_to_v7_config_migration_bumps_version_without_shape_change(state_root: Path):
+    """v6 config files have no shape change at v7 — schema_version bump only."""
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text(
+        json.dumps({"schema_version": 6, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
+    )
+    loaded = must(read_config())
+    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["home_address"] == "1 Old Loop"
+
+
 def test_config_round_trips_airport_clearance_fields(state_root: Path):
     """The v5 airport-clearance config fields write and read back unchanged."""
     state_root.mkdir(parents=True)
