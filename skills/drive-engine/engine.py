@@ -48,6 +48,18 @@ from suppression import is_trivial_leg
 RouteFn = Callable[[str, str], "timedelta | None"]
 BoardingPresentFn = Callable[[MergedFlight], bool]
 LeftTerminalFn = Callable[[MergedFlight, MergedFlight], bool]
+HasBudgetFn = Callable[[], bool]
+
+
+class PlanBudgetExceeded(Exception):
+    """Raised when the routing phase runs past its wall-clock budget.
+
+    A single airport leg can cost a slow provider-failover round trip (Google
+    ZERO_RESULTS on an airport → TomTom geocode+geocode+route, seconds each), so
+    a many-leg itinerary can route for minutes. The caller injects `has_budget`
+    and, on exhaustion, this aborts the plan build BEFORE any partial `desired`
+    set reaches the reconcile — a partial set would look like orphaned blocks and
+    get deleted, so the sweep must skip the whole cycle cleanly instead (#171)."""
 
 
 @dataclass(frozen=True)
@@ -254,6 +266,7 @@ def build_reconcile_plan(
     overrides: BufferOverrides | None = None,
     extra_desired: list[DesiredBlock] | None = None,
     managed_legacy: frozenset[str] | None = None,
+    has_budget: HasBudgetFn | None = None,
 ) -> EngineResult:
     """Run the full engine pipeline and return the reconcile plan + diagnostics.
 
@@ -265,6 +278,10 @@ def build_reconcile_plan(
     meeting-leg source) so both are diffed against the calendar in one reconcile.
     `managed_legacy`, when given, is passed through to `plan_reconcile` to scope
     which legacy generations the engine may converge / orphan-delete.
+
+    `has_budget`, when given, is polled once per leg before that leg is routed; the
+    first time it returns False the whole build aborts with `PlanBudgetExceeded`
+    (never a partial plan — see that class). Default None routes every leg.
     """
     boarding_present = boarding_present or (lambda _flight: True)
     if overrides is None:
@@ -278,6 +295,14 @@ def build_reconcile_plan(
     for chain in chains:
         contexts = build_pair_contexts(chain, schedule=schedule, left_terminal=left_terminal)
         for planned in plan_chain_legs(chain, contexts):
+            # Poll the routing budget before this leg. A leg costs one or more
+            # provider round trips; on exhaustion abort the whole build rather
+            # than route on and hang, or emit a partial plan the reconcile would
+            # read as orphaned blocks to delete (#171).
+            if has_budget is not None and not has_budget():
+                raise PlanBudgetExceeded(
+                    f"routing budget exhausted after {len(desired)} built, {len(skipped)} skipped"
+                )
             # plan_chain_legs guarantees the right endpoint per kind, but narrow it
             # explicitly here so _facts_for receives a non-None flight (no ignore).
             if planned.kind is LegKind.AIRPORT_TRANSFER:

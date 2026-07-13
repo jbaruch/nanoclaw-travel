@@ -16,12 +16,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
+sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
 from block_codec import GEN_LEGACY_DP, ParsedBlock  # noqa: E402
 from flight_identity import TRIPIT, Flight  # noqa: E402
+from maps_client import MapsError, TravelTime  # noqa: E402
 from reconcile import DesiredBlock  # noqa: E402
-from reconcile_sweep import ResolvedAirport, build_plan  # noqa: E402
+from reconcile_sweep import ResolvedAirport, build_plan, make_route  # noqa: E402
 
 UTC = timezone.utc
 HOME = "12 Example St, TN"
@@ -247,3 +249,58 @@ def test_unresolved_airport_skipped():
     )
     assert result.plan.is_noop
     assert any("unresolved airport" in s for s in result.skipped)
+
+
+# --- make_route memoization (#171) ------------------------------------------
+
+
+class _FakeMaps:
+    """Counts travel_time calls and can be told to fail, to pin memoization."""
+
+    def __init__(self, *, fail: bool = False):
+        self.calls: list[tuple[str, str]] = []
+        self._fail = fail
+
+    def travel_time(self, origin: str, destination: str) -> TravelTime:
+        self.calls.append((origin, destination))
+        if self._fail:
+            raise MapsError("ALL_PROVIDERS_FAILED", "boom")
+        return TravelTime(
+            duration_seconds=1800,
+            in_traffic_seconds=1800,
+            traffic_factor=1.0,
+            distance_meters=1000,
+            origin_resolved=origin,
+            destination_resolved=destination,
+            source="google",
+        )
+
+
+def test_make_route_memoizes_repeated_pair():
+    """A repeated (origin, destination) pair — an airport that is both a departure
+    destination and a transfer origin — routes ONCE, not per leg (#171)."""
+    maps = _FakeMaps()
+    route = make_route(maps)
+    first = route("home", "STN airport")
+    second = route("home", "STN airport")
+    assert first == second == timedelta(seconds=1800)
+    assert maps.calls == [("home", "STN airport")]  # one round trip, not two
+
+
+def test_make_route_distinct_pairs_each_route_once():
+    maps = _FakeMaps()
+    route = make_route(maps)
+    route("home", "STN airport")
+    route("STN airport", "CPH airport")
+    route("home", "STN airport")  # repeat of the first
+    assert maps.calls == [("home", "STN airport"), ("STN airport", "CPH airport")]
+
+
+def test_make_route_caches_failure_as_none():
+    """A dead endpoint caches None so it isn't re-attempted every leg (each retry
+    is the same slow provider-failover that caused the storm) (#171)."""
+    maps = _FakeMaps(fail=True)
+    route = make_route(maps)
+    assert route("home", "STN airport") is None
+    assert route("home", "STN airport") is None
+    assert maps.calls == [("home", "STN airport")]  # failure not re-attempted

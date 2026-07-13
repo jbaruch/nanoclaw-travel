@@ -40,7 +40,7 @@ if str(_BUNDLE_DIR) not in sys.path:
 
 from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
-from engine import AirportInfo, build_reconcile_plan  # noqa: E402
+from engine import AirportInfo, PlanBudgetExceeded, build_reconcile_plan  # noqa: E402
 from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
 from meeting_source import exclude_drive_block_events, meeting_desired_blocks  # noqa: E402
 from normalize import flight_from_byair  # noqa: E402
@@ -63,6 +63,50 @@ SWEEP_WINDOW = timedelta(days=14)
 # `deferred` and drained on the next sweep (the reconcile is idempotent, so
 # resuming never duplicates).
 _SWEEP_WALL_CLOCK_BUDGET_SECONDS = 27.0
+
+# Wall-clock budget for the plan (routing) phase, carved out of the sweep budget
+# so the write phase still has room after it. Each airport leg can cost a slow
+# provider failover (Google ZERO_RESULTS on an airport → three sequential TomTom
+# calls at up to 10s each), so an unbounded plan phase could route for minutes and
+# blow past any container timeout (#171). On exhaustion the whole cycle skips
+# cleanly (no partial plan — a partial `desired` set reads as orphaned blocks to
+# delete). With `make_route` memoization a normal itinerary never reaches this.
+_PLAN_PHASE_BUDGET_SECONDS = 20.0
+
+
+def make_route(maps, *, cache: dict | None = None) -> RouteFn:
+    """A memoizing `route(origin, destination) -> timedelta | None` over `maps`.
+
+    Per `MapsClient`'s own contract ("cache aggressively at the caller level"),
+    dedupes identical (origin, destination) pairs within one sweep — an airport
+    that is both a departure destination and a transfer origin is routed once, not
+    per leg. Traffic is stable across a single ~20s sweep, so a cached duration is
+    the same answer the provider would return again (#171). A failed route caches
+    None too, so a dead endpoint isn't re-attempted every leg.
+    """
+    import urllib.error
+
+    from maps_client import MapsError
+
+    memo: dict[tuple[str, str], timedelta | None] = {} if cache is None else cache
+
+    def route(origin: str, destination: str) -> timedelta | None:
+        key = (origin, destination)
+        if key in memo:
+            return memo[key]
+        try:
+            tt = maps.travel_time(origin, destination)
+        except (MapsError, urllib.error.URLError, TimeoutError):
+            memo[key] = None
+            return None
+        seconds = (
+            tt.in_traffic_seconds if tt.in_traffic_seconds is not None else tt.duration_seconds
+        )
+        result = timedelta(seconds=seconds)
+        memo[key] = result
+        return result
+
+    return route
 
 
 @dataclass(frozen=True)
@@ -92,6 +136,7 @@ def build_plan(
     live_origin: str | None = None,
     tripit_flights: list | None = None,
     boarding_present: Callable | None = None,
+    has_budget: Callable[[], bool] | None = None,
 ) -> PlanResult:
     """Assemble the combined (airport + meeting) reconcile plan. Pure over inputs.
 
@@ -138,6 +183,7 @@ def build_plan(
         boarding_present=boarding_present,
         extra_desired=meeting_blocks,
         managed_legacy=_MANAGED_LEGACY,
+        has_budget=has_budget,
     )
     return PlanResult(plan=result.plan, skipped=tuple(skipped) + result.skipped)
 
@@ -236,7 +282,6 @@ def main() -> int:
         _on_path("flight-assist")
         _on_path("travel-core")
         _on_path("drive-planner")
-        import urllib.error
 
         from airport_drive_inputs import airport_context
         from byair_client import ByAirClient
@@ -244,7 +289,7 @@ def main() -> int:
         from composio_client import ComposioClient
         from fetch_events import CalendarFetcher
         from home_address import HomeAddressError, read_current_home
-        from maps_client import MapsClient, MapsError
+        from maps_client import MapsClient
         from scan import scan
         from skip_state import load_active_skips
         from state import (
@@ -276,16 +321,17 @@ def main() -> int:
         schedule = load_travel_schedule()
 
         maps = MapsClient.from_env()
+        # One memoizing route closure for the whole sweep — meeting legs and
+        # airport legs share it, so a repeated (origin, destination) pair costs one
+        # provider round trip, not one per leg (#171).
+        route = make_route(maps)
 
-        def route(origin: str, destination: str) -> timedelta | None:
-            try:
-                tt = maps.travel_time(origin, destination)
-            except (MapsError, urllib.error.URLError, TimeoutError):
-                return None
-            seconds = (
-                tt.in_traffic_seconds if tt.in_traffic_seconds is not None else tt.duration_seconds
-            )
-            return timedelta(seconds=seconds)
+        # Deadline for the routing phase, so a slow provider-failover storm can't
+        # run the plan phase for minutes (#171). Polled once per airport leg.
+        plan_deadline = sweep_start + _PLAN_PHASE_BUDGET_SECONDS
+
+        def has_plan_budget() -> bool:
+            return time.monotonic() < plan_deadline
 
         # --- flight sources: byAir records + TripIt segments (R2 union) ---
         records = [
@@ -384,19 +430,28 @@ def main() -> int:
 
         live_origin = _fresh_live_origin(now, MAX_LIVE_ORIGIN_AGE_MINUTES)
 
-        result = build_plan(
-            flight_records=records,
-            resolve_airport=resolve_airport,
-            meeting_blocks=meeting_blocks,
-            current_blocks=current_blocks,
-            route=route,
-            tripit_flights=tripit_flights,
-            boarding_present=boarding_present,
-            now=now,
-            schedule=schedule,
-            home_address=home,
-            live_origin=live_origin,
-        )
+        try:
+            result = build_plan(
+                flight_records=records,
+                resolve_airport=resolve_airport,
+                meeting_blocks=meeting_blocks,
+                current_blocks=current_blocks,
+                route=route,
+                tripit_flights=tripit_flights,
+                boarding_present=boarding_present,
+                now=now,
+                schedule=schedule,
+                home_address=home,
+                live_origin=live_origin,
+                has_budget=has_plan_budget,
+            )
+        except PlanBudgetExceeded as exc:
+            # Routing ran past its budget — skip this whole cycle cleanly rather
+            # than apply a partial plan (a partial `desired` set reads as orphaned
+            # blocks to delete). Next sweep resumes; the reconcile is idempotent.
+            print(f"[drive-engine] {exc}; skipping cycle", file=sys.stderr)
+            print(json.dumps({"wake_agent": False, "data": {"reason": "plan_budget_exceeded"}}))
+            return 0
 
         # --- APPLY (write) ---
         # Give apply whatever of the sweep budget the fetch/plan phase left, so

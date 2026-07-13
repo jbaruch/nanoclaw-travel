@@ -1,5 +1,28 @@
 # Changelog
 
+### Fixed — drive-engine routing storm hung the sweep (#171)
+
+The airport-endpoint fix in #165 (`"STN airport"` instead of a bare `"STN"`) made
+airport legs geocode *successfully* — but many airports return Google Distance
+Matrix `ZERO_RESULTS` and fall back to TomTom's three-call geocode+geocode+route
+chain at up to 10s each. Uncached and unbounded, a multi-leg itinerary routed for
+minutes on every sweep (observed live: 80+ `maps.googleapis.com` + 30+ TomTom calls
+in 15 minutes), and the agent container that ran it was SIGKILLed at its timeout
+with no output. Two fixes:
+
+- **Per-sweep route memoization.** `reconcile_sweep.make_route` wraps the maps
+  client in a `(origin, destination)` cache shared by every airport and meeting
+  leg, so an endpoint that appears in several legs (a departure destination that is
+  also a transfer origin) is routed once per sweep, not per leg — the caller-level
+  caching `MapsClient`'s own docstring prescribes. A failed route caches `None` so a
+  dead endpoint isn't re-attempted (and re-failed-over) every leg.
+- **Plan-phase wall-clock budget.** `build_reconcile_plan` now polls an injected
+  `has_budget` once per leg and, on exhaustion, raises `PlanBudgetExceeded` so the
+  sweep skips the whole cycle cleanly (`wake_agent: false`) rather than routing on
+  and hanging. The abort is deliberately all-or-nothing: a partial `desired` set
+  would read as orphaned blocks and get deleted, then recreated next sweep — the
+  exact churn #164 fixed. The next sweep resumes; the reconcile is idempotent.
+
 ## 0.2.43 — 2026-07-13
 
 ### Fixed — drive-engine airport legs never produced ('origin route failed') (#165)
