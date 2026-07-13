@@ -78,6 +78,20 @@ class TripWindow:
     reason: str
 
 
+def _is_accepted_version(version: object) -> bool:
+    """True only for a real int equal to the accepted schema version.
+
+    Type-strict on purpose: `bool` is an int subclass and `1.0 == 1`, so a
+    malformed stamp (`true`, `1.0`, `"1"`) must be rejected rather than coerced
+    into "accepted state" — mirrors `state.py`'s bool-as-int rejection.
+    """
+    return (
+        isinstance(version, int)
+        and not isinstance(version, bool)
+        and version == _ACCEPTED_TRAVEL_DB_SCHEMA_VERSION
+    )
+
+
 def _parse_db_date(value: object) -> datetime | None:
     """Parse a `travel-db.json` `start`/`end` value to a UTC instant, or None.
 
@@ -126,14 +140,17 @@ def evaluate_trip_window(*, now_utc: datetime, path: str | None = None) -> TripW
         return TripWindow(True, f"travel-db not valid JSON ({parse_err}) — failing open")
 
     # Non-owner reader schema gate (stateful-artifacts). A stamped version other
-    # than the one accepted → no usable prior state → fail OPEN. Absent version
-    # is legacy-implicit v1 and read normally.
+    # than the one accepted → no usable prior state → fail OPEN. The check is
+    # type-strict: a malformed stamp (bool, float, string, wrong int) must NOT be
+    # coerced into "accepted" — `True == 1` and `1.0 == 1` in Python, so only a
+    # real int equal to the accepted version passes. Absent version is
+    # legacy-implicit v1 and read normally.
     version = parsed.get("schema_version") if isinstance(parsed, dict) else None
-    if version is not None and version != _ACCEPTED_TRAVEL_DB_SCHEMA_VERSION:
+    if version is not None and not _is_accepted_version(version):
         return TripWindow(
             True,
-            f"travel-db schema_version {version!r} != accepted "
-            f"{_ACCEPTED_TRAVEL_DB_SCHEMA_VERSION} — failing open",
+            f"travel-db schema_version {version!r} not accepted "
+            f"(reader at {_ACCEPTED_TRAVEL_DB_SCHEMA_VERSION}) — failing open",
         )
 
     trips = parsed.get("trips") if isinstance(parsed, dict) else None

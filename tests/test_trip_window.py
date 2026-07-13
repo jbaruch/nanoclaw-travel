@@ -12,6 +12,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
@@ -147,14 +149,20 @@ def test_unreadable_path_fails_open(tmp_path: Path):
 # --- non-owner reader schema_version gate (stateful-artifacts) --------------
 
 
-def test_unaccepted_schema_version_fails_open(tmp_path: Path):
-    """A travel-db stamped with a version this reader doesn't accept is treated
-    as no-usable-state → fail OPEN, overriding an otherwise out-of-window trip,
-    so a cross-pipeline schema bump never blinds an active trip."""
+@pytest.mark.parametrize(
+    "bad_version",
+    [2, True, 1.0, "1"],
+    ids=["wrong-int", "bool-true", "float", "string"],
+)
+def test_unaccepted_or_malformed_schema_version_fails_open(tmp_path: Path, bad_version):
+    """A version this reader doesn't accept — including a MALFORMED stamp
+    (bool/float/string, which `== 1` would coerce to "accepted") — is treated as
+    no-usable-state → fail OPEN, overriding an otherwise out-of-window trip so a
+    cross-pipeline schema bump never blinds an active trip."""
     path = _write_db(
         tmp_path,
         {
-            "schema_version": 2,  # ahead of the accepted 1
+            "schema_version": bad_version,
             "trips": {"past": {"start": "2020-01-01", "end": "2020-01-05"}},
         },
     )
