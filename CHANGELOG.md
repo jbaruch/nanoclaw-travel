@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.38 — 2026-07-13
+
 ### Changed — wire the drive-engine's remaining designed features live (#156)
 
 Three refinements the earlier live cutover built but left unwired are now active in
