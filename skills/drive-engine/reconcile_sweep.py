@@ -233,6 +233,7 @@ def main() -> int:
         from calendar_reconcile import _find_events_args, _items
         from composio_client import ComposioClient
         from fetch_events import CalendarFetcher
+        from home_address import HomeAddressError, read_current_home
         from maps_client import MapsClient, MapsError
         from scan import scan
         from skip_state import load_active_skips
@@ -250,8 +251,18 @@ def main() -> int:
 
         now = datetime.now(timezone.utc)
         config = read_config() or {}
+        # Home resolution (#162): the flight-assist config may have no
+        # home_address key (a fresh cutover never provisioned it), so fall back to
+        # the canonical user_profile current_home — the same source the retired
+        # drive-planner read. Without this the sweep is DOA: the meeting scan
+        # raises on an empty home and takes the whole cycle down.
         home_config = config.get("home_address")
-        home = home_config if isinstance(home_config, str) else None
+        home = home_config if isinstance(home_config, str) and home_config.strip() else None
+        if home is None:
+            try:
+                home = read_current_home()
+            except HomeAddressError:
+                home = None  # neither source configured — degrade, see below
         schedule = load_travel_schedule()
 
         maps = MapsClient.from_env()
@@ -295,34 +306,46 @@ def main() -> int:
             return any(abs((be - dep).total_seconds()) < 1800 for be in boarding_ends)
 
         # --- meeting side: fetch calendar, mask flights by IDENTITY (R5), scan ---
-        fetcher = CalendarFetcher.from_env()
-        events = exclude_drive_block_events(
-            fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
-        )
-        # Drop flight events by identity only (R5 — never by time overlap, so a
-        # ground meeting overlapping a redeye window survives). scan then runs with
-        # an EMPTY flight context, since masking already happened here.
-        events = [
-            e
-            for e in events
-            if not (isinstance(e, dict) and is_flight_event(e.get("summary"), known_codes))
-        ]
-        skips = load_active_skips(now)
+        # scan() requires a non-empty home_address. If neither the config nor the
+        # user_profile provided one (#162), SKIP the meeting side with a
+        # diagnostic rather than letting scan raise and take the airport side down
+        # with it — the whole cycle must not be DOA over a missing home.
+        meeting_blocks: list[DesiredBlock] = []
+        meeting_skipped: list[str] = []
+        if home:
+            fetcher = CalendarFetcher.from_env()
+            events = exclude_drive_block_events(
+                fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
+            )
+            # Drop flight events by identity only (R5 — never by time overlap, so a
+            # ground meeting overlapping a redeye window survives). scan then runs
+            # with an EMPTY flight context, since masking already happened here.
+            events = [
+                e
+                for e in events
+                if not (isinstance(e, dict) and is_flight_event(e.get("summary"), known_codes))
+            ]
+            skips = load_active_skips(now)
 
-        def anchor_for(at: datetime) -> tuple[str | None, str | None]:
-            anchor = resolve_anchor(schedule, at=at, home_address=home)
-            return anchor.address, anchor.detail
+            def anchor_for(at: datetime) -> tuple[str | None, str | None]:
+                anchor = resolve_anchor(schedule, at=at, home_address=home)
+                return anchor.address, anchor.detail
 
-        meetings = scan(
-            events,
-            now=now,
-            home_address=home or "",
-            skip_state=skips,
-            anchor_for=anchor_for,
-            flight_windows=[],
-            flight_summaries=[],
-        )
-        meeting_blocks, meeting_skipped = meeting_desired_blocks(meetings, route=route)
+            meetings = scan(
+                events,
+                now=now,
+                home_address=home,
+                skip_state=skips,
+                anchor_for=anchor_for,
+                flight_windows=[],
+                flight_summaries=[],
+            )
+            meeting_blocks, meeting_skipped = meeting_desired_blocks(meetings, route=route)
+        else:
+            meeting_skipped = [
+                "meeting side skipped: no home_address (flight-assist config and "
+                "user_profile current_home both empty) — see #162"
+            ]
 
         # --- airport facts ---
         byair = ByAirClient.from_env()

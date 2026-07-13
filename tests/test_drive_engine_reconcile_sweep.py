@@ -216,6 +216,24 @@ def test_legacy_dp_blocks_left_untouched():
     assert any(c.desired.kind == "meeting_outbound" for c in result.plan.creates)
 
 
+def test_no_home_off_trip_degrades_not_crashes():
+    # With no home_address and no active trip, the airport side must degrade (legs
+    # skipped with a diagnostic) rather than raise — a missing home never takes the
+    # sweep down (#162). The meeting side is guarded separately in main().
+    records = [_record(1, 4, 3, "2020-07-12T09:00:00Z", "2020-07-12T11:00:00Z")]
+    result = build_plan(
+        flight_records=records,
+        resolve_airport=_resolve_airport,
+        meeting_blocks=[],
+        current_blocks=[],
+        route=_route,
+        now=NOW,
+        home_address=None,  # neither config nor user_profile provided one
+    )
+    assert result.plan.creates == ()  # no origin → no blind block
+    assert any("unresolved" in s for s in result.skipped)
+
+
 def test_unresolved_airport_skipped():
     records = [_record(1, 9, 3, "2020-07-12T09:00:00Z", "2020-07-12T11:00:00Z")]
     result = build_plan(
