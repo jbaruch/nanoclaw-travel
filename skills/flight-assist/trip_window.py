@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Trip-window evaluation — the flight-assist precheck's defense-in-depth (#147).
 
 The host owns the primary control: a pre-spawn gate (`src/spawn-gates.ts`,
