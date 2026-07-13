@@ -85,6 +85,14 @@ def test_create_args_unknown_tz_falls_back_to_utc():
     assert args["start_datetime"].startswith("2020-07-13T08:18")
 
 
+def test_create_args_exclude_organizer_so_block_shows_accepted():
+    """#158: a drive block is a personal event, not an invite. exclude_organizer
+    keeps Composio from injecting a needsAction self-attendee, so the block shows
+    as accepted instead of prompting an RSVP. Verified against the live toolkit."""
+    args = build_create_args(_desired(), calendar_id="primary")
+    assert args["exclude_organizer"] is True
+
+
 # --- delete-only cleanup path ----------------------------------------------
 
 
