@@ -68,6 +68,14 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
+# trip_origin ships in the co-located travel-core bundle (same plugin); resolve
+# it at the runtime mount, dev-clone sibling fallback for CI.
+_TRAVEL_CORE = Path("/home/node/.claude/skills/tessl__travel-core")
+if not _TRAVEL_CORE.is_dir():
+    _TRAVEL_CORE = _BUNDLE_DIR.parent / "travel-core"
+if str(_TRAVEL_CORE) not in sys.path:
+    sys.path.insert(0, str(_TRAVEL_CORE))
+
 from airport_block import parse_block  # noqa: E402
 from airport_drive import DesiredDriveBlock, plan_drive_block  # noqa: E402
 from airport_drive_inputs import (  # noqa: E402

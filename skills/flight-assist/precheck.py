@@ -47,6 +47,14 @@ from pathlib import Path
 _BUNDLE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_BUNDLE_DIR))
 
+# trip_origin ships in the co-located travel-core bundle (same plugin). Resolve
+# it at the runtime mount, falling back to the dev-clone sibling so the import
+# works both on the NAS and in CI — same cross-bundle pattern as drive-planner.
+_TRAVEL_CORE = Path("/home/node/.claude/skills/tessl__travel-core")
+if not _TRAVEL_CORE.is_dir():
+    _TRAVEL_CORE = _BUNDLE_DIR.parent / "travel-core"
+sys.path.insert(0, str(_TRAVEL_CORE))
+
 from boarding_lead import resolve_boarding_lead_minutes  # noqa: E402
 from byair_client import ByAirClient, ByAirError  # noqa: E402
 from connection_risk import (  # noqa: E402

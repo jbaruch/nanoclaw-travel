@@ -58,6 +58,11 @@ sys.path.insert(0, str(_BUNDLE_DIR))
 _FLIGHT_ASSIST_RUNTIME = Path("/home/node/.claude/skills/tessl__flight-assist")
 _FLIGHT_ASSIST_DEV = _BUNDLE_DIR.parent / "flight-assist"
 
+# trip_origin ships in the co-located travel-core bundle (same plugin), resolved
+# the same cross-bundle way as flight-assist's maps_client below.
+_TRAVEL_CORE_RUNTIME = Path("/home/node/.claude/skills/tessl__travel-core")
+_TRAVEL_CORE_DEV = _BUNDLE_DIR.parent / "travel-core"
+
 from block_props import DEFAULT_ARRIVAL_BUFFER_SECONDS, build_block_args  # noqa: E402
 from fetch_events import CalendarFetcher  # noqa: E402
 from home_address import read_current_home  # noqa: E402
@@ -102,10 +107,32 @@ def _flight_assist_on_path() -> None:
         raise FileNotFoundError(
             "drive-planner sweep: cannot locate the co-shipped flight-assist skill at "
             f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev) — maps_client "
-            "and trip_origin ship there; both skills are part of jbaruch/nanoclaw-travel"
+            "ships there; both skills are part of jbaruch/nanoclaw-travel"
         )
     if str(flight_assist_dir) not in sys.path:
         sys.path.insert(0, str(flight_assist_dir))
+
+
+def _travel_core_on_path() -> None:
+    """Put the co-shipped travel-core bundle on sys.path, cross-bundle.
+
+    Raises FileNotFoundError when neither the runtime mount nor the dev sibling
+    holds travel-core (trip_origin ships there; all skills are part of the same
+    plugin) — main()'s outer-boundary handler converts that into the safe
+    no-wake payload. Idempotent: an already-present entry is not re-inserted.
+    """
+    if _TRAVEL_CORE_RUNTIME.is_dir():
+        travel_core_dir = _TRAVEL_CORE_RUNTIME
+    elif _TRAVEL_CORE_DEV.is_dir():
+        travel_core_dir = _TRAVEL_CORE_DEV
+    else:
+        raise FileNotFoundError(
+            "drive-planner sweep: cannot locate the co-shipped travel-core skill at "
+            f"{_TRAVEL_CORE_RUNTIME} (runtime) or {_TRAVEL_CORE_DEV} (dev) — trip_origin "
+            "ships there; all skills are part of jbaruch/nanoclaw-travel"
+        )
+    if str(travel_core_dir) not in sys.path:
+        sys.path.insert(0, str(travel_core_dir))
 
 
 def _load_maps_client():
@@ -125,7 +152,7 @@ def _build_anchor_resolver(home_address: str):
     resolves every anchor to home (trip_origin's degraded mode — the
     pre-#122 behavior, with the cause on stderr).
     """
-    _flight_assist_on_path()
+    _travel_core_on_path()
     from trip_origin import load_travel_schedule, resolve_anchor
 
     schedule = load_travel_schedule()
@@ -149,7 +176,7 @@ def _build_flight_context():
     time/identity signals go quiet and only the intrinsic summary signal
     remains, so a real meeting is never suppressed.
     """
-    _flight_assist_on_path()
+    _travel_core_on_path()
     from trip_origin import flight_summaries, flight_windows, load_travel_schedule
 
     schedule = load_travel_schedule()
