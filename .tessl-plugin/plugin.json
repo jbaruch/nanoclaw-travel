@@ -5,6 +5,7 @@
   "private": false,
   "skills": [
     "skills/travel-core",
+    "skills/drive-engine",
     "skills/flight-assist",
     "skills/sync-tripit",
     "skills/check-travel-bookings",
