@@ -7,7 +7,9 @@ disable-model-invocation: true
 
 # Travel Core
 
-This skill is a shared library bundle, not an executable workflow. It ships the travel-domain Python modules that more than one skill depends on, so there is one source of truth rather than a copy per skill. There are no steps to run and nothing to invoke — the consuming skills put this bundle on `sys.path` (runtime mount `tessl__travel-core`, dev-clone sibling fallback) and import from it.
+Background library bundle — not a workflow and not an action router. It has no steps and must never be executed or invoked; do not parallelize or freelance over it. Its only role is to host shared code that other skills import.
+
+It ships the travel-domain Python modules that more than one skill depends on, so there is one source of truth rather than a copy per skill. The consuming skills put this bundle on `sys.path` (runtime mount `tessl__travel-core`, dev-clone sibling fallback) and import from it.
 
 ## Hosted modules
 

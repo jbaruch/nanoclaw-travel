@@ -265,7 +265,14 @@ def main() -> int:
                 print(f"  - {line}", file=sys.stderr)
         print(json.dumps(result.payload))
         return 0
-    except Exception as exc:  # noqa: BLE001 - outer-boundary-process-contract: fail closed
+    # outer-boundary-process-contract:
+    #   caller's silent-failure shape — the scheduler reads a non-zero exit OR
+    #     malformed stdout as "don't wake this cycle";
+    #   what this catch emits — a valid {"wake_agent": false, ...} payload on
+    #     stdout (traceback to stderr) and exit 0, so the run is skipped cleanly;
+    #   why propagation breaks the contract — an uncaught exception would exit
+    #     non-zero and print no payload, silently disabling the shadow run.
+    except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
         print(f"drive-engine shadow precheck failed, no wake: {exc}", file=sys.stderr)
         print(json.dumps({"wake_agent": False, "data": {"error": str(exc)}}))

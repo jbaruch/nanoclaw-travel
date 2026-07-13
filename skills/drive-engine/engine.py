@@ -70,11 +70,21 @@ def _facts_for(flight: MergedFlight, airport_info: dict[str, AirportInfo]) -> Ai
     return AirportFacts(dep_flag=dep.flag, arr_flag=arr.flag, delay_index=dep.delay_index)
 
 
+def _dest_label(planned) -> str:
+    """A human label for a resolved drive-home destination: 'home' only when it
+    really is the static home, else the lodging/anchor address (never a lie)."""
+    if planned.source == "home":
+        return "home"
+    return planned.address or "destination"
+
+
 def _summary(leg: ConcreteLeg) -> str:
     if leg.kind is LegKind.AIRPORT_DEPARTURE:
         return f"Drive: → {leg.dest_airport}"
     if leg.kind is LegKind.AIRPORT_ARRIVAL:
-        return f"Drive: {leg.origin_airport} → home"
+        # Arrival's real destination is resolved later; _build_arrival overrides
+        # this with the actual place. Fallback label only.
+        return f"Drive: {leg.origin_airport} → destination"
     return f"Drive: {leg.origin_airport} → {leg.dest_airport}"
 
 
@@ -160,7 +170,7 @@ def _build_arrival(
         DesiredBlock(
             identity=leg_identity(leg),
             kind="airport_arrival",
-            summary=_summary(leg),
+            summary=f"Drive: {leg.origin_airport} → {_dest_label(planned)}",
             start=anchor,
             end=anchor + drive,
             origin=leg.origin_airport,

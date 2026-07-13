@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
-from block_codec import GEN_LEGACY_FADRIVE, GEN_UNIFIED, ParsedBlock  # noqa: E402
+from block_codec import GEN_LEGACY_DP, GEN_LEGACY_FADRIVE, GEN_UNIFIED, ParsedBlock  # noqa: E402
 from reconcile import (  # noqa: E402
     DesiredBlock,
     legacy_keys_for_airport_leg,
@@ -127,6 +127,26 @@ def test_legacy_orphan_is_deleted():
     assert len(plan.deletes) == 1
     assert plan.deletes[0].event_id == "cph1"
     assert "legacy orphan" in plan.deletes[0].reason
+
+
+def test_drive_planner_meeting_blocks_are_left_untouched():
+    # The engine has no meeting-leg source yet, so it does NOT own dp (meeting)
+    # blocks: an unmatched drive-planner meeting block must never be orphaned —
+    # deleting real meeting drives would be catastrophic for the apply path.
+    dp_block = ParsedBlock(
+        generation=GEN_LEGACY_DP,
+        event_id="meeting1",
+        legacy_id="mtg-abc",
+        legacy_direction="outbound",
+    )
+    plan = plan_reconcile(
+        [desired("STN-CPH-20200712T0900Z", byair_ids=frozenset({6277117}))],
+        [dp_block, legacy_fadrive("6277117", "to_airport", event_id="stn1")],
+    )
+    # the fadrive block converges onto the desired leg; the dp block is untouched
+    assert len(plan.converts) == 1
+    assert all(d.event_id != "meeting1" for d in plan.deletes)
+    assert plan.deletes == ()
 
 
 # --- R4: legacy convergence -------------------------------------------------

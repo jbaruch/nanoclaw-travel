@@ -26,13 +26,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from block_codec import GEN_LEGACY_DP, GEN_LEGACY_FADRIVE, GEN_UNIFIED, ParsedBlock
+from block_codec import GEN_LEGACY_FADRIVE, GEN_UNIFIED, ParsedBlock
 
 # Legacy directions ↔ unified leg kinds, for building a desired leg's legacy keys.
 _KIND_TO_LEGACY_DIRECTION = {
     "airport_departure": "to_airport",
     "airport_arrival": "from_airport",
 }
+
+# The legacy block generations the engine currently OWNS and may converge or
+# orphan-delete. Today the engine produces only airport legs, so it owns just the
+# flight-assist airport blocks (fadrive). Drive-planner MEETING blocks (dp) are NOT
+# owned yet — the engine has no meeting-leg source — so they are left completely
+# untouched (never orphaned), never mistaken for airport-leg garbage. When the
+# meeting source lands, add GEN_LEGACY_DP to the managed set.
+_DEFAULT_MANAGED_LEGACY = frozenset({GEN_LEGACY_FADRIVE})
 
 
 @dataclass(frozen=True)
@@ -125,11 +133,20 @@ def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:
     )
 
 
-def plan_reconcile(desired: list[DesiredBlock], current: list[ParsedBlock]) -> ReconcilePlan:
+def plan_reconcile(
+    desired: list[DesiredBlock],
+    current: list[ParsedBlock],
+    *,
+    managed_legacy: frozenset[str] = _DEFAULT_MANAGED_LEGACY,
+) -> ReconcilePlan:
     """Diff desired legs against current calendar blocks (#156 G1 / G7 / R4).
 
-    Pure and deterministic: output action lists are ordered by the desired-leg
-    order and then the current-block order, with no clock or ambient state.
+    `managed_legacy` is the set of legacy generations the engine owns and may
+    converge or orphan-delete; blocks of any other legacy generation (e.g.
+    drive-planner meeting blocks while the engine has no meeting-leg source) are
+    left entirely untouched — never orphaned. Pure and deterministic: output
+    action lists are ordered by the desired-leg order then the current-block
+    order, with no clock or ambient state.
     """
     creates: list[Create] = []
     updates: list[Update] = []
@@ -142,7 +159,7 @@ def plan_reconcile(desired: list[DesiredBlock], current: list[ParsedBlock]) -> R
     for block in current:
         if block.generation == GEN_UNIFIED and block.identity is not None:
             unified_by_key.setdefault((block.identity, block.kind), []).append(block)
-        elif block.generation in (GEN_LEGACY_FADRIVE, GEN_LEGACY_DP):
+        elif block.generation in managed_legacy:
             key = _legacy_key(block)
             if key is not None:
                 legacy_by_key.setdefault(key, []).append(block)
