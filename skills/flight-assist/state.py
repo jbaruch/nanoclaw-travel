@@ -5,7 +5,7 @@ deltas between byAir snapshots. State lives under
 `/workspace/state/flight-assist/` in production; tests override the
 directory via the `FLIGHT_ASSIST_STATE_DIR` environment variable.
 
-Files written (all JSON, all carry `schema_version: 6` at the top level):
+Files written (all JSON, all carry `schema_version: 7` at the top level):
 
     config.json                       — home_address, etc. (set via /setup)
     active-flights.json               — list of currently-tracked flight_ids
@@ -60,7 +60,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-STATE_SCHEMA_VERSION = 6
+STATE_SCHEMA_VERSION = 7
 
 _DEFAULT_STATE_DIR = "/workspace/state/flight-assist"
 _STATE_DIR_ENV = "FLIGHT_ASSIST_STATE_DIR"
@@ -264,6 +264,15 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
         ):
             phase_markers["gate_assignment_fired"] = False
         version = 6
+    if version == 6:
+        # v6 → v7: per-flight `last_snapshot` gains the resolved airport slice
+        # (`dep_airport_code`/`dep_airport_name`/`arr_airport_code`/
+        # `arr_airport_name`) and its `code` is realigned to the marketing
+        # designator (#159). last_snapshot is a byair-owned, rebuilt-each-poll
+        # slice whose fields are all optional and absent-tolerant, so there is
+        # no shape to backfill on migration — the next precheck poll repopulates
+        # it. Config and active-flights files only get a schema_version bump.
+        version = 7
     if version != STATE_SCHEMA_VERSION:
         # Unknown older version: refuse to silently pass through. The
         # branches above are the authoritative list of known upgrade
