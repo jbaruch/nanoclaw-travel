@@ -80,6 +80,14 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
     The block is created in its local timezone (`desired.timezone`) so it shows
     the correct local time; the unified codec description carries the leg identity
     + machine state for round-trip.
+
+    `exclude_organizer: true` keeps Composio from injecting the connected user as
+    a `needsAction` self-attendee — otherwise a personal drive block renders as an
+    unconfirmed invite the operator must RSVP to. With it, the block has no
+    attendees and shows as a plain accepted event (#158, verified against the live
+    Composio toolkit). A distinct `colorId` is NOT set here: no Composio Google
+    Calendar action (create/update/patch) exposes an event color field, so the
+    colour half of #158 is deferred to the post-Composio calendar backend.
     """
     total_minutes = max(round((desired.end - desired.start).total_seconds() / 60), 1)
     description = build_description(
@@ -103,6 +111,7 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
         "description": description,
         "timezone": tz_name,
         "transparency": "transparent",
+        "exclude_organizer": True,
     }
 
 

@@ -1,5 +1,18 @@
 # Changelog
 
+### Fixed — drive blocks show as accepted, not an unconfirmed invite (#158)
+
+Drive blocks were created with a `needsAction` self-attendee, so they rendered as
+pending invites the operator had to RSVP to. The unified engine's create args now pass
+`exclude_organizer: true`, which stops Composio from injecting the connected user as an
+attendee — the block has no attendees and shows as a plain accepted event. Verified
+against the live Composio toolkit (create with `exclude_organizer` → zero attendees).
+
+The companion ask — a distinct calendar colour (Tangerine / `colorId: "6"`) — is deferred:
+no Composio Google Calendar action (create / update / patch / quick-add) exposes an event
+colour field in the deployed toolkit, so it cannot be set through the current write path.
+Tracked separately, blocked on the Composio retirement / workspace-MCP migration.
+
 ## 0.2.39 — 2026-07-13
 
 ### Fixed — flight-assist day-before notification: wrong flight code + hallucinated airport (#159)
