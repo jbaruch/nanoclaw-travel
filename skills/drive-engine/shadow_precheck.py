@@ -188,11 +188,13 @@ def main() -> int:
     try:
         _flight_assist_on_path()
         _travel_core_on_path()
+        import urllib.error
+
         from airport_drive_inputs import airport_context
         from byair_client import ByAirClient
         from calendar_reconcile import _find_events_args, _items
         from composio_client import ComposioClient
-        from maps_client import MapsClient
+        from maps_client import MapsClient, MapsError
         from state import (
             MAX_LIVE_ORIGIN_AGE_MINUTES,
             read_active_flights,
@@ -228,8 +230,8 @@ def main() -> int:
         def route(origin: str, destination: str) -> timedelta | None:
             try:
                 tt = maps.travel_time(origin, destination)
-            except Exception:  # noqa: BLE001 - route failure degrades one leg, not the run
-                return None
+            except (MapsError, urllib.error.URLError):
+                return None  # a route failure degrades one leg, not the whole run
             seconds = (
                 tt.in_traffic_seconds if tt.in_traffic_seconds is not None else tt.duration_seconds
             )

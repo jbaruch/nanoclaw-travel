@@ -231,20 +231,27 @@ def build_reconcile_plan(
     for chain in chains:
         contexts = build_pair_contexts(chain, schedule=schedule, left_terminal=left_terminal)
         for planned in plan_chain_legs(chain, contexts):
+            # plan_chain_legs guarantees the right endpoint per kind, but narrow it
+            # explicitly here so _facts_for receives a non-None flight (no ignore).
             if planned.kind is LegKind.AIRPORT_TRANSFER:
-                partner = planned.to_flight
+                earlier, later = planned.from_flight, planned.to_flight
+                if earlier is None or later is None:
+                    skipped.append("transfer leg missing a flight endpoint")
+                    continue
                 concrete = resolve_leg_anchor(
                     planned,
-                    facts=_facts_for(planned.from_flight, airport_info),  # type: ignore[arg-type]
-                    partner_facts=_facts_for(partner, airport_info),  # type: ignore[arg-type]
+                    facts=_facts_for(earlier, airport_info),
+                    partner_facts=_facts_for(later, airport_info),
                     overrides=overrides,
                 )
                 block, diag = _build_transfer(concrete, route=route)
             elif planned.kind is LegKind.AIRPORT_DEPARTURE:
+                flight = planned.to_flight
+                if flight is None:
+                    skipped.append("departure leg missing a flight")
+                    continue
                 concrete = resolve_leg_anchor(
-                    planned,
-                    facts=_facts_for(planned.to_flight, airport_info),  # type: ignore[arg-type]
-                    overrides=overrides,
+                    planned, facts=_facts_for(flight, airport_info), overrides=overrides
                 )
                 block, diag = _build_departure(
                     concrete,
@@ -256,10 +263,12 @@ def build_reconcile_plan(
                     boarding_present=boarding_present,
                 )
             else:  # AIRPORT_ARRIVAL
+                flight = planned.from_flight
+                if flight is None:
+                    skipped.append("arrival leg missing a flight")
+                    continue
                 concrete = resolve_leg_anchor(
-                    planned,
-                    facts=_facts_for(planned.from_flight, airport_info),  # type: ignore[arg-type]
-                    overrides=overrides,
+                    planned, facts=_facts_for(flight, airport_info), overrides=overrides
                 )
                 block, diag = _build_arrival(
                     concrete,

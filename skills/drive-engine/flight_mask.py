@@ -27,6 +27,7 @@ identity itself excludes the designator.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 # IATA-style flight designator: a 2-char carrier code (LL / L# / #L) followed by
 # 1–4 digits, optional space. Matches "DL 4908", "FR7382", "U2 8001".
@@ -49,14 +50,14 @@ def flight_codes(summary: str | None) -> set[str]:
     return {normalize_code(f"{a}{b}") for a, b in _FLIGHT_CODE_RE.findall(summary.upper())}
 
 
-def known_flight_codes(codes: object) -> set[str]:
+def known_flight_codes(codes: Iterable[str | None]) -> set[str]:
     """Build the known-designator set from raw flight codes (both sources).
 
     Accepts any iterable of code strings (e.g. every `Flight.code` before merge).
-    Skips falsy entries and normalizes the rest.
+    Skips falsy / non-string entries and normalizes the rest.
     """
     result: set[str] = set()
-    for code in codes:  # type: ignore[attr-defined]
+    for code in codes:
         if isinstance(code, str) and code.strip():
             result.add(normalize_code(code))
     return result

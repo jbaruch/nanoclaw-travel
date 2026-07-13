@@ -11,8 +11,8 @@ This skill is a shared library bundle, not an executable workflow. It ships the 
 
 ## Hosted modules
 
-- `trip_origin.py` — resolves the operator's planned position/anchor at a given instant: most-recent lodging check-in ≤ T, else trip location, else the static home off-trip (TripIt truth over the static home, #122). Also exposes `resolve_effective_home`, `load_travel_schedule`, and the flight-window / flight-summary helpers the meeting sweep uses. Consumed by flight-assist (`precheck`, `airport_drive_reconcile`) and drive-planner (`precheck`).
-- `airport_lead.py` — the airport buffer policy: departure clearance (domestic / international, Schengen-as-domestic, delay-index nudge) and post-arrival minutes (domestic / intl-to-US / intl-abroad), all config-overridable. Consumed by flight-assist (`airport_drive_inputs`) and the drive engine.
+- `trip_origin.py` — resolves the operator's planned position/anchor at a given instant (TripIt truth over the static home, #122). Public surface: `resolve_anchor`, `resolve_effective_home`, `load_travel_schedule`, and the flight-window / flight-summary helpers the meeting sweep uses. The resolution ladder itself lives in `trip_origin.py` and its tests — do not restate it here. Consumed by flight-assist (`precheck`, `airport_drive_reconcile`) and drive-planner (`precheck`).
+- `airport_lead.py` — the airport clearance / post-arrival buffer policy. Public surface: `resolve_departure_clearance_minutes`, `resolve_post_arrival_minutes`, `departure_class`, `arrival_class`. The classification rules and buffer values live in `airport_lead.py` and its tests. Consumed by flight-assist (`airport_drive_inputs`) and the drive engine.
 
 ## Consumer contract
 

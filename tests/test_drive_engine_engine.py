@@ -5,7 +5,7 @@ Deterministic fixtures only — hand-built flights, a fake router, fixed referen
 merge → chains → classify → anchor → route → desired → reconcile) with injected
 dependencies, and pin the behaviors that only emerge from composition: a single
 flight yields a home→airport and airport→home block; a multi-leg same-airport
-connection chain yields only the ground-endpoint legs; the live 2026-07-12
+connection chain yields only the ground-endpoint legs; the live 2020-07-12
 itinerary converges its legacy storm and deletes the connection orphans; trivial
 and unroutable legs are suppressed/skipped.
 """
@@ -26,12 +26,12 @@ from flight_identity import BYAIR, Flight  # noqa: E402
 
 UTC = timezone.utc
 HOME = "12 Example St, TN"
-NOW = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)  # well before the trip → plan wins
+NOW = datetime(2020, 7, 10, 12, 0, tzinfo=UTC)  # well before the trip → plan wins
 US = "🇺🇸"
 
 
 def _dt(h, mi=0, *, day=12):
-    return datetime(2026, 7, day, h, mi, tzinfo=UTC)
+    return datetime(2020, 7, day, h, mi, tzinfo=UTC)
 
 
 def flight(dep, arr, sdep, sarr, *, fid, trip_id=None, code=None):

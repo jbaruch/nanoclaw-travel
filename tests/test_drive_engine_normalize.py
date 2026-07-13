@@ -31,11 +31,11 @@ def _byair_record(**over):
         "flight_id": 6277117,
         "code": "FR7382",
         "trip_id": 678,
-        "scheduled_dep_time": "2026-07-12T09:00:00+00:00",
-        "scheduled_arr_time": "2026-07-12T11:05:00+00:00",
+        "scheduled_dep_time": "2020-07-12T09:00:00+00:00",
+        "scheduled_arr_time": "2020-07-12T11:05:00+00:00",
         "dep_airport_id": 20,
         "arr_airport_id": 28,
-        "last_snapshot": {"dep_time": "2026-07-12T09:35:00+00:00", "arr_time": None},
+        "last_snapshot": {"dep_time": "2020-07-12T09:35:00+00:00", "arr_time": None},
     }
     record.update(over)
     return record
@@ -45,9 +45,9 @@ def test_byair_scheduled_and_live_times():
     f = flight_from_byair(_byair_record(), dep_iata="STN", arr_iata="CPH")
     assert f.source == BYAIR
     assert f.dep_airport == "STN" and f.arr_airport == "CPH"
-    assert f.scheduled_dep == datetime(2026, 7, 12, 9, 0, tzinfo=UTC)
-    assert f.scheduled_arr == datetime(2026, 7, 12, 11, 5, tzinfo=UTC)
-    assert f.live_dep == datetime(2026, 7, 12, 9, 35, tzinfo=UTC)
+    assert f.scheduled_dep == datetime(2020, 7, 12, 9, 0, tzinfo=UTC)
+    assert f.scheduled_arr == datetime(2020, 7, 12, 11, 5, tzinfo=UTC)
+    assert f.live_dep == datetime(2020, 7, 12, 9, 35, tzinfo=UTC)
     assert f.live_arr is None
     assert f.byair_flight_id == 6277117
     assert f.code == "FR7382"
@@ -56,9 +56,9 @@ def test_byair_scheduled_and_live_times():
 
 def test_byair_zulu_suffix_parsed():
     f = flight_from_byair(
-        _byair_record(scheduled_dep_time="2026-07-12T09:00:00Z"), dep_iata="STN", arr_iata="CPH"
+        _byair_record(scheduled_dep_time="2020-07-12T09:00:00Z"), dep_iata="STN", arr_iata="CPH"
     )
-    assert f.scheduled_dep == datetime(2026, 7, 12, 9, 0, tzinfo=UTC)
+    assert f.scheduled_dep == datetime(2020, 7, 12, 9, 0, tzinfo=UTC)
 
 
 def test_byair_missing_snapshot_is_fine():
@@ -85,8 +85,8 @@ def _tripit_segment(**over):
         "type": "Flight",
         "uid": "uid-flight-1",
         "summary": "FR 7382 STN to CPH",
-        "start": "2026-07-12T09:00:00Z",
-        "end": "2026-07-12T11:05:00Z",
+        "start": "2020-07-12T09:00:00Z",
+        "end": "2020-07-12T11:05:00Z",
         "location": "London Stansted Airport (STN)",
     }
     seg.update(over)
@@ -97,8 +97,8 @@ def test_tripit_scheduled_only():
     f = flight_from_tripit_segment(_tripit_segment(), dep_iata="STN", arr_iata="CPH", code="FR7382")
     assert f.source == TRIPIT
     assert f.dep_airport == "STN" and f.arr_airport == "CPH"
-    assert f.scheduled_dep == datetime(2026, 7, 12, 9, 0, tzinfo=UTC)
-    assert f.scheduled_arr == datetime(2026, 7, 12, 11, 5, tzinfo=UTC)
+    assert f.scheduled_dep == datetime(2020, 7, 12, 9, 0, tzinfo=UTC)
+    assert f.scheduled_arr == datetime(2020, 7, 12, 11, 5, tzinfo=UTC)
     assert f.live_dep is None and f.live_arr is None
     assert f.tripit_segment_id == "uid-flight-1"
     assert f.code == "FR7382"

@@ -23,7 +23,7 @@ from shadow_precheck import ResolvedAirport, build_shadow_result  # noqa: E402
 
 UTC = timezone.utc
 HOME = "12 Example St, TN"
-NOW = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+NOW = datetime(2020, 7, 10, 12, 0, tzinfo=UTC)
 US = "🇺🇸"
 
 _IATA = {1: "STN", 2: "CPH", 3: "JFK", 4: "BNA"}
@@ -64,7 +64,7 @@ def legacy(flight_id, direction, event_id):
 
 
 def test_shadow_payload_never_wakes():
-    records = [_record(1, "AA1", 4, 3, "2026-07-12T09:00:00Z", "2026-07-12T11:00:00Z")]
+    records = [_record(1, "AA1", 4, 3, "2020-07-12T09:00:00Z", "2020-07-12T11:00:00Z")]
     result = build_shadow_result(
         flight_records=records,
         resolve_airport=_resolve_airport,
@@ -79,9 +79,9 @@ def test_shadow_payload_never_wakes():
 
 def test_shadow_jul12_itinerary_diff():
     records = [
-        _record(6277117, "FR7382", 1, 2, "2026-07-12T09:00:00Z", "2026-07-12T11:00:00Z"),
-        _record(3358446, "SK915", 2, 3, "2026-07-12T13:00:00Z", "2026-07-12T20:00:00Z"),
-        _record(3359520, "DL4908", 3, 4, "2026-07-12T22:00:00Z", "2026-07-12T23:30:00Z"),
+        _record(6277117, "FR7382", 1, 2, "2020-07-12T09:00:00Z", "2020-07-12T11:00:00Z"),
+        _record(3358446, "SK915", 2, 3, "2020-07-12T13:00:00Z", "2020-07-12T20:00:00Z"),
+        _record(3359520, "DL4908", 3, 4, "2020-07-12T22:00:00Z", "2020-07-12T23:30:00Z"),
     ]
     current = (
         [legacy("6277117", "to_airport", f"stn{i}") for i in range(5)]
@@ -106,7 +106,7 @@ def test_shadow_jul12_itinerary_diff():
 
 def test_unresolved_airport_is_skipped_not_guessed():
     # airport_id 9 is unknown to the resolver.
-    records = [_record(1, "AA1", 9, 3, "2026-07-12T09:00:00Z", "2026-07-12T11:00:00Z")]
+    records = [_record(1, "AA1", 9, 3, "2020-07-12T09:00:00Z", "2020-07-12T11:00:00Z")]
     result = build_shadow_result(
         flight_records=records,
         resolve_airport=_resolve_airport,
@@ -120,7 +120,7 @@ def test_unresolved_airport_is_skipped_not_guessed():
 
 
 def test_route_failure_skips_with_diagnostic():
-    records = [_record(1, "AA1", 4, 3, "2026-07-12T09:00:00Z", "2026-07-12T11:00:00Z")]
+    records = [_record(1, "AA1", 4, 3, "2020-07-12T09:00:00Z", "2020-07-12T11:00:00Z")]
     result = build_shadow_result(
         flight_records=records,
         resolve_airport=_resolve_airport,

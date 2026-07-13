@@ -28,7 +28,7 @@ UTC = timezone.utc
 
 
 def _dt(h, mi=0):
-    return datetime(2026, 7, 12, h, mi, tzinfo=UTC)
+    return datetime(2020, 7, 12, h, mi, tzinfo=UTC)
 
 
 def desired(identity, kind="airport_departure", *, byair_ids=frozenset(), anchor=None, origin="X"):
@@ -72,13 +72,13 @@ def legacy_fadrive(flight_id, direction, *, event_id):
 
 
 def test_desired_with_no_current_is_a_create():
-    plan = plan_reconcile([desired("STN-CPH-20260712T0900Z")], [])
+    plan = plan_reconcile([desired("STN-CPH-20200712T0900Z")], [])
     assert len(plan.creates) == 1
     assert plan.updates == () and plan.deletes == ()
 
 
 def test_matching_unchanged_block_is_noop():
-    ident = "STN-CPH-20260712T0900Z"
+    ident = "STN-CPH-20200712T0900Z"
     plan = plan_reconcile(
         [desired(ident, anchor=_dt(8), origin="X")],
         [unified_block(ident, event_id="e1", anchor=_dt(8), origin="X")],
@@ -87,7 +87,7 @@ def test_matching_unchanged_block_is_noop():
 
 
 def test_changed_block_is_an_update():
-    ident = "STN-CPH-20260712T0900Z"
+    ident = "STN-CPH-20200712T0900Z"
     plan = plan_reconcile(
         [desired(ident, anchor=_dt(8, 30), origin="Hotel")],
         [unified_block(ident, event_id="e1", anchor=_dt(8), origin="X")],
@@ -100,7 +100,7 @@ def test_changed_block_is_an_update():
 
 
 def test_duplicate_identity_storm_keeps_one_deletes_rest():
-    ident = "STN-CPH-20260712T0900Z"
+    ident = "STN-CPH-20200712T0900Z"
     storm = [unified_block(ident, event_id=f"e{i}", anchor=_dt(8), origin="X") for i in range(7)]
     plan = plan_reconcile([desired(ident, anchor=_dt(8), origin="X")], storm)
     # first kept (unchanged → no update), other 6 deleted
@@ -115,7 +115,7 @@ def test_duplicate_identity_storm_keeps_one_deletes_rest():
 
 def test_unified_orphan_is_deleted():
     # A suppressed connection's stale block: present on calendar, not desired.
-    plan = plan_reconcile([], [unified_block("CPH-JFK-20260712T1300Z", event_id="orph")])
+    plan = plan_reconcile([], [unified_block("CPH-JFK-20200712T1300Z", event_id="orph")])
     assert len(plan.deletes) == 1
     assert plan.deletes[0].event_id == "orph"
     assert "orphan" in plan.deletes[0].reason
@@ -133,7 +133,7 @@ def test_legacy_orphan_is_deleted():
 
 
 def test_legacy_block_matching_desired_is_converted():
-    ident = "STN-CPH-20260712T0900Z"
+    ident = "STN-CPH-20200712T0900Z"
     plan = plan_reconcile(
         [desired(ident, kind="airport_departure", byair_ids=frozenset({6277117}))],
         [legacy_fadrive("6277117", "to_airport", event_id="stn1")],
@@ -144,7 +144,7 @@ def test_legacy_block_matching_desired_is_converted():
 
 
 def test_codeshare_dual_id_converges_both_legacy_onto_one_leg():
-    ident = "STN-CPH-20260712T0900Z"
+    ident = "STN-CPH-20200712T0900Z"
     plan = plan_reconcile(
         [desired(ident, kind="airport_departure", byair_ids=frozenset({6277117, 7166978}))],
         [
@@ -160,7 +160,7 @@ def test_codeshare_dual_id_converges_both_legacy_onto_one_leg():
 def test_jul12_itinerary_shape():
     # BNA→STN→CPH→JFK: STN departure desired; CPH + JFK connections suppressed.
     # Current calendar: 5× STN legacy, 7× CPH legacy storm, 1× JFK legacy.
-    stn_ident = "BNA-STN-20260712T0600Z"
+    stn_ident = "BNA-STN-20200712T0600Z"
     desired_legs = [desired(stn_ident, kind="airport_departure", byair_ids=frozenset({6277117}))]
     current = (
         [legacy_fadrive("6277117", "to_airport", event_id=f"stn{i}") for i in range(5)]

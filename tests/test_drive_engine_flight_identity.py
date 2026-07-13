@@ -69,30 +69,30 @@ def test_naive_scheduled_dep_rejected():
         Flight(
             dep_airport="STN",
             arr_airport="CPH",
-            scheduled_dep=datetime(2026, 7, 12, 9, 0),  # naive
+            scheduled_dep=datetime(2020, 7, 12, 9, 0),  # naive
             source=BYAIR,
             byair_flight_id=1,
         )
 
 
 def test_iata_uppercased_and_utc_normalized():
-    f = byair(1, "FR7382", "stn", "cph", _dt(2026, 7, 12, 11, 50, offset_hours=2))
+    f = byair(1, "FR7382", "stn", "cph", _dt(2020, 7, 12, 11, 50, offset_hours=2))
     assert f.dep_airport == "STN"
     assert f.arr_airport == "CPH"
-    assert f.scheduled_dep == datetime(2026, 7, 12, 9, 50, tzinfo=UTC)
+    assert f.scheduled_dep == datetime(2020, 7, 12, 9, 50, tzinfo=UTC)
 
 
 def test_byair_requires_flight_id():
     with pytest.raises(ValueError, match="byair_flight_id"):
         Flight(
-            dep_airport="STN", arr_airport="CPH", scheduled_dep=_dt(2026, 7, 12, 9), source=BYAIR
+            dep_airport="STN", arr_airport="CPH", scheduled_dep=_dt(2020, 7, 12, 9), source=BYAIR
         )
 
 
 def test_tripit_requires_segment_id():
     with pytest.raises(ValueError, match="tripit_segment_id"):
         Flight(
-            dep_airport="STN", arr_airport="CPH", scheduled_dep=_dt(2026, 7, 12, 9), source=TRIPIT
+            dep_airport="STN", arr_airport="CPH", scheduled_dep=_dt(2020, 7, 12, 9), source=TRIPIT
         )
 
 
@@ -102,8 +102,8 @@ def test_tripit_requires_segment_id():
 def test_codeshare_different_designators_collapse_to_one():
     # The live defect: same physical STN->CPH leg, two byAir ids, two codes.
     flights = [
-        byair(6277117, "FR7382", "STN", "CPH", _dt(2026, 7, 12, 9, 0, offset_hours=0)),
-        byair(7166978, "MW7382", "STN", "CPH", _dt(2026, 7, 12, 9, 5, offset_hours=0)),
+        byair(6277117, "FR7382", "STN", "CPH", _dt(2020, 7, 12, 9, 0, offset_hours=0)),
+        byair(7166978, "MW7382", "STN", "CPH", _dt(2020, 7, 12, 9, 5, offset_hours=0)),
     ]
     merged = merge_flights(flights)
     assert len(merged) == 1
@@ -116,8 +116,8 @@ def test_midnight_boundary_same_flight_collapses():
     # TripIt: 23:50 local (+02:00) on the 12th == 21:50Z. byAir: 22:10Z on the 12th.
     # Different calendar dates in local terms, ~20 min apart in true UTC -> one flight.
     flights = [
-        tripit("seg-A", "SK915", "CPH", "EWR", _dt(2026, 7, 12, 23, 50, offset_hours=2)),
-        byair(3358446, "SK915", "CPH", "EWR", _dt(2026, 7, 12, 22, 10, offset_hours=0)),
+        tripit("seg-A", "SK915", "CPH", "EWR", _dt(2020, 7, 12, 23, 50, offset_hours=2)),
+        byair(3358446, "SK915", "CPH", "EWR", _dt(2020, 7, 12, 22, 10, offset_hours=0)),
     ]
     merged = merge_flights(flights)
     assert len(merged) == 1
@@ -128,10 +128,10 @@ def test_midnight_boundary_same_flight_collapses():
 
 
 def test_byair_wins_on_times_when_both_sources_present():
-    sched_byair = _dt(2026, 7, 12, 9, 0, offset_hours=0)
-    live = _dt(2026, 7, 12, 9, 40, offset_hours=0)
+    sched_byair = _dt(2020, 7, 12, 9, 0, offset_hours=0)
+    live = _dt(2020, 7, 12, 9, 40, offset_hours=0)
     flights = [
-        tripit("seg-1", "FR7382", "STN", "CPH", _dt(2026, 7, 12, 9, 10, offset_hours=0)),
+        tripit("seg-1", "FR7382", "STN", "CPH", _dt(2020, 7, 12, 9, 10, offset_hours=0)),
         byair(6277117, "FR7382", "STN", "CPH", sched_byair, live_dep=live),
     ]
     merged = merge_flights(flights)
@@ -146,13 +146,13 @@ def test_byair_wins_on_times_when_both_sources_present():
 
 
 def test_byair_only_flight_survives():
-    merged = merge_flights([byair(1, "DL4908", "CPH", "JFK", _dt(2026, 7, 12, 12))])
+    merged = merge_flights([byair(1, "DL4908", "CPH", "JFK", _dt(2020, 7, 12, 12))])
     assert len(merged) == 1
     assert merged[0].has_byair and not merged[0].has_tripit
 
 
 def test_tripit_only_flight_survives():
-    merged = merge_flights([tripit("seg-x", "AA100", "JFK", "BNA", _dt(2026, 7, 12, 18))])
+    merged = merge_flights([tripit("seg-x", "AA100", "JFK", "BNA", _dt(2020, 7, 12, 18))])
     assert len(merged) == 1
     assert merged[0].has_tripit and not merged[0].has_byair
 
@@ -162,8 +162,8 @@ def test_tripit_only_flight_survives():
 
 def test_same_route_24h_apart_not_merged():
     flights = [
-        byair(1, "FR7382", "STN", "CPH", _dt(2026, 7, 12, 9)),
-        byair(2, "FR7382", "STN", "CPH", _dt(2026, 7, 13, 9)),
+        byair(1, "FR7382", "STN", "CPH", _dt(2020, 7, 12, 9)),
+        byair(2, "FR7382", "STN", "CPH", _dt(2020, 7, 13, 9)),
     ]
     merged = merge_flights(flights)
     assert len(merged) == 2
@@ -171,8 +171,8 @@ def test_same_route_24h_apart_not_merged():
 
 def test_different_routes_not_merged():
     flights = [
-        byair(1, "FR7382", "STN", "CPH", _dt(2026, 7, 12, 9)),
-        byair(2, "SK915", "CPH", "EWR", _dt(2026, 7, 12, 9)),
+        byair(1, "FR7382", "STN", "CPH", _dt(2020, 7, 12, 9)),
+        byair(2, "SK915", "CPH", "EWR", _dt(2020, 7, 12, 9)),
     ]
     merged = merge_flights(flights)
     assert len(merged) == 2
@@ -182,7 +182,7 @@ def test_different_routes_not_merged():
 
 
 def test_just_inside_tolerance_merges():
-    base = _dt(2026, 7, 12, 9, 0)
+    base = _dt(2020, 7, 12, 9, 0)
     flights = [
         byair(1, "X1", "STN", "CPH", base),
         byair(2, "X2", "STN", "CPH", base + DEFAULT_IDENTITY_TOLERANCE - timedelta(minutes=1)),
@@ -191,7 +191,7 @@ def test_just_inside_tolerance_merges():
 
 
 def test_just_outside_tolerance_splits():
-    base = _dt(2026, 7, 12, 9, 0)
+    base = _dt(2020, 7, 12, 9, 0)
     flights = [
         byair(1, "X1", "STN", "CPH", base),
         byair(2, "X2", "STN", "CPH", base + DEFAULT_IDENTITY_TOLERANCE + timedelta(minutes=1)),
@@ -203,7 +203,7 @@ def test_anchor_prevents_transitive_swallow():
     # Three flights each ~5h apart: 1-2 within tolerance, 2-3 within tolerance,
     # but 1-3 are 10h apart. Anchoring on the cluster's first instant must NOT let
     # a chain of sub-tolerance steps merge flights 10h apart into one.
-    base = _dt(2026, 7, 12, 6, 0)
+    base = _dt(2020, 7, 12, 6, 0)
     flights = [
         byair(1, "A", "STN", "CPH", base),
         byair(2, "B", "STN", "CPH", base + timedelta(hours=5)),
@@ -219,8 +219,8 @@ def test_anchor_prevents_transitive_swallow():
 
 def test_output_is_deterministically_ordered():
     flights = [
-        byair(2, "B", "CPH", "JFK", _dt(2026, 7, 12, 12)),
-        byair(1, "A", "STN", "CPH", _dt(2026, 7, 12, 9)),
+        byair(2, "B", "CPH", "JFK", _dt(2020, 7, 12, 12)),
+        byair(1, "A", "STN", "CPH", _dt(2020, 7, 12, 9)),
     ]
     merged = merge_flights(flights)
     assert [m.dep_airport for m in merged] == ["CPH", "STN"]

@@ -42,56 +42,56 @@ def _dt(y, mo, d, h=0, mi=0):
 
 
 def test_position_at_off_trip_is_home():
-    anchor = position_at(None, _dt(2026, 7, 12, 9), home_address=HOME)
+    anchor = position_at(None, _dt(2020, 7, 12, 9), home_address=HOME)
     assert anchor.address == HOME
     assert anchor.source == "home"
 
 
 def test_position_at_on_trip_resolves_lodging():
     schedule = [
-        {"type": "Trip", "start": "2026-07-11", "end": "2026-07-15", "summary": "CPH"},
+        {"type": "Trip", "start": "2020-07-11", "end": "2020-07-15", "summary": "CPH"},
         {
             "type": "Lodging",
-            "start": "2026-07-11T14:00:00+00:00",
+            "start": "2020-07-11T14:00:00+00:00",
             "location": HOTEL,
             "summary": "Skt Petri",
         },
     ]
     # A leave_by the morning after check-in resolves to the hotel — the #154 case.
-    anchor = position_at(schedule, _dt(2026, 7, 12, 6), home_address=HOME)
+    anchor = position_at(schedule, _dt(2020, 7, 12, 6), home_address=HOME)
     assert anchor.address == HOTEL
     assert anchor.source == "lodging"
 
 
 def test_position_at_before_checkin_is_not_the_hotel():
     schedule = [
-        {"type": "Trip", "start": "2026-07-11", "end": "2026-07-15", "summary": "CPH"},
+        {"type": "Trip", "start": "2020-07-11", "end": "2020-07-15", "summary": "CPH"},
         {
             "type": "Lodging",
-            "start": "2026-07-12T14:00:00+00:00",
+            "start": "2020-07-12T14:00:00+00:00",
             "location": HOTEL,
             "summary": "Skt Petri",
         },
     ]
     # An instant BEFORE the check-in must not anchor at that hotel (falls to trip
     # location / unresolved, never the future lodging).
-    anchor = position_at(schedule, _dt(2026, 7, 12, 6), home_address=HOME)
+    anchor = position_at(schedule, _dt(2020, 7, 12, 6), home_address=HOME)
     assert anchor.source != "lodging"
 
 
 def test_position_at_rejects_naive_instant():
     with pytest.raises(ValueError, match="timezone-aware"):
-        position_at(None, datetime(2026, 7, 12, 9), home_address=HOME)
+        position_at(None, datetime(2020, 7, 12, 9), home_address=HOME)
 
 
 # --- is_drive_imminent: the window boundary ---------------------------------
 
-LEAVE_BY = _dt(2026, 7, 12, 9, 0)
+LEAVE_BY = _dt(2020, 7, 12, 9, 0)
 DRIVE = timedelta(minutes=30)
 
 
 def test_not_imminent_a_day_ahead():
-    assert not is_drive_imminent(_dt(2026, 7, 11, 9), LEAVE_BY, DRIVE)
+    assert not is_drive_imminent(_dt(2020, 7, 11, 9), LEAVE_BY, DRIVE)
 
 
 def test_imminent_at_lower_boundary():
@@ -112,7 +112,7 @@ def test_imminent_at_and_past_leave_by():
 
 def test_imminent_rejects_naive():
     with pytest.raises(ValueError, match="timezone-aware"):
-        is_drive_imminent(datetime(2026, 7, 12, 9), LEAVE_BY, DRIVE)
+        is_drive_imminent(datetime(2020, 7, 12, 9), LEAVE_BY, DRIVE)
 
 
 def test_imminent_rejects_negative_drive():
@@ -129,7 +129,7 @@ LIVE = "55.6761,12.5683"
 def test_plan_wins_when_not_imminent_even_with_fresh_fix():
     resolved = resolve_leg_origin(
         PLANNED,
-        now=_dt(2026, 7, 11, 9),  # a day ahead
+        now=_dt(2020, 7, 11, 9),  # a day ahead
         leave_by=LEAVE_BY,
         drive=DRIVE,
         live_origin=LIVE,
@@ -163,7 +163,7 @@ def test_unresolved_plan_passes_through_when_not_imminent():
     unresolved = TripAnchor(address=None, source="unresolved")
     resolved = resolve_leg_origin(
         unresolved,
-        now=_dt(2026, 7, 11, 9),
+        now=_dt(2020, 7, 11, 9),
         leave_by=LEAVE_BY,
         drive=DRIVE,
         live_origin=None,

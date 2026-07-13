@@ -34,7 +34,7 @@ DK = "🇩🇰"
 
 
 def _dt(h, mi=0, *, day=12):
-    return datetime(2026, 7, day, h, mi, tzinfo=UTC)
+    return datetime(2020, 7, day, h, mi, tzinfo=UTC)
 
 
 def flight(dep, arr, sched_dep, sched_arr, *, fid=1, live_dep=None, live_arr=None):

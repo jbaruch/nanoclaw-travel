@@ -31,7 +31,7 @@ UTC = timezone.utc
 
 
 def _dt(h, mi=0, *, day=12):
-    return datetime(2026, 7, day, h, mi, tzinfo=UTC)
+    return datetime(2020, 7, day, h, mi, tzinfo=UTC)
 
 
 def flight(dep, arr, sched_dep, *, sched_arr=None, fid=1):
@@ -122,7 +122,7 @@ def test_same_airport_connection_suppresses_interior_legs():
 
 
 def test_two_same_airport_connections_zero_interior_drives():
-    # Owner's 2026-07-12 itinerary shape: CPH and JFK connections -> zero drives
+    # Owner's 2020-07-12 itinerary shape: CPH and JFK connections -> zero drives
     # between; only the ground endpoints.
     chain = [
         flight("STN", "CPH", _dt(9), fid=1),

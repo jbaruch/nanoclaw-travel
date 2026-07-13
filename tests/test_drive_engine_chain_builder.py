@@ -27,7 +27,7 @@ UTC = timezone.utc
 
 
 def _dt(h, mi=0, *, day=12):
-    return datetime(2026, 7, day, h, mi, tzinfo=UTC)
+    return datetime(2020, 7, day, h, mi, tzinfo=UTC)
 
 
 def flight(dep, arr, sched_dep, sched_arr, *, fid=1, trip_id=None):
@@ -75,18 +75,18 @@ def test_distinct_trips_are_separate_chains():
 
 
 def test_lodging_between_true_when_checkin_in_gap():
-    schedule = [{"type": "Lodging", "start": "2026-07-12T15:00:00Z", "location": "Hotel"}]
+    schedule = [{"type": "Lodging", "start": "2020-07-12T15:00:00Z", "location": "Hotel"}]
     assert has_lodging_between(schedule, _dt(11), _dt(20))
 
 
 def test_lodging_between_false_when_checkin_outside_gap():
-    schedule = [{"type": "Lodging", "start": "2026-07-13T15:00:00Z", "location": "Hotel"}]
+    schedule = [{"type": "Lodging", "start": "2020-07-13T15:00:00Z", "location": "Hotel"}]
     assert not has_lodging_between(schedule, _dt(11), _dt(20))
 
 
 def test_lodging_between_ignores_non_lodging_and_bad_dates():
     schedule = [
-        {"type": "Flight", "start": "2026-07-12T15:00:00Z"},
+        {"type": "Flight", "start": "2020-07-12T15:00:00Z"},
         {"type": "Lodging", "start": "not-a-date"},
     ]
     assert not has_lodging_between(schedule, _dt(11), _dt(20))
@@ -105,7 +105,7 @@ def test_pair_context_overnight_from_lodging():
         flight("BNA", "CPH", _dt(6, day=12), _dt(9, day=12), fid=1, trip_id=1),
         flight("CPH", "JFK", _dt(9, day=14), _dt(12, day=14), fid=2, trip_id=1),
     ]
-    schedule = [{"type": "Lodging", "start": "2026-07-12T18:00:00Z", "location": "Hotel"}]
+    schedule = [{"type": "Lodging", "start": "2020-07-12T18:00:00Z", "location": "Hotel"}]
     ctxs = build_pair_contexts(chain, schedule=schedule)
     assert len(ctxs) == 1
     assert ctxs[0].lodging_between is True
