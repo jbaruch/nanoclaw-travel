@@ -11,6 +11,7 @@ Compact day-indexed projection of upcoming trips.
 - **Readers:**
   - `scripts/check-travel-bookings.py` (owner; gates on `schema_version`)
   - `nanoclaw-admin/morning-brief` (cross-plugin, via the same script invoked as the reader)
+  - `flight-assist/trip_window.py` (cross-plugin non-owner reader — the #147 trip-window gate). Gates on `schema_version` and, per `coding-policy: stateful-artifacts` Cross-Pipeline Schema Bumps, treats any version other than the accepted `1` as no-usable-state and **fails open** (defers to the host pre-spawn gate rather than blind a possibly-active trip). A bump here must land in lock-step with `trip_window._ACCEPTED_TRAVEL_DB_SCHEMA_VERSION`, and with the host gate `src/spawn-gates.ts` in jbaruch/nanoclaw, which read the same file through their own pipelines.
 - **Schema:**
 
 ```json

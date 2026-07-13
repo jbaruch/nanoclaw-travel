@@ -57,6 +57,18 @@ _TRAVEL_DB_ENV = "FLIGHT_ASSIST_TRAVEL_DB"
 _TRIP_WINDOW_LEAD = timedelta(hours=24)
 _TRIP_WINDOW_TRAIL = timedelta(hours=24)
 
+# The `travel-db.json` schema_version this non-owner reader accepts, matching the
+# owner's `SCHEMA_VERSION` in `check-travel-bookings/scripts/build-travel-db.py`.
+# Per `coding-policy: stateful-artifacts`, a non-owner reader treats any other
+# stamped version as "no usable prior state" — and since owner (this plugin) and
+# the host gate deploy through separate pipelines, a bump runs mixed versions for
+# the rollout window. The safe no-prior-state path for a defense-in-depth gate is
+# fail OPEN (defer to the host, never blind a possibly-active trip), so a version
+# skew relaxes suppression rather than escalating work. A record with no
+# schema_version is legacy-implicit v1 (the owner's migration policy) and read
+# normally.
+_ACCEPTED_TRAVEL_DB_SCHEMA_VERSION = 1
+
 
 @dataclass(frozen=True)
 class TripWindow:
@@ -112,6 +124,17 @@ def evaluate_trip_window(*, now_utc: datetime, path: str | None = None) -> TripW
         parsed = json.loads(raw)
     except json.JSONDecodeError as parse_err:
         return TripWindow(True, f"travel-db not valid JSON ({parse_err}) — failing open")
+
+    # Non-owner reader schema gate (stateful-artifacts). A stamped version other
+    # than the one accepted → no usable prior state → fail OPEN. Absent version
+    # is legacy-implicit v1 and read normally.
+    version = parsed.get("schema_version") if isinstance(parsed, dict) else None
+    if version is not None and version != _ACCEPTED_TRAVEL_DB_SCHEMA_VERSION:
+        return TripWindow(
+            True,
+            f"travel-db schema_version {version!r} != accepted "
+            f"{_ACCEPTED_TRAVEL_DB_SCHEMA_VERSION} — failing open",
+        )
 
     trips = parsed.get("trips") if isinstance(parsed, dict) else None
     if not isinstance(trips, dict):

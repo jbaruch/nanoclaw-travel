@@ -144,6 +144,32 @@ def test_unreadable_path_fails_open(tmp_path: Path):
     assert evaluate_trip_window(now_utc=NOW, path=str(d)).in_window is True
 
 
+# --- non-owner reader schema_version gate (stateful-artifacts) --------------
+
+
+def test_unaccepted_schema_version_fails_open(tmp_path: Path):
+    """A travel-db stamped with a version this reader doesn't accept is treated
+    as no-usable-state → fail OPEN, overriding an otherwise out-of-window trip,
+    so a cross-pipeline schema bump never blinds an active trip."""
+    path = _write_db(
+        tmp_path,
+        {
+            "schema_version": 2,  # ahead of the accepted 1
+            "trips": {"past": {"start": "2020-01-01", "end": "2020-01-05"}},
+        },
+    )
+    result = evaluate_trip_window(now_utc=NOW, path=path)
+    assert result.in_window is True
+    assert "schema_version" in result.reason
+
+
+def test_absent_schema_version_is_read_as_v1(tmp_path: Path):
+    """A record with no schema_version is legacy-implicit v1 — evaluated
+    normally (not failed open): an out-of-window trip stays out of window."""
+    path = _write_db(tmp_path, {"trips": {"past": {"start": "2020-01-01", "end": "2020-01-05"}}})
+    assert evaluate_trip_window(now_utc=NOW, path=path).in_window is False
+
+
 # --- valid-but-empty and unparseable-date handling --------------------------
 
 
