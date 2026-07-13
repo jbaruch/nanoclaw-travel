@@ -216,11 +216,35 @@ def _reconcile_active_flights(upstream_flights: list[dict], *, now_utc: datetime
             continue
         delete_flight_state(flight_id)
 
+    # Repair codeshare records poisoned before the marketing-code fix (#159):
+    # a prior precheck poll (byAir get_flight, operating perspective) may have
+    # overwritten `code` with the operating designator (e.g. 9E4908) instead of
+    # the marketing one (DL4908). The poll now preserves `code`, but that also
+    # preserves an already-wrong value — nothing else heals it. list_trips is
+    # the marketing-code authority, so refresh the display code on every
+    # retained flight from upstream, repairing corrupted state on the next daily
+    # sync. Touch only `code` (and the snapshot's mirror of it); the poll owns
+    # every other field.
+    repaired: list[dict] = []
+    for flight_id in sorted(upstream_ids & current_ids):
+        upstream_code = upstream_by_id[flight_id].get("code")
+        if not upstream_code:
+            continue
+        prior = read_flight_state(flight_id)
+        if prior is None or prior.get("code") == upstream_code:
+            continue
+        prior["code"] = upstream_code
+        snapshot = prior.get("last_snapshot")
+        if isinstance(snapshot, dict):
+            snapshot["code"] = upstream_code
+        write_flight_state(prior)
+        repaired.append({"flight_id": flight_id, "code": upstream_code})
+
     # Persist the new active-flights index. read_active_flights returns
     # sorted/preserved order; here we sort for determinism.
     write_active_flights(sorted(upstream_ids))
 
-    return {"added": added, "removed": removed}
+    return {"added": added, "removed": removed, "repaired": repaired}
 
 
 def _initial_state(flight: dict, *, now_utc: datetime) -> dict:

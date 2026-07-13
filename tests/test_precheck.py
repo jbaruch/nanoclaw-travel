@@ -116,6 +116,95 @@ def _write_open_travel_db(tmp_path: Path) -> str:
     return str(p)
 
 
+def test_trim_to_snapshot_captures_resolved_airports():
+    """#159 Bug 2: the snapshot persists the resolved dep/arr airport code+name
+    off the byAir payload, so the day-before compose renders the airport instead
+    of free-typing a name from the numeric id."""
+    raw = _byair_flight()
+    raw["depAirport"] = {"id": 12, "code": "JFK", "name": "John F. Kennedy International Airport"}
+    raw["arrAirport"] = {"id": 98, "code": "BNA", "name": "Nashville International Airport"}
+
+    snapshot = precheck._trim_to_snapshot(raw)
+
+    assert snapshot["dep_airport_code"] == "JFK"
+    assert snapshot["dep_airport_name"] == "John F. Kennedy International Airport"
+    assert snapshot["arr_airport_code"] == "BNA"
+    assert snapshot["arr_airport_name"] == "Nashville International Airport"
+
+
+def test_trim_to_snapshot_airports_absent_tolerant():
+    """A payload missing the airport dicts (or their code/name) yields None for
+    the resolved fields rather than raising — the compose degrades, the poll
+    survives."""
+    raw = _byair_flight()
+    raw.pop("depAirport", None)
+    raw["arrAirport"] = {"id": 98}  # id only, no code/name
+
+    snapshot = precheck._trim_to_snapshot(raw)
+
+    assert snapshot["dep_airport_code"] is None
+    assert snapshot["dep_airport_name"] is None
+    assert snapshot["arr_airport_code"] is None
+    assert snapshot["arr_airport_name"] is None
+
+
+def _phase_markers() -> dict:
+    return {
+        "day_before_fired": False,
+        "time_to_leave_fired": False,
+        "boarding_fired": False,
+        "arrival_logistics_fired": False,
+        "landed_acknowledged": False,
+        "connection_at_risk_fired": False,
+        "gate_assignment_fired": False,
+    }
+
+
+def test_build_flight_state_preserves_marketing_code_over_operating_designator():
+    """#159 Bug 1: sync_tripit seeds the marketing designator (DL4908) from
+    byAir list_trips; the poll's get_flight returns the operating designator
+    (9E4908) for a codeshare. The poll must preserve the seeded marketing code —
+    on both the top-level record and the persisted snapshot — never overwrite it
+    with the operating code."""
+    prior = _make_state(flight_id=7175544, code="DL4908")
+    raw_flight = _byair_flight(flight_id=7175544)
+    raw_flight["code"] = "9E4908"  # get_flight's operating designator
+    new_snapshot = precheck._trim_to_snapshot(raw_flight)
+    assert new_snapshot["code"] == "9E4908"  # the raw slice mirrors get_flight...
+
+    state = precheck._build_flight_state(
+        flight_id=7175544,
+        prior_state=prior,
+        raw_flight=raw_flight,
+        new_snapshot=new_snapshot,
+        phase_markers=_phase_markers(),
+        now_utc=datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert state["code"] == "DL4908"  # ...but the record keeps the marketing code
+    assert state["last_snapshot"]["code"] == "DL4908"  # and the snapshot is realigned
+
+
+def test_build_flight_state_seeds_code_from_poll_when_no_prior():
+    """With no prior seed (flight first seen via the poll), the poll's code is
+    the best available — used for both the record and the snapshot."""
+    raw_flight = _byair_flight(flight_id=7175544)
+    raw_flight["code"] = "9E4908"
+    new_snapshot = precheck._trim_to_snapshot(raw_flight)
+
+    state = precheck._build_flight_state(
+        flight_id=7175544,
+        prior_state=None,
+        raw_flight=raw_flight,
+        new_snapshot=new_snapshot,
+        phase_markers=_phase_markers(),
+        now_utc=datetime(2026, 7, 12, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert state["code"] == "9E4908"
+    assert state["last_snapshot"]["code"] == "9E4908"
+
+
 def _make_state(flight_id: int = 12345, **overrides) -> dict:
     base = {
         "flight_id": flight_id,
