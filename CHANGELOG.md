@@ -1,5 +1,28 @@
 # Changelog
 
+### Fixed — drive-engine duplicate storm + apply timeout (#164)
+
+Every ~30-min sweep was killed mid-write past the host's ~33s precheck budget and left
+a fresh set of duplicate drive blocks — the calendar accumulated 10+ copies of each leg.
+Two root causes, both fixed:
+
+- **Update churn (the storm).** The maps route returns a slightly different
+  `baseline_seconds` on every sweep (traffic-recomputation jitter — 1–46s swings for an
+  unchanged leg). `_needs_update` compared it exactly, so every sweep re-"shifted" all
+  ~15 legs, and each shift was a **recreate-then-delete**: the ~33s kill landed after the
+  recreates but before the deletes, duplicating every leg every cycle. Fix: (1) an update
+  now only fires on a **meaningful** baseline change (≥ 120s; sub-2-min jitter is ignored),
+  and (2) a shift is a single **in-place `PATCH_EVENT`** of the same event — no second
+  event is ever created, so a kill can no longer leave a duplicate. Verified live that a
+  PATCH shifts a block's start + description to the correct instant without a duplicate.
+- **Unbounded apply.** `apply_plan` now takes a wall-clock **budget** (the sweep gives it
+  whatever of a 27s budget the fetch/plan phase left) and stops starting new write ops
+  once it elapses — deletes first (so a duplicate backlog drains), then creates/converts/
+  updates — returning a clean payload with a `deferred` count instead of being killed
+  mid-write. Deferred ops drain on the next sweep; the reconcile is idempotent, so
+  resuming never duplicates. The existing duplicate backlog is cleaned up by the engine's
+  own G1/G7 delete path over the next few sweeps.
+
 ## 0.2.41 — 2026-07-13
 
 ### Added — flight-assist trip-window defense-in-depth (#147)

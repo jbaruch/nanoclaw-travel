@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -54,6 +55,14 @@ RouteFn = Callable[[str, str], "timedelta | None"]
 _MANAGED_LEGACY: frozenset[str] = frozenset()
 
 SWEEP_WINDOW = timedelta(days=14)
+
+# Wall-clock budget for the whole sweep. The host kills this precheck at ~33s
+# (#164); bound the write phase so `apply_plan` stops starting new ops with margin
+# for the last in-flight op + the JSON print + interpreter teardown, and returns a
+# clean payload instead of being killed mid-write. Any ops it couldn't reach are
+# `deferred` and drained on the next sweep (the reconcile is idempotent, so
+# resuming never duplicates).
+_SWEEP_WALL_CLOCK_BUDGET_SECONDS = 27.0
 
 
 @dataclass(frozen=True)
@@ -223,6 +232,7 @@ def main() -> int:
         non-zero / print no payload, silently disabling the sweep.
     """
     try:
+        sweep_start = time.monotonic()
         _on_path("flight-assist")
         _on_path("travel-core")
         _on_path("drive-planner")
@@ -389,7 +399,12 @@ def main() -> int:
         )
 
         # --- APPLY (write) ---
-        applied = apply_plan(result.plan, composio=composio, calendar_id="primary")
+        # Give apply whatever of the sweep budget the fetch/plan phase left, so
+        # the write phase stops with margin before the host precheck kill (#164).
+        apply_budget = max(_SWEEP_WALL_CLOCK_BUDGET_SECONDS - (time.monotonic() - sweep_start), 0.0)
+        applied = apply_plan(
+            result.plan, composio=composio, calendar_id="primary", budget_seconds=apply_budget
+        )
 
         skipped = list(result.skipped) + list(meeting_skipped)
         for line in skipped:
@@ -406,6 +421,7 @@ def main() -> int:
                     "deleted": applied.deleted,
                     "converted": applied.converted,
                 },
+                "deferred": applied.deferred,
                 "skipped": len(skipped),
                 "errors": len(applied.errors),
             },

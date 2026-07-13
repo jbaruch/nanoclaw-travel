@@ -127,6 +127,43 @@ def test_route_duration_change_alone_triggers_update():
     assert plan.updates[0].event_id == "e1"
 
 
+def _baseline_block(identity, baseline_seconds):
+    """A unified block matching desired() on everything but baseline_seconds."""
+    return ParsedBlock(
+        generation=GEN_UNIFIED,
+        event_id="e1",
+        identity=identity,
+        kind="airport_departure",
+        anchor=_dt(8),
+        origin="X",
+        destination="APT",
+        baseline_seconds=baseline_seconds,
+    )
+
+
+def test_baseline_jitter_below_tolerance_is_noop():
+    """#164: a sub-2-min routing-jitter swing in baseline_seconds is NOT an update.
+    Comparing exactly made every sweep re-shift all legs, and a sweep killed
+    mid-write duplicated them. desired baseline 1800, current off by 46s (observed
+    jitter) → no-op."""
+    ident = "STN-CPH-20200712T0900Z"
+    plan = plan_reconcile(
+        [desired(ident, anchor=_dt(8), origin="X")], [_baseline_block(ident, 1846)]
+    )
+    assert plan.is_noop
+
+
+def test_baseline_change_at_tolerance_triggers_update():
+    """A change of exactly the 120s tolerance (a real traffic shift, not jitter)
+    still updates."""
+    ident = "STN-CPH-20200712T0900Z"
+    plan = plan_reconcile(
+        [desired(ident, anchor=_dt(8), origin="X")], [_baseline_block(ident, 1800 - 120)]
+    )
+    assert len(plan.updates) == 1
+    assert plan.updates[0].event_id == "e1"
+
+
 # --- G1: duplicate storm collapses ------------------------------------------
 
 

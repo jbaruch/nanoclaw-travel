@@ -123,19 +123,38 @@ def _legacy_key(block: ParsedBlock) -> tuple[str, str, str] | None:
     return (block.generation, block.legacy_id, block.legacy_direction)
 
 
+# A matched block is only shifted when its routed drive duration changed by at
+# least this much. The maps route returns a slightly different `baseline_seconds`
+# on every sweep (traffic recomputation jitter — observed 1–46s swings for an
+# unchanged leg), and each update is a recreate-then-delete; comparing exactly
+# made every sweep re-shift all ~15 legs, and a sweep killed mid-write (after the
+# recreates, before the deletes) left a duplicate every cycle — the #164 storm.
+# 2 min is well above the jitter yet still catches a real traffic change (which
+# moves the leave-by enough to matter).
+_BASELINE_SHIFT_TOLERANCE_SECONDS = 120
+
+
 def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:
     """Whether a matched unified block differs from the desired leg on the fields
-    that drive a shift: anchor, endpoints, window, OR the routed drive duration
-    (`baseline_seconds`). A route-duration change alone (traffic grew) moves the
-    block's leave-by even when the anchor is unchanged, so it must trigger an
-    update — otherwise the live writer would leave a stale block."""
-    return (
+    that drive a shift: anchor, endpoints, window, OR a MEANINGFUL change in the
+    routed drive duration (`baseline_seconds`). A real route-duration change
+    (traffic grew) moves the block's leave-by and must trigger an update; a
+    sub-tolerance change is routing jitter, not signal, and is ignored so the
+    live writer doesn't churn a recreate every sweep (#164)."""
+    if (
         current.anchor != desired.anchor
         or current.origin != desired.origin
         or current.destination != desired.destination
         or current.window_end != desired.window_end
-        or current.baseline_seconds != desired.baseline_seconds
-    )
+    ):
+        return True
+    # A block whose baseline didn't parse can't be compared — re-shift it to a
+    # well-formed block. Otherwise update only on a meaningful (>= tolerance)
+    # drive-duration change, ignoring routing jitter (#164).
+    if current.baseline_seconds is None:
+        return True
+    drift = abs(current.baseline_seconds - desired.baseline_seconds)
+    return drift >= _BASELINE_SHIFT_TOLERANCE_SECONDS
 
 
 def plan_reconcile(

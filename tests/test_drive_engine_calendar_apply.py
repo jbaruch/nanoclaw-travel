@@ -3,7 +3,8 @@
 Deterministic fixtures only — a fake Composio client recording calls, hand-built
 plans, fixed datetimes. These pin: deletes need only an id (the drive-planner
 cleanup path), creates build local-tz args, converts create-then-delete-legacy,
-updates recreate-then-delete with rollback on a failed delete, and a 404 delete is
+updates PATCH the same event in place (never recreate — so a kill can't duplicate,
+#164), the wall-clock budget defers writes past its deadline, and a 404 delete is
 treated as done.
 """
 
@@ -45,11 +46,13 @@ def _desired(identity="m1", kind="meeting_outbound", tz="America/Chicago"):
 
 
 class FakeComposio:
-    def __init__(self, *, delete_404=(), delete_fail=()):
+    def __init__(self, *, delete_404=(), delete_fail=(), patch_fail=()):
         self.created = []
         self.deleted = []
+        self.patched = []
         self._delete_404 = set(delete_404)
         self._delete_fail = set(delete_fail)
+        self._patch_fail = set(patch_fail)
         self._n = 0
 
     def create_event(self, args):
@@ -65,6 +68,12 @@ class FakeComposio:
         if eid in self._delete_fail:
             raise ComposioError("boom")
         self.deleted.append(eid)
+
+    def patch_event(self, args):
+        eid = args["event_id"]
+        if eid in self._patch_fail:
+            raise ComposioError("boom")
+        self.patched.append(args)
 
 
 # --- create args (local tz) -------------------------------------------------
@@ -151,23 +160,89 @@ def test_convert_rolls_back_new_when_a_legacy_delete_fails():
     assert any("leg2" in e for e in result.errors)
 
 
-def test_update_recreates_then_deletes_old():
+def test_update_patches_in_place_never_duplicates():
+    """#164: an update is a single in-place PATCH of the same event — no create,
+    no delete, so a kill right after can't leave a duplicate."""
     plan = ReconcilePlan(updates=(Update("old1", _desired()),))
     comp = FakeComposio()
     result = apply_plan(plan, composio=comp, calendar_id="primary")
     assert result.updated == 1
-    assert len(comp.created) == 1
-    assert comp.deleted == ["old1"]
+    assert comp.created == []  # never recreated
+    assert comp.deleted == []  # never deletes the old block
+    assert len(comp.patched) == 1
+    assert comp.patched[0]["event_id"] == "old1"  # patched the SAME event
 
 
-def test_update_rolls_back_replacement_when_old_delete_fails():
-    plan = ReconcilePlan(updates=(Update("old1", _desired()),))
-    comp = FakeComposio(delete_fail={"old1"})
+def test_update_patch_failure_is_recorded_not_counted():
+    plan = ReconcilePlan(updates=(Update("old1", _desired(identity="m1")),))
+    comp = FakeComposio(patch_fail={"old1"})
     result = apply_plan(plan, composio=comp, calendar_id="primary")
-    # old delete failed → not counted as updated, and the new block is rolled back
     assert result.updated == 0
-    assert "new1" in comp.deleted  # replacement deleted (rollback)
-    assert any("old1" in e for e in result.errors)
+    assert comp.created == [] and comp.deleted == []  # nothing left behind
+    assert any("m1" in e for e in result.errors)
+
+
+def test_update_with_no_event_id_is_skipped():
+    plan = ReconcilePlan(updates=(Update(None, _desired()),))
+    comp = FakeComposio()
+    result = apply_plan(plan, composio=comp, calendar_id="primary")
+    assert result.updated == 0
+    assert comp.patched == []
+    assert any("no event_id" in e for e in result.errors)
+
+
+class _Clock:
+    """Deterministic monotonic: returns start, start+step, start+2*step, ... on
+    each call — so `over_budget` flips predictably at a known op count."""
+
+    def __init__(self, start=0.0, step=1.0):
+        self.t = start
+        self.step = step
+
+    def __call__(self):
+        v = self.t
+        self.t += self.step
+        return v
+
+
+def test_budget_defers_writes_past_the_deadline():
+    """#164: apply stops starting new ops once the wall-clock budget elapses,
+    counting the rest as deferred (drained next sweep) instead of running past the
+    host kill. Clock advances 1s/call, budget 2.5s → 2 creates then defer."""
+    plan = ReconcilePlan(creates=tuple(Create(_desired(identity=f"m{i}")) for i in range(5)))
+    comp = FakeComposio()
+    result = apply_plan(
+        plan, composio=comp, calendar_id="primary", budget_seconds=2.5, monotonic=_Clock()
+    )
+    assert result.created == 2
+    assert result.deferred == 3
+    assert len(comp.created) == 2
+
+
+def test_budget_runs_deletes_before_creates():
+    """Deletes (dedup/orphan cleanup) get budget priority — they run first, so a
+    duplicate backlog drains even when the sweep can't also create this cycle."""
+    plan = ReconcilePlan(
+        deletes=(Delete("d1", "orphan"), Delete("d2", "orphan")),
+        creates=(Create(_desired(identity="m1")), Create(_desired(identity="m2"))),
+    )
+    comp = FakeComposio()
+    result = apply_plan(
+        plan, composio=comp, calendar_id="primary", budget_seconds=2.5, monotonic=_Clock()
+    )
+    assert result.deleted == 2
+    assert result.created == 0
+    assert result.deferred == 2
+    assert set(comp.deleted) == {"d1", "d2"}
+
+
+def test_no_budget_applies_everything():
+    """Without a budget, apply runs the whole plan (unchanged default behavior)."""
+    plan = ReconcilePlan(creates=tuple(Create(_desired(identity=f"m{i}")) for i in range(5)))
+    comp = FakeComposio()
+    result = apply_plan(plan, composio=comp, calendar_id="primary")
+    assert result.created == 5
+    assert result.deferred == 0
 
 
 def test_apply_result_totals():

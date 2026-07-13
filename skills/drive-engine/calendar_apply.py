@@ -2,25 +2,30 @@
 
 Executes a `ReconcilePlan` against a Composio calendar client: deletes orphans,
 creates new drive blocks, converts prior-gen blocks (create new + delete legacy),
-and shifts changed blocks (recreate-then-delete). This is what makes the engine
+and shifts changed blocks with an in-place PATCH. This is what makes the engine
 authoritative instead of merely observant.
 
-Atomicity mirrors the proven flight-assist pattern: a shift/convert always CREATES
-the replacement first, then deletes the old — so a transient create failure raises
-before any delete and leaves the prior block intact; a delete that 404s (already
-gone) is an idempotent success; a real delete failure after a successful create
-rolls the replacement back so no duplicate is left behind.
+A shift is a single atomic PATCH of the same event — never a recreate-then-delete
+— so a sweep killed mid-write can't leave the new block next to an undeleted old
+one (the #164 duplicate storm). A convert still CREATES the unified replacement
+before deleting the legacy event(s) (they are distinct events), rolling the
+replacement back if a legacy delete fails; a delete that 404s (already gone) is an
+idempotent success. The whole write phase is bounded by a wall-clock budget so it
+returns a clean payload under the host precheck timeout, deferring the rest to the
+next (idempotent) sweep instead of being killed mid-write (#164).
 
-Deletes need only an event id, so the 44-block drive-planner cleanup runs through
-the delete path with no create/timezone concerns. The create path builds the v3
-flat `start_datetime` + duration args and carries the unified codec description so
-the block round-trips.
+Deletes need only an event id, so the drive-planner cleanup runs through the delete
+path with no create/timezone concerns. The create path builds the v3 flat
+`start_datetime` + duration args and carries the unified codec description so the
+block round-trips.
 """
 
 from __future__ import annotations
 
 import sys
+import time
 import urllib.error
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +57,7 @@ class ApplyResult:
     updated: int = 0
     deleted: int = 0
     converted: int = 0
+    deferred: int = 0
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -90,7 +96,24 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
     colour half of #158 is deferred to the post-Composio calendar backend.
     """
     total_minutes = max(round((desired.end - desired.start).total_seconds() / 60), 1)
-    description = build_description(
+    local_start, tz_name = _start_in_local(desired.start, desired.timezone)
+    return {
+        "calendar_id": calendar_id,
+        "summary": desired.summary,
+        "start_datetime": local_start.isoformat(),
+        "event_duration_hour": total_minutes // 60,
+        "event_duration_minutes": total_minutes % 60,
+        "location": desired.destination,
+        "description": _desired_description(desired),
+        "timezone": tz_name,
+        "transparency": "transparent",
+        "exclude_organizer": True,
+    }
+
+
+def _desired_description(desired: DesiredBlock) -> str:
+    """The unified-codec description for a desired leg (identity + machine state)."""
+    return build_description(
         summary=desired.summary,
         identity=desired.identity,
         kind=desired.kind,
@@ -100,18 +123,29 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
         destination=desired.destination,
         window_end=desired.window_end,
     )
+
+
+def build_patch_args(desired: DesiredBlock, *, event_id: str, calendar_id: str) -> dict:
+    """Build `GOOGLECALENDAR_PATCH_EVENT` args to shift an existing block IN PLACE.
+
+    An update is a single atomic patch of the same event — new start/end (the
+    leave-by moved), refreshed description + location — never a recreate-then-
+    delete. So a sweep killed mid-write can no longer leave the new block next to
+    an undeleted old one: the duplicate storm's mechanism is gone (#164). `end_time`
+    is expressed in the same local zone as `start_time` so Composio re-reads both
+    wall-clocks in `timezone` and the block lands at the right instant (#83).
+    """
     local_start, tz_name = _start_in_local(desired.start, desired.timezone)
+    local_end, _ = _start_in_local(desired.end, desired.timezone)
     return {
         "calendar_id": calendar_id,
+        "event_id": event_id,
         "summary": desired.summary,
-        "start_datetime": local_start.isoformat(),
-        "event_duration_hour": total_minutes // 60,
-        "event_duration_minutes": total_minutes % 60,
+        "start_time": local_start.isoformat(),
+        "end_time": local_end.isoformat(),
         "location": desired.destination,
-        "description": description,
+        "description": _desired_description(desired),
         "timezone": tz_name,
-        "transparency": "transparent",
-        "exclude_organizer": True,
     }
 
 
@@ -140,20 +174,49 @@ def _delete(composio, *, calendar_id: str, event_id: str | None, result: ApplyRe
     return True
 
 
-def apply_plan(plan: ReconcilePlan, *, composio, calendar_id: str = "primary") -> ApplyResult:
+def apply_plan(
+    plan: ReconcilePlan,
+    *,
+    composio,
+    calendar_id: str = "primary",
+    budget_seconds: float | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> ApplyResult:
     """Execute a reconcile plan against the calendar. Returns applied counts.
 
-    Order: deletes (cleanup) first, then creates, converts, and updates. Each
-    convert/update creates the replacement before deleting the old so a failure
-    never leaves a gap; a failed post-create delete rolls the replacement back.
+    Order: deletes (cleanup — drains any duplicate/orphan backlog), then creates,
+    converts, updates.
+
+    Updates are an in-place PATCH of the same event, so an update can never leave
+    a duplicate even if the sweep is killed the instant after — the recreate-then-
+    delete that produced the #164 storm is gone. Converts (adopting a legacy event
+    into a unified one — two distinct events) still create-then-delete atomically.
+
+    `budget_seconds` bounds the wall-clock spent on writes so the sweep returns a
+    clean payload instead of being killed mid-write past the host precheck timeout
+    (#164). Each write UNIT is atomic — the budget is checked BEFORE starting one,
+    never mid-unit — so bounding never splits a create/patch/convert. Ops not
+    started this sweep are counted in `deferred` and drained on the next sweep;
+    because the reconcile is idempotent (matches existing blocks), resuming never
+    duplicates. `monotonic` is injected for deterministic tests.
     """
     result = ApplyResult()
+    deadline = monotonic() + budget_seconds if budget_seconds is not None else None
+
+    def over_budget() -> bool:
+        return deadline is not None and monotonic() >= deadline
 
     for d in plan.deletes:
+        if over_budget():
+            result.deferred += 1
+            continue
         if _delete(composio, calendar_id=calendar_id, event_id=d.event_id, result=result):
             result.deleted += 1
 
     for c in plan.creates:
+        if over_budget():
+            result.deferred += 1
+            continue
         try:
             composio.create_event(build_create_args(c.desired, calendar_id=calendar_id))
         except _WRITE_ERRORS as exc:
@@ -162,6 +225,9 @@ def apply_plan(plan: ReconcilePlan, *, composio, calendar_id: str = "primary") -
         result.created += 1
 
     for cv in plan.converts:
+        if over_budget():
+            result.deferred += 1
+            continue
         try:
             created = composio.create_event(build_create_args(cv.desired, calendar_id=calendar_id))
         except _WRITE_ERRORS as exc:
@@ -182,16 +248,22 @@ def apply_plan(plan: ReconcilePlan, *, composio, calendar_id: str = "primary") -
             _delete(composio, calendar_id=calendar_id, event_id=new_id, result=result)
 
     for u in plan.updates:
-        try:
-            created = composio.create_event(build_create_args(u.desired, calendar_id=calendar_id))
-        except _WRITE_ERRORS as exc:
-            result.errors.append(f"update-create {u.desired.identity}: {exc}")
+        if over_budget():
+            result.deferred += 1
             continue
-        if _delete(composio, calendar_id=calendar_id, event_id=u.event_id, result=result):
-            result.updated += 1
-        else:
-            # Old block survived; roll back the replacement so no duplicate remains.
-            new_id = _created_id(created)
-            _delete(composio, calendar_id=calendar_id, event_id=new_id, result=result)
+        if u.event_id is None:
+            # A matched block with no parseable event id can't be patched; the
+            # reconcile only pairs an Update to a real fetched block, so this is
+            # a defensive guard, logged and left for the next sweep.
+            result.errors.append(f"update {u.desired.identity}: no event_id to patch")
+            continue
+        try:
+            composio.patch_event(
+                build_patch_args(u.desired, event_id=u.event_id, calendar_id=calendar_id)
+            )
+        except _WRITE_ERRORS as exc:
+            result.errors.append(f"update-patch {u.desired.identity}: {exc}")
+            continue
+        result.updated += 1
 
     return result
