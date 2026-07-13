@@ -8,7 +8,7 @@ pending invites the operator had to RSVP to. The unified engine's create args no
 attendee — the block has no attendees and shows as a plain accepted event. Verified
 against the live Composio toolkit (create with `exclude_organizer` → zero attendees).
 
-The companion ask — a distinct calendar colour (Tangerine / `colorId: 6`) — is deferred:
+The companion ask — a distinct calendar colour (Tangerine / `colorId: "6"`) — is deferred:
 no Composio Google Calendar action (create / update / patch / quick-add) exposes an event
 colour field in the deployed toolkit, so it cannot be set through the current write path.
 Tracked separately, blocked on the Composio retirement / workspace-MCP migration.
