@@ -78,6 +78,7 @@ from state import (  # noqa: E402
     write_flight_state,
 )
 from trip_origin import resolve_effective_home  # noqa: E402
+from trip_window import evaluate_trip_window  # noqa: E402
 from wake_rules import detect_wake_events  # noqa: E402
 
 # Cadence ladder (minutes). Keyed by `computed_status`; the
@@ -157,7 +158,20 @@ def main() -> int:
     # subsequent run, so the outermost catch emits a safe-shape JSON +
     # writes the traceback to stderr per error-handling.md's carve-out.
     try:
-        events = _run_cycle(now_utc=datetime.now(timezone.utc))
+        now_utc = datetime.now(timezone.utc)
+        # Defense-in-depth trip-window gate (#147). The host pre-spawn gate
+        # (jbaruch/nanoclaw#754) should already keep the container from spawning
+        # off-window; if one spawns anyway, bail here — before any byAir call —
+        # reading the SAME travel-db.json with the SAME formula so the two layers
+        # agree. Fail-open on a corrupt file never blinds an active trip.
+        window = evaluate_trip_window(now_utc=now_utc)
+        if not window.in_window:
+            # Keep stdout to the documented contract; the human-readable
+            # rationale goes to stderr for debug, not into the JSON payload.
+            print(f"flight-assist precheck: {window.reason}", file=sys.stderr)
+            _emit({"wake_agent": False, "data": {"reason": "outside_trip_window"}})
+            return 0
+        events = _run_cycle(now_utc=now_utc)
         _emit({"wake_agent": bool(events), "data": {"events": events}})
         return 0
     except Exception:  # noqa: BLE001 — outer-boundary-process-contract

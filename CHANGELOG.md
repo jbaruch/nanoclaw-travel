@@ -1,5 +1,27 @@
 # Changelog
 
+### Added — flight-assist trip-window defense-in-depth (#147)
+
+The host now owns the primary control: a pre-spawn gate (jbaruch/nanoclaw#754) that
+reads the group `travel-db.json` and does not spawn the flight-assist container outside
+a trip window, so the `*/2` cadence costs nothing off-trip. This adds the plugin-side
+belt-and-suspenders: `trip_window.evaluate_trip_window` reads the **same** file with the
+**same** window (`(start − 24h) ≤ now < (end + 24h)`, union of trips) and the **same**
+asymmetric fail semantics (absent → out of window; corrupt / unreadable → fail open so a
+bad file never blinds an active trip). The precheck consults it first and, if a container
+was spawned off-window anyway, exits before any byAir call with
+`{"wake_agent": false, "data": {"reason": "outside_trip_window"}}`.
+
+`travel-db.json` (owned by `check-travel-bookings`, written nightly) is the single source
+of truth for active trips — no second trip store. As a cross-plugin non-owner reader,
+`trip_window` gates on `schema_version` (`coding-policy: stateful-artifacts`): a version
+other than the accepted `1` is no-usable-state and **fails open**, so a cross-pipeline
+schema bump defers to the host gate instead of blinding a trip. The trip-window gate is
+trip-level and stacks with the existing flight-level `_POLL_HORIZON_HOURS = 24`. Documented
+in `skills/flight-assist/state-schema.md` and the owner's reader contract in
+`skills/check-travel-bookings/state-schema.md`; `FLIGHT_ASSIST_TRAVEL_DB` overrides the
+path for tests.
+
 ## 0.2.40 — 2026-07-13
 
 ### Fixed — drive blocks show as accepted, not an unconfirmed invite (#158)

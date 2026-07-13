@@ -84,6 +84,16 @@ Origin-resolution ladder used by `precheck._resolve_time_to_leave_origin`:
 
 A `schema_version` mismatch (host bumped) returns `None` from the reader and the precheck falls back to `home_address`, matching the no-snapshot-on-disk path.
 
+### `travel-db.json` — trip-window gate (#147)
+
+`/workspace/group/travel-db.json` is the single source of truth for **which trips are active**. **Owner: `check-travel-bookings`** (`scripts/build-travel-db.py`, run nightly); its schema lives in `skills/check-travel-bookings/state-schema.md` (`trips` map keyed by slug, each with `start`/`end` `YYYY-MM-DD` dates). flight-assist is a **non-owner reader** — it never writes this file and keeps no second trip store.
+
+The primary control is **host-side**: a pre-spawn gate (jbaruch/nanoclaw#754, `src/spawn-gates.ts`) reads this file and does **not** spawn the flight-assist container outside a trip window, so the `*/2` cadence costs nothing off-trip. The precheck's `trip_window.evaluate_trip_window` is **defense-in-depth**: if a container spawns anyway, it reads the same file with the same window and exits before any byAir call — emitting `{"wake_agent": false, "data": {"reason": "outside_trip_window"}}`.
+
+- **Window (mirrors the host byte-for-byte):** a trip covers `now` when `(start − 24h) ≤ now < (end + 24h)`; union over all trips. `FLIGHT_ASSIST_TRAVEL_DB` overrides the path for tests.
+- **Fail semantics (asymmetric, safety-relevant):** file **absent** → out of window (no itinerary → nothing to act on); present but **unreadable / not JSON / no well-formed `trips` map** → in window (**fail OPEN**) so a corrupt file never blinds an active trip; **valid** → evaluate, skipping any trip whose dates don't parse. See `trip_window.py` for the implementation.
+- **Stacks with the per-flight poll horizon:** the trip-window gate is **trip-level** (should this container run at all); `precheck._POLL_HORIZON_HOURS = 24` is **flight-level** (which flights inside an active trip are close enough to poll). They compose — a long trip stays in-window while individual flights still wait for their 24h poll horizon.
+
 ### `flight-<flight_id>.json`
 
 Per-flight state record. One file per tracked flight.
