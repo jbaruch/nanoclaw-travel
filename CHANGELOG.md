@@ -1,6 +1,6 @@
 # Changelog
 
-### Fixed — drive-engine routing storm hung the sweep (#171)
+### Fixed — drive-engine routing storm hung the sweep (#172)
 
 The airport-endpoint fix in #165 (`"STN airport"` instead of a bare `"STN"`) made
 airport legs geocode *successfully* — but many airports return Google Distance

@@ -59,7 +59,7 @@ class PlanBudgetExceeded(Exception):
     a many-leg itinerary can route for minutes. The caller injects `has_budget`
     and, on exhaustion, this aborts the plan build BEFORE any partial `desired`
     set reaches the reconcile — a partial set would look like orphaned blocks and
-    get deleted, so the sweep must skip the whole cycle cleanly instead (#171)."""
+    get deleted, so the sweep must skip the whole cycle cleanly instead (#172)."""
 
 
 @dataclass(frozen=True)
@@ -298,7 +298,7 @@ def build_reconcile_plan(
             # Poll the routing budget before this leg. A leg costs one or more
             # provider round trips; on exhaustion abort the whole build rather
             # than route on and hang, or emit a partial plan the reconcile would
-            # read as orphaned blocks to delete (#171).
+            # read as orphaned blocks to delete (#172).
             if has_budget is not None and not has_budget():
                 raise PlanBudgetExceeded(
                     f"routing budget exhausted after {len(desired)} built, {len(skipped)} skipped"

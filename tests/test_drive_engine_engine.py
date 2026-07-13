@@ -237,11 +237,11 @@ def test_no_home_off_trip_skips_rather_than_routing_blind():
     assert any("unresolved" in s for s in result.skipped)
 
 
-# --- routing budget (#171) --------------------------------------------------
+# --- routing budget (#172) --------------------------------------------------
 
 
 def test_plan_budget_exhausted_aborts_before_routing():
-    """#171: when the injected budget is already spent, the build raises rather
+    """#172: when the injected budget is already spent, the build raises rather
     than routing the leg — so a slow provider-failover storm can never run the
     plan phase for minutes and hang the container."""
     routed: list[tuple[str, str]] = []
@@ -264,7 +264,7 @@ def test_plan_budget_exhausted_aborts_before_routing():
 
 
 def test_plan_budget_polled_per_leg_and_aborts_without_partial_plan():
-    """#171: the budget is polled once per leg; the first exhausted poll aborts
+    """#172: the budget is polled once per leg; the first exhausted poll aborts
     the WHOLE build (never a partial `ReconcilePlan` the reconcile would read as
     orphaned blocks to delete)."""
     polls = {"n": 0}

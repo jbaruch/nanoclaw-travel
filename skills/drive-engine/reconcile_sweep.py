@@ -68,7 +68,7 @@ _SWEEP_WALL_CLOCK_BUDGET_SECONDS = 27.0
 # so the write phase still has room after it. Each airport leg can cost a slow
 # provider failover (Google ZERO_RESULTS on an airport → three sequential TomTom
 # calls at up to 10s each), so an unbounded plan phase could route for minutes and
-# blow past any container timeout (#171). On exhaustion the whole cycle skips
+# blow past any container timeout (#172). On exhaustion the whole cycle skips
 # cleanly (no partial plan — a partial `desired` set reads as orphaned blocks to
 # delete). With `make_route` memoization a normal itinerary never reaches this.
 _PLAN_PHASE_BUDGET_SECONDS = 20.0
@@ -81,7 +81,7 @@ def make_route(maps, *, cache: dict | None = None) -> RouteFn:
     dedupes identical (origin, destination) pairs within one sweep — an airport
     that is both a departure destination and a transfer origin is routed once, not
     per leg. Traffic is stable across a single ~20s sweep, so a cached duration is
-    the same answer the provider would return again (#171). A failed route caches
+    the same answer the provider would return again (#172). A failed route caches
     None too, so a dead endpoint isn't re-attempted every leg.
     """
     import urllib.error
@@ -323,11 +323,11 @@ def main() -> int:
         maps = MapsClient.from_env()
         # One memoizing route closure for the whole sweep — meeting legs and
         # airport legs share it, so a repeated (origin, destination) pair costs one
-        # provider round trip, not one per leg (#171).
+        # provider round trip, not one per leg (#172).
         route = make_route(maps)
 
         # Deadline for the routing phase, so a slow provider-failover storm can't
-        # run the plan phase for minutes (#171). Polled once per airport leg.
+        # run the plan phase for minutes (#172). Polled once per airport leg.
         plan_deadline = sweep_start + _PLAN_PHASE_BUDGET_SECONDS
 
         def has_plan_budget() -> bool:

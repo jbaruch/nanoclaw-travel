@@ -251,7 +251,7 @@ def test_unresolved_airport_skipped():
     assert any("unresolved airport" in s for s in result.skipped)
 
 
-# --- make_route memoization (#171) ------------------------------------------
+# --- make_route memoization (#172) ------------------------------------------
 
 
 class _FakeMaps:
@@ -278,7 +278,7 @@ class _FakeMaps:
 
 def test_make_route_memoizes_repeated_pair():
     """A repeated (origin, destination) pair — an airport that is both a departure
-    destination and a transfer origin — routes ONCE, not per leg (#171)."""
+    destination and a transfer origin — routes ONCE, not per leg (#172)."""
     maps = _FakeMaps()
     route = make_route(maps)
     first = route("home", "STN airport")
@@ -298,7 +298,7 @@ def test_make_route_distinct_pairs_each_route_once():
 
 def test_make_route_caches_failure_as_none():
     """A dead endpoint caches None so it isn't re-attempted every leg (each retry
-    is the same slow provider-failover that caused the storm) (#171)."""
+    is the same slow provider-failover that caused the storm) (#172)."""
     maps = _FakeMaps(fail=True)
     route = make_route(maps)
     assert route("home", "STN airport") is None
