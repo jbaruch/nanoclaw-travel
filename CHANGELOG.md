@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.39 — 2026-07-13
+
 ### Fixed — flight-assist day-before notification: wrong flight code + hallucinated airport (#159)
 
 Two independent defects in the day-before notification, both trust-eroding though the
