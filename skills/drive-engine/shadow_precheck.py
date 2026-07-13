@@ -201,11 +201,17 @@ def main() -> int:
             read_config,
             read_flight_state,
         )
-        from trip_origin import load_travel_schedule, resolve_effective_home
+        from trip_origin import load_travel_schedule
 
         now = datetime.now(timezone.utc)
         config = read_config() or {}
-        home = resolve_effective_home(config.get("home_address"), now=now)
+        # The STATIC configured home — NOT resolve_effective_home(now), which
+        # returns the trip-current lodging. position_at already does the
+        # time-correct trip-aware resolution per leg from the schedule; its
+        # home_address is only the off-trip fallback, so passing a trip-current
+        # value here would mis-route an off-trip anchor (a #154-class bug).
+        home_config = config.get("home_address")
+        home = home_config if isinstance(home_config, str) else None
         schedule = load_travel_schedule()
         records = [
             record
