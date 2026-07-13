@@ -35,6 +35,7 @@ class FakeLeg:
     arrive_by: datetime | None = None
     depart_after: datetime | None = None
     anchor_note: str | None = None
+    gap_seconds: int | None = None
 
 
 @dataclass
@@ -113,6 +114,30 @@ def test_plausible_drive_at_threshold_kept():
     m = FakeMeeting("m1", "Offsite", (FakeLeg("outbound", "Home", "Venue", arrive_by=_dt(9)),))
     blocks, _ = meeting_desired_blocks([m], route=const_route(180))  # exactly 3h
     assert len(blocks) == 1
+
+
+def test_bridge_drive_longer_than_gap_is_suppressed():
+    # A bridge leg whose drive doesn't fit the gap between two meetings can't be
+    # made — suppress it (the "5h drive in a 45-min gap" case), don't create it.
+    m = FakeMeeting(
+        "m1",
+        "Second meeting",
+        (FakeLeg("bridge", "Venue A", "Venue B", arrive_by=_dt(9), gap_seconds=45 * 60),),
+    )
+    blocks, skipped = meeting_desired_blocks([m], route=const_route(90))  # 90min > 45min gap
+    assert blocks == []
+    assert any("exceeds the" in s and "gap" in s for s in skipped)
+
+
+def test_bridge_drive_within_gap_is_kept():
+    m = FakeMeeting(
+        "m1",
+        "Second meeting",
+        (FakeLeg("bridge", "Venue A", "Venue B", arrive_by=_dt(9), gap_seconds=45 * 60),),
+    )
+    blocks, _ = meeting_desired_blocks([m], route=const_route(20))  # 20min < 45min gap
+    assert len(blocks) == 1
+    assert blocks[0].kind == "meeting_outbound"
 
 
 # --- skip paths -------------------------------------------------------------

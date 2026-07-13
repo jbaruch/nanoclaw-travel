@@ -105,6 +105,17 @@ def meeting_desired_blocks(
                 skipped.append(f"{tag}: {minutes}min drive implausible — suppressed (away?)")
                 continue
 
+            # Bridge leg: the drive must fit the gap between two consecutive
+            # meetings. A drive longer than the gap can't be made (the "5h drive
+            # inside a 45-min gap" case, #85) — suppress rather than create it.
+            gap = getattr(leg, "gap_seconds", None)
+            if isinstance(gap, int) and drive.total_seconds() > gap:
+                skipped.append(
+                    f"{tag}: {int(drive.total_seconds() // 60)}min drive exceeds the "
+                    f"{gap // 60}min gap — suppressed"
+                )
+                continue
+
             kind = _DIRECTION_KIND.get(leg.direction)
             if kind is None:
                 skipped.append(f"{tag}: unknown direction")
