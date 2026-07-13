@@ -290,6 +290,13 @@ def main() -> int:
         }
         print(json.dumps(payload))
         return 0
+    # outer-boundary-process-contract:
+    #   caller's silent-failure shape — the scheduler reads a non-zero exit OR
+    #     malformed stdout as "don't wake this cycle";
+    #   what this catch emits — a valid {"wake_agent": false, ...} payload on
+    #     stdout (traceback on stderr) and exit 0, so the sweep is skipped cleanly;
+    #   why propagation breaks the contract — an uncaught exception would exit
+    #     non-zero and print no payload, silently disabling the sweep.
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
         print(f"drive-engine precheck failed, no wake: {exc}", file=sys.stderr)
