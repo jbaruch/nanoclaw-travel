@@ -257,6 +257,30 @@ def test_find_events_drains_all_pages_and_merges(client):
     ]
 
 
+def test_find_events_tolerates_flat_and_wrapped_page_shapes(client):
+    """Page accumulation + token follow the same shapes callers' `_items` accept.
+
+    The live toolkit double-nests, but Composio is mid-retirement; a flat
+    `items` page (token at top level) and a `response_data` wrap must still
+    drain, not silently return an empty merge or stop after page one.
+    """
+    pages = [
+        _ok({"items": [{"id": "e1"}], "nextPageToken": "tok-2"}),  # flat shape
+        _ok({"response_data": {"items": [{"id": "e2"}]}}),  # wrapped, terminal
+    ]
+    calls = []
+
+    def fake_urlopen(request, **kwargs):
+        calls.append(json.loads(request.data)["arguments"].get("pageToken"))
+        return pages[len(calls) - 1]
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        result = client.find_events({"calendar_id": "c"})
+
+    assert calls == [None, "tok-2"]
+    assert result["event_data"]["event_data"] == [{"id": "e1"}, {"id": "e2"}]
+
+
 def test_find_events_raises_when_token_never_clears(client):
     """A nextPageToken that never clears is bounded, not an infinite loop."""
 

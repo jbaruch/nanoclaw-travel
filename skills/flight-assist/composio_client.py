@@ -256,25 +256,41 @@ class ComposioClient:
         return body.get("data") or {}
 
 
-def _find_event_page_items(data: object) -> list:
-    """Events from one FIND_EVENT page (double-nested `event_data.event_data`).
+def _find_event_containers(data: object) -> tuple[dict, ...]:
+    """The dict containers a FIND_EVENT page may nest its payload under.
 
-    Returns `[]` for any shape without that list — a page carrying no events is
-    a normal terminal page, not an error.
+    The live v3 response double-nests events at `data.event_data.event_data`,
+    but the tolerant `_items` extraction callers already run also accepts a flat
+    payload and a `response_data` wrap (Composio is mid-retirement, so the shape
+    can shift). Page accumulation and the page token walk the SAME containers so
+    a shape shift doesn't silently return an empty merge (or drop the token and
+    stop after page one).
     """
-    if isinstance(data, dict):
-        inner = data.get("event_data")
-        if isinstance(inner, dict) and isinstance(inner.get("event_data"), list):
-            return inner["event_data"]
+    if not isinstance(data, dict):
+        return ()
+    return tuple(
+        c for c in (data, data.get("event_data"), data.get("response_data")) if isinstance(c, dict)
+    )
+
+
+def _find_event_page_items(data: object) -> list:
+    """Events from one FIND_EVENT page, tolerant of the shapes `_items` accepts.
+
+    Returns `[]` for any shape without an event list — a page carrying no events
+    is a normal terminal page, not an error.
+    """
+    for container in _find_event_containers(data):
+        for key in ("event_data", "items"):
+            value = container.get(key)
+            if isinstance(value, list):
+                return value
     return []
 
 
 def _find_event_next_page_token(data: object) -> str | None:
     """The `nextPageToken` from a FIND_EVENT page, or None when no page follows."""
-    if isinstance(data, dict):
-        inner = data.get("event_data")
-        if isinstance(inner, dict):
-            token = inner.get("nextPageToken")
-            if isinstance(token, str) and token:
-                return token
+    for container in _find_event_containers(data):
+        token = container.get("nextPageToken")
+        if isinstance(token, str) and token:
+            return token
     return None
