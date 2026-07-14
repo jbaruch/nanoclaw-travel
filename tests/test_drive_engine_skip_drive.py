@@ -20,11 +20,11 @@ from block_codec import build_description  # noqa: E402
 from skip_drive import SkipTarget, resolve_skip  # noqa: E402
 
 UTC = timezone.utc
-NOW = datetime(2026, 7, 14, 12, 0, tzinfo=UTC)
+NOW = datetime(2020, 7, 14, 12, 0, tzinfo=UTC)
 
 
 def _anchor(day, h, mi=0):
-    return datetime(2026, 7, day, h, mi, tzinfo=UTC)
+    return datetime(2020, 7, day, h, mi, tzinfo=UTC)
 
 
 def _event(
@@ -44,7 +44,7 @@ def _event(
     return {
         "id": eid,
         "summary": summary,
-        "start": {"dateTime": start_local or "2026-07-18T10:35:00-05:00"},
+        "start": {"dateTime": start_local or "2020-07-18T10:35:00-05:00"},
         "description": desc,
     }
 
@@ -74,8 +74,8 @@ def test_no_match_returns_nothing():
 def test_same_name_meetings_are_ambiguous():
     # Two distinct meetings both named "Swimming Practice" -> hand back candidates.
     events = [
-        _event("s1", "mon", meeting="Swimming Practice", start_local="2026-07-20T10:30:00-05:00"),
-        _event("s2", "wed", meeting="Swimming Practice", start_local="2026-07-22T12:30:00-05:00"),
+        _event("s1", "mon", meeting="Swimming Practice", start_local="2020-07-20T10:30:00-05:00"),
+        _event("s2", "wed", meeting="Swimming Practice", start_local="2020-07-22T12:30:00-05:00"),
     ]
     target, candidates = resolve_skip(events, summary="Swimming Practice", now=NOW)
     assert target is None

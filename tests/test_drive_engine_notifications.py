@@ -189,9 +189,9 @@ def _legs(*entries):
 def test_meeting_legs_grouped_one_per_meeting_earliest_anchor():
     applied = ApplyResult()
     applied.added_meeting_legs = _legs(
-        ("mtgA", "Massage", "Sat Jul 18, 10:35", "2026-07-18T15:35:00+00:00"),  # return
-        ("mtgA", "Massage", "Sat Jul 18, 09:50", "2026-07-18T14:50:00+00:00"),  # outbound (earlier)
-        ("mtgB", "Dentist", "Mon Jul 20, 08:00", "2026-07-20T13:00:00+00:00"),
+        ("mtgA", "Massage", "Sat Jul 18, 10:35", "2020-07-18T15:35:00+00:00"),  # return
+        ("mtgA", "Massage", "Sat Jul 18, 09:50", "2020-07-18T14:50:00+00:00"),  # outbound (earlier)
+        ("mtgB", "Dentist", "Mon Jul 20, 08:00", "2020-07-20T13:00:00+00:00"),
     )
     payload = build_sweep_payload(applied, [])
     added = payload["data"]["added_meeting_drives"]
@@ -220,7 +220,7 @@ def test_wake_true_on_material_update_alone():
             "minutes": 5,
             "direction": "sooner",
             "when": "Sat Jul 18, 10:35",
-            "anchor": "2026-07-18T15:35:00+00:00",
+            "anchor": "2020-07-18T15:35:00+00:00",
         }
     ]
     payload = build_sweep_payload(applied, [])
@@ -239,7 +239,7 @@ def test_material_deduped_per_meeting_largest_swing():
             "minutes": 3,
             "direction": "sooner",
             "when": "a",
-            "anchor": "2026-07-18T14:00:00+00:00",
+            "anchor": "2020-07-18T14:00:00+00:00",
         },
         {
             "identity": "m",
@@ -247,7 +247,7 @@ def test_material_deduped_per_meeting_largest_swing():
             "minutes": 8,
             "direction": "sooner",
             "when": "b",
-            "anchor": "2026-07-18T16:00:00+00:00",
+            "anchor": "2020-07-18T16:00:00+00:00",
         },
     ]
     payload = build_sweep_payload(applied, [])
