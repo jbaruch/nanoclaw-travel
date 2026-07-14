@@ -17,10 +17,17 @@ the unified block's identity IS the meeting id (`meeting_source` sets
 
 CLI: `python3 skip_drive.py '<json-request>'` where the request is
 `{"summary": "Massage"}`. The skip is timestamped by the process clock (a live
-skip happens "now"), so the request carries no time field. Prints a JSON result:
+skip happens "now"), so the request carries no time field. Always prints a JSON
+result to stdout (never a bare traceback — the skill parses stdout):
   {"skipped": true, "meeting": "Massage", "removed": 2}
   {"skipped": false, "unmatched": "Massage"}
   {"skipped": false, "ambiguous": "Swimming Practice", "candidates": [{"when": ...}, ...]}
+  {"skipped": false, "error": "<Type>: <message>"}   # operational failure
+
+Exit codes: 0 = a result was produced (including unmatched / ambiguous — the
+script ran fine, the meeting just wasn't uniquely resolved); 1 = an operational
+failure (bad Composio env, transport error, skip-store write failure) — the
+`error` shape above; 2 = a caller/usage error (missing or non-JSON argument).
 """
 
 from __future__ import annotations
@@ -177,7 +184,19 @@ def main(argv: list[str]) -> int:
     except json.JSONDecodeError as exc:
         print(json.dumps({"skipped": False, "error": f"invalid JSON request: {exc}"}))
         return 2
-    print(json.dumps(skip_meeting_drive(request)))
+    try:
+        result = skip_meeting_drive(request)
+    except Exception as exc:  # noqa: BLE001 — outer-boundary-process-contract
+        # The skill invokes this as a subprocess and parses ONLY stdout JSON. An
+        # uncaught exception (bad env from `ComposioClient.from_env`, a transport
+        # error from the fetch / delete, a skip-store write failure) would emit a
+        # Python traceback the skill can't read — it would look like "no result".
+        # Emit the documented `{"skipped": false, "error": ...}` shape and a
+        # non-zero exit so the skill reports the failure instead of hanging on
+        # unparseable output. KeyboardInterrupt / SystemExit still propagate.
+        print(json.dumps({"skipped": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    print(json.dumps(result))
     return 0
 
 

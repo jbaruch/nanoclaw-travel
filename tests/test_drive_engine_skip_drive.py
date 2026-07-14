@@ -7,6 +7,7 @@ whose descriptions round-trip through the unified block codec.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
+import skip_drive  # noqa: E402
 from block_codec import build_description  # noqa: E402
 from skip_drive import SkipTarget, resolve_skip  # noqa: E402
 
@@ -98,3 +100,41 @@ def test_non_drive_events_ignored():
     target, _ = resolve_skip(events, summary="Massage", now=NOW)
     assert target is not None and target.identity == "mtgA"
     assert set(target.event_ids) == {"d1"}
+
+
+# --- CLI boundary: always JSON, never a bare traceback ----------------------
+
+
+def test_cli_wraps_operational_failure_as_json_and_nonzero(capsys, monkeypatch):
+    # An uncaught exception (bad Composio env, transport error, skip-store
+    # failure) must surface as the documented error shape + exit 1, not a
+    # traceback the skill can't parse.
+    def boom(request):
+        raise RuntimeError("composio down")
+
+    monkeypatch.setattr(skip_drive, "skip_meeting_drive", boom)
+    rc = skip_drive.main(["skip_drive.py", '{"summary": "Massage"}'])
+    assert rc == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["skipped"] is False and "composio down" in out["error"]
+
+
+def test_cli_happy_path_returns_zero(capsys, monkeypatch):
+    monkeypatch.setattr(
+        skip_drive, "skip_meeting_drive", lambda request: {"skipped": True, "meeting": "Massage"}
+    )
+    rc = skip_drive.main(["skip_drive.py", '{"summary": "Massage"}'])
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out)["skipped"] is True
+
+
+def test_cli_missing_arg_is_usage_error(capsys):
+    rc = skip_drive.main(["skip_drive.py"])
+    assert rc == 2
+    assert json.loads(capsys.readouterr().out)["skipped"] is False
+
+
+def test_cli_bad_json_is_usage_error(capsys):
+    rc = skip_drive.main(["skip_drive.py", "not json"])
+    assert rc == 2
+    assert "invalid JSON" in json.loads(capsys.readouterr().out)["error"]

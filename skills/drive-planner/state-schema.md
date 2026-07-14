@@ -4,7 +4,7 @@ Documents the on-disk state files the drive-planner skill reads and writes. Per 
 
 ## Owner Skill
 
-`drive-planner` (this plugin) is the sole owner. Only this skill migrates `schema_version`. The sweep is both writer and reader; no other skill reads or writes these files.
+`drive-planner`'s `skip_state.py` (now a library — the drive-planner sweep is retired, #156) owns the schema: only it migrates `schema_version`. The live writer and reader is **drive-engine**, through that owner API — its skip action (`skip_drive.py`) writes via `add_skip`, and its sweep (`reconcile_sweep.py`) reads via `load_active_skips`. No skill rewrites the file directly, so the owner's shape control is intact; no other skill reads or writes it.
 
 ## State Directory
 
@@ -33,8 +33,8 @@ Fields:
 
 Writer / reader contract:
 
-- **Writer** — the skip-reply path calls `apply.py remove`, which derives the expiry: the request's `meeting_end` when present, otherwise the latest of the deleted blocks' arrive-by values — both lapse the skip once the meeting is past. `add_skip(meeting_id, expires=, now=)` records it; `clear_skip(meeting_id, now=)` undoes it; `prune(now)` reclaims disk.
-- **Reader** — the sweep calls `load_active_skips(now)` and passes the result to `scan(skip_state=...)`. `scan.py` consumes the returned `{meeting_id: expiry}` mapping; it never touches the file.
+- **Writer** — drive-engine's skip-reply path, `skip_drive.py` (the retired drive-planner `apply.py remove` no longer runs). It resolves the meeting by summary, deletes its drive blocks, and calls `add_skip(meeting_id, expires=, now=)` with the expiry derived from the latest matched block anchor (meeting end) plus a pad, so the skip lapses once the meeting is past. `clear_skip(meeting_id, now=)` undoes a skip; `prune(now)` reclaims disk. All three go through the owner (`skip_state.py`) API.
+- **Reader** — drive-engine's sweep (`reconcile_sweep.py`) calls `load_active_skips(now)` and passes the result to `scan(skip_state=...)` (the meeting classifier it shares with the retired drive-planner). `scan.py` consumes the returned `{meeting_id: expiry}` mapping; it never touches the file.
 
 Tolerance:
 

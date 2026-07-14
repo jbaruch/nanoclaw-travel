@@ -8,20 +8,21 @@ this module returns and buckets a still-active skip as `skipped` instead of
 `needs_decision`.
 
 Skips expire. A skip is meaningless once its meeting is over, so the writer
-(the drive-planner sweep) sets each skip's expiry to the meeting's end; once
-that passes, `load_active_skips` drops it and the id would re-enter
-`needs_decision` if it ever recurred. Expiry is also the safety valve
-against a skip file that silently suppresses a meeting forever.
+sets each skip's expiry to the meeting's end; once that passes,
+`load_active_skips` drops it and the id would re-enter `needs_decision` if it
+ever recurred. Expiry is also the safety valve against a skip file that
+silently suppresses a meeting forever.
 
 State file (per `coding-policy: stateful-artifacts`; see `state-schema.md`):
     <state_dir>/skip-state.json
     {"schema_version": 1, "skips": {"<meeting_id>": "<ISO-8601 expiry>"}}
 
 Owner / contract:
-    drive-planner is the sole owner. The sweep WRITES via `add_skip` /
-    `clear_skip` / `prune`; the sweep READS via `load_active_skips` and
-    feeds the result to `scan(skip_state=...)`. Only this module migrates
-    `schema_version`.
+    This module owns the SHAPE — only it migrates `schema_version`. The
+    drive-planner sweep that used to write is retired (#156); the live writer
+    and reader is drive-engine, through this module's API: `skip_drive.py`
+    WRITES via `add_skip` / `clear_skip` / `prune`, and `reconcile_sweep.py`
+    READS via `load_active_skips`, feeding the result to `scan(skip_state=...)`.
 
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
