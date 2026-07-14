@@ -70,6 +70,18 @@ ACTION_CREATE_EVENT = "GOOGLECALENDAR_CREATE_EVENT"
 ACTION_PATCH_EVENT = "GOOGLECALENDAR_PATCH_EVENT"
 ACTION_DELETE_EVENT = "GOOGLECALENDAR_DELETE_EVENT"
 
+# FIND_EVENT pagination. The live v3 response double-nests events at
+# data.event_data.event_data and carries data.event_data.nextPageToken while
+# more pages remain (verified against the NAS). Left to its default the action
+# returns only the first ~10 events, so a caller reconciles against a partial
+# window (#171: truncated current_blocks defeats dedup -> duplicate storm).
+# maxResults=2500 (Google Calendar's max page size) drains any realistic window
+# in a single call; the nextPageToken loop is the safety net for a window that
+# still exceeds one page. _MAX_PAGES bounds the loop so a token that never
+# clears can't spin forever.
+_FIND_EVENT_PAGE_SIZE = 2500
+_FIND_EVENT_MAX_PAGES = 40
+
 
 class ComposioError(Exception):
     """Raised when Composio returns `successful: false` for a tool call.
@@ -154,8 +166,36 @@ class ComposioClient:
         return self.execute(ACTION_LIST_CALENDARS, arguments or {})
 
     def find_events(self, arguments: dict) -> dict:
-        """Find events by calendar + time window (`GOOGLECALENDAR_FIND_EVENT`)."""
-        return self.execute(ACTION_FIND_EVENTS, arguments)
+        """Find events by calendar + time window, draining the COMPLETE window.
+
+        `GOOGLECALENDAR_FIND_EVENT` returns at most one page per call (~10
+        events by default, up to `maxResults`). This method sets `maxResults`
+        and follows `nextPageToken` until the window is exhausted, then returns
+        a single response whose `event_data.event_data` holds the merged events
+        — the same shape a one-page response has, so a caller's own event
+        extraction is unchanged (#171). Without this, callers reconcile against
+        a truncated first page and re-create everything they can't see.
+
+        Raises:
+            ComposioError: on a tool-level failure (per `execute`), or if the
+                window needs more than `_FIND_EVENT_MAX_PAGES` pages to drain
+                (an implausibly large window, or a `nextPageToken` that never
+                clears).
+        """
+        merged: list = []
+        page_args = {**arguments, "maxResults": _FIND_EVENT_PAGE_SIZE}
+        for _ in range(_FIND_EVENT_MAX_PAGES):
+            data = self.execute(ACTION_FIND_EVENTS, page_args)
+            merged.extend(_find_event_page_items(data))
+            token = _find_event_next_page_token(data)
+            if not token:
+                return {"event_data": {"event_data": merged}}
+            page_args = {**page_args, "pageToken": token}
+        raise ComposioError(
+            f"find_events: window did not drain within {_FIND_EVENT_MAX_PAGES} pages "
+            f"(>{_FIND_EVENT_MAX_PAGES * _FIND_EVENT_PAGE_SIZE} events) — the time window "
+            f"is implausibly large or nextPageToken is not clearing; narrow the window"
+        )
 
     def create_event(self, arguments: dict) -> dict:
         """Create a calendar event (`GOOGLECALENDAR_CREATE_EVENT`)."""
@@ -214,3 +254,27 @@ class ComposioClient:
                 status_code=status_code,
             )
         return body.get("data") or {}
+
+
+def _find_event_page_items(data: object) -> list:
+    """Events from one FIND_EVENT page (double-nested `event_data.event_data`).
+
+    Returns `[]` for any shape without that list — a page carrying no events is
+    a normal terminal page, not an error.
+    """
+    if isinstance(data, dict):
+        inner = data.get("event_data")
+        if isinstance(inner, dict) and isinstance(inner.get("event_data"), list):
+            return inner["event_data"]
+    return []
+
+
+def _find_event_next_page_token(data: object) -> str | None:
+    """The `nextPageToken` from a FIND_EVENT page, or None when no page follows."""
+    if isinstance(data, dict):
+        inner = data.get("event_data")
+        if isinstance(inner, dict):
+            token = inner.get("nextPageToken")
+            if isinstance(token, str) and token:
+                return token
+    return None

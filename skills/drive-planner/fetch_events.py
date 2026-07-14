@@ -1,12 +1,15 @@
 """Wide-window primary-calendar event fetch for the drive-planner sweep.
 
 The sweep needs the upcoming calendar events in one shot so `scan.py` can
-classify them (Epic #59 §4). This module is that fetch: a single Composio
-tool-execution call against `GOOGLECALENDAR_EVENTS_LIST` (calendarId
-"primary", singleEvents) over a time window, returning the raw Google
+classify them (Epic #59 §4). This module is that fetch: Composio
+tool-execution calls against `GOOGLECALENDAR_EVENTS_LIST` (calendarId
+"primary", singleEvents, maxResults=2500) over a time window, following
+`nextPageToken` until the window is drained, returning the raw Google
 Calendar event dicts in the exact
 shape `scan(events=...)` consumes (`id`, `summary`, `location`, `start`,
-`end`, `description`). The recheck poll reads the drive-planner block's machine
+`end`, `description`). `maxResults` drains any realistic window in one call;
+without it the action caps at the default 250 and silently truncates a busy
+calendar (#171). The recheck poll reads the drive-planner block's machine
 state back out of the same `description` field (Epic #59 §4 — the live v3
 toolkit has no writable extendedProperties). drive-planner owns its own fetch
 rather than sharing
@@ -64,9 +67,17 @@ ACTION_LIST_EVENTS = "GOOGLECALENDAR_EVENTS_LIST"
 # The action's required/contract arguments (camelCase). `calendarId` is
 # required by the v3 schema; "primary" is the operator's main calendar (where
 # meetings live). `singleEvents` expands recurring events into instances so a
-# weekly standup surfaces as datable occurrences `scan.py` can classify. The
-# wide `[timeMin, timeMax]` window is added per-call in `fetch_window`.
-_BASE_ARGS = {"calendarId": "primary", "singleEvents": True}
+# weekly standup surfaces as datable occurrences `scan.py` can classify.
+# `maxResults` is Google Calendar's max page size: without it the action caps
+# at the default 250 and silently truncates a busy window (#171), so the sweep
+# would scan a partial calendar. The wide `[timeMin, timeMax]` window is added
+# per-call in `fetch_window`.
+_BASE_ARGS = {"calendarId": "primary", "singleEvents": True, "maxResults": 2500}
+
+# Pagination bound: 2500/page drains any realistic window in one call, but a
+# window that still exceeds one page is followed via `nextPageToken`. _MAX_PAGES
+# stops a token that never clears from spinning forever.
+_MAX_PAGES = 40
 
 # Candidate keys under the Composio `data` envelope that hold the event list.
 # The live v3 response is the Google-native events.list resource, whose list is
@@ -193,11 +204,20 @@ class CalendarFetcher:
         if time_max <= time_min:
             raise ValueError("fetch_window: time_max must be after time_min")
 
-        data = self._execute(
-            ACTION_LIST_EVENTS,
-            {**_BASE_ARGS, "timeMin": time_min.isoformat(), "timeMax": time_max.isoformat()},
+        events: list = []
+        args = {**_BASE_ARGS, "timeMin": time_min.isoformat(), "timeMax": time_max.isoformat()}
+        for _ in range(_MAX_PAGES):
+            data = self._execute(ACTION_LIST_EVENTS, args)
+            events.extend(_extract_events(data))
+            token = _next_page_token(data)
+            if not token:
+                return [_project_event(event) for event in events]
+            args = {**args, "pageToken": token}
+        raise FetchError(
+            f"calendar fetch did not drain within {_MAX_PAGES} pages "
+            f"(>{_MAX_PAGES * _BASE_ARGS['maxResults']} events) — the window is implausibly "
+            f"large or nextPageToken is not clearing; narrow [timeMin, timeMax]"
         )
-        return [_project_event(event) for event in _extract_events(data)]
 
     def _execute(self, action: str, arguments: dict) -> dict:
         """Execute one Composio action; return its `data` payload.
@@ -262,6 +282,24 @@ def _extract_events(data: object) -> list:
         f"{_EVENT_CONTAINER_KEYS} (top-level or response_data) — verify the action's "
         "response shape against the live toolkit"
     )
+
+
+def _next_page_token(data: object) -> str | None:
+    """The `nextPageToken` from an EVENTS_LIST page, or None when no page follows.
+
+    The live v3 response carries it flat under `data.nextPageToken`; the same
+    `response_data` wrap `_extract_events` tolerates is honored here too. A
+    terminal page omits it (it carries `nextSyncToken` instead), which ends the
+    fetch loop.
+    """
+    if not isinstance(data, dict):
+        return None
+    nested = data.get("response_data")
+    for container in (data, nested) if isinstance(nested, dict) else (data,):
+        token = container.get("nextPageToken")
+        if isinstance(token, str) and token:
+            return token
+    return None
 
 
 def _project_event(event: object) -> object:

@@ -104,6 +104,72 @@ def test_fetch_posts_action_with_window_args():
     assert captured["headers"]["x-api-key"] == SYNTH_KEY
 
 
+# --- pagination (#171) ----------------------------------------------------
+
+
+def _page(events: list, token: str | None = None) -> _FakeResponse:
+    data: dict = {"items": events}
+    if token is not None:
+        data["nextPageToken"] = token
+    return _ok(data)
+
+
+def test_fetch_requests_max_page_size():
+    # Without maxResults the action caps at Google's default 250 and silently
+    # truncates a busy calendar (#171); the fetch must ask for the max page.
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["args"] = json.loads(request.data.decode())["arguments"]
+        return _page([_event("a")])
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert captured["args"]["maxResults"] == 2500
+
+
+def test_single_page_when_no_token():
+    calls = []
+
+    def fake_urlopen(request, timeout=None):
+        calls.append(json.loads(request.data.decode())["arguments"].get("pageToken"))
+        return _page([_event("a"), _event("b")])
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert calls == [None]
+    assert [e["id"] for e in events] == ["a", "b"]
+
+
+def test_drains_all_pages_following_next_page_token():
+    # The core storm fix (#171): every page in the window is followed and
+    # accumulated, so the caller scans the complete calendar, not the first 250.
+    pages = [
+        _page([_event("a"), _event("b")], token="tok-2"),
+        _page([_event("c")], token="tok-3"),
+        _page([_event("d")]),  # terminal page, no token
+    ]
+    sent_tokens = []
+
+    def fake_urlopen(request, timeout=None):
+        sent_tokens.append(json.loads(request.data.decode())["arguments"].get("pageToken"))
+        return pages[len(sent_tokens) - 1]
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert sent_tokens == [None, "tok-2", "tok-3"]
+    assert [e["id"] for e in events] == ["a", "b", "c", "d"]
+
+
+def test_non_clearing_token_is_bounded_not_infinite():
+    def fake_urlopen(request, timeout=None):
+        return _page([_event("a")], token="always-more")
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        with pytest.raises(FetchError, match="did not drain within"):
+            _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+
+
 # --- event extraction + projection ---------------------------------------
 
 
