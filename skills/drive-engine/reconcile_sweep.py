@@ -459,28 +459,20 @@ def main() -> int:
 
         live_origin = _fresh_live_origin(now, MAX_LIVE_ORIGIN_AGE_MINUTES)
 
-        try:
-            result = build_plan(
-                flight_records=records,
-                resolve_airport=resolve_airport,
-                meeting_blocks=meeting_blocks,
-                current_blocks=current_blocks,
-                route=route,
-                tripit_flights=tripit_flights,
-                boarding_present=boarding_present,
-                now=now,
-                schedule=schedule,
-                home_address=home,
-                live_origin=live_origin,
-                has_budget=has_plan_budget,
-            )
-        except PlanBudgetExceeded as exc:
-            # Routing ran past its budget — skip this whole cycle cleanly rather
-            # than apply a partial plan (a partial `desired` set reads as orphaned
-            # blocks to delete). Next sweep resumes; the reconcile is idempotent.
-            print(f"[drive-engine] {exc}; skipping cycle", file=sys.stderr)
-            print(json.dumps({"wake_agent": False, "data": {"reason": "plan_budget_exceeded"}}))
-            return 0
+        result = build_plan(
+            flight_records=records,
+            resolve_airport=resolve_airport,
+            meeting_blocks=meeting_blocks,
+            current_blocks=current_blocks,
+            route=route,
+            tripit_flights=tripit_flights,
+            boarding_present=boarding_present,
+            now=now,
+            schedule=schedule,
+            home_address=home,
+            live_origin=live_origin,
+            has_budget=has_plan_budget,
+        )
 
         # --- APPLY (write) ---
         # Give apply whatever of the sweep budget the fetch/plan phase left, so
@@ -511,6 +503,15 @@ def main() -> int:
             },
         }
         print(json.dumps(payload))
+        return 0
+    except PlanBudgetExceeded as exc:
+        # Routing (meeting side or airport side — both share the budget-aware
+        # `route`) ran past its budget. Skip this whole cycle cleanly rather than
+        # apply a partial plan (a partial `desired` set reads as orphaned blocks to
+        # delete). Handled at the outer boundary so it covers every `route` use in
+        # main(), not just build_plan (#172). Next sweep resumes; idempotent.
+        print(f"[drive-engine] {exc}; skipping cycle", file=sys.stderr)
+        print(json.dumps({"wake_agent": False, "data": {"reason": "plan_budget_exceeded"}}))
         return 0
     # outer-boundary-process-contract:
     #   caller's silent-failure shape — the scheduler reads a non-zero exit OR

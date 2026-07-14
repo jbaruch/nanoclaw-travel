@@ -21,8 +21,10 @@ with no output. Two fixes:
   START a new route call once the deadline passes — both raise `PlanBudgetExceeded`.
   Enforcing at the route call (not only between legs) means a single leg's provider
   fallback chain can't push the sweep past its budget after the per-leg poll already
-  passed. The sweep catches the exception and skips the cycle cleanly
-  (`wake_agent: false`) rather than being killed mid-route before it can print JSON.
+  passed. The sweep catches the exception at its outer `main()` boundary — so it
+  covers meeting-side and airport-side routing alike, both of which share the
+  budget-aware `route` — and skips the cycle cleanly (`wake_agent: false`) rather
+  than being killed mid-route before it can print JSON.
   The abort is deliberately all-or-nothing: a partial `desired` set would read as
   orphaned blocks and get deleted, then recreated next sweep — the exact churn #164
   fixed. The next sweep resumes; the reconcile is idempotent.
