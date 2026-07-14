@@ -26,7 +26,7 @@ Never mention removed blocks, airport drives, or routine (sub-threshold) re-time
 Run this when the operator replies to a drive notification to skip one — "skip", "skip 1", "skip 2 and 3", "skip the Massage drive". Map each local index to the meeting NAME from the message you sent (index 1 = the first meeting listed); a bare "skip" refers to the single meeting just offered. Never surface an internal id — the operator only ever named the drive by its position or name. For each named meeting, invoke:
 
 ```bash
-python3 /home/node/.claude/skills/tessl__drive-engine/skip_drive.py '{"summary": "<meeting name>", "now": "<current ISO-8601 UTC>"}'
+python3 /home/node/.claude/skills/tessl__drive-engine/skip_drive.py '{"summary": "<meeting name>"}'
 ```
 
 The script deletes that meeting's drive blocks and records a skip so no future sweep recreates them. Its result is `{"skipped": true, "meeting": ...}`, `{"skipped": false, "unmatched": ...}` (name not found — say so), or `{"skipped": false, "ambiguous": ..., "candidates": [...]}` (several same-named meetings — ask the operator which `when` they mean, then re-invoke). Confirm what you skipped in one message. Finish here.

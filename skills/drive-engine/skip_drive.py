@@ -16,7 +16,8 @@ the unified block's identity IS the meeting id (`meeting_source` sets
 `identity=meeting.meeting_id`), which is the `skip_state` key `scan` honors.
 
 CLI: `python3 skip_drive.py '<json-request>'` where the request is
-`{"summary": "Massage", "now": "<iso8601>"}`. Prints a JSON result to stdout:
+`{"summary": "Massage"}`. The skip is timestamped by the process clock (a live
+skip happens "now"), so the request carries no time field. Prints a JSON result:
   {"skipped": true, "meeting": "Massage", "removed": 2}
   {"skipped": false, "unmatched": "Massage"}
   {"skipped": false, "ambiguous": "Swimming Practice", "candidates": [{"when": ...}, ...]}

@@ -80,6 +80,12 @@ def test_below_ten_percent_is_silent():
     assert material_update_delta(600, 630) is None  # +30s = 5%
 
 
+def test_material_percent_but_31_to_59_seconds_floors_to_silent():
+    # 48s on a 400s drive is 12% (>= threshold) but < 1 whole minute — FLOOR keeps
+    # it silent. (round() would wrongly report "1 min" and wake on it.)
+    assert material_update_delta(400, 448) is None
+
+
 def test_material_percent_but_under_a_minute_is_silent():
     # 10% of a 5-min drive is 30s — rounds below 1 min, not worth a "leave 0 min".
     assert material_update_delta(300, 330) is None

@@ -161,7 +161,10 @@ def material_update_delta(prior_seconds: int | None, new_seconds: int) -> tuple[
     diff = new_seconds - prior_seconds
     if abs(diff) / prior_seconds < _MATERIAL_UPDATE_FRACTION:
         return None
-    minutes = round(abs(diff) / 60)
+    # FLOOR, not round: "at least one whole minute" means a real >= 60s swing.
+    # Rounding would report "1 min" for a 31-59s change and wake on it (a short
+    # drive can clear the 10% bar with well under a minute of movement).
+    minutes = abs(diff) // 60
     if minutes < 1:
         return None
     return minutes, ("sooner" if diff > 0 else "later")
