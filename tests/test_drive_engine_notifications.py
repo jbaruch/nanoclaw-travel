@@ -18,6 +18,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
+from block_codec import GEN_UNIFIED, ParsedBlock  # noqa: E402
 from calendar_apply import ApplyResult, apply_plan  # noqa: E402
 from reconcile import (  # noqa: E402
     Create,
@@ -25,6 +26,7 @@ from reconcile import (  # noqa: E402
     ReconcilePlan,
     Update,
     material_update_delta,
+    plan_reconcile,
 )
 from reconcile_sweep import build_sweep_payload  # noqa: E402
 
@@ -72,28 +74,69 @@ def test_shorter_drive_is_leave_later():
     assert material_update_delta(600, 300) == (5, "later")  # -5 min, -50%
 
 
-def test_exactly_ten_percent_is_material():
-    assert material_update_delta(600, 660) == (1, "sooner")  # +60s = 10%, 1 min
+def test_at_patch_tolerance_and_material_fraction_alerts():
+    # 120s = the patch gate (so it actually reaches apply_plan) AND 20% — material.
+    assert material_update_delta(600, 720) == (2, "sooner")
+
+
+def test_ten_percent_below_patch_tolerance_is_silent():
+    # 60s IS 10%, but < the 120s patch gate — _needs_update schedules no Update,
+    # so it never reaches apply_plan; alerting on it would promise a heads-up the
+    # reconcile can't deliver. Silent. (See test_boundary_alert_reaches_apply_plan.)
+    assert material_update_delta(600, 660) is None
 
 
 def test_below_ten_percent_is_silent():
     assert material_update_delta(600, 630) is None  # +30s = 5%
 
 
-def test_material_percent_but_31_to_59_seconds_floors_to_silent():
-    # 48s on a 400s drive is 12% (>= threshold) but < 1 whole minute — FLOOR keeps
-    # it silent. (round() would wrongly report "1 min" and wake on it.)
-    assert material_update_delta(400, 448) is None
-
-
-def test_material_percent_but_under_a_minute_is_silent():
-    # 10% of a 5-min drive is 30s — rounds below 1 min, not worth a "leave 0 min".
-    assert material_update_delta(300, 330) is None
+def test_large_absolute_but_under_ten_percent_is_silent():
+    # 150s change (>= patch tolerance, so it patches) on a 2000s drive is 7.5% —
+    # not a proportionally material swing, so it patches silently.
+    assert material_update_delta(2000, 2150) is None
 
 
 def test_missing_or_zero_prior_is_never_material():
     assert material_update_delta(None, 900) is None
     assert material_update_delta(0, 900) is None
+
+
+# --- boundary: the alert threshold agrees with the reconcile patch gate ------
+
+
+def _current(baseline, identity="m1"):
+    """A current unified block that differs from `_desired` ONLY in drive time."""
+    return ParsedBlock(
+        generation=GEN_UNIFIED,
+        event_id="e1",
+        identity=identity,
+        kind="meeting_return",
+        baseline_seconds=baseline,
+        anchor=_dt(10, 35),
+        origin="Home",
+        destination="Venue",
+    )
+
+
+def test_boundary_alert_reaches_apply_plan():
+    # A 120s swing IS the patch gate: plan_reconcile emits an Update carrying the
+    # prior baseline, and apply_plan records the alert — the full production path,
+    # not just the helper in isolation.
+    plan = plan_reconcile([_desired("m1", "meeting_return", 720)], [_current(600)])
+    assert len(plan.updates) == 1
+    assert plan.updates[0].prior_baseline_seconds == 600
+    result = apply_plan(plan, composio=FakeComposio(), calendar_id="primary")
+    assert [(u["minutes"], u["direction"]) for u in result.material_updates] == [(2, "sooner")]
+
+
+def test_sub_tolerance_change_produces_no_update_and_no_alert():
+    # A 60s swing is below the patch gate, so plan_reconcile emits NO update — it
+    # never reaches apply_plan, so there is nothing to alert. The alert floor and
+    # the patch gate agree, so a "material" claim never outruns the reconcile.
+    plan = plan_reconcile([_desired("m1", "meeting_return", 660)], [_current(600)])
+    assert plan.updates == ()
+    result = apply_plan(plan, composio=FakeComposio(), calendar_id="primary")
+    assert result.material_updates == []
 
 
 # --- apply_plan records notification material for APPLIED ops only -----------

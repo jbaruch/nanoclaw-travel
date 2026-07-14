@@ -149,25 +149,30 @@ _MATERIAL_UPDATE_FRACTION = 0.10
 def material_update_delta(prior_seconds: int | None, new_seconds: int) -> tuple[int, str] | None:
     """Classify a drive-duration change for operator alerting.
 
-    Returns `(minutes, direction)` when the change is material — at least
-    `_MATERIAL_UPDATE_FRACTION` of the prior duration AND at least one whole
-    minute — else None (routine jitter, alert suppressed). `direction` is
-    `"sooner"` when the drive got LONGER (leave earlier) and `"later"` when it
-    got shorter (leave later). A missing / non-positive prior duration can't be
-    compared, so it is never material.
+    Returns `(minutes, direction)` when the change is material, else None.
+    `direction` is `"sooner"` when the drive got LONGER (leave earlier) and
+    `"later"` when it got shorter (leave later). A missing / non-positive prior
+    duration can't be compared, so it is never material.
+
+    Material requires BOTH:
+      - a swing of at least `_BASELINE_SHIFT_TOLERANCE_SECONDS`. This MUST match
+        `_needs_update`'s patch gate: a smaller drift schedules no Update, so it
+        never reaches `apply_plan` to be notified — alerting on it would promise
+        a heads-up the reconcile can't deliver. The floor is also >= 60s, so the
+        reported minute count (floored) is always >= 1.
+      - a swing of at least `_MATERIAL_UPDATE_FRACTION` of the prior duration —
+        a proportionally real traffic change, not a large absolute move on an
+        already-long drive.
     """
     if prior_seconds is None or prior_seconds <= 0:
         return None
     diff = new_seconds - prior_seconds
+    if abs(diff) < _BASELINE_SHIFT_TOLERANCE_SECONDS:
+        return None
     if abs(diff) / prior_seconds < _MATERIAL_UPDATE_FRACTION:
         return None
-    # FLOOR, not round: "at least one whole minute" means a real >= 60s swing.
-    # Rounding would report "1 min" for a 31-59s change and wake on it (a short
-    # drive can clear the 10% bar with well under a minute of movement).
-    minutes = abs(diff) // 60
-    if minutes < 1:
-        return None
-    return minutes, ("sooner" if diff > 0 else "later")
+    # FLOOR, not round: a reported minute is a real >= 60s of that minute.
+    return abs(diff) // 60, ("sooner" if diff > 0 else "later")
 
 
 def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:

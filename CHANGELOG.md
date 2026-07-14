@@ -8,7 +8,7 @@ It now wakes ONLY for two things: a new MEETING drive, or a MATERIAL drive-time
 change. Everything else applies silently.
 
 - **Material re-time alerts.** A shifted block alerts only when its routed drive
-  duration changed by ≥10% (either direction) and by ≥1 minute — `reconcile.material_update_delta`. The message is actionable: "leave {N} min sooner/later for your {meeting} at {time}" (sooner when the drive got longer). Sub-threshold shifts still patch the calendar, silently.
+  duration changed by ≥10% (either direction) AND by at least the reconcile's patch tolerance (`_BASELINE_SHIFT_TOLERANCE_SECONDS`, 2 min) — `reconcile.material_update_delta`. The two thresholds are deliberately aligned: a smaller drift schedules no patch, so it never reaches `apply_plan` to be notified — an alert must never promise a heads-up the reconcile can't deliver. The message is actionable: "leave {N} min sooner/later for your {meeting} at {time}" (sooner when the drive got longer). Sub-threshold shifts still patch the calendar, silently.
 - **Skippable meeting-add notifications.** A new meeting drive is announced and can be declined: the operator replies "skip" (or "skip 1", "skip 2 and 3" when several were added — a local index, never an internal id). `skip_drive.py` resolves the name to the meeting, deletes its blocks, and records a skip so no sweep recreates them. Airport drives to/from a flight are NOT announced — a flight is not skippable.
 - **Silent by design.** Removes, airport-drive adds, converts, and routine re-times no longer notify.
 - The drive-engine SKILL is now an action router (report sweep changes / skip a drive / flag a wrong block). `reconcile_sweep.build_sweep_payload` owns the wake gating and per-meeting grouping.
