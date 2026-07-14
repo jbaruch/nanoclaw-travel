@@ -50,6 +50,19 @@ BoardingPresentFn = Callable[[MergedFlight], bool]
 LeftTerminalFn = Callable[[MergedFlight, MergedFlight], bool]
 
 
+class PlanBudgetExceeded(Exception):
+    """Raised when routing runs past its wall-clock budget.
+
+    A single airport leg can cost a slow provider-failover round trip (Google
+    ZERO_RESULTS on an airport → TomTom geocode+geocode+route, seconds each), so a
+    many-leg itinerary can route for minutes. The budget-aware `route`
+    (`reconcile_sweep.make_route`) raises this on a cache MISS past the deadline;
+    it propagates out of `build_reconcile_plan` unwound, BEFORE any partial
+    `desired` set reaches the reconcile — a partial set would look like orphaned
+    blocks and get deleted, so the sweep must skip the whole cycle cleanly
+    instead (#172)."""
+
+
 @dataclass(frozen=True)
 class AirportInfo:
     """Resolved byAir facts for one airport, keyed by IATA in the `airport_info` map."""
@@ -265,6 +278,11 @@ def build_reconcile_plan(
     meeting-leg source) so both are diffed against the calendar in one reconcile.
     `managed_legacy`, when given, is passed through to `plan_reconcile` to scope
     which legacy generations the engine may converge / orphan-delete.
+
+    Routing budget is enforced by the injected `route` itself (see
+    `reconcile_sweep.make_route`): a cached endpoint is always routed, and a cache
+    MISS past the budget raises `PlanBudgetExceeded`, which propagates out of this
+    build unwound (never a partial plan — see that class).
     """
     boarding_present = boarding_present or (lambda _flight: True)
     if overrides is None:

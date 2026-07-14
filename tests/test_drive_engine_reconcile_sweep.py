@@ -4,24 +4,31 @@ Deterministic fixtures only — hand-built byAir records, pre-built meeting bloc
 a fake airport resolver and router, fixed `now`. These pin: airport + meeting
 blocks are combined into ONE plan; legacy drive-planner (dp) blocks on the calendar
 are LEFT UNTOUCHED (managed_legacy empty — the operator cleans them up); an
-unresolvable airport is skipped, not guessed. The main() I/O layer is the outer
-process boundary and is not unit-tested here.
+unresolvable airport is skipped, not guessed. main()'s live I/O work (`_run_sweep`)
+is not unit-tested, but main()'s outer-boundary contract — clean budget skip vs.
+generic error payload vs. work payload — is, via a monkeypatched `_run_sweep`.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
+sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
+import pytest  # noqa: E402
+import reconcile_sweep  # noqa: E402
 from block_codec import GEN_LEGACY_DP, ParsedBlock  # noqa: E402
+from engine import PlanBudgetExceeded  # noqa: E402
 from flight_identity import TRIPIT, Flight  # noqa: E402
+from maps_client import MapsError, TravelTime  # noqa: E402
 from reconcile import DesiredBlock  # noqa: E402
-from reconcile_sweep import ResolvedAirport, build_plan  # noqa: E402
+from reconcile_sweep import ResolvedAirport, build_plan, make_route  # noqa: E402
 
 UTC = timezone.utc
 HOME = "12 Example St, TN"
@@ -247,3 +254,143 @@ def test_unresolved_airport_skipped():
     )
     assert result.plan.is_noop
     assert any("unresolved airport" in s for s in result.skipped)
+
+
+# --- make_route memoization (#172) ------------------------------------------
+
+
+class _FakeMaps:
+    """Counts travel_time calls and can be told to fail, to pin memoization."""
+
+    def __init__(self, *, fail: bool = False):
+        self.calls: list[tuple[str, str]] = []
+        self._fail = fail
+
+    def travel_time(self, origin: str, destination: str) -> TravelTime:
+        self.calls.append((origin, destination))
+        if self._fail:
+            raise MapsError("ALL_PROVIDERS_FAILED", "boom")
+        return TravelTime(
+            duration_seconds=1800,
+            in_traffic_seconds=1800,
+            traffic_factor=1.0,
+            distance_meters=1000,
+            origin_resolved=origin,
+            destination_resolved=destination,
+            source="google",
+        )
+
+
+def test_make_route_memoizes_repeated_pair():
+    """A repeated (origin, destination) pair — an airport that is both a departure
+    destination and a transfer origin — routes ONCE, not per leg (#172)."""
+    maps = _FakeMaps()
+    route = make_route(maps)
+    first = route("home", "STN airport")
+    second = route("home", "STN airport")
+    assert first == second == timedelta(seconds=1800)
+    assert maps.calls == [("home", "STN airport")]  # one round trip, not two
+
+
+def test_make_route_distinct_pairs_each_route_once():
+    maps = _FakeMaps()
+    route = make_route(maps)
+    route("home", "STN airport")
+    route("STN airport", "CPH airport")
+    route("home", "STN airport")  # repeat of the first
+    assert maps.calls == [("home", "STN airport"), ("STN airport", "CPH airport")]
+
+
+def test_make_route_caches_failure_as_none():
+    """A dead endpoint caches None so it isn't re-attempted every leg (each retry
+    is the same slow provider-failover that caused the storm) (#172)."""
+    maps = _FakeMaps(fail=True)
+    route = make_route(maps)
+    assert route("home", "STN airport") is None
+    assert route("home", "STN airport") is None
+    assert maps.calls == [("home", "STN airport")]  # failure not re-attempted
+
+
+def test_make_route_raises_past_deadline_before_network_call():
+    """#172: past the budget deadline a cache MISS raises rather than entering the
+    provider-fallback chain — so a slow leg can't push the sweep past its budget
+    after the per-leg poll already passed. No network call is made."""
+    maps = _FakeMaps()
+    route = make_route(maps, deadline=100.0, clock=lambda: 100.0)
+    with pytest.raises(PlanBudgetExceeded):
+        route("home", "STN airport")
+    assert maps.calls == []  # aborted before the travel_time call
+
+
+def test_make_route_serves_cache_hit_even_past_deadline():
+    """A cached pair is free, so it's served even past the deadline — only a MISS
+    (a new network call) is gated (#172)."""
+    cache: dict[tuple[str, str], timedelta | None] = {}
+    now = {"t": 0.0}
+    route = make_route(maps=_FakeMaps(), cache=cache, deadline=100.0, clock=lambda: now["t"])
+    before = route("home", "STN airport")  # populates the cache before the deadline
+    now["t"] = 200.0  # now well past the deadline
+    after = route("home", "STN airport")  # cache hit — must not raise
+    assert before == after == timedelta(seconds=1800)
+
+
+def test_make_route_next_miss_raises_after_a_slow_call_crosses_deadline():
+    """#172: the 'last route succeeds after the deadline' case. A miss that starts
+    under the deadline is allowed to finish (even though the clock then crosses the
+    deadline), but the NEXT miss raises — no further provider-fallback chain is
+    entered, so the sweep reaches its clean no-wake path deterministically."""
+    maps = _FakeMaps()
+    now = {"t": 14.0}  # under the 15.0 deadline
+
+    def clock() -> float:
+        return now["t"]
+
+    route = make_route(maps, deadline=15.0, clock=clock)
+    first = route("home", "STN airport")  # begins under budget, completes
+    assert first == timedelta(seconds=1800)
+    now["t"] = 31.0  # that call returned well past the deadline
+    with pytest.raises(PlanBudgetExceeded):
+        route("STN airport", "CPH airport")  # a new miss — refused
+    assert maps.calls == [("home", "STN airport")]  # the second never hit the network
+
+
+# --- main() outer-boundary contract (#172) ----------------------------------
+
+
+def test_main_emits_clean_skip_on_plan_budget_exceeded(monkeypatch, capsys):
+    """The production contract: when routing raises PlanBudgetExceeded, main()
+    emits the clean no-wake skip payload (NOT the generic error payload) and
+    exits 0, so the scheduler skips the cycle instead of treating it as failure."""
+    monkeypatch.setattr(
+        reconcile_sweep,
+        "_run_sweep",
+        lambda: (_ for _ in ()).throw(PlanBudgetExceeded("budget spent")),
+    )
+    rc = reconcile_sweep.main()
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"wake_agent": False, "data": {"reason": "plan_budget_exceeded"}}
+
+
+def test_main_emits_error_payload_on_unexpected_exception(monkeypatch, capsys):
+    """A non-budget failure still fails closed: a valid no-wake payload carrying
+    the error (never a non-zero exit or empty stdout, which the scheduler reads as
+    silent failure)."""
+    monkeypatch.setattr(
+        reconcile_sweep,
+        "_run_sweep",
+        lambda: (_ for _ in ()).throw(RuntimeError("kaboom")),
+    )
+    rc = reconcile_sweep.main()
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["wake_agent"] is False and out["data"]["error"] == "kaboom"
+
+
+def test_main_prints_run_sweep_payload_on_success(monkeypatch, capsys):
+    """On a normal run main() prints exactly the payload _run_sweep returns."""
+    payload = {"wake_agent": True, "data": {"applied": {"created": 1}}}
+    monkeypatch.setattr(reconcile_sweep, "_run_sweep", lambda: payload)
+    rc = reconcile_sweep.main()
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out) == payload

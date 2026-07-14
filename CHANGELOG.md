@@ -1,5 +1,45 @@
 # Changelog
 
+### Fixed — drive-engine routing storm hung the sweep (#172)
+
+The airport-endpoint fix in #165 (`"STN airport"` instead of a bare `"STN"`) made
+airport legs geocode *successfully* — but many airports return Google Distance
+Matrix `ZERO_RESULTS` and fall back to TomTom's three-call geocode+geocode+route
+chain at up to 10s each. Uncached and unbounded, a multi-leg itinerary routed for
+minutes on every sweep (observed live: 80+ `maps.googleapis.com` + 30+ TomTom calls
+in 15 minutes), and the agent container that ran it was SIGKILLed at its timeout
+with no output. Two fixes:
+
+- **Per-sweep route memoization.** `reconcile_sweep.make_route` wraps the maps
+  client in a `(origin, destination)` cache shared by every airport and meeting
+  leg, so an endpoint that appears in several legs (a departure destination that is
+  also a transfer origin) is routed once per sweep, not per leg — the caller-level
+  caching `MapsClient`'s own docstring prescribes. A failed route caches `None` so a
+  dead endpoint isn't re-attempted (and re-failed-over) every leg.
+- **Wall-clock routing budget, enforced at the route call.** `make_route` serves a
+  cached (origin, destination) pair even past the deadline, but refuses to START a
+  new cache-miss route call once the deadline passes — raising `PlanBudgetExceeded`
+  before entering the provider-fallback chain. Enforcing at the call (not per leg)
+  means a single leg's fallback chain can't push the sweep past its budget, while
+  already-routed legs still plan. The exception propagates out of `build_reconcile_plan`
+  unwound (never a partial `desired` set — which would read as orphaned blocks and
+  get deleted, the exact churn #164 fixed) and is caught at `main()`'s outer boundary,
+  covering meeting-side and airport-side routing alike, so the sweep skips the cycle
+  cleanly (`wake_agent: false`) instead of being killed mid-route before it prints JSON.
+- **Sweep-budget gate before the post-routing network work.** After meeting routing,
+  before the current-block fetch and airport resolution, the sweep skips cleanly if
+  the whole-sweep budget is already spent — so a meeting leg that returned well past
+  the deadline can't drag more network work toward the host precheck kill. The gate
+  uses the sweep budget (not the tighter routing deadline) so cheap cache-served legs
+  aren't needlessly abandoned.
+- **Tightened per-call timeout for the sweep's maps client** (4s, from the shared
+  10s default) so a single `travel_time` — one Google call plus up to three
+  sequential TomTom fallback calls — finishes within the margin between the routing
+  deadline and the host's ~33s precheck kill.
+- **No PII in the budget-exceeded log.** The `PlanBudgetExceeded` message no longer
+  includes the raw origin/destination (which can be a home address or live GPS fix),
+  since it is printed to stderr.
+
 ## 0.2.43 — 2026-07-13
 
 ### Fixed — drive-engine airport legs never produced ('origin route failed') (#165)
