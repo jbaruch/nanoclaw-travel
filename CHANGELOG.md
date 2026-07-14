@@ -1,5 +1,27 @@
 # Changelog
 
+### Fixed — unpaginated calendar fetches truncated the window → drive-engine duplicate storm (#171)
+
+Both Composio calendar-fetch primitives returned only the first page of a time
+window, so every caller reconciled against a partial view. `ComposioClient.find_events`
+(`GOOGLECALENDAR_FIND_EVENT`) sent no `maxResults` and never followed `nextPageToken`,
+capping at ~10 events; the drive-engine sweep built `current_blocks` from that truncated
+fetch, so its G1 dedup was blind to the ~100 `Drive:` blocks it had already created and
+re-created them every sweep — 40+ surplus duplicates on the live `primary` calendar and
+growing. The same truncation also fooled a diagnostic into reporting "0 Drive blocks" off
+the capped fetch. `CalendarFetcher.fetch_window` (`GOOGLECALENDAR_EVENTS_LIST`, the meeting
+scan path) had the same latent bug, silently capping at Google's default 250.
+
+Both now drain the complete window: `maxResults=2500` (Google Calendar's max page size)
+returns any realistic window in a single call, and a `nextPageToken` loop — bounded at 40
+pages so a non-clearing token can't spin forever — is the safety net for a window that
+still exceeds one page. Verified against the live NAS toolkit: both actions honor
+`maxResults` and `pageToken` (page 2 disjoint from page 1, token clears on the last page).
+`find_events` merges the pages back into the same `event_data.event_data` shape a one-page
+response has, so every caller's own event extraction is unchanged. Once `current_blocks` is
+complete, reconcile G1 sees the surplus and self-heals — deleting the duplicate pile with
+no manual cleanup.
+
 ## 0.2.44 — 2026-07-14
 
 ### Fixed — drive-engine routing storm hung the sweep (#172)

@@ -184,6 +184,114 @@ def test_named_methods_bind_their_action_slugs(client):
     ]
 
 
+# --- find_events pagination (#171) ---------------------------------------
+
+
+def _find_page(events: list, token: str | None = None) -> _FakeResponse:
+    """A FIND_EVENT page: double-nested events + optional nextPageToken."""
+    inner: dict = {"event_data": events}
+    if token is not None:
+        inner["nextPageToken"] = token
+    return _ok({"event_data": inner})
+
+
+def test_find_events_single_page_when_no_token(client):
+    """A window that fits one page costs exactly one call and returns its events."""
+    calls = []
+
+    def fake_urlopen(request, **kwargs):
+        calls.append(json.loads(request.data)["arguments"])
+        return _find_page([{"id": "e1"}, {"id": "e2"}])
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        result = client.find_events({"calendar_id": "c"})
+
+    assert len(calls) == 1
+    assert result == {"event_data": {"event_data": [{"id": "e1"}, {"id": "e2"}]}}
+
+
+def test_find_events_injects_max_results(client):
+    """maxResults is set so the action does not silently cap at its ~10 default."""
+    captured = {}
+
+    def fake_urlopen(request, **kwargs):
+        captured["args"] = json.loads(request.data)["arguments"]
+        return _find_page([{"id": "e1"}])
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        client.find_events({"calendar_id": "c"})
+
+    assert captured["args"]["maxResults"] == 2500
+    assert captured["args"]["calendar_id"] == "c"
+
+
+def test_find_events_drains_all_pages_and_merges(client):
+    """Multiple pages are followed via nextPageToken and merged into one shape.
+
+    This is the storm fix (#171): a caller running `_items` over the return
+    value sees every event in the window, not just the first page, so dedup
+    can collapse the surplus instead of re-creating unseen blocks.
+    """
+    pages = [
+        _find_page([{"id": "e1"}, {"id": "e2"}], token="tok-2"),
+        _find_page([{"id": "e3"}, {"id": "e4"}], token="tok-3"),
+        _find_page([{"id": "e5"}]),  # terminal page, no token
+    ]
+    sent_tokens = []
+
+    def fake_urlopen(request, **kwargs):
+        sent_tokens.append(json.loads(request.data)["arguments"].get("pageToken"))
+        return pages[len(sent_tokens) - 1]
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        result = client.find_events({"calendar_id": "c"})
+
+    # page 1 sends no token; pages 2 and 3 echo the prior page's nextPageToken
+    assert sent_tokens == [None, "tok-2", "tok-3"]
+    assert result["event_data"]["event_data"] == [
+        {"id": "e1"},
+        {"id": "e2"},
+        {"id": "e3"},
+        {"id": "e4"},
+        {"id": "e5"},
+    ]
+
+
+def test_find_events_tolerates_flat_and_wrapped_page_shapes(client):
+    """Page accumulation + token follow the same shapes callers' `_items` accept.
+
+    The live toolkit double-nests, but Composio is mid-retirement; a flat
+    `items` page (token at top level) and a `response_data` wrap must still
+    drain, not silently return an empty merge or stop after page one.
+    """
+    pages = [
+        _ok({"items": [{"id": "e1"}], "nextPageToken": "tok-2"}),  # flat shape
+        _ok({"response_data": {"items": [{"id": "e2"}]}}),  # wrapped, terminal
+    ]
+    calls = []
+
+    def fake_urlopen(request, **kwargs):
+        calls.append(json.loads(request.data)["arguments"].get("pageToken"))
+        return pages[len(calls) - 1]
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        result = client.find_events({"calendar_id": "c"})
+
+    assert calls == [None, "tok-2"]
+    assert result["event_data"]["event_data"] == [{"id": "e1"}, {"id": "e2"}]
+
+
+def test_find_events_raises_when_token_never_clears(client):
+    """A nextPageToken that never clears is bounded, not an infinite loop."""
+
+    def fake_urlopen(request, **kwargs):
+        return _find_page([{"id": "e"}], token="always-more")
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(ComposioError, match="did not drain within"):
+            client.find_events({"calendar_id": "c"})
+
+
 def test_trailing_slash_in_base_url_does_not_double_up():
     c = ComposioClient(SYNTH_KEY, SYNTH_USER, base_url=SYNTH_BASE + "/")
     captured = []
