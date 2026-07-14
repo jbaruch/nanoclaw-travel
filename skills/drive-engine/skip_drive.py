@@ -175,15 +175,22 @@ def skip_meeting_drive(request: dict, *, composio=None, now: datetime | None = N
     return {"skipped": True, "meeting": summary, "removed": removed}
 
 
+def _fail(message: str, code: int) -> int:
+    """Emit the structured failure on stdout (skill contract) AND a concise
+    diagnostic on stderr (standard script failure contract — an error stream for
+    CI / operator logs to inspect), then return the exit code."""
+    print(json.dumps({"skipped": False, "error": message}))
+    print(f"skip_drive: {message}", file=sys.stderr)
+    return code
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        print(json.dumps({"skipped": False, "error": "usage: skip_drive.py '<json-request>'"}))
-        return 2
+        return _fail("usage: skip_drive.py '<json-request>'", 2)
     try:
         request = json.loads(argv[1])
     except json.JSONDecodeError as exc:
-        print(json.dumps({"skipped": False, "error": f"invalid JSON request: {exc}"}))
-        return 2
+        return _fail(f"invalid JSON request: {exc}", 2)
     try:
         result = skip_meeting_drive(request)
     except Exception as exc:  # noqa: BLE001 — outer-boundary-process-contract
@@ -191,11 +198,11 @@ def main(argv: list[str]) -> int:
         # uncaught exception (bad env from `ComposioClient.from_env`, a transport
         # error from the fetch / delete, a skip-store write failure) would emit a
         # Python traceback the skill can't read — it would look like "no result".
-        # Emit the documented `{"skipped": false, "error": ...}` shape and a
-        # non-zero exit so the skill reports the failure instead of hanging on
-        # unparseable output. KeyboardInterrupt / SystemExit still propagate.
-        print(json.dumps({"skipped": False, "error": f"{type(exc).__name__}: {exc}"}))
-        return 1
+        # Emit the documented `{"skipped": false, "error": ...}` shape (plus a
+        # stderr diagnostic) and a non-zero exit so the skill reports the failure
+        # instead of hanging on unparseable output. KeyboardInterrupt /
+        # SystemExit still propagate.
+        return _fail(f"{type(exc).__name__}: {exc}", 1)
     print(json.dumps(result))
     return 0
 

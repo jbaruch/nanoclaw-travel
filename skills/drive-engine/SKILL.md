@@ -29,7 +29,13 @@ Run this when the operator replies to a drive notification to skip one — "skip
 python3 /home/node/.claude/skills/tessl__drive-engine/skip_drive.py '{"summary": "<meeting name>"}'
 ```
 
-The script deletes that meeting's drive blocks and records a skip so no future sweep recreates them. Its result is `{"skipped": true, "meeting": ...}`, `{"skipped": false, "unmatched": ...}` (name not found — say so), or `{"skipped": false, "ambiguous": ..., "candidates": [...]}` (several same-named meetings — ask the operator which `when` they mean, then re-invoke). Confirm what you skipped in one message. Finish here.
+The script deletes that meeting's drive blocks and records a skip so no future sweep recreates them. It always prints a JSON result on stdout; read it (do not treat a non-zero exit as "no result"):
+- `{"skipped": true, "meeting": ...}` (exit 0) — confirm what you skipped.
+- `{"skipped": false, "unmatched": ...}` (exit 0) — the name wasn't found; say so.
+- `{"skipped": false, "ambiguous": ..., "candidates": [...]}` (exit 0) — several same-named meetings; ask the operator which `when` they mean, then re-invoke.
+- `{"skipped": false, "error": ...}` (exit 1) — an operational failure (bad Composio env, transport error); tell the operator the skip couldn't be recorded and to retry. Exit 2 is a usage/JSON error in how it was invoked — fix the call.
+
+Reply in one message. Finish here.
 
 ## Step 3 — Flag a block that looks wrong
 
