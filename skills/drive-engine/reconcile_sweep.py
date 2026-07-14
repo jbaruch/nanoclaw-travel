@@ -292,6 +292,219 @@ def _fresh_live_origin(now: datetime, max_age_minutes: int) -> str | None:
     return None
 
 
+def _run_sweep() -> dict:
+    """Run the live unified reconcile, APPLY it, and return the stdout payload.
+
+    Raises `PlanBudgetExceeded` when routing (meeting or airport side, both
+    sharing the budget-aware `route`) runs past budget — `main()` maps that to the
+    clean no-wake skip. Any other exception propagates to `main()`'s fail-closed
+    boundary. Split out from `main()` so the outer-boundary contract (clean skip
+    vs. error payload vs. work payload) is unit-testable without the live I/O
+    clients (#172)."""
+    sweep_start = time.monotonic()
+    _on_path("flight-assist")
+    _on_path("travel-core")
+    _on_path("drive-planner")
+
+    from airport_drive_inputs import airport_context
+    from byair_client import ByAirClient
+    from calendar_reconcile import _find_events_args, _items
+    from composio_client import ComposioClient
+    from fetch_events import CalendarFetcher
+    from home_address import HomeAddressError, read_current_home
+    from maps_client import MapsClient
+    from scan import scan
+    from skip_state import load_active_skips
+    from state import (
+        MAX_LIVE_ORIGIN_AGE_MINUTES,
+        read_active_flights,
+        read_config,
+        read_flight_state,
+    )
+    from trip_origin import (
+        flight_summaries,
+        load_travel_schedule,
+        resolve_anchor,
+    )
+
+    now = datetime.now(timezone.utc)
+    config = read_config() or {}
+    # Home resolution (#162): the flight-assist config may have no home_address
+    # key (a fresh cutover never provisioned it), so fall back to the canonical
+    # user_profile current_home — the same source the retired drive-planner read.
+    # Without this the sweep is DOA: the meeting scan raises on an empty home and
+    # takes the whole cycle down.
+    home_config = config.get("home_address")
+    home = home_config if isinstance(home_config, str) and home_config.strip() else None
+    if home is None:
+        try:
+            home = read_current_home()
+        except HomeAddressError:
+            home = None  # neither source configured — degrade, see below
+    schedule = load_travel_schedule()
+
+    maps = MapsClient.from_env(timeout=_SWEEP_MAPS_TIMEOUT_SECONDS)
+    # Deadline for the routing phase, so a slow provider-failover storm can't run
+    # routing for minutes (#172).
+    plan_deadline = sweep_start + _PLAN_PHASE_BUDGET_SECONDS
+
+    # One memoizing, budget-aware route closure for the whole sweep — meeting legs
+    # and airport legs share it, so a repeated (origin, destination) pair costs one
+    # provider round trip, not one per leg. It serves cached pairs even past the
+    # deadline but refuses to START a new (cache-miss) route call once the deadline
+    # passes, raising PlanBudgetExceeded instead (#172).
+    route = make_route(maps, deadline=plan_deadline, clock=time.monotonic)
+
+    # --- flight sources: byAir records + TripIt segments (R2 union) ---
+    records = [
+        record for fid in read_active_flights() if (record := read_flight_state(fid)) is not None
+    ]
+    tripit_flights = flights_from_schedule(schedule)
+
+    # Known flight designators from the whole itinerary (both sources) — the
+    # identity mask (R5) that keeps flight events out of the meeting scan.
+    known_codes = known_flight_codes(
+        [r.get("code") for r in records] + [f.code for f in tripit_flights]
+    )
+    for summary in flight_summaries(schedule):
+        known_codes |= flight_codes(summary)
+
+    composio = ComposioClient.from_env()
+
+    # --- V3: boarding-block presence on the byAir calendar ---
+    boarding_ends = _boarding_block_end_times(
+        composio, _find_events_args, _items, config.get("byair_calendar_id"), now
+    )
+
+    def boarding_present(flight) -> bool:
+        # A boarding block ends at ~departure; match it to this flight by time.
+        dep = flight.effective_dep
+        return any(abs((be - dep).total_seconds()) < 1800 for be in boarding_ends)
+
+    # --- meeting side: fetch calendar, mask flights by IDENTITY (R5), scan ---
+    # scan() requires a non-empty home_address. If neither the config nor the
+    # user_profile provided one (#162), SKIP the meeting side with a diagnostic
+    # rather than letting scan raise and take the airport side down with it — the
+    # whole cycle must not be DOA over a missing home.
+    meeting_blocks: list[DesiredBlock] = []
+    meeting_skipped: list[str] = []
+    if home:
+        fetcher = CalendarFetcher.from_env()
+        events = exclude_drive_block_events(
+            fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
+        )
+        # Drop flight events by identity only (R5 — never by time overlap, so a
+        # ground meeting overlapping a redeye window survives). scan then runs
+        # with an EMPTY flight context, since masking already happened here.
+        events = [
+            e
+            for e in events
+            if not (isinstance(e, dict) and is_flight_event(e.get("summary"), known_codes))
+        ]
+        skips = load_active_skips(now)
+
+        def anchor_for(at: datetime) -> tuple[str | None, str | None]:
+            anchor = resolve_anchor(schedule, at=at, home_address=home)
+            return anchor.address, anchor.detail
+
+        meetings = scan(
+            events,
+            now=now,
+            home_address=home,
+            skip_state=skips,
+            anchor_for=anchor_for,
+            flight_windows=[],
+            flight_summaries=[],
+        )
+        meeting_blocks, meeting_skipped = meeting_desired_blocks(meetings, route=route)
+    else:
+        meeting_skipped = [
+            "meeting side skipped: no home_address (flight-assist config and "
+            "user_profile current_home both empty) — see #162"
+        ]
+
+    # Outcome-level budget gate (#172). Meeting routing above shares the
+    # budget-aware `route`; a single meeting leg whose provider-fallback chain
+    # began just under the deadline can return well past it. `make_route` stops
+    # STARTING new route calls past the plan deadline, but the current-block fetch
+    # and airport resolution below are non-route network work that would still run.
+    # Gate on the whole-sweep budget (not the tighter plan deadline, so cheap
+    # cache-served legs aren't needlessly abandoned): once even that is spent, skip
+    # cleanly here rather than push more work toward the host kill.
+    if time.monotonic() - sweep_start >= _SWEEP_WALL_CLOCK_BUDGET_SECONDS:
+        raise PlanBudgetExceeded("sweep budget spent after meeting routing")
+
+    # --- airport facts ---
+    byair = ByAirClient.from_env()
+    airport_cache: dict[int, ResolvedAirport] = {}
+
+    def resolve_airport(airport_id: int) -> ResolvedAirport | None:
+        if airport_id not in airport_cache:
+            ctx = airport_context(byair.get_airport(airport_id))
+            airport_cache[airport_id] = ResolvedAirport(
+                iata=ctx.code,
+                flag=ctx.flag,
+                delay_index=ctx.delay_index,
+                timezone=ctx.timezone,
+            )
+        return airport_cache[airport_id]
+
+    # --- current blocks ---
+    raw = composio.find_events(
+        _find_events_args(
+            calendar_id="primary",
+            time_min=(now - timedelta(days=2)).isoformat(),
+            time_max=(now + timedelta(days=21)).isoformat(),
+        )
+    )
+    current_blocks = [b for b in (parse_block(e) for e in _items(raw)) if b is not None]
+
+    live_origin = _fresh_live_origin(now, MAX_LIVE_ORIGIN_AGE_MINUTES)
+
+    result = build_plan(
+        flight_records=records,
+        resolve_airport=resolve_airport,
+        meeting_blocks=meeting_blocks,
+        current_blocks=current_blocks,
+        route=route,
+        tripit_flights=tripit_flights,
+        boarding_present=boarding_present,
+        now=now,
+        schedule=schedule,
+        home_address=home,
+        live_origin=live_origin,
+    )
+
+    # --- APPLY (write) ---
+    # Give apply whatever of the sweep budget the fetch/plan phase left, so the
+    # write phase stops with margin before the host precheck kill (#164).
+    apply_budget = max(_SWEEP_WALL_CLOCK_BUDGET_SECONDS - (time.monotonic() - sweep_start), 0.0)
+    applied = apply_plan(
+        result.plan, composio=composio, calendar_id="primary", budget_seconds=apply_budget
+    )
+
+    skipped = list(result.skipped) + list(meeting_skipped)
+    for line in skipped:
+        print(f"[drive-engine] skip: {line}", file=sys.stderr)
+    for line in applied.errors:
+        print(f"[drive-engine] error: {line}", file=sys.stderr)
+
+    return {
+        "wake_agent": applied.total_writes > 0,
+        "data": {
+            "applied": {
+                "created": applied.created,
+                "updated": applied.updated,
+                "deleted": applied.deleted,
+                "converted": applied.converted,
+            },
+            "deferred": applied.deferred,
+            "skipped": len(skipped),
+            "errors": len(applied.errors),
+        },
+    }
+
+
 def main() -> int:
     """Run the live unified reconcile and APPLY it. Fails closed on any error.
 
@@ -304,218 +517,12 @@ def main() -> int:
         non-zero / print no payload, silently disabling the sweep.
     """
     try:
-        sweep_start = time.monotonic()
-        _on_path("flight-assist")
-        _on_path("travel-core")
-        _on_path("drive-planner")
-
-        from airport_drive_inputs import airport_context
-        from byair_client import ByAirClient
-        from calendar_reconcile import _find_events_args, _items
-        from composio_client import ComposioClient
-        from fetch_events import CalendarFetcher
-        from home_address import HomeAddressError, read_current_home
-        from maps_client import MapsClient
-        from scan import scan
-        from skip_state import load_active_skips
-        from state import (
-            MAX_LIVE_ORIGIN_AGE_MINUTES,
-            read_active_flights,
-            read_config,
-            read_flight_state,
-        )
-        from trip_origin import (
-            flight_summaries,
-            load_travel_schedule,
-            resolve_anchor,
-        )
-
-        now = datetime.now(timezone.utc)
-        config = read_config() or {}
-        # Home resolution (#162): the flight-assist config may have no
-        # home_address key (a fresh cutover never provisioned it), so fall back to
-        # the canonical user_profile current_home — the same source the retired
-        # drive-planner read. Without this the sweep is DOA: the meeting scan
-        # raises on an empty home and takes the whole cycle down.
-        home_config = config.get("home_address")
-        home = home_config if isinstance(home_config, str) and home_config.strip() else None
-        if home is None:
-            try:
-                home = read_current_home()
-            except HomeAddressError:
-                home = None  # neither source configured — degrade, see below
-        schedule = load_travel_schedule()
-
-        maps = MapsClient.from_env(timeout=_SWEEP_MAPS_TIMEOUT_SECONDS)
-        # Deadline for the routing phase, so a slow provider-failover storm can't
-        # run routing for minutes (#172).
-        plan_deadline = sweep_start + _PLAN_PHASE_BUDGET_SECONDS
-
-        # One memoizing, budget-aware route closure for the whole sweep — meeting
-        # legs and airport legs share it, so a repeated (origin, destination) pair
-        # costs one provider round trip, not one per leg. It serves cached pairs
-        # even past the deadline but refuses to START a new (cache-miss) route call
-        # once the deadline passes, raising PlanBudgetExceeded instead (#172).
-        route = make_route(maps, deadline=plan_deadline, clock=time.monotonic)
-
-        # --- flight sources: byAir records + TripIt segments (R2 union) ---
-        records = [
-            record
-            for fid in read_active_flights()
-            if (record := read_flight_state(fid)) is not None
-        ]
-        tripit_flights = flights_from_schedule(schedule)
-
-        # Known flight designators from the whole itinerary (both sources) — the
-        # identity mask (R5) that keeps flight events out of the meeting scan.
-        known_codes = known_flight_codes(
-            [r.get("code") for r in records] + [f.code for f in tripit_flights]
-        )
-        for summary in flight_summaries(schedule):
-            known_codes |= flight_codes(summary)
-
-        composio = ComposioClient.from_env()
-
-        # --- V3: boarding-block presence on the byAir calendar ---
-        boarding_ends = _boarding_block_end_times(
-            composio, _find_events_args, _items, config.get("byair_calendar_id"), now
-        )
-
-        def boarding_present(flight) -> bool:
-            # A boarding block ends at ~departure; match it to this flight by time.
-            dep = flight.effective_dep
-            return any(abs((be - dep).total_seconds()) < 1800 for be in boarding_ends)
-
-        # --- meeting side: fetch calendar, mask flights by IDENTITY (R5), scan ---
-        # scan() requires a non-empty home_address. If neither the config nor the
-        # user_profile provided one (#162), SKIP the meeting side with a
-        # diagnostic rather than letting scan raise and take the airport side down
-        # with it — the whole cycle must not be DOA over a missing home.
-        meeting_blocks: list[DesiredBlock] = []
-        meeting_skipped: list[str] = []
-        if home:
-            fetcher = CalendarFetcher.from_env()
-            events = exclude_drive_block_events(
-                fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
-            )
-            # Drop flight events by identity only (R5 — never by time overlap, so a
-            # ground meeting overlapping a redeye window survives). scan then runs
-            # with an EMPTY flight context, since masking already happened here.
-            events = [
-                e
-                for e in events
-                if not (isinstance(e, dict) and is_flight_event(e.get("summary"), known_codes))
-            ]
-            skips = load_active_skips(now)
-
-            def anchor_for(at: datetime) -> tuple[str | None, str | None]:
-                anchor = resolve_anchor(schedule, at=at, home_address=home)
-                return anchor.address, anchor.detail
-
-            meetings = scan(
-                events,
-                now=now,
-                home_address=home,
-                skip_state=skips,
-                anchor_for=anchor_for,
-                flight_windows=[],
-                flight_summaries=[],
-            )
-            meeting_blocks, meeting_skipped = meeting_desired_blocks(meetings, route=route)
-        else:
-            meeting_skipped = [
-                "meeting side skipped: no home_address (flight-assist config and "
-                "user_profile current_home both empty) — see #162"
-            ]
-
-        # Outcome-level budget gate (#172). Meeting routing above shares the
-        # budget-aware `route`; a single meeting leg whose provider-fallback chain
-        # began just under the deadline can return well past it. `make_route` stops
-        # STARTING new route calls past the plan deadline, but the current-block
-        # fetch and airport resolution below are non-route network work that would
-        # still run. Gate on the whole-sweep budget (not the tighter plan deadline,
-        # so cheap cache-served legs aren't needlessly abandoned): once even that is
-        # spent, skip cleanly here rather than push more work toward the host kill.
-        if time.monotonic() - sweep_start >= _SWEEP_WALL_CLOCK_BUDGET_SECONDS:
-            raise PlanBudgetExceeded("sweep budget spent after meeting routing")
-
-        # --- airport facts ---
-        byair = ByAirClient.from_env()
-        airport_cache: dict[int, ResolvedAirport] = {}
-
-        def resolve_airport(airport_id: int) -> ResolvedAirport | None:
-            if airport_id not in airport_cache:
-                ctx = airport_context(byair.get_airport(airport_id))
-                airport_cache[airport_id] = ResolvedAirport(
-                    iata=ctx.code,
-                    flag=ctx.flag,
-                    delay_index=ctx.delay_index,
-                    timezone=ctx.timezone,
-                )
-            return airport_cache[airport_id]
-
-        # --- current blocks ---
-        raw = composio.find_events(
-            _find_events_args(
-                calendar_id="primary",
-                time_min=(now - timedelta(days=2)).isoformat(),
-                time_max=(now + timedelta(days=21)).isoformat(),
-            )
-        )
-        current_blocks = [b for b in (parse_block(e) for e in _items(raw)) if b is not None]
-
-        live_origin = _fresh_live_origin(now, MAX_LIVE_ORIGIN_AGE_MINUTES)
-
-        result = build_plan(
-            flight_records=records,
-            resolve_airport=resolve_airport,
-            meeting_blocks=meeting_blocks,
-            current_blocks=current_blocks,
-            route=route,
-            tripit_flights=tripit_flights,
-            boarding_present=boarding_present,
-            now=now,
-            schedule=schedule,
-            home_address=home,
-            live_origin=live_origin,
-        )
-
-        # --- APPLY (write) ---
-        # Give apply whatever of the sweep budget the fetch/plan phase left, so
-        # the write phase stops with margin before the host precheck kill (#164).
-        apply_budget = max(_SWEEP_WALL_CLOCK_BUDGET_SECONDS - (time.monotonic() - sweep_start), 0.0)
-        applied = apply_plan(
-            result.plan, composio=composio, calendar_id="primary", budget_seconds=apply_budget
-        )
-
-        skipped = list(result.skipped) + list(meeting_skipped)
-        for line in skipped:
-            print(f"[drive-engine] skip: {line}", file=sys.stderr)
-        for line in applied.errors:
-            print(f"[drive-engine] error: {line}", file=sys.stderr)
-
-        payload = {
-            "wake_agent": applied.total_writes > 0,
-            "data": {
-                "applied": {
-                    "created": applied.created,
-                    "updated": applied.updated,
-                    "deleted": applied.deleted,
-                    "converted": applied.converted,
-                },
-                "deferred": applied.deferred,
-                "skipped": len(skipped),
-                "errors": len(applied.errors),
-            },
-        }
-        print(json.dumps(payload))
-        return 0
+        payload = _run_sweep()
     except PlanBudgetExceeded as exc:
         # Routing (meeting side or airport side — both share the budget-aware
         # `route`) ran past its budget. Skip this whole cycle cleanly rather than
         # apply a partial plan (a partial `desired` set reads as orphaned blocks to
-        # delete). Handled at the outer boundary so it covers every `route` use in
-        # main(), not just build_plan (#172). Next sweep resumes; idempotent.
+        # delete). Next sweep resumes; the reconcile is idempotent (#172).
         print(f"[drive-engine] {exc}; skipping cycle", file=sys.stderr)
         print(json.dumps({"wake_agent": False, "data": {"reason": "plan_budget_exceeded"}}))
         return 0
@@ -531,6 +538,8 @@ def main() -> int:
         print(f"drive-engine precheck failed, no wake: {exc}", file=sys.stderr)
         print(json.dumps({"wake_agent": False, "data": {"error": str(exc)}}))
         return 0
+    print(json.dumps(payload))
+    return 0
 
 
 if __name__ == "__main__":

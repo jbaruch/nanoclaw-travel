@@ -4,12 +4,14 @@ Deterministic fixtures only — hand-built byAir records, pre-built meeting bloc
 a fake airport resolver and router, fixed `now`. These pin: airport + meeting
 blocks are combined into ONE plan; legacy drive-planner (dp) blocks on the calendar
 are LEFT UNTOUCHED (managed_legacy empty — the operator cleans them up); an
-unresolvable airport is skipped, not guessed. The main() I/O layer is the outer
-process boundary and is not unit-tested here.
+unresolvable airport is skipped, not guessed. main()'s live I/O work (`_run_sweep`)
+is not unit-tested, but main()'s outer-boundary contract — clean budget skip vs.
+generic error payload vs. work payload — is, via a monkeypatched `_run_sweep`.
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
 import pytest  # noqa: E402
+import reconcile_sweep  # noqa: E402
 from block_codec import GEN_LEGACY_DP, ParsedBlock  # noqa: E402
 from engine import PlanBudgetExceeded  # noqa: E402
 from flight_identity import TRIPIT, Flight  # noqa: E402
@@ -349,3 +352,45 @@ def test_make_route_next_miss_raises_after_a_slow_call_crosses_deadline():
     with pytest.raises(PlanBudgetExceeded):
         route("STN airport", "CPH airport")  # a new miss — refused
     assert maps.calls == [("home", "STN airport")]  # the second never hit the network
+
+
+# --- main() outer-boundary contract (#172) ----------------------------------
+
+
+def test_main_emits_clean_skip_on_plan_budget_exceeded(monkeypatch, capsys):
+    """The production contract: when routing raises PlanBudgetExceeded, main()
+    emits the clean no-wake skip payload (NOT the generic error payload) and
+    exits 0, so the scheduler skips the cycle instead of treating it as failure."""
+    monkeypatch.setattr(
+        reconcile_sweep,
+        "_run_sweep",
+        lambda: (_ for _ in ()).throw(PlanBudgetExceeded("budget spent")),
+    )
+    rc = reconcile_sweep.main()
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out == {"wake_agent": False, "data": {"reason": "plan_budget_exceeded"}}
+
+
+def test_main_emits_error_payload_on_unexpected_exception(monkeypatch, capsys):
+    """A non-budget failure still fails closed: a valid no-wake payload carrying
+    the error (never a non-zero exit or empty stdout, which the scheduler reads as
+    silent failure)."""
+    monkeypatch.setattr(
+        reconcile_sweep,
+        "_run_sweep",
+        lambda: (_ for _ in ()).throw(RuntimeError("kaboom")),
+    )
+    rc = reconcile_sweep.main()
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["wake_agent"] is False and out["data"]["error"] == "kaboom"
+
+
+def test_main_prints_run_sweep_payload_on_success(monkeypatch, capsys):
+    """On a normal run main() prints exactly the payload _run_sweep returns."""
+    payload = {"wake_agent": True, "data": {"applied": {"created": 1}}}
+    monkeypatch.setattr(reconcile_sweep, "_run_sweep", lambda: payload)
+    rc = reconcile_sweep.main()
+    assert rc == 0
+    assert json.loads(capsys.readouterr().out) == payload
