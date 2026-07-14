@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.46 — 2026-07-14
+
 ### Changed — drive-engine notifies only on what the operator can act on
 
 The sweep woke the operator on every write (`total_writes > 0`), so routine
