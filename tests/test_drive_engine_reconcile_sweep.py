@@ -19,7 +19,9 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
+import pytest  # noqa: E402
 from block_codec import GEN_LEGACY_DP, ParsedBlock  # noqa: E402
+from engine import PlanBudgetExceeded  # noqa: E402
 from flight_identity import TRIPIT, Flight  # noqa: E402
 from maps_client import MapsError, TravelTime  # noqa: E402
 from reconcile import DesiredBlock  # noqa: E402
@@ -304,3 +306,26 @@ def test_make_route_caches_failure_as_none():
     assert route("home", "STN airport") is None
     assert route("home", "STN airport") is None
     assert maps.calls == [("home", "STN airport")]  # failure not re-attempted
+
+
+def test_make_route_raises_past_deadline_before_network_call():
+    """#172: past the budget deadline a cache MISS raises rather than entering the
+    provider-fallback chain — so a slow leg can't push the sweep past its budget
+    after the per-leg poll already passed. No network call is made."""
+    maps = _FakeMaps()
+    route = make_route(maps, deadline=100.0, clock=lambda: 100.0)
+    with pytest.raises(PlanBudgetExceeded):
+        route("home", "STN airport")
+    assert maps.calls == []  # aborted before the travel_time call
+
+
+def test_make_route_serves_cache_hit_even_past_deadline():
+    """A cached pair is free, so it's served even past the deadline — only a MISS
+    (a new network call) is gated (#172)."""
+    cache: dict[tuple[str, str], timedelta | None] = {}
+    now = {"t": 0.0}
+    route = make_route(maps=_FakeMaps(), cache=cache, deadline=100.0, clock=lambda: now["t"])
+    before = route("home", "STN airport")  # populates the cache before the deadline
+    now["t"] = 200.0  # now well past the deadline
+    after = route("home", "STN airport")  # cache hit — must not raise
+    assert before == after == timedelta(seconds=1800)

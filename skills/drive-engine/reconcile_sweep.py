@@ -67,22 +67,46 @@ _SWEEP_WALL_CLOCK_BUDGET_SECONDS = 27.0
 # Wall-clock budget for the plan (routing) phase, carved out of the sweep budget
 # so the write phase still has room after it. Each airport leg can cost a slow
 # provider failover (Google ZERO_RESULTS on an airport → three sequential TomTom
-# calls at up to 10s each), so an unbounded plan phase could route for minutes and
-# blow past any container timeout (#172). On exhaustion the whole cycle skips
-# cleanly (no partial plan — a partial `desired` set reads as orphaned blocks to
-# delete). With `make_route` memoization a normal itinerary never reaches this.
-_PLAN_PHASE_BUDGET_SECONDS = 20.0
+# calls), so an unbounded plan phase could route for minutes and blow past any
+# container timeout (#172). `make_route` refuses to START a new route call once
+# this budget is spent — it raises `PlanBudgetExceeded` instead, so the sweep
+# takes its clean no-wake path rather than being killed mid-route before it can
+# print JSON. On exhaustion the whole cycle skips cleanly (no partial plan — a
+# partial `desired` set reads as orphaned blocks to delete). With memoization a
+# normal itinerary never reaches this.
+_PLAN_PHASE_BUDGET_SECONDS = 15.0
+
+# Per-call timeout for the sweep's own maps client (the shared default is 10s).
+# Tightened so a single `travel_time` — worst case one Google call plus three
+# sequential TomTom fallback calls — cannot outlast the margin between the plan
+# budget and the host precheck kill: a call that begins just before the budget
+# elapses finishes in ≤ 4 × 4s = 16s, so 15s + 16s ≈ 31s stays under the ~33s
+# kill and the clean no-wake JSON is always emitted first. A leg that times out is
+# skipped this cycle and retried next sweep (the reconcile is idempotent).
+_SWEEP_MAPS_TIMEOUT_SECONDS = 4.0
 
 
-def make_route(maps, *, cache: dict[tuple[str, str], timedelta | None] | None = None) -> RouteFn:
-    """A memoizing `route(origin, destination) -> timedelta | None` over `maps`.
+def make_route(
+    maps,
+    *,
+    cache: dict[tuple[str, str], timedelta | None] | None = None,
+    deadline: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> RouteFn:
+    """A memoizing, budget-aware `route(origin, destination) -> timedelta | None`.
 
     Per `MapsClient`'s own contract ("cache aggressively at the caller level"),
     dedupes identical (origin, destination) pairs within one sweep — an airport
     that is both a departure destination and a transfer origin is routed once, not
-    per leg. Traffic is stable across a single ~20s sweep, so a cached duration is
-    the same answer the provider would return again (#172). A failed route caches
-    None too, so a dead endpoint isn't re-attempted every leg.
+    per leg. Traffic is stable across a single sweep, so a cached duration is the
+    same answer the provider would return again (#172). A failed route caches None
+    too, so a dead endpoint isn't re-attempted every leg.
+
+    When `deadline` (a `clock()` reading) is set, a cache MISS past the deadline
+    raises `PlanBudgetExceeded` BEFORE the network call — a single leg's provider
+    fallback chain can't push the sweep past its budget after the per-leg poll
+    already passed (#172). A cache HIT is free and always served, even past the
+    deadline. `clock` is injected for deterministic tests.
     """
     import urllib.error
 
@@ -94,6 +118,10 @@ def make_route(maps, *, cache: dict[tuple[str, str], timedelta | None] | None = 
         key = (origin, destination)
         if key in memo:
             return memo[key]
+        if deadline is not None and clock() >= deadline:
+            raise PlanBudgetExceeded(
+                f"routing budget spent before routing {origin!r} → {destination!r}"
+            )
         try:
             tt = maps.travel_time(origin, destination)
         except (MapsError, urllib.error.URLError, TimeoutError):
@@ -320,18 +348,19 @@ def main() -> int:
                 home = None  # neither source configured — degrade, see below
         schedule = load_travel_schedule()
 
-        maps = MapsClient.from_env()
-        # One memoizing route closure for the whole sweep — meeting legs and
-        # airport legs share it, so a repeated (origin, destination) pair costs one
-        # provider round trip, not one per leg (#172).
-        route = make_route(maps)
-
+        maps = MapsClient.from_env(timeout=_SWEEP_MAPS_TIMEOUT_SECONDS)
         # Deadline for the routing phase, so a slow provider-failover storm can't
-        # run the plan phase for minutes (#172). Polled once per airport leg.
+        # run the plan phase for minutes (#172).
         plan_deadline = sweep_start + _PLAN_PHASE_BUDGET_SECONDS
 
         def has_plan_budget() -> bool:
             return time.monotonic() < plan_deadline
+
+        # One memoizing, budget-aware route closure for the whole sweep — meeting
+        # legs and airport legs share it, so a repeated (origin, destination) pair
+        # costs one provider round trip, not one per leg, and no new route call is
+        # started once the plan budget is spent (#172).
+        route = make_route(maps, deadline=plan_deadline, clock=time.monotonic)
 
         # --- flight sources: byAir records + TripIt segments (R2 union) ---
         records = [

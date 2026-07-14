@@ -16,12 +16,21 @@ with no output. Two fixes:
   also a transfer origin) is routed once per sweep, not per leg — the caller-level
   caching `MapsClient`'s own docstring prescribes. A failed route caches `None` so a
   dead endpoint isn't re-attempted (and re-failed-over) every leg.
-- **Plan-phase wall-clock budget.** `build_reconcile_plan` now polls an injected
-  `has_budget` once per leg and, on exhaustion, raises `PlanBudgetExceeded` so the
-  sweep skips the whole cycle cleanly (`wake_agent: false`) rather than routing on
-  and hanging. The abort is deliberately all-or-nothing: a partial `desired` set
-  would read as orphaned blocks and get deleted, then recreated next sweep — the
-  exact churn #164 fixed. The next sweep resumes; the reconcile is idempotent.
+- **Plan-phase wall-clock budget, enforced per route call.** `build_reconcile_plan`
+  polls an injected `has_budget` once per leg, and `make_route` itself refuses to
+  START a new route call once the deadline passes — both raise `PlanBudgetExceeded`.
+  Enforcing at the route call (not only between legs) means a single leg's provider
+  fallback chain can't push the sweep past its budget after the per-leg poll already
+  passed. The sweep catches the exception and skips the cycle cleanly
+  (`wake_agent: false`) rather than being killed mid-route before it can print JSON.
+  The abort is deliberately all-or-nothing: a partial `desired` set would read as
+  orphaned blocks and get deleted, then recreated next sweep — the exact churn #164
+  fixed. The next sweep resumes; the reconcile is idempotent.
+- **Tightened per-call timeout for the sweep's maps client** (4s, from the shared
+  10s default) so a single `travel_time` — one Google call plus up to three
+  sequential TomTom fallback calls — finishes within the margin between the plan
+  budget and the host's ~33s precheck kill, guaranteeing the clean no-wake payload
+  is emitted first.
 
 ## 0.2.43 — 2026-07-13
 
