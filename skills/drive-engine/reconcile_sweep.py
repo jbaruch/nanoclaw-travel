@@ -292,6 +292,69 @@ def _fresh_live_origin(now: datetime, max_age_minutes: int) -> str | None:
     return None
 
 
+def _group_meeting_adds(legs: list[dict]) -> list[dict]:
+    """One entry per meeting (by identity), using its EARLIEST leg anchor — the
+    outbound leg's meeting-start time — so the operator sees "<meeting> at
+    <start>". Ordered by that anchor so the enumerated skip list reads
+    chronologically (index 1 is the soonest drive)."""
+    by_identity: dict[str, dict] = {}
+    for leg in legs:
+        cur = by_identity.get(leg["identity"])
+        if cur is None or leg["anchor"] < cur["anchor"]:
+            by_identity[leg["identity"]] = leg
+    ordered = sorted(by_identity.values(), key=lambda leg: leg["anchor"])
+    return [{"meeting": leg["meeting"], "when": leg["when"]} for leg in ordered]
+
+
+def _dedup_material(updates: list[dict]) -> list[dict]:
+    """One alert per meeting (by identity), the LARGEST drive-time swing — so a
+    meeting whose outbound and return both moved is announced once. Ordered by
+    anchor for a chronological read."""
+    by_identity: dict[str, dict] = {}
+    for u in updates:
+        cur = by_identity.get(u["identity"])
+        if cur is None or u["minutes"] > cur["minutes"]:
+            by_identity[u["identity"]] = u
+    ordered = sorted(by_identity.values(), key=lambda u: u["anchor"])
+    return [
+        {
+            "meeting": u["meeting"],
+            "minutes": u["minutes"],
+            "direction": u["direction"],
+            "when": u["when"],
+        }
+        for u in ordered
+    ]
+
+
+def build_sweep_payload(applied, skipped: list[str]) -> dict:
+    """Assemble the sweep's stdout payload and wake decision from an ApplyResult.
+
+    Wakes the agent ONLY when the operator has something to act on: a new MEETING
+    drive (which they can skip) or a MATERIAL drive-time change (leave earlier /
+    later). Removes, airport-drive adds, converts, and routine sub-threshold
+    re-times all apply SILENTLY — no wake, no message (the noise this gating
+    exists to kill). `applied` is a `calendar_apply.ApplyResult`."""
+    added = _group_meeting_adds(applied.added_meeting_legs)
+    material = _dedup_material(applied.material_updates)
+    return {
+        "wake_agent": bool(added) or bool(material),
+        "data": {
+            "applied": {
+                "created": applied.created,
+                "updated": applied.updated,
+                "deleted": applied.deleted,
+                "converted": applied.converted,
+            },
+            "added_meeting_drives": added,
+            "material_updates": material,
+            "deferred": applied.deferred,
+            "skipped": len(skipped),
+            "errors": len(applied.errors),
+        },
+    }
+
+
 def _run_sweep() -> dict:
     """Run the live unified reconcile, APPLY it, and return the stdout payload.
 
@@ -489,20 +552,7 @@ def _run_sweep() -> dict:
     for line in applied.errors:
         print(f"[drive-engine] error: {line}", file=sys.stderr)
 
-    return {
-        "wake_agent": applied.total_writes > 0,
-        "data": {
-            "applied": {
-                "created": applied.created,
-                "updated": applied.updated,
-                "deleted": applied.deleted,
-                "converted": applied.converted,
-            },
-            "deferred": applied.deferred,
-            "skipped": len(skipped),
-            "errors": len(applied.errors),
-        },
-    }
+    return build_sweep_payload(applied, skipped)
 
 
 def main() -> int:
