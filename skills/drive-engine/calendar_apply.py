@@ -36,7 +36,11 @@ if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
 from block_codec import build_description  # noqa: E402
-from reconcile import DesiredBlock, ReconcilePlan  # noqa: E402
+from reconcile import DesiredBlock, ReconcilePlan, material_update_delta  # noqa: E402
+
+# A drive block's human summary is "Drive: <meeting/leg>". Stripping the prefix
+# recovers the name the operator recognizes for a notification.
+_DRIVE_SUMMARY_PREFIX = "Drive: "
 
 # flight-assist ships ComposioError; resolve it cross-bundle for the caught type.
 _FA = Path("/home/node/.claude/skills/tessl__flight-assist")
@@ -59,10 +63,31 @@ class ApplyResult:
     converted: int = 0
     deferred: int = 0
     errors: list[str] = field(default_factory=list)
+    # Operator-facing notification material, recorded ONLY for ops that actually
+    # applied this sweep (never for deferred / failed ones). Per-leg here; the
+    # sweep payload builder groups them per meeting. `added_meeting_legs` holds
+    # only MEETING creates — airport creates are not notified (a flight drive is
+    # not skippable, so there is nothing for the operator to act on).
+    added_meeting_legs: list[dict] = field(default_factory=list)
+    material_updates: list[dict] = field(default_factory=list)
 
     @property
     def total_writes(self) -> int:
         return self.created + self.updated + self.deleted + self.converted
+
+
+def _meeting_name(summary: str) -> str:
+    """Recover the operator-recognizable name from a "Drive: <name>" summary."""
+    if summary.startswith(_DRIVE_SUMMARY_PREFIX):
+        return summary[len(_DRIVE_SUMMARY_PREFIX) :]
+    return summary
+
+
+def _local_when(desired: DesiredBlock) -> str:
+    """The block's meeting-relevant time (its anchor) as a human local string,
+    e.g. "Sat Jul 18, 10:35" — what the operator sees for "... at 10:35"."""
+    local_dt, _ = _start_in_local(desired.anchor, desired.timezone)
+    return local_dt.strftime("%a %b %d, %H:%M")
 
 
 def _start_in_local(start: datetime, tz_name: str | None) -> tuple[datetime, str]:
@@ -223,6 +248,17 @@ def apply_plan(
             result.errors.append(f"create {c.desired.identity}: {exc}")
             continue
         result.created += 1
+        # Notify only for MEETING drives (skippable). Airport drives to/from a
+        # flight are not skippable, so they are created silently.
+        if c.desired.kind.startswith("meeting_"):
+            result.added_meeting_legs.append(
+                {
+                    "identity": c.desired.identity,
+                    "meeting": _meeting_name(c.desired.summary),
+                    "when": _local_when(c.desired),
+                    "anchor": c.desired.anchor.isoformat(),
+                }
+            )
 
     for cv in plan.converts:
         if over_budget():
@@ -265,5 +301,20 @@ def apply_plan(
             result.errors.append(f"update-patch {u.desired.identity}: {exc}")
             continue
         result.updated += 1
+        # Alert only on a MATERIAL drive-time change (traffic swing worth acting
+        # on); routine sub-threshold re-times patch silently.
+        delta = material_update_delta(u.prior_baseline_seconds, u.desired.baseline_seconds)
+        if delta is not None:
+            minutes, direction = delta
+            result.material_updates.append(
+                {
+                    "identity": u.desired.identity,
+                    "meeting": _meeting_name(u.desired.summary),
+                    "minutes": minutes,
+                    "direction": direction,
+                    "when": _local_when(u.desired),
+                    "anchor": u.desired.anchor.isoformat(),
+                }
+            )
 
     return result

@@ -88,6 +88,9 @@ class Create:
 class Update:
     event_id: str | None
     desired: DesiredBlock
+    # The matched block's prior routed drive duration, so the apply layer can tell
+    # a material traffic change (worth alerting the operator) from routine jitter.
+    prior_baseline_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,34 @@ def _legacy_key(block: ParsedBlock) -> tuple[str, str, str] | None:
 # pointless churn — so ignore it. 2 min is well above the jitter yet still
 # catches a real traffic change (which moves the leave-by enough to matter).
 _BASELINE_SHIFT_TOLERANCE_SECONDS = 120
+
+# A shifted block only ALERTS the operator when the routed drive duration changed
+# by at least this fraction of its prior value — a material traffic swing worth a
+# "leave earlier/later" heads-up, versus the routine sub-tolerance re-times that
+# happen every sweep and are pure noise. Below this, the block is still updated
+# silently so the calendar stays accurate; only the notification is suppressed.
+_MATERIAL_UPDATE_FRACTION = 0.10
+
+
+def material_update_delta(prior_seconds: int | None, new_seconds: int) -> tuple[int, str] | None:
+    """Classify a drive-duration change for operator alerting.
+
+    Returns `(minutes, direction)` when the change is material — at least
+    `_MATERIAL_UPDATE_FRACTION` of the prior duration AND at least one whole
+    minute — else None (routine jitter, alert suppressed). `direction` is
+    `"sooner"` when the drive got LONGER (leave earlier) and `"later"` when it
+    got shorter (leave later). A missing / non-positive prior duration can't be
+    compared, so it is never material.
+    """
+    if prior_seconds is None or prior_seconds <= 0:
+        return None
+    diff = new_seconds - prior_seconds
+    if abs(diff) / prior_seconds < _MATERIAL_UPDATE_FRACTION:
+        return None
+    minutes = round(abs(diff) / 60)
+    if minutes < 1:
+        return None
+    return minutes, ("sooner" if diff > 0 else "later")
 
 
 def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:
@@ -201,7 +232,7 @@ def plan_reconcile(
             # G1: keep the first, delete every extra sharing this identity.
             keep = matches[0]
             if _needs_update(keep, d):
-                updates.append(Update(keep.event_id, d))
+                updates.append(Update(keep.event_id, d, keep.baseline_seconds))
             for extra in matches[1:]:
                 deletes.append(Delete(extra.event_id, "duplicate identity"))
             continue

@@ -1,5 +1,19 @@
 # Changelog
 
+### Changed — drive-engine notifies only on what the operator can act on
+
+The sweep woke the operator on every write (`total_writes > 0`), so routine
+traffic re-times — a few seconds of jitter every 30 minutes — spammed the chat.
+It now wakes ONLY for two things: a new MEETING drive, or a MATERIAL drive-time
+change. Everything else applies silently.
+
+- **Material re-time alerts.** A shifted block alerts only when its routed drive
+  duration changed by ≥10% (either direction) and by ≥1 minute — `reconcile.material_update_delta`. The message is actionable: "leave {N} min sooner/later for your {meeting} at {time}" (sooner when the drive got longer). Sub-threshold shifts still patch the calendar, silently.
+- **Skippable meeting-add notifications.** A new meeting drive is announced and can be declined: the operator replies "skip" (or "skip 1", "skip 2 and 3" when several were added — a local index, never an internal id). `skip_drive.py` resolves the name to the meeting, deletes its blocks, and records a skip so no sweep recreates them. Airport drives to/from a flight are NOT announced — a flight is not skippable.
+- **Silent by design.** Removes, airport-drive adds, converts, and routine re-times no longer notify.
+- The drive-engine SKILL is now an action router (report sweep changes / skip a drive / flag a wrong block). `reconcile_sweep.build_sweep_payload` owns the wake gating and per-meeting grouping.
+- Confirmed the engine only ever creates a drive for a meeting with a real, routable address: `scan` filters a location-less or virtual meeting to `filtered`, and `meeting_source` drops legs whose location won't geocode or whose drive is implausible.
+
 ## 0.2.45 — 2026-07-14
 
 ### Fixed — unpaginated calendar fetches truncated the window → drive-engine duplicate storm (#171)
