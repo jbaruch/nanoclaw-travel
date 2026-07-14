@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.45 — 2026-07-14
+
 ### Fixed — unpaginated calendar fetches truncated the window → drive-engine duplicate storm (#171)
 
 Both Composio calendar-fetch primitives returned only the first page of a time
