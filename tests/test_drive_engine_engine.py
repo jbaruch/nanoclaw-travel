@@ -20,9 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
-import pytest  # noqa: E402
 from block_codec import GEN_LEGACY_FADRIVE, ParsedBlock  # noqa: E402
-from engine import AirportInfo, PlanBudgetExceeded, build_reconcile_plan  # noqa: E402
+from engine import AirportInfo, build_reconcile_plan  # noqa: E402
 from flight_identity import BYAIR, Flight  # noqa: E402
 
 UTC = timezone.utc
@@ -235,70 +234,3 @@ def test_no_home_off_trip_skips_rather_than_routing_blind():
     )
     assert result.plan.creates == ()
     assert any("unresolved" in s for s in result.skipped)
-
-
-# --- routing budget (#172) --------------------------------------------------
-
-
-def test_plan_budget_exhausted_aborts_before_routing():
-    """#172: when the injected budget is already spent, the build raises rather
-    than routing the leg — so a slow provider-failover storm can never run the
-    plan phase for minutes and hang the container."""
-    routed: list[tuple[str, str]] = []
-
-    def counting_route(o, d):
-        routed.append((o, d))
-        return timedelta(minutes=30)
-
-    with pytest.raises(PlanBudgetExceeded):
-        build_reconcile_plan(
-            flights=[flight("BNA", "JFK", _dt(9), _dt(11), fid=1)],
-            airport_info=_us_info("BNA", "JFK"),
-            current_blocks=[],
-            route=counting_route,
-            home_address=HOME,
-            now=NOW,
-            has_budget=lambda: False,  # no budget from the first poll
-        )
-    assert routed == []  # aborted before any route call
-
-
-def test_plan_budget_polled_per_leg_and_aborts_without_partial_plan():
-    """#172: the budget is polled once per leg; the first exhausted poll aborts
-    the WHOLE build (never a partial `ReconcilePlan` the reconcile would read as
-    orphaned blocks to delete)."""
-    polls = {"n": 0}
-
-    def budget_for_one_leg() -> bool:
-        polls["n"] += 1
-        return polls["n"] <= 1  # first leg routes, second trips the budget
-
-    # One flight yields two planned legs (a home→airport departure and an
-    # airport→home arrival), so the second poll trips the budget mid-build.
-    with pytest.raises(PlanBudgetExceeded):
-        build_reconcile_plan(
-            flights=[flight("BNA", "JFK", _dt(9), _dt(11), fid=1)],
-            airport_info=_us_info("BNA", "JFK"),
-            current_blocks=[],
-            route=const_route(30),
-            home_address=HOME,
-            now=NOW,
-            has_budget=budget_for_one_leg,
-        )
-    assert polls["n"] == 2  # polled per leg, tripped on the second
-
-
-def test_has_budget_always_true_builds_normally():
-    """A budget that never runs out is equivalent to the default (None) — every
-    leg is built."""
-    result = build_reconcile_plan(
-        flights=[flight("BNA", "JFK", _dt(9), _dt(11), fid=1)],
-        airport_info=_us_info("BNA", "JFK"),
-        current_blocks=[],
-        route=const_route(30),
-        home_address=HOME,
-        now=NOW,
-        has_budget=lambda: True,
-    )
-    kinds = sorted(c.desired.kind for c in result.plan.creates)
-    assert kinds == ["airport_arrival", "airport_departure"]

@@ -16,23 +16,29 @@ with no output. Two fixes:
   also a transfer origin) is routed once per sweep, not per leg — the caller-level
   caching `MapsClient`'s own docstring prescribes. A failed route caches `None` so a
   dead endpoint isn't re-attempted (and re-failed-over) every leg.
-- **Plan-phase wall-clock budget, enforced per route call.** `build_reconcile_plan`
-  polls an injected `has_budget` once per leg, and `make_route` itself refuses to
-  START a new route call once the deadline passes — both raise `PlanBudgetExceeded`.
-  Enforcing at the route call (not only between legs) means a single leg's provider
-  fallback chain can't push the sweep past its budget after the per-leg poll already
-  passed. The sweep catches the exception at its outer `main()` boundary — so it
-  covers meeting-side and airport-side routing alike, both of which share the
-  budget-aware `route` — and skips the cycle cleanly (`wake_agent: false`) rather
-  than being killed mid-route before it can print JSON.
-  The abort is deliberately all-or-nothing: a partial `desired` set would read as
-  orphaned blocks and get deleted, then recreated next sweep — the exact churn #164
-  fixed. The next sweep resumes; the reconcile is idempotent.
+- **Wall-clock routing budget, enforced at the route call.** `make_route` serves a
+  cached (origin, destination) pair even past the deadline, but refuses to START a
+  new cache-miss route call once the deadline passes — raising `PlanBudgetExceeded`
+  before entering the provider-fallback chain. Enforcing at the call (not per leg)
+  means a single leg's fallback chain can't push the sweep past its budget, while
+  already-routed legs still plan. The exception propagates out of `build_reconcile_plan`
+  unwound (never a partial `desired` set — which would read as orphaned blocks and
+  get deleted, the exact churn #164 fixed) and is caught at `main()`'s outer boundary,
+  covering meeting-side and airport-side routing alike, so the sweep skips the cycle
+  cleanly (`wake_agent: false`) instead of being killed mid-route before it prints JSON.
+- **Sweep-budget gate before the post-routing network work.** After meeting routing,
+  before the current-block fetch and airport resolution, the sweep skips cleanly if
+  the whole-sweep budget is already spent — so a meeting leg that returned well past
+  the deadline can't drag more network work toward the host precheck kill. The gate
+  uses the sweep budget (not the tighter routing deadline) so cheap cache-served legs
+  aren't needlessly abandoned.
 - **Tightened per-call timeout for the sweep's maps client** (4s, from the shared
   10s default) so a single `travel_time` — one Google call plus up to three
-  sequential TomTom fallback calls — finishes within the margin between the plan
-  budget and the host's ~33s precheck kill, guaranteeing the clean no-wake payload
-  is emitted first.
+  sequential TomTom fallback calls — finishes within the margin between the routing
+  deadline and the host's ~33s precheck kill.
+- **No PII in the budget-exceeded log.** The `PlanBudgetExceeded` message no longer
+  includes the raw origin/destination (which can be a home address or live GPS fix),
+  since it is printed to stderr.
 
 ## 0.2.43 — 2026-07-13
 

@@ -119,9 +119,9 @@ def make_route(
         if key in memo:
             return memo[key]
         if deadline is not None and clock() >= deadline:
-            raise PlanBudgetExceeded(
-                f"routing budget spent before routing {origin!r} → {destination!r}"
-            )
+            # Deliberately no origin/destination in the message — it can be a home
+            # address or live GPS fix, and this string is printed to stderr (#172).
+            raise PlanBudgetExceeded("routing budget spent before a cache-miss route call")
         try:
             tt = maps.travel_time(origin, destination)
         except (MapsError, urllib.error.URLError, TimeoutError):
@@ -164,7 +164,6 @@ def build_plan(
     live_origin: str | None = None,
     tripit_flights: list | None = None,
     boarding_present: Callable | None = None,
-    has_budget: Callable[[], bool] | None = None,
 ) -> PlanResult:
     """Assemble the combined (airport + meeting) reconcile plan. Pure over inputs.
 
@@ -211,7 +210,6 @@ def build_plan(
         boarding_present=boarding_present,
         extra_desired=meeting_blocks,
         managed_legacy=_MANAGED_LEGACY,
-        has_budget=has_budget,
     )
     return PlanResult(plan=result.plan, skipped=tuple(skipped) + result.skipped)
 
@@ -350,16 +348,14 @@ def main() -> int:
 
         maps = MapsClient.from_env(timeout=_SWEEP_MAPS_TIMEOUT_SECONDS)
         # Deadline for the routing phase, so a slow provider-failover storm can't
-        # run the plan phase for minutes (#172).
+        # run routing for minutes (#172).
         plan_deadline = sweep_start + _PLAN_PHASE_BUDGET_SECONDS
-
-        def has_plan_budget() -> bool:
-            return time.monotonic() < plan_deadline
 
         # One memoizing, budget-aware route closure for the whole sweep — meeting
         # legs and airport legs share it, so a repeated (origin, destination) pair
-        # costs one provider round trip, not one per leg, and no new route call is
-        # started once the plan budget is spent (#172).
+        # costs one provider round trip, not one per leg. It serves cached pairs
+        # even past the deadline but refuses to START a new (cache-miss) route call
+        # once the deadline passes, raising PlanBudgetExceeded instead (#172).
         route = make_route(maps, deadline=plan_deadline, clock=time.monotonic)
 
         # --- flight sources: byAir records + TripIt segments (R2 union) ---
@@ -432,6 +428,17 @@ def main() -> int:
                 "user_profile current_home both empty) — see #162"
             ]
 
+        # Outcome-level budget gate (#172). Meeting routing above shares the
+        # budget-aware `route`; a single meeting leg whose provider-fallback chain
+        # began just under the deadline can return well past it. `make_route` stops
+        # STARTING new route calls past the plan deadline, but the current-block
+        # fetch and airport resolution below are non-route network work that would
+        # still run. Gate on the whole-sweep budget (not the tighter plan deadline,
+        # so cheap cache-served legs aren't needlessly abandoned): once even that is
+        # spent, skip cleanly here rather than push more work toward the host kill.
+        if time.monotonic() - sweep_start >= _SWEEP_WALL_CLOCK_BUDGET_SECONDS:
+            raise PlanBudgetExceeded("sweep budget spent after meeting routing")
+
         # --- airport facts ---
         byair = ByAirClient.from_env()
         airport_cache: dict[int, ResolvedAirport] = {}
@@ -471,7 +478,6 @@ def main() -> int:
             schedule=schedule,
             home_address=home,
             live_origin=live_origin,
-            has_budget=has_plan_budget,
         )
 
         # --- APPLY (write) ---

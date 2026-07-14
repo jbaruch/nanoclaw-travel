@@ -329,3 +329,23 @@ def test_make_route_serves_cache_hit_even_past_deadline():
     now["t"] = 200.0  # now well past the deadline
     after = route("home", "STN airport")  # cache hit — must not raise
     assert before == after == timedelta(seconds=1800)
+
+
+def test_make_route_next_miss_raises_after_a_slow_call_crosses_deadline():
+    """#172: the 'last route succeeds after the deadline' case. A miss that starts
+    under the deadline is allowed to finish (even though the clock then crosses the
+    deadline), but the NEXT miss raises — no further provider-fallback chain is
+    entered, so the sweep reaches its clean no-wake path deterministically."""
+    maps = _FakeMaps()
+    now = {"t": 14.0}  # under the 15.0 deadline
+
+    def clock() -> float:
+        return now["t"]
+
+    route = make_route(maps, deadline=15.0, clock=clock)
+    first = route("home", "STN airport")  # begins under budget, completes
+    assert first == timedelta(seconds=1800)
+    now["t"] = 31.0  # that call returned well past the deadline
+    with pytest.raises(PlanBudgetExceeded):
+        route("STN airport", "CPH airport")  # a new miss — refused
+    assert maps.calls == [("home", "STN airport")]  # the second never hit the network
