@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.44 — 2026-07-14
+
 ### Fixed — drive-engine routing storm hung the sweep (#172)
 
 The airport-endpoint fix in #165 (`"STN airport"` instead of a bare `"STN"`) made
