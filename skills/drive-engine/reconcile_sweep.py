@@ -74,7 +74,7 @@ _SWEEP_WALL_CLOCK_BUDGET_SECONDS = 27.0
 _PLAN_PHASE_BUDGET_SECONDS = 20.0
 
 
-def make_route(maps, *, cache: dict | None = None) -> RouteFn:
+def make_route(maps, *, cache: dict[tuple[str, str], timedelta | None] | None = None) -> RouteFn:
     """A memoizing `route(origin, destination) -> timedelta | None` over `maps`.
 
     Per `MapsClient`'s own contract ("cache aggressively at the caller level"),

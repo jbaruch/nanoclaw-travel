@@ -273,15 +273,12 @@ def test_plan_budget_polled_per_leg_and_aborts_without_partial_plan():
         polls["n"] += 1
         return polls["n"] <= 1  # first leg routes, second trips the budget
 
-    # Two independent flights → two legs to route.
-    flights = [
-        flight("BNA", "JFK", _dt(9), _dt(11), fid=1, trip_id=1),
-        flight("SEA", "LAX", _dt(14), _dt(16), fid=2, trip_id=2),
-    ]
+    # One flight yields two planned legs (a home→airport departure and an
+    # airport→home arrival), so the second poll trips the budget mid-build.
     with pytest.raises(PlanBudgetExceeded):
         build_reconcile_plan(
-            flights=flights,
-            airport_info=_us_info("BNA", "JFK", "SEA", "LAX"),
+            flights=[flight("BNA", "JFK", _dt(9), _dt(11), fid=1)],
+            airport_info=_us_info("BNA", "JFK"),
             current_blocks=[],
             route=const_route(30),
             home_address=HOME,
