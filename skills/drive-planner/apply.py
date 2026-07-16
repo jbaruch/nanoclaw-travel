@@ -48,8 +48,10 @@ Modes (subcommand on argv[1]):
     suppress stdin {"patches": [{"event_id": "...", "calendar_id": "...",
                     "description": "<full rebuilt block description>"}]}
              stdout {"patched": ["<event_id>", ...]}
-             Invoked by the recheck SKILL.md AFTER the alert is sent, so a
-             failed send never permanently suppresses an alert.
+             Currently uninvoked: its only caller was the removed
+             `drive-planner-recheck` skill (#156), which applied it AFTER
+             the alert was sent so a failed send never permanently
+             suppressed an alert.
 
 This script is NOT a scheduler precheck — it is invoked by the agent and its
 exit code is read directly: exit 0 on success, non-zero with a `{"error": ...}`
@@ -745,14 +747,15 @@ def _list_mode(request: dict, client) -> dict:
 
 
 def _suppress_mode(request: dict, client) -> dict:
-    """Persist the recheck poll's alert-suppression records — AFTER the ping.
+    """Persist alert-suppression records onto blocks — AFTER the ping.
 
-    The recheck SKILL.md calls this only once `mcp__nanoclaw__send_message` has
+    Currently uninvoked. Its only caller was `drive-planner-recheck` (#156,
+    removed), which called this only once `mcp__nanoclaw__send_message` had
     delivered the leave-earlier / leave-now alert, so a failed send never
-    permanently suppresses an alert. Each patch carries the block's full new
-    `description` (the poll rebuilt it with the updated alert record); since the
-    machine state lives in the description and events.patch supports a partial
-    update, the patch is just that one field.
+    permanently suppressed an alert. Each patch carries the block's full new
+    `description` (the caller rebuilds it with the updated alert record); since
+    the machine state lives in the description and events.patch supports a
+    partial update, the patch is just that one field.
     """
     patched = []
     patches = request.get("patches")

@@ -10,6 +10,8 @@ It surfaced during `jbaruch/nanoclaw#638`: that migration made a two-line creden
 
 `tests/test_drive_planner_recheck.py` stays — despite the name it exercises `skills/drive-planner/recheck.py`, part of the kept library, not the removed skill.
 
+Its removal orphaned two surfaces inside the still-shipped `drive-planner` library, both of which named it as their reader/caller. `state-schema.md`'s Writer/Reader contract said "the recheck poll" reads blocks back and applies suppression patches; `apply.py`'s `suppress` mode documented itself as "invoked by the recheck SKILL.md". Both now state what is true: the reader is gone, `suppress` is uninvoked, and the block format remains the contract for blocks already on the calendar. The wider question — drive-planner ships entry points (`apply.py create` / `remove`) whose only caller was its own disabled sweep, and prose across the kept modules still describes the removed poll in the present tense — is `#181`, since it is `#156` cleanup rather than a prerequisite here.
+
 **Surface sync:** removed `skills/drive-planner-recheck/` and `tests/test_drive_planner_recheck_precheck.py`; dropped the entry from `.tessl-plugin/plugin.json`, the row from `README.md`, and the execution environment + `extraPaths` mentions from `pyrightconfig.json`.
 
 ### Fixed — the Gmail freshness fallback no longer puts raw email in the session

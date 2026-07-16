@@ -49,7 +49,7 @@ Migration:
 
 ## Calendar-as-State: Drive Blocks
 
-A created drive block has no local record — the calendar event itself IS the state (Epic #59 §4). The recheck poll re-fetches the near-term window by a direct API call and reads each of its own blocks back off the event. There is no `blocks.json`; the only local state file is `skip-state.json` above. Owned by `block_props.py` (`build_block_args` / `build_description` write, `parse_block` reads).
+A created drive block has no local record — the calendar event itself IS the state (Epic #59 §4). A reader re-fetches the near-term window by a direct API call and reads each block back off the event. There is no `blocks.json`; the only local state file is `skip-state.json` above. Owned by `block_props.py` (`build_block_args` / `build_description` write, `parse_block` reads).
 
 All state lives in the event **`description`**. The Composio v3 toolkit this plugin shipped on exposed NO writable `extendedProperties` on any create/patch/update action, which forced the choice; the native Calendar API it now speaks (nanoclaw#638) does expose `extendedProperties.private`, but every deployed block already carries its state in the description, so moving is a migration in its own right, not a side effect of the transport swap. It carries three parts:
 
@@ -69,8 +69,8 @@ The leg `direction` and served meeting id come from the marker; the block's star
 
 Writer / reader contract:
 
-- **Writer** — the sweep creates blocks via `apply.py create` (idempotent: finds existing markers first via an events.list, never double-books). When an alert fires, the recheck poll emits a patch and the recheck SKILL.md applies it via `apply.py suppress` AFTER the send; the patch carries the full rebuilt `description` with only `al` updated (events.patch supports a partial `description` update).
-- **Reader** — the recheck poll calls `parse_block(event)`; a non-block or malformed event yields `None` (never raises), so one bad event can't abort the poll. Only arrival-anchored legs (`outbound` / `bridge`) are rechecked; a `return` leg is created for visibility but not watched.
+- **Writer** — `apply.py create` writes a block (idempotent: finds existing markers first via an events.list, never double-books), and `apply.py suppress` patches an alert record onto one. Both modes are currently **uninvoked**: this plugin's sweep is disabled (#156) and `drive-planner-recheck`, `suppress`'s only caller, is removed. drive-engine writes its blocks through its own `calendar_apply.py`.
+- **Reader** — `parse_block(event)` reads a block back; a non-block or malformed event yields `None` (never raises), so one bad event can't abort a caller. Only arrival-anchored legs (`outbound` / `bridge`) were ever rechecked; a `return` leg is created for visibility but not watched. This format remains the contract for blocks already on the calendar — the reader that polled them is gone, not the blocks.
 
 Migration (per `coding-policy: stateful-artifacts`):
 
