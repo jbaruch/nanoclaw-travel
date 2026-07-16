@@ -1,6 +1,6 @@
 """Tests for the drive-planner sweep precheck planning core (`precheck.py`).
 
-Exercises `plan_meetings` with an injected router (no live Composio, no live
+Exercises `plan_meetings` with an injected router (no live calendar, no live
 maps) over scan output, plus the round trip back through `parse_block` so the
 blocks the sweep builds are exactly what the recheck poll later reads. Covers:
 the actionable gate (only needs_decision / bridge / back_to_back surface),
@@ -124,14 +124,14 @@ def test_outbound_block_starts_baseline_plus_buffer_before_meeting():
     [m] = payload["meetings"]
     outbound = _leg(m["create_args"], "outbound")
     # arrive_by = 14:00; baseline 1500s (25m) + 300s buffer (5m) = 30m before.
-    # Live v3 contract: flat start_datetime + duration (no nested start/end).
-    assert outbound["start_datetime"] == datetime(2026, 7, 1, 13, 30, tzinfo=CT).isoformat()
-    assert outbound["event_duration_hour"] == 0 and outbound["event_duration_minutes"] == 30
+    # Native events.insert body: nested start/end, no flat duration fields.
+    assert outbound["start"]["dateTime"] == datetime(2026, 7, 1, 13, 30, tzinfo=CT).isoformat()
+    assert outbound["end"]["dateTime"] == datetime(2026, 7, 1, 14, 0, tzinfo=CT).isoformat()
     # display-ready fields the SKILL.md consumes verbatim (no arithmetic there)
     assert m["leave_by"] == datetime(2026, 7, 1, 13, 30, tzinfo=CT).isoformat()
     assert m["drive_minutes"] == 25  # 1500s / 60
-    # the meeting's IANA timezone reaches the CREATE args (#83)
-    assert outbound["timezone"] == "America/Chicago"
+    # the meeting's IANA timezone names the event's own zone
+    assert outbound["start"]["timeZone"] == "America/Chicago"
 
 
 def test_return_block_starts_at_meeting_end():
@@ -139,9 +139,9 @@ def test_return_block_starts_at_meeting_end():
     payload = precheck.plan_meetings(_scan(events), route=_fixed_router(1500), home_address=HOME)
     [m] = payload["meetings"]
     ret = _leg(m["create_args"], "return")
-    assert ret["start_datetime"] == datetime(2026, 7, 1, 15, 0, tzinfo=CT).isoformat()
+    assert ret["start"]["dateTime"] == datetime(2026, 7, 1, 15, 0, tzinfo=CT).isoformat()
     # return leg lasts baseline seconds (25m) after departure
-    assert ret["event_duration_minutes"] == 25
+    assert ret["end"]["dateTime"] == datetime(2026, 7, 1, 15, 25, tzinfo=CT).isoformat()
 
 
 # --- round trip: built blocks parse back for the recheck poll ------------

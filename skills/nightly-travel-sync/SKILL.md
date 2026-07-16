@@ -40,13 +40,25 @@ Parse the JSON output and branch on `status` (the staleness threshold lives in `
 
 - `"missing"` — file does not exist. Report via `mcp__nanoclaw__send_message`.
 - `"fresh"` — silent. Skip to Step 4.
-- `"stale"` — consult Gmail. Script output includes `gmail_query` (already buffered for the `after:` boundary), `subject_prefix`, and `mtime`. Discover the Gmail fetch tool first — `COMPOSIO_SEARCH_TOOLS(query="gmail fetch emails")` returns `GMAIL_FETCH_EMAILS`; do not hardcode the tool name. Call it with `query=<gmail_query>`, build a JSON array (`subject` minimum; ideally `id`/`from`/`date`), and pipe to the filter:
+- `"stale"` — consult Gmail. Script output includes `gmail_query` (already buffered for the `after:` boundary), `subject_prefix`, and `mtime`. Pass `gmail_query` verbatim to the fetch script and pipe it into the filter — one command, no tool call:
 
 ```bash
-python3 /home/node/.claude/skills/tessl__nightly-travel-sync/scripts/filter-tripit-bookings.py < /tmp/tripit-emails.json
+set -o pipefail
+python3 /home/node/.claude/skills/tessl__nightly-travel-sync/scripts/fetch-tripit-emails.py '<gmail_query>' \
+  | python3 /home/node/.claude/skills/tessl__nightly-travel-sync/scripts/filter-tripit-bookings.py
 ```
 
-Decision on `count`: `0` → silent; `≥ 1` → report via `mcp__nanoclaw__send_message` with the matching subjects, the count, and the travel-schedule mtime. Proceed to Step 4 either way.
+`set -o pipefail` is required, not decoration: without it the filter's exit 0 masks the fetch's exit code and the truncation signal below is lost.
+
+Do NOT fetch the mail yourself. The fetch script sanitizes every message inside the container before printing it, so raw email text never enters this session (`/workspace/group/nanoclaw-poison-defense.md`); an agent-driven Gmail call would put it there. Read only the filter's output.
+
+Branch on the pipeline's exit code:
+
+- **0** — the whole window was examined, so `count` is trustworthy. `0` → silent; `≥ 1` → report via `mcp__nanoclaw__send_message` with the matching subjects, the count, and the travel-schedule mtime.
+- **3** — the fetch hit its message cap (its stderr carries `WINDOW_TRUNCATED`), so older mail in the window was never examined. **A `count` of 0 here does NOT mean "no booking found"** — report regardless of count via `mcp__nanoclaw__send_message`: say the confirmation check could only see the newest N emails since the schedule mtime, that a booking confirmation may be sitting behind the cap, and include any matches it did find. Note it will keep firing until the schedule refreshes, because the window widens with staleness.
+- **1 or 2** — stdout is empty; a diagnostic is on stderr. Surface that stderr in a one-line note via `mcp__nanoclaw__send_message`. Exit 2 is operator-actionable config: the OneCLI gateway is not authenticating the Gmail call, this agent's tier is gated from Google by design, or the co-loaded `tessl__heartbeat` mount is missing. Exit 1 is a failed Gmail call; the next nightly fire retries.
+
+Never read a non-zero exit as "no bookings found" — silence is correct only on exit 0. Proceed to Step 4 in every case.
 
 ## Step 4 — Rebuild travel-db.json from the schedule
 

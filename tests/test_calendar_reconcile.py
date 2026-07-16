@@ -1,6 +1,6 @@
 """Tests for the calendar reconciliation orchestrator (`calendar_reconcile.py`).
 
-Deterministic fixtures only: a fake Composio client records calls and returns
+Deterministic fixtures only: a fake calendar client records calls and returns
 controlled responses, and state lives under a tmp `FLIGHT_ASSIST_STATE_DIR`.
 No network, no real calendar IDs, no real API keys. Assertions target
 outcomes — the ledger written back, which calendar calls fired, the summary —
@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 import calendar_reconcile as cr  # noqa: E402
 from calendar_plan import _signature as _sig  # noqa: E402
 from calendar_tags import encode_tags  # noqa: E402
-from composio_client import ComposioError  # noqa: E402
+from google_calendar_client import GoogleCalendarError  # noqa: E402
 from state import (  # noqa: E402
     read_config,
     read_flight_state,
@@ -43,10 +43,13 @@ def state_root(tmp_path: Path, monkeypatch) -> Path:
     return root
 
 
-class FakeComposio:
+class FakeCalendar:
     """Records every call; returns controlled list/find/create responses.
 
-    `delete_error` (a ComposioError) is raised on delete to exercise the
+    Speaks the native shapes `GoogleCalendarClient` returns: `items` for both
+    list surfaces, the created event resource for a create.
+
+    `delete_error` (a GoogleCalendarError) is raised on delete to exercise the
     404-idempotent path and the non-404 failure path.
     """
 
@@ -56,7 +59,7 @@ class FakeComposio:
         calendars: list[dict] | None = None,
         events_by_calendar: dict[str, list[dict]] | None = None,
         create_id: str = "evt_created",
-        delete_error: ComposioError | None = None,
+        delete_error: GoogleCalendarError | None = None,
     ):
         self.calendars = calendars or []
         self.events_by_calendar = events_by_calendar or {}
@@ -66,14 +69,15 @@ class FakeComposio:
 
     def list_calendars(self, arguments: dict | None = None) -> dict:
         self.calls.append(("list_calendars", arguments if arguments is not None else {}))
-        # Live v3 LIST_CALENDARS returns the list under `calendars`.
-        return {"calendars": self.calendars}
+        # calendarList.list returns the calendars under `items`.
+        return {"items": self.calendars}
 
     def find_events(self, arguments: dict) -> dict:
         self.calls.append(("find_events", arguments))
-        # Live v3 FIND_EVENT double-nests at data.event_data.event_data.
+        # events.list returns the events under `items`; the client merges every
+        # page into that same shape.
         events = self.events_by_calendar.get(arguments["calendar_id"], [])
-        return {"event_data": {"event_data": events}}
+        return {"items": events}
 
     def create_event(self, arguments: dict) -> dict:
         self.calls.append(("create_event", arguments))
@@ -147,9 +151,9 @@ def _raw_event(
 ) -> dict:
     """A Google-native raw event resource (normalize_event input shape).
 
-    A managed event's tags ride in the description's <!--fa:{...}--> comment
-    (the live v3 toolkit has no writable extendedProperties), so `private`
-    encodes into the description exactly as the reconcile writes it.
+    A managed event's tags ride in the description's <!--fa:{...}--> comment,
+    so `private` encodes into the description exactly as the reconcile writes
+    it.
     """
     raw: dict = {
         "id": event_id,
@@ -161,12 +165,10 @@ def _raw_event(
     return raw
 
 
-# --- write-arg shapes (the live v3 contract — regression guards) -------------
+# --- write-arg shapes (native events.insert / events.patch bodies) ----------
 
 
-def test_create_event_args_are_flat_with_tags_in_description():
-    # The original nested start.dateTime + extendedProperties shape silently
-    # failed every live create; pin the flat contract so it can't regress.
+def test_create_event_args_are_native_with_tags_in_description():
     op = {
         "calendar_id": BYAIR_CAL,
         "body": {
@@ -177,51 +179,65 @@ def test_create_event_args_are_flat_with_tags_in_description():
         },
     }
     args = cr._create_event_args(op)
-    assert args["start_datetime"] == "2026-07-01T09:30:00-05:00"
-    assert args["event_duration_hour"] == 0
-    assert args["event_duration_minutes"] == 30
-    assert "start" not in args and "end" not in args
+    assert args["start"] == {"dateTime": "2026-07-01T09:30:00-05:00"}
+    assert args["end"] == {"dateTime": "2026-07-01T10:00:00-05:00"}
+    assert "start_datetime" not in args
+    assert "event_duration_hour" not in args and "event_duration_minutes" not in args
     assert "extendedProperties" not in args
     # tags ride in the description
     assert '"faFlightId":"1"' in args["description"]
-    # an explicit timezone anchors the instant (#82) — -05:00 -> Etc/GMT+5
-    assert args["timezone"] == "Etc/GMT+5"
 
 
-def test_create_time_fields_maps_offset_to_etc_zone():
-    # Whole-hour offsets map to a fixed-offset Etc zone (correct instant + local
-    # display); the start string is preserved.
-    assert cr._create_time_fields("2026-07-01T09:30:00-05:00") == (
-        "2026-07-01T09:30:00-05:00",
-        "Etc/GMT+5",
-    )
-    assert cr._create_time_fields("2026-07-01T09:30:00+01:00") == (
-        "2026-07-01T09:30:00+01:00",
-        "Etc/GMT-1",
-    )
-    assert cr._create_time_fields("2026-07-01T09:30:00+00:00") == (
-        "2026-07-01T09:30:00+00:00",
-        "Etc/GMT",
-    )
+def test_create_event_args_send_no_timezone():
+    """The offset in `dateTime` IS the instant — Calendar reads it verbatim.
+
+    This is the #82/#83 regression guard, inverted. Composio's adapter ignored
+    the offset and re-read the wall-clock as UTC, so the create had to carry a
+    synthesized `Etc/GMT±N` zone to land at the right time. Sending that zone
+    now would pin the event to a fixed offset for no reason; sending nothing is
+    both correct and simpler.
+    """
+    op = {
+        "calendar_id": BYAIR_CAL,
+        "body": {
+            "summary": "Boarding AA100",
+            "start": "2026-07-01T09:30:00-05:00",
+            "end": "2026-07-01T10:00:00-05:00",
+            "private_props": {},
+        },
+    }
+    args = cr._create_event_args(op)
+    assert "timeZone" not in args["start"] and "timeZone" not in args["end"]
+    assert "timezone" not in args
 
 
-def test_create_time_fields_non_whole_hour_falls_back_to_utc():
-    # +05:30 (India) has no Etc zone — normalize to UTC so the instant is right.
-    start, tz = cr._create_time_fields("2026-07-01T09:30:00+05:30")
-    assert tz is None
-    assert start == "2026-07-01T04:00:00+00:00"
+def test_create_event_args_preserve_non_whole_hour_offset():
+    """+05:30 (India) had no Etc zone, so the old adapter normalized the whole
+    timestamp to UTC to keep the instant right. Natively the offset is simply
+    honoured, so the caller's own string survives."""
+    op = {
+        "calendar_id": BYAIR_CAL,
+        "body": {
+            "summary": "Boarding AI101",
+            "start": "2026-07-01T09:30:00+05:30",
+            "end": "2026-07-01T10:00:00+05:30",
+            "private_props": {},
+        },
+    }
+    args = cr._create_event_args(op)
+    assert args["start"] == {"dateTime": "2026-07-01T09:30:00+05:30"}
 
 
-def test_patch_event_args_delta_shift_uses_flat_times():
+def test_patch_event_args_delta_shift_uses_native_times():
     op = {
         "calendar_id": BYAIR_CAL,
         "event_id": "e1",
         "body": {"start": "2026-07-01T10:15:00-05:00", "end": "2026-07-01T12:45:00-05:00"},
     }
     args = cr._patch_event_args(op)
-    assert args["start_time"] == "2026-07-01T10:15:00-05:00"
-    assert args["end_time"] == "2026-07-01T12:45:00-05:00"
-    assert "start" not in args and "extendedProperties" not in args
+    assert args["start"] == {"dateTime": "2026-07-01T10:15:00-05:00"}
+    assert args["end"] == {"dateTime": "2026-07-01T12:45:00-05:00"}
+    assert "start_time" not in args and "extendedProperties" not in args
 
 
 def test_patch_event_args_adopt_appends_tags_to_existing_description():
@@ -237,13 +253,17 @@ def test_patch_event_args_adopt_appends_tags_to_existing_description():
     # byAir's description is preserved, tags appended — not clobbered.
     assert args["description"].startswith("✈ BNA→YYZ • UA 8018")
     assert '"faManaged":"adopted"' in args["description"]
-    assert "start_time" not in args
+    assert "start" not in args
 
 
-def test_items_reads_calendars_and_double_nested_find():
-    assert cr._items({"calendars": [{"id": "c1"}]}) == [{"id": "c1"}]
-    assert cr._items({"event_data": {"event_data": [{"id": "e1"}]}}) == [{"id": "e1"}]
+def test_items_reads_the_native_items_list():
+    """events.list and calendarList.list both put their rows in `items`, and
+    the client merges its pages into that same shape — so there is one key to
+    read, not the four container shapes Composio could return."""
     assert cr._items({"items": [{"id": "x"}]}) == [{"id": "x"}]
+    assert cr._items({"items": []}) == []
+    assert cr._items({}) == []
+    assert cr._items({"items": "not a list"}) == []
     assert cr._items("not a dict") == []
 
 
@@ -252,7 +272,7 @@ def test_items_reads_calendars_and_double_nested_find():
 
 def test_resolve_uses_cached_id_without_listing(state_root: Path):
     write_config({"byair_calendar_id": BYAIR_CAL})
-    client = FakeComposio()
+    client = FakeCalendar()
     resolved = cr.resolve_byair_calendar_id(client, must(read_config()))
     assert resolved == BYAIR_CAL
     assert client.calls_named("list_calendars") == []  # cached → no lookup
@@ -260,7 +280,7 @@ def test_resolve_uses_cached_id_without_listing(state_root: Path):
 
 def test_resolve_by_name_matches_and_caches(state_root: Path):
     write_config({"byair_calendar_name": "Flighty Flights"})
-    client = FakeComposio(
+    client = FakeCalendar(
         calendars=[
             {"id": "c_other@g", "summary": "Work"},
             {"id": BYAIR_CAL, "summary": "Flighty Flights"},
@@ -274,20 +294,20 @@ def test_resolve_by_name_matches_and_caches(state_root: Path):
 
 def test_resolve_by_name_is_case_and_whitespace_insensitive(state_root: Path):
     write_config({"byair_calendar_name": "  flighty flights "})
-    client = FakeComposio(calendars=[{"id": BYAIR_CAL, "summary": "Flighty Flights"}])
+    client = FakeCalendar(calendars=[{"id": BYAIR_CAL, "summary": "Flighty Flights"}])
     assert cr.resolve_byair_calendar_id(client, must(read_config())) == BYAIR_CAL
 
 
 def test_resolve_by_name_no_match_returns_none(state_root: Path):
     write_config({"byair_calendar_name": "Nonexistent"})
-    client = FakeComposio(calendars=[{"id": BYAIR_CAL, "summary": "Flighty Flights"}])
+    client = FakeCalendar(calendars=[{"id": BYAIR_CAL, "summary": "Flighty Flights"}])
     assert cr.resolve_byair_calendar_id(client, must(read_config())) is None
     assert "byair_calendar_id" not in must(read_config())  # nothing cached on a miss
 
 
 def test_resolve_no_config_returns_none(state_root: Path):
     write_config({"home_address": "1 Loop"})
-    client = FakeComposio()
+    client = FakeCalendar()
     assert cr.resolve_byair_calendar_id(client, must(read_config())) is None
     assert client.calls_named("list_calendars") == []
 
@@ -297,7 +317,7 @@ def test_resolve_no_config_returns_none(state_root: Path):
 
 def test_run_reconcile_no_calendar_when_unconfigured(state_root: Path):
     write_config({"home_address": "1 Loop"})
-    summary = cr.run_reconcile(FakeComposio(), now=FIXED_NOW)
+    summary = cr.run_reconcile(FakeCalendar(), now=FIXED_NOW)
     assert summary["status"] == "no_calendar"
     assert summary["executed"] == 0
 
@@ -305,7 +325,7 @@ def test_run_reconcile_no_calendar_when_unconfigured(state_root: Path):
 def test_run_reconcile_no_flights_when_index_empty(state_root: Path):
     write_config({"byair_calendar_id": BYAIR_CAL})
     write_active_flights([])
-    summary = cr.run_reconcile(FakeComposio(), now=FIXED_NOW)
+    summary = cr.run_reconcile(FakeCalendar(), now=FIXED_NOW)
     assert summary["status"] == "no_flights"
     assert summary["executed"] == 0
 
@@ -317,7 +337,7 @@ def test_creates_boarding_block_and_writes_ledger(state_root: Path):
     write_config({"byair_calendar_id": BYAIR_CAL})
     _write_flight(flight_id=1)  # empty ledger, no snapshot → effective = scheduled
     write_active_flights([1])
-    client = FakeComposio(create_id="evt_boarding_new")  # no events on any calendar
+    client = FakeCalendar(create_id="evt_boarding_new")  # no events on any calendar
 
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -363,7 +383,7 @@ def test_adopts_byair_flight_event_and_tags_it(state_root: Path):
         end="2026-07-01T10:00:00-05:00",
         private={"faFlightId": "1", "faKind": "boarding", "faManaged": "created"},
     )
-    client = FakeComposio(events_by_calendar={BYAIR_CAL: [byair_flight_event, live_boarding]})
+    client = FakeCalendar(events_by_calendar={BYAIR_CAL: [byair_flight_event, live_boarding]})
 
     cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -390,7 +410,7 @@ def test_teardown_deletes_managed_events_on_cancel(state_root: Path):
         },
     )
     write_active_flights([1])
-    client = FakeComposio()
+    client = FakeCalendar()
 
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -415,7 +435,7 @@ def test_delete_404_is_idempotent_success(state_root: Path):
         },
     )
     write_active_flights([1])
-    client = FakeComposio(delete_error=ComposioError("not found", status_code=404))
+    client = FakeCalendar(delete_error=GoogleCalendarError("not found", status_code=404))
 
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -438,7 +458,7 @@ def test_non_404_delete_failure_is_collected_and_ledger_kept(state_root: Path):
         calendar_events={"boarding": dict(entry)},
     )
     write_active_flights([1])
-    client = FakeComposio(delete_error=ComposioError("server error", status_code=500))
+    client = FakeCalendar(delete_error=GoogleCalendarError("server error", status_code=500))
 
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -511,7 +531,7 @@ def test_deletes_reclaim_travel_block_in_same_airport_gap(state_root: Path):
         end="2026-07-01T12:00:00-05:00",
         private={"faFlightId": "2", "faKind": "boarding", "faManaged": "created"},
     )
-    client = FakeComposio(
+    client = FakeCalendar(
         events_by_calendar={
             BYAIR_CAL: [live_b1, live_b2],
             cr.PRIMARY_CALENDAR_ID: [reclaim_block],
@@ -561,7 +581,7 @@ def test_delta_only_noop_when_already_synced(state_root: Path):
         end="2026-07-01T12:30:00-05:00",
         private={"faFlightId": "1", "faKind": "flight", "faManaged": "adopted"},
     )
-    client = FakeComposio(events_by_calendar={BYAIR_CAL: [live_boarding, live_flight]})
+    client = FakeCalendar(events_by_calendar={BYAIR_CAL: [live_boarding, live_flight]})
 
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -602,7 +622,7 @@ def test_tombstone_sweep_tears_down_switched_away_flight(state_root: Path):
     write_config({"byair_calendar_id": BYAIR_CAL})
     _write_flight(flight_id=1, calendar_events=_ledger(boarding=True, flight=True))
     write_active_flights([])  # flight 1 dropped from the index
-    client = FakeComposio()
+    client = FakeCalendar()
 
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -627,7 +647,7 @@ def test_tombstone_sweep_archives_completed_flight_without_touching_calendar(sta
         calendar_events=_ledger(boarding=True),
     )
     write_active_flights([])
-    client = FakeComposio()
+    client = FakeCalendar()
 
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -643,7 +663,7 @@ def test_tombstone_retained_when_teardown_delete_fails(state_root: Path):
     entry = dict(_ledger(boarding=True)["boarding"])
     _write_flight(flight_id=1, calendar_events={"boarding": dict(entry)})
     write_active_flights([])
-    client = FakeComposio(delete_error=ComposioError("server error", status_code=500))
+    client = FakeCalendar(delete_error=GoogleCalendarError("server error", status_code=500))
 
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -660,7 +680,7 @@ def test_non_active_flight_without_ledger_is_not_a_tombstone(state_root: Path):
     write_config({"byair_calendar_id": BYAIR_CAL})
     _write_flight(flight_id=2)  # on disk, not active, no calendar_events
     write_active_flights([])
-    client = FakeComposio()
+    client = FakeCalendar()
 
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -677,7 +697,7 @@ def test_active_and_tombstone_reconciled_in_one_cycle(state_root: Path):
     _write_flight(flight_id=1)  # active, needs a boarding block created
     _write_flight(flight_id=2, calendar_events=_ledger(boarding=True))  # switched-away tombstone
     write_active_flights([1])
-    client = FakeComposio()
+    client = FakeCalendar()
 
     summary = cr.run_reconcile(client, now=FIXED_NOW)
 
@@ -731,7 +751,7 @@ def test_collect_events_filters_all_day_and_keeps_timed(state_root: Path):
         start="2026-07-01T10:00:00-05:00",
         end="2026-07-01T12:30:00-05:00",
     )
-    client = FakeComposio(
+    client = FakeCalendar(
         events_by_calendar={BYAIR_CAL: [all_day, timed], cr.PRIMARY_CALENDAR_ID: []}
     )
     events = cr.collect_events(
@@ -750,7 +770,7 @@ def test_collect_events_skips_event_without_id(state_root: Path):
         "start": {"dateTime": "2026-07-01T10:00:00-05:00"},
         "end": {"dateTime": "2026-07-01T11:00:00-05:00"},
     }
-    client = FakeComposio(events_by_calendar={BYAIR_CAL: [no_id], cr.PRIMARY_CALENDAR_ID: []})
+    client = FakeCalendar(events_by_calendar={BYAIR_CAL: [no_id], cr.PRIMARY_CALENDAR_ID: []})
     events = cr.collect_events(
         client,
         byair_calendar_id=BYAIR_CAL,

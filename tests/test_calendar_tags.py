@@ -1,7 +1,7 @@
 """Tests for the flight-assist managed-event tag codec (`calendar_tags.py`).
 
 The tags ride in the event description's `<!--fa:{...}-->` comment (the live v3
-Composio toolkit has no writable extendedProperties). These tests pin the round
+toolkit this plugin shipped on had no writable extendedProperties). These tests pin the round
 trip the reconcile depends on: encode tags onto a (possibly pre-existing)
 description, decode them back, and strip the comment so a byAir event's own
 content survives an adopt without the tag accumulating on re-reads.

@@ -23,14 +23,13 @@ Run the env-presence check (`scripts/check-env.py` relative to this skill; the N
 python3 /home/node/.claude/skills/tessl__flight-assist/scripts/check-env.py
 ```
 
-The script reads `BYAIR_MCP_URL`, `GOOGLE_MAPS_API_KEY`, `COMPOSIO_API_KEY`, and `COMPOSIO_USER_ID`, prints single-line JSON on stdout, exits 0.
+The script reads `BYAIR_MCP_URL` and `GOOGLE_MAPS_API_KEY`, prints single-line JSON on stdout, exits 0.
 
 Parse the JSON. All `true`: emit `flight-assist credentials present`. Any `false`: emit one line per missing variable:
 
 - `BYAIR_MCP_URL missing. Add personal MCP link from https://byairapp.com/mcp/ to OneCLI vault and restart container.`
 - `GOOGLE_MAPS_API_KEY missing. Create a Distance Matrix API key at https://console.cloud.google.com/apis/credentials and add to OneCLI vault.`
-- `COMPOSIO_API_KEY missing. Add the Composio project API key from https://app.composio.dev settings to OneCLI vault — calendar reconciliation is disabled without it.`
-- `COMPOSIO_USER_ID missing. Add the Composio user/entity the Google Calendar account is connected under to OneCLI vault — calendar reconciliation is disabled without it.`
+Calendar access has no flag: OneCLI's gateway injects the Google OAuth Bearer on the wire, so no credential lives in this container and no env var gates it (nanoclaw#638). If the user is diagnosing calendar writes specifically, tell them to run the reconcile (Step 3) and read its `error` — `gateway` means the gateway is not authenticating the requests, `tier` means this agent's tier is gated from Google by design.
 
 Finish here.
 
@@ -58,7 +57,7 @@ python3 /home/node/.claude/skills/tessl__flight-assist/scripts/reconcile.py
 
 It converges the calendar to byAir truth — creates/shifts the boarding block, adopts and delta-shifts the byAir flight event, removes Reclaim travel blocks inside a same-airport layover gap, and tears down events for switched-away / cancelled flights that dropped out of the active-flights index. Every write is idempotent and a no-op when the calendar already matches, so it is safe to run on every wake cycle and alongside byAir's own delay-shifts. Airport drive blocks are no longer reconciled here — they are retired to the unified drive-engine (#156), which plans and applies them from its own sweep.
 
-It prints single-line JSON: `{"status": "...", "planned": N, "executed": N, "archived": N, "failed": [...], "airport_drive": {...}}`. Output keys vary by `status`: `byair_calendar_id` and `archived` are present only when a cycle ran (`ok` / `no_flights`) and are omitted on `no_calendar`, so do not depend on a key that may be absent. `status: "ok"` means a cycle ran. `no_calendar` (no flight calendar resolved from config), `no_flights` (nothing tracked), or `{"status": "error", "error": "credentials"}` (Composio not configured — see Step 1) all mean reconciliation is inactive this cycle. The `airport_drive` object is now a fixed retired marker — `{"status": "retired", "engine": "drive-engine"}` — since airport drives moved to the unified drive-engine (#156); it is bookkeeping only, absent on the early credentials/state setup-failure exits. Treat a non-empty `failed` list (those ops retry next cycle) as expected: proceed to the notification below. Reconcile output is calendar bookkeeping, never a user-facing message — do not surface it; proceed silently regardless of its result.
+It prints single-line JSON: `{"status": "...", "planned": N, "executed": N, "archived": N, "failed": [...], "airport_drive": {...}}`. Output keys vary by `status`: `byair_calendar_id` and `archived` are present only when a cycle ran (`ok` / `no_flights`) and are omitted on `no_calendar`, so do not depend on a key that may be absent. `status: "ok"` means a cycle ran. `no_calendar` (no flight calendar resolved from config), `no_flights` (nothing tracked), or `{"status": "error", "error": "gateway"}` (the OneCLI gateway is not authenticating the requests) or `{"status": "error", "error": "tier"}` (this agent's tier is gated from Google by design) all mean reconciliation is inactive this cycle. The `airport_drive` object is now a fixed retired marker — `{"status": "retired", "engine": "drive-engine"}` — since airport drives moved to the unified drive-engine (#156); it is bookkeeping only, absent on the error exits. Treat a non-empty `failed` list (those ops retry next cycle) as expected: proceed to the notification below. Reconcile output is calendar bookkeeping, never a user-facing message — do not surface it; proceed silently regardless of its result.
 
 Then compose the notification. Each event is `{"flight_id": int, "event": {"reason": "...", ...}}`. Compose one human-readable notification per event.
 

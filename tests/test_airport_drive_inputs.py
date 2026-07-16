@@ -413,7 +413,7 @@ def test_departure_block_round_trips_through_the_block_codec():
         timezone=block.timezone,
     )
     assert args["summary"] == "Drive: → BNA (DL123)"
-    assert args["timezone"] == "America/Chicago"
+    assert args["start"]["timeZone"] == "America/Chicago"
     assert args["transparency"] == "transparent"  # Free, #90 decision
     # Parse it back the way the recheck poll would.
     fetched = {"id": "evt_1", "summary": args["summary"], "description": args["description"]}
@@ -448,9 +448,10 @@ def test_arrival_block_round_trips_through_the_block_codec():
         leg_end=block.leg_end,
         timezone=block.timezone,
     )
-    # Duration spans the drive home: anchor → anchor + 1200s = 20 min.
-    assert args["event_duration_hour"] == 0
-    assert args["event_duration_minutes"] == 20
+    # The block spans the drive home: anchor → anchor + 1200s = 20 min.
+    start = datetime.fromisoformat(args["start"]["dateTime"])
+    end = datetime.fromisoformat(args["end"]["dateTime"])
+    assert (end - start) == timedelta(minutes=20)
     fetched = {"id": "evt_2", "summary": args["summary"], "description": args["description"]}
     state = parse_block(fetched)
     assert state is not None

@@ -1,7 +1,7 @@
 """Tests for the drive-planner recheck poll core (`drive-planner-recheck/precheck.py`).
 
 Exercises `evaluate_blocks` with an injected router (no live maps, no live
-Composio) over fetched-event fixtures built from the real block codec, so the
+calendar) over fetched-event fixtures built from the real block codec, so the
 poll reads exactly the blocks the sweep writes. Covers: the traffic-growth
 alert and its one-shot suppression, the independent leave-by alert, return-leg
 and not-yet-due skips, and route-error recording (no silent miss).

@@ -1,11 +1,11 @@
 """Calendar reconciliation orchestrator for flight-assist (#55).
 
 The deterministic glue that connects the pure planner (`calendar_plan.py`)
-to live Google Calendars via Composio. No LLM in the loop: it resolves
-calendar IDs, fetches + normalizes the current calendar state, builds the
-per-flight planner inputs, runs `plan_reconciliation`, executes the
-returned ops through `composio_client`, and writes the resulting event IDs
-back into each flight's `calendar_events` ledger.
+to live Google Calendars. No LLM in the loop: it resolves calendar IDs,
+fetches + normalizes the current calendar state, builds the per-flight
+planner inputs, runs `plan_reconciliation`, executes the returned ops
+through `google_calendar_client`, and writes the resulting event IDs back
+into each flight's `calendar_events` ledger.
 
 Responsibility split (the same discipline the planner enforces):
 
@@ -41,11 +41,9 @@ Two passes per cycle:
     ledger, this module executes the deletes, then archives the state file
     once teardown settles (see `_archive_settled_tombstones`).
 
-The exact `GOOGLECALENDAR_*` *argument* field names are Composio-version-
-specific. They are isolated in the "Composio argument adapters" section
-below so a live-toolkit correction is a one-spot fix — the same treatment
-`composio_client.py` gives its action slugs. Verify them against the live
-toolkit when first wiring against the NAS.
+The op -> request mapping is isolated in the "Calendar argument adapters"
+section below: the planner speaks ops, Google speaks event resources, and
+that section is the only place the two meet.
 
 stdlib-only (`datetime`) per `coding-policy: dependency-management`.
 """
@@ -64,8 +62,8 @@ from calendar_plan import (
     plan_reconciliation,
 )
 from calendar_tags import encode_tags
-from composio_client import ComposioError
 from disposition import resolve_disposition
+from google_calendar_client import GoogleCalendarError
 from state import (
     delete_flight_state,
     list_flight_state_ids,
@@ -98,12 +96,11 @@ class ReconcileError(Exception):
     """
 
 
-# --- Calendar argument adapters (verify against the live Composio toolkit) ---
+# --- Calendar argument adapters ----------------------------------------------
 #
-# Each helper maps to/from the GOOGLECALENDAR_* `arguments` / response shape.
-# The response shape (`{"items": [...]}`, an event resource carrying `id`) is
-# the Google-native shape the composio_client tests already assume. The
-# request-argument field names are the version-specific surface; isolated here.
+# Each helper maps a planner op to a native Google Calendar request. The
+# planner speaks ops (`create` / `adopt` / `update` / `delete` with a `body`);
+# Calendar speaks event resources. This is the only place the two meet.
 
 
 def _list_calendar_items(client) -> list[dict]:
@@ -113,13 +110,12 @@ def _list_calendar_items(client) -> list[dict]:
 
 
 def _find_events_args(*, calendar_id: str, time_min: str, time_max: str) -> dict:
-    """Arguments for GOOGLECALENDAR_FIND_EVENT over a calendar + time window.
+    """Arguments for an events.list over a calendar + time window.
 
     `singleEvents` expands recurring events into instances so each carries a
     concrete start/end the planner can compare; without it a recurring master
     comes back with no concrete instance time and `_is_timed` would mishandle
-    it. The name is Google Calendar's documented camelCase API parameter (the
-    response is Google-native too) — verify against the live toolkit.
+    it.
     """
     return {
         "calendar_id": calendar_id,
@@ -129,124 +125,95 @@ def _find_events_args(*, calendar_id: str, time_min: str, time_max: str) -> dict
     }
 
 
-def _instant(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+def _event_time(iso: str) -> dict:
+    """A native Calendar event time object for an RFC 3339 instant.
 
+    `dateTime`'s own offset IS the instant — Calendar reads it verbatim, so
+    there is nothing to disambiguate and no `timeZone` to send. flight-assist
+    only ever has the departure offset, never an IANA name, and an event with
+    no `timeZone` renders in the viewer's calendar zone (which is what the
+    operator wants for a boarding block anyway).
 
-def _duration_minutes(start: str, end: str) -> int:
-    """Whole-minute duration between two RFC 3339 instants (at least 1)."""
-    return max(round((_instant(end) - _instant(start)).total_seconds() / 60), 1)
-
-
-def _create_time_fields(start_iso: str) -> tuple[str, str | None]:
-    """`(start_datetime, timezone)` for the live CREATE, anchored to the right instant.
-
-    The live `GOOGLECALENDAR_CREATE_EVENT` reads a bare `start_datetime`'s
-    wall-clock as UTC unless an explicit `timezone` is given — so an offset
-    string alone lands the event hours off (#82/#83). flight-assist has only the
-    departure offset, not an IANA name, so map a whole-hour offset to a
-    fixed-offset `Etc/GMT±N` zone (correct instant AND local-clock display).
-    A rare non-whole-hour offset (e.g. +05:30) has no Etc zone, so fall back to
-    a UTC-normalized `start_datetime` (correct instant, UTC display).
+    This is where the #82/#83 workaround used to live: Composio's adapter read
+    a bare `start_datetime`'s wall-clock as UTC and ignored its offset, so the
+    block landed hours off unless an explicit `timezone` was passed — and
+    since flight-assist had only an offset, that meant synthesizing a
+    fixed-offset `Etc/GMT±N` zone to fake one. Calendar honours the offset, so
+    the whole dance is gone.
     """
-    dt = _instant(start_iso)
-    offset = dt.utcoffset()
-    if offset is None:
-        return start_iso, None
-    total_minutes = offset.total_seconds() / 60
-    if total_minutes % 60 != 0:
-        return dt.astimezone(timezone.utc).isoformat(), None
-    hours = int(total_minutes // 60)
-    inverted = -hours  # POSIX Etc/GMT zones invert the sign
-    tz = "Etc/GMT" if inverted == 0 else f"Etc/GMT{inverted:+d}"
-    return start_iso, tz
+    return {"dateTime": iso}
 
 
 def _create_event_args(op: dict) -> dict:
-    """Arguments for GOOGLECALENDAR_CREATE_EVENT from a planner `create` op.
+    """A native events.insert body from a planner `create` op.
 
-    The planner's `body` is `{summary, start, end, private_props}`. The live v3
-    contract is flat `start_datetime` + `event_duration_*` (no nested
-    start/end), and there is NO writable `extendedProperties` — so the managed
-    tags ride in the `description` via `encode_tags`. An explicit `timezone`
-    anchors the block to the right instant (see `_create_time_fields`).
+    The planner's `body` is `{summary, start, end, private_props}`; Calendar
+    takes nested `start` / `end` objects. The managed tags ride in the
+    `description` via `encode_tags` — see the state-schema note on why the
+    description, not `extendedProperties`, is the state surface.
     """
     body = op["body"]
-    minutes = _duration_minutes(body["start"], body["end"])
-    start_datetime, tz = _create_time_fields(body["start"])
-    args = {
+    return {
         "calendar_id": op["calendar_id"],
         "summary": body["summary"],
         "description": encode_tags(body.get("description", ""), body["private_props"]),
-        "start_datetime": start_datetime,
-        "event_duration_hour": minutes // 60,
-        "event_duration_minutes": minutes % 60,
+        "start": _event_time(body["start"]),
+        "end": _event_time(body["end"]),
     }
-    if tz:
-        args["timezone"] = tz
-    return args
 
 
 def _patch_event_args(op: dict) -> dict:
-    """Arguments for GOOGLECALENDAR_PATCH_EVENT from an `update` / `adopt` op.
+    """A native events.patch body from an `update` / `adopt` op.
 
-    `update` carries `{start, end}` (a delta-shift to byAir truth) → flat
-    `start_time` / `end_time`. `adopt` carries `{private_props, description}`
-    (claims a byAir event) → the tags are appended to the event's existing
-    description via `encode_tags` (PATCH supports a partial `description`
-    update; there is no writable extendedProperties). Only the keys present in
-    the op body are sent, so a patch never clobbers a field it did not touch.
+    `update` carries `{start, end}` (a delta-shift to byAir truth); `adopt`
+    carries `{private_props, description}` (claims a byAir event) → the tags
+    are appended to the event's existing description via `encode_tags`. Only
+    the keys present in the op body are sent, so the patch never clobbers a
+    field it did not touch.
     """
     body = op["body"]
     args: dict = {"calendar_id": op["calendar_id"], "event_id": op["event_id"]}
     if "start" in body:
-        args["start_time"] = body["start"]
+        args["start"] = _event_time(body["start"])
     if "end" in body:
-        args["end_time"] = body["end"]
+        args["end"] = _event_time(body["end"])
     if "private_props" in body:
         args["description"] = encode_tags(body.get("description", ""), body["private_props"])
     return args
 
 
 def _delete_event_args(op: dict) -> dict:
-    """Arguments for GOOGLECALENDAR_DELETE_EVENT from a `delete` op."""
+    """Arguments for an events.delete from a `delete` op."""
     return {"calendar_id": op["calendar_id"], "event_id": op["event_id"]}
 
 
 def _items(data: object) -> list[dict]:
-    """Pull the event/calendar list out of a Composio GoogleCalendar response.
+    """The event / calendar list out of a native Calendar list response.
 
-    The live v3 shapes (verified against the NAS) differ per action:
-      - `GOOGLECALENDAR_LIST_CALENDARS` → the list is under `calendars`;
-      - `GOOGLECALENDAR_FIND_EVENT` → double-nested at `event_data.event_data`.
-    A flat `items` and a `response_data` wrap are tolerated for other shapes.
-    Walks one level into a dict container; the first list found wins; `[]` when
-    none match.
+    Both events.list and calendarList.list put their rows in top-level
+    `items`, and `GoogleCalendarClient.find_events` returns its merged pages
+    in that same shape. `[]` when the key is absent or not a list.
+
+    This used to walk a tuple of candidate containers (`calendars`,
+    `event_data`, `event_data.event_data`, `response_data`) because Composio's
+    shape varied per action and drifted between toolkit versions. Google's
+    does neither.
     """
-    keys = ("calendars", "event_data", "items")
     if not isinstance(data, dict):
         return []
-    for container in (data, data.get("event_data"), data.get("response_data")):
-        if not isinstance(container, dict):
-            continue
-        for key in keys:
-            value = container.get(key)
-            if isinstance(value, list):
-                return value
-    return []
+    items = data.get("items")
+    return items if isinstance(items, list) else []
 
 
 def _created_event_id(data: object) -> str | None:
-    """Extract the new event's `id` from a CREATE_EVENT response."""
+    """The new event's `id` from an events.insert response.
+
+    Calendar answers a create with the created event resource, whose id is
+    top-level. (Composio nested it under `response_data`; that's gone.)
+    """
     if not isinstance(data, dict):
         return None
-    event_id = data.get("id")
-    if event_id:
-        return event_id
-    nested = data.get("response_data")
-    if isinstance(nested, dict):
-        return nested.get("id")
-    return None
+    return data.get("id")
 
 
 # --- Calendar-ID resolution -------------------------------------------------
@@ -454,7 +421,7 @@ def _apply_op_to_ledger(op: dict, ledger: dict, client) -> bool:
     """Execute one planner op and mutate `ledger` in place. Return True if the
     flight's state needs to be written back (ledger changed).
 
-    Raises ComposioError / urllib errors to the caller, which logs and
+    Raises GoogleCalendarError / urllib errors to the caller, which logs and
     collects them so one failed op never aborts the cycle. A delete that
     404s (event already gone) is an idempotent success, handled here.
     """
@@ -465,7 +432,7 @@ def _apply_op_to_ledger(op: dict, ledger: dict, client) -> bool:
         data = client.create_event(_create_event_args(op))
         new_id = _created_event_id(data)
         if new_id is None:
-            raise ComposioError(f"create for {kind} returned no event id: {data!r}")
+            raise GoogleCalendarError(f"create for {kind} returned no event id: {data!r}")
         ledger[kind] = _ledger_entry(
             event_id=new_id,
             calendar_id=op["calendar_id"],
@@ -495,7 +462,7 @@ def _apply_op_to_ledger(op: dict, ledger: dict, client) -> bool:
     if operation == "delete":
         try:
             client.delete_event(_delete_event_args(op))
-        except ComposioError as exc:
+        except GoogleCalendarError as exc:
             if exc.status_code != 404:
                 raise
             # 404 = already gone; idempotent success, fall through to ledger drop.
@@ -570,7 +537,7 @@ def run_reconcile(client, *, now: datetime) -> dict:
 
     Returns a summary dict: the resolved calendar id, the op counts, the
     number of teardown tombstones archived, and any per-op failures
-    (collected, not raised — a single failed Composio call defers that op to
+    (collected, not raised — a single failed Calendar call defers that op to
     the next cycle without aborting the rest).
     """
     config = read_config() or {}
@@ -638,7 +605,7 @@ def run_reconcile(client, *, now: datetime) -> dict:
         ledger = state.setdefault("calendar_events", {})
         try:
             changed = _apply_op_to_ledger(op, ledger, client)
-        except (ComposioError, OSError) as exc:
+        except (GoogleCalendarError, OSError) as exc:
             print(
                 f"flight-assist reconcile: op {op['op']}/{op['kind']} for flight "
                 f"{flight_id} failed: {exc}",

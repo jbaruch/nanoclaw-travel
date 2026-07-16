@@ -15,10 +15,10 @@ meeting's existing marker blocks first and skips any (meeting, direction) that
 already exists: the sweep agent and a user reply can race on the same meeting,
 so assume the race and make create a no-op when the block is already there.
 
-Composio surface (`find_events` / `create_event` / `delete_event`) ships in the
-co-located flight-assist skill's `composio_client`; imported read-only via the
-runtime-mount-with-dev-fallback pattern. The marker codec + skip store are
-drive-planner's own (`block_props`, `skip_state`).
+The Google Calendar surface (`find_events` / `create_event` / `delete_event`)
+ships in the co-located flight-assist skill's `google_calendar_client`; imported
+read-only via the runtime-mount-with-dev-fallback pattern. The marker codec +
+skip store are drive-planner's own (`block_props`, `skip_state`).
 
 Modes (subcommand on argv[1]):
     create   stdin {"meetings": [{"meeting_id": "...", "create_args": [...]}]}
@@ -53,7 +53,7 @@ Modes (subcommand on argv[1]):
 
 This script is NOT a scheduler precheck — it is invoked by the agent and its
 exit code is read directly: exit 0 on success, non-zero with a `{"error": ...}`
-stderr line on a usage error or an unrecovered Composio failure (the agent
+stderr line on a usage error or an unrecovered calendar failure (the agent
 surfaces that to the user). stdlib-only (plus in-plugin modules).
 """
 
@@ -79,29 +79,47 @@ def _flight_assist_dir() -> Path:
         return _FLIGHT_ASSIST_DEV
     raise FileNotFoundError(
         "drive-planner apply: cannot locate the co-shipped flight-assist skill at "
-        f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev) — composio_client "
+        f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev) — "
+        "google_calendar_client "
         "ships there; both skills are part of jbaruch/nanoclaw-travel"
     )
 
 
-# Composio's find/create/delete surface ships in the co-located flight-assist
-# bundle; add it to the path and import its client + error type (the same
-# cross-bundle import reconcile.py does in-bundle), so the calendar-write
-# failures can be caught by their specific type per `coding-policy:
-# error-handling` rather than a bare catch-all.
+# The find/create/delete surface ships in the co-located flight-assist bundle;
+# add it to the path and import its client + error type (the same cross-bundle
+# import reconcile.py does in-bundle), so the calendar-write failures can be
+# caught by their specific type per `coding-policy: error-handling` rather than
+# a bare catch-all.
 sys.path.insert(0, str(_flight_assist_dir()))
 
 from block_props import parse_block, parse_marker  # noqa: E402
-from composio_client import ComposioClient, ComposioError  # noqa: E402
+from google_calendar_client import (  # noqa: E402
+    GatewayNotInjecting,
+    GoogleCalendarClient,
+    GoogleCalendarError,
+    TierAccessRestricted,
+)
 from skip_state import add_skip  # noqa: E402
 
-# Calendar-write failures worth catching per-op: a Composio tool error or a
+# Calendar-write failures worth catching per-op: an API-level error or a
 # transport error. A non-write bug is not in this set and propagates.
-_WRITE_ERRORS = (ComposioError, urllib.error.URLError, urllib.error.HTTPError, OSError)
+# `urllib.error.HTTPError` is not listed: the client maps every non-2xx to a
+# GoogleCalendarError, so an HTTPError never reaches here.
+_WRITE_ERRORS = (GoogleCalendarError, urllib.error.URLError, OSError)
 
 # Pad the find window around a block so a small clock/timezone skew between
 # create and the idempotency find never hides an existing block.
 _FIND_PAD = timedelta(hours=1)
+
+# `singleEvents` expands recurring events into instances. This is load-bearing,
+# not a default worth inheriting: `scan.py` classifies events fetched WITH the
+# expansion, so the `meeting_id` it puts in the skip store is an INSTANCE id.
+# `_remove_mode` / `_resolve_candidates` match a fetched event's `id` against
+# exactly those, so an unexpanded fetch would hand back recurring MASTERS whose
+# ids never match — a daily standup would resolve to nothing and silently fail
+# to skip. events.list defaults this OFF (Composio's slug defaulted it on, which
+# is why this never needed saying before).
+_FIND_ARGS = {"singleEvents": True}
 
 # Fallback skip horizon when a remove request carries no meeting_end and no
 # blocks are found to derive one from — bounds the search window and the skip
@@ -109,29 +127,28 @@ _FIND_PAD = timedelta(hours=1)
 _DEFAULT_SKIP_HORIZON = timedelta(days=30)
 
 
-def _load_composio():
-    """Construct the in-plugin ComposioClient from env (cross-bundle path set above)."""
-    return ComposioClient.from_env()
+def _load_calendar():
+    """Construct the in-plugin GoogleCalendarClient (cross-bundle path set above).
+
+    Takes no credential — the OneCLI gateway injects the Bearer on the wire
+    (see `google_calendar_client`).
+    """
+    return GoogleCalendarClient()
 
 
 def _items(data: object) -> list:
-    """Pull the event list out of a Composio FIND_EVENT response, tolerantly.
+    """Pull the event list out of an events.list resource.
 
-    The live v3 `GOOGLECALENDAR_FIND_EVENT` double-nests the events at
-    `data.event_data.event_data` (verified against the NAS); a flat
-    `event_data`/`items` list and a `response_data` wrap are tolerated for other
-    toolkit shapes. Walks one level into a dict container; first list wins.
+    Both a single page and `GoogleCalendarClient.find_events`' merged result put
+    the events in top-level `items`. `[]` when absent or not a list.
+
+    This used to walk a tuple of candidate containers because Composio's shape
+    varied per action and drifted between toolkit versions. Google's does not.
     """
     if not isinstance(data, dict):
         return []
-    for container in (data, data.get("event_data"), data.get("response_data")):
-        if not isinstance(container, dict):
-            continue
-        for key in ("event_data", "items"):
-            value = container.get(key)
-            if isinstance(value, list):
-                return value
-    return []
+    items = data.get("items")
+    return items if isinstance(items, list) else []
 
 
 def existing_directions(fetched_events: list, meeting_id: str) -> set:
@@ -190,27 +207,38 @@ def plan_creates(meeting: dict, fetched_events: list) -> tuple[list, list]:
     return to_create, skipped
 
 
+def _event_dt(arg: dict, key: str) -> datetime | None:
+    """The instant out of a create-arg's nested `start` / `end` object, or None.
+
+    Tolerant of a malformed arg (the create loop already skips those): a
+    missing or non-dict endpoint, or an unparseable `dateTime`, yields None so
+    the idempotency find degrades to "no window" rather than raising.
+    """
+    endpoint = arg.get(key)
+    if not isinstance(endpoint, dict):
+        return None
+    return _parse_iso(endpoint.get("dateTime"))
+
+
 def _find_window(create_args: list) -> tuple[datetime | None, datetime | None]:
     """The padded [min start, max end] across a meeting's create_args.
 
-    The v3 create contract is flat `start_datetime` + `event_duration_*`, so
-    each block's end is start + its duration.
+    Both endpoints are read straight off the native `start` / `end` objects.
+    The flat Composio contract this replaced had no end at all — it sent a
+    duration — so the end had to be reconstructed as start + hours + minutes,
+    with each duration field type-checked because a malformed one would have
+    shifted the window silently.
     """
     starts, ends = [], []
     for arg in create_args:
         if not isinstance(arg, dict):
             continue
-        start = _parse_iso(arg.get("start_datetime"))
-        if not start:
+        start = _event_dt(arg, "start")
+        end = _event_dt(arg, "end")
+        if start is None or end is None:
             continue
-        hours = arg.get("event_duration_hour") or 0
-        minutes = arg.get("event_duration_minutes") or 0
-        if not isinstance(hours, int) or isinstance(hours, bool):
-            hours = 0
-        if not isinstance(minutes, int) or isinstance(minutes, bool):
-            minutes = 0
         starts.append(start)
-        ends.append(start + timedelta(hours=hours, minutes=minutes))
+        ends.append(end)
     if not starts or not ends:
         return None, None
     return min(starts) - _FIND_PAD, max(ends) + _FIND_PAD
@@ -452,6 +480,7 @@ def _create_mode(request: dict, client) -> dict:
             fetched = _items(
                 client.find_events(
                     {
+                        **_FIND_ARGS,
                         "calendar_id": calendar_id,
                         "timeMin": time_min.isoformat(),
                         "timeMax": time_max.isoformat(),
@@ -513,6 +542,7 @@ def _remove_mode(request: dict, client) -> dict:
     fetched = _items(
         client.find_events(
             {
+                **_FIND_ARGS,
                 "calendar_id": calendar_id,
                 "timeMin": time_min.isoformat(),
                 "timeMax": time_max.isoformat(),
@@ -555,10 +585,10 @@ def _remove_mode(request: dict, client) -> dict:
             continue
         try:
             client.delete_event({"calendar_id": calendar_id, "event_id": state.event_id})
-        except ComposioError as exc:
+        except GoogleCalendarError as exc:
             # A 404 means the event is already gone (a concurrent delete) — an
             # idempotent success, not a failure (matches reconcile.py). Any
-            # other Composio error propagates to main's handler.
+            # other Calendar error propagates to main's handler.
             if exc.status_code != 404:
                 raise
         removed.append({"event_id": state.event_id, "direction": state.direction})
@@ -682,6 +712,7 @@ def _list_mode(request: dict, client) -> dict:
     fetched = _items(
         client.find_events(
             {
+                **_FIND_ARGS,
                 "calendar_id": calendar_id,
                 "timeMin": (now - _FIND_PAD).isoformat(),
                 "timeMax": (now + _DEFAULT_SKIP_HORIZON).isoformat(),
@@ -720,8 +751,8 @@ def _suppress_mode(request: dict, client) -> dict:
     delivered the leave-earlier / leave-now alert, so a failed send never
     permanently suppresses an alert. Each patch carries the block's full new
     `description` (the poll rebuilt it with the updated alert record); since the
-    machine state lives in the description and `GOOGLECALENDAR_PATCH_EVENT`
-    supports a partial `description` update, the patch is just that one field.
+    machine state lives in the description and events.patch supports a partial
+    update, the patch is just that one field.
     """
     patched = []
     patches = request.get("patches")
@@ -743,7 +774,7 @@ def _suppress_mode(request: dict, client) -> dict:
                     "description": description,
                 }
             )
-        except ComposioError as exc:
+        except GoogleCalendarError as exc:
             # A 404 means the block was deleted concurrently — nothing to
             # suppress, an idempotent skip. One block's 404 must not fail
             # suppression for the others; any other status propagates.
@@ -773,7 +804,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     try:
-        client = _load_composio()
+        client = _load_calendar()
         if argv[1] == "create":
             result = _create_mode(request, client)
         elif argv[1] == "list":
@@ -783,11 +814,20 @@ def main(argv: list[str]) -> int:
         else:
             result = _suppress_mode(request, client)
     except ValueError as exc:
-        # Config / usage error — missing COMPOSIO_* env, or a bad remove request.
+        # Usage error — a bad remove request.
         print(json.dumps({"error": str(exc)}), file=sys.stderr)
         return 2
+    except (GatewayNotInjecting, TierAccessRestricted) as exc:
+        # A config failure, not a write failure: the gateway is not
+        # authenticating us, or this agent's tier is gated from Google by
+        # design. Both are caught HERE rather than left to propagate because
+        # the agent parses only this script's JSON — a traceback reads to it as
+        # "no result". Their messages are already actionable, so they pass
+        # through verbatim.
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
     except _WRITE_ERRORS as exc:
-        # An unrecovered Composio / transport failure during find/delete —
+        # An unrecovered calendar / transport failure during find/delete —
         # surface it to the agent. A non-write bug propagates as a traceback.
         print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), file=sys.stderr)
         return 1

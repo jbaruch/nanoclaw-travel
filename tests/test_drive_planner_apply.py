@@ -1,6 +1,6 @@
 """Tests for the drive-planner calendar-write step (`apply.py`).
 
-Uses a fake in-memory Composio client (no live backend) to exercise the
+Uses a fake in-memory calendar client (no live backend) to exercise the
 idempotent create (lombot #50 — never double-book a meeting that already has a
 marker block) and the skip-remove (delete the meeting's blocks + record a skip
 so the next sweep won't recreate them). Skip state is redirected to a tmp dir
@@ -9,6 +9,8 @@ via DRIVE_PLANNER_STATE_DIR so the test owns its own state.
 
 from __future__ import annotations
 
+import io
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,9 +27,9 @@ import apply  # noqa: E402
 import skip_state  # noqa: E402
 from block_props import build_block_args  # noqa: E402
 
-# apply.py adds the flight-assist bundle to sys.path on import (for ComposioError);
-# that makes composio_client importable here too.
-from composio_client import ComposioError  # noqa: E402
+# apply.py adds the flight-assist bundle to sys.path on import (for GoogleCalendarError);
+# that makes google_calendar_client importable here too.
+from google_calendar_client import GoogleCalendarError  # noqa: E402
 
 CT = timezone(timedelta(hours=-5))
 ARRIVE = datetime(2026, 7, 2, 13, 0, tzinfo=CT)
@@ -39,8 +41,8 @@ def _state_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(tmp_path))
 
 
-class FakeComposio:
-    """In-memory stand-in for ComposioClient: stores created events, serves finds."""
+class FakeCalendar:
+    """In-memory stand-in for GoogleCalendarClient: stores creates, serves finds."""
 
     def __init__(self, existing=None):
         self.events = list(existing or [])
@@ -50,8 +52,8 @@ class FakeComposio:
 
     def find_events(self, arguments):
         # Ignore the window; tests pass exactly the events they want found.
-        # Live v3 FIND_EVENT double-nests: data.event_data.event_data.
-        return {"event_data": {"event_data": list(self.events)}}
+        # events.list returns the events under `items`.
+        return {"items": list(self.events)}
 
     def create_event(self, arguments):
         self.created.append(arguments)
@@ -111,7 +113,7 @@ def test_list_returns_one_per_meeting_ordered_by_leave_by_no_drive_prefix():
     late = _block_for(
         "evt_late", "Football Practice", datetime(2026, 7, 2, 15, 30, tzinfo=CT), "b2"
     )
-    client = FakeComposio(existing=[late, early])  # unordered on the calendar
+    client = FakeCalendar(existing=[late, early])  # unordered on the calendar
     result = apply._list_mode({"now": datetime(2026, 7, 2, 8, 0, tzinfo=CT).isoformat()}, client)
     # ordered by leave_by; the "Drive: " prefix is stripped for the operator
     assert [b["summary"] for b in result["blocks"]] == ["Swimming Practice", "Football Practice"]
@@ -121,7 +123,7 @@ def test_list_returns_one_per_meeting_ordered_by_leave_by_no_drive_prefix():
 def test_list_groups_multiple_legs_of_one_meeting():
     out = _block_for("evt_42", "Customer sync", datetime(2026, 7, 2, 13, 0, tzinfo=CT), "ob")
     ret = _block_for("evt_42", "Customer sync", datetime(2026, 7, 2, 15, 0, tzinfo=CT), "rt")
-    client = FakeComposio(existing=[out, ret])
+    client = FakeCalendar(existing=[out, ret])
     result = apply._list_mode({"now": datetime(2026, 7, 2, 8, 0, tzinfo=CT).isoformat()}, client)
     assert len(result["blocks"]) == 1  # one entry per meeting, not per leg
     assert result["blocks"][0]["meeting_id"] == "evt_42"
@@ -131,7 +133,7 @@ def test_list_groups_multiple_legs_of_one_meeting():
 
 
 def test_create_inserts_when_no_existing_block():
-    client = FakeComposio(existing=[])
+    client = FakeCalendar(existing=[])
     request = {"meetings": [{"meeting_id": "evt_42", "create_args": [_create_args()]}]}
     result = apply._create_mode(request, client)
     assert len(result["created"]) == 1
@@ -142,7 +144,7 @@ def test_create_inserts_when_no_existing_block():
 
 def test_create_is_idempotent_when_block_exists():
     args = _create_args()
-    client = FakeComposio(existing=[_fetched_block(args)])
+    client = FakeCalendar(existing=[_fetched_block(args)])
     request = {"meetings": [{"meeting_id": "evt_42", "create_args": [args]}]}
     result = apply._create_mode(request, client)
     # The marker block already exists — create is a no-op (no duplicate).
@@ -155,7 +157,7 @@ def test_create_adds_only_missing_direction():
     outbound = _create_args(direction="outbound")
     ret = _create_args(direction="return")
     # Outbound already on the calendar; only the return should be created.
-    client = FakeComposio(existing=[_fetched_block(outbound, "ob")])
+    client = FakeCalendar(existing=[_fetched_block(outbound, "ob")])
     request = {"meetings": [{"meeting_id": "evt_42", "create_args": [outbound, ret]}]}
     result = apply._create_mode(request, client)
     assert [c["direction"] for c in result["created"]] == ["return"]
@@ -163,16 +165,16 @@ def test_create_adds_only_missing_direction():
 
 
 def test_create_records_per_leg_failure_without_aborting():
-    class FlakyComposio(FakeComposio):
+    class FlakyCalendar(FakeCalendar):
         def create_event(self, arguments):
-            raise ComposioError("composio 500")
+            raise GoogleCalendarError("calendar 500")
 
-    client = FlakyComposio(existing=[])
+    client = FlakyCalendar(existing=[])
     request = {"meetings": [{"meeting_id": "evt_42", "create_args": [_create_args()]}]}
     result = apply._create_mode(request, client)
     assert result["created"] == []
     assert len(result["failed"]) == 1
-    assert "composio 500" in result["failed"][0]["error"]
+    assert "calendar 500" in result["failed"][0]["error"]
 
 
 # --- remove: delete blocks + record skip ---------------------------------
@@ -180,7 +182,7 @@ def test_create_records_per_leg_failure_without_aborting():
 
 def test_remove_deletes_blocks_and_records_skip():
     args = _create_args()
-    client = FakeComposio(existing=[_fetched_block(args, "block_x")])
+    client = FakeCalendar(existing=[_fetched_block(args, "block_x")])
     now = datetime(2026, 7, 2, 9, 0, tzinfo=CT)
     request = {
         "meeting_id": "evt_42",
@@ -207,7 +209,7 @@ def test_remove_by_summary_picks_the_right_meeting_among_pre_existing_blocks():
     football = _block_for(
         "evt_fb", "Football Practice", datetime(2026, 7, 2, 15, 30, tzinfo=CT), "b_fb"
     )
-    client = FakeComposio(existing=[swim, football])
+    client = FakeCalendar(existing=[swim, football])
     now = datetime(2026, 7, 2, 8, 0, tzinfo=CT)
     result = apply._remove_mode({"summary": "Football Practice", "now": now.isoformat()}, client)
     assert client.deleted == ["b_fb"]  # only football, not swimming
@@ -230,7 +232,7 @@ def test_remove_by_summary_skips_unplannable_meeting_with_no_block():
         "start": {"dateTime": datetime(2026, 7, 2, 14, 0, tzinfo=CT).isoformat()},
         "end": {"dateTime": meeting_end.isoformat()},
     }
-    client = FakeComposio(existing=[meeting_event])
+    client = FakeCalendar(existing=[meeting_event])
     now = datetime(2026, 7, 2, 8, 0, tzinfo=CT)
     result = apply._remove_mode({"summary": "St. Louis talk", "now": now.isoformat()}, client)
     assert result["removed"] == []  # no block to delete
@@ -265,7 +267,7 @@ def test_resolve_candidates_reports_return_block_actual_start():
 
 
 def test_remove_by_unmatched_summary_reports_no_match():
-    client = FakeComposio(existing=[])
+    client = FakeCalendar(existing=[])
     now = datetime(2026, 7, 2, 8, 0, tzinfo=CT)
     result = apply._remove_mode({"summary": "Nonexistent", "now": now.isoformat()}, client)
     assert result["skip_recorded"] is False
@@ -277,7 +279,7 @@ def test_remove_same_summary_without_leave_by_is_ambiguous_not_guessed():
     # script returns the choices instead of guessing by fetch order.
     mon = _block_for("evt_mon", "Standup", datetime(2026, 7, 6, 9, 0, tzinfo=CT), "b_mon")
     tue = _block_for("evt_tue", "Standup", datetime(2026, 7, 7, 9, 0, tzinfo=CT), "b_tue")
-    client = FakeComposio(existing=[tue, mon])
+    client = FakeCalendar(existing=[tue, mon])
     now = datetime(2026, 7, 6, 7, 0, tzinfo=CT)
     result = apply._remove_mode({"summary": "Standup", "now": now.isoformat()}, client)
     assert result["skip_recorded"] is False
@@ -297,7 +299,7 @@ def test_remove_resolves_unplannable_occurrence_even_when_another_has_a_block():
         "description": "",
         "start": {"dateTime": datetime(2026, 7, 7, 9, 0, tzinfo=CT).isoformat()},
     }
-    client = FakeComposio(existing=[mon_block, tue_meeting])
+    client = FakeCalendar(existing=[mon_block, tue_meeting])
     now = datetime(2026, 7, 6, 7, 0, tzinfo=CT)
     # both occurrences are offered (block + unplannable event), not just the block
     amb = apply._remove_mode({"summary": "Standup", "now": now.isoformat()}, client)
@@ -331,7 +333,7 @@ def test_resolve_candidates_uses_earliest_leg_leave_by():
 def test_remove_same_summary_with_leave_by_pins_the_right_instance():
     mon = _block_for("evt_mon", "Standup", datetime(2026, 7, 6, 9, 0, tzinfo=CT), "b_mon")
     tue = _block_for("evt_tue", "Standup", datetime(2026, 7, 7, 9, 0, tzinfo=CT), "b_tue")
-    client = FakeComposio(existing=[tue, mon])
+    client = FakeCalendar(existing=[tue, mon])
     now = datetime(2026, 7, 6, 7, 0, tzinfo=CT)
     # Tuesday's leave-by = 9:00 - 25min drive - 5min buffer = 8:30 on 2026-07-07.
     tue_leave_by = datetime(2026, 7, 7, 8, 30, tzinfo=CT).isoformat()
@@ -347,13 +349,13 @@ def test_remove_same_summary_with_leave_by_pins_the_right_instance():
 def test_remove_with_past_meeting_end_keeps_find_window_valid():
     # A late skip/remove (meeting_end already past) must not invert the find
     # window (timeMax < timeMin), which could fail the whole remove.
-    class CapturingComposio(FakeComposio):
+    class CapturingCalendar(FakeCalendar):
         def find_events(self, arguments):
             self.find_args = arguments
-            return {"event_data": {"event_data": list(self.events)}}
+            return super().find_events(arguments)
 
     args = _create_args()
-    client = CapturingComposio(existing=[_fetched_block(args, "block_x")])
+    client = CapturingCalendar(existing=[_fetched_block(args, "block_x")])
     now = datetime(2026, 7, 10, 9, 0, tzinfo=CT)  # well after ARRIVE (2026-07-02)
     past_end = datetime(2026, 7, 2, 13, 0, tzinfo=CT)
     result = apply._remove_mode(
@@ -367,13 +369,13 @@ def test_remove_with_past_meeting_end_keeps_find_window_valid():
 
 
 def test_create_tolerates_non_list_meetings():
-    client = FakeComposio(existing=[])
+    client = FakeCalendar(existing=[])
     result = apply._create_mode({"meetings": "not-a-list"}, client)  # must not raise
     assert result == {"created": [], "skipped_existing": [], "failed": [], "message": None}
 
 
 def test_suppress_tolerates_non_list_patches():
-    client = FakeComposio()
+    client = FakeCalendar()
     result = apply._suppress_mode({"patches": {"bad": "shape"}}, client)  # must not raise
     assert result == {"patched": []}
 
@@ -383,18 +385,18 @@ def test_create_tolerates_non_dict_start_in_arg():
     # idempotency-find window math.
     bad = _create_args()
     bad["start"] = None
-    client = FakeComposio(existing=[])
+    client = FakeCalendar(existing=[])
     request = {"meetings": [{"meeting_id": "evt_42", "create_args": [bad]}]}
     result = apply._create_mode(request, client)  # must not raise
     assert "evt_42" in {c["meeting_id"] for c in result["created"]} or result["failed"]
 
 
 def test_remove_treats_delete_404_as_idempotent_success():
-    # A concurrent delete (event already gone) surfaces as ComposioError(404);
+    # A concurrent delete (event already gone) surfaces as GoogleCalendarError(404);
     # remove must treat it as success, not abort.
-    class Gone404(FakeComposio):
+    class Gone404(FakeCalendar):
         def delete_event(self, arguments):
-            raise ComposioError("not found", status_code=404)
+            raise GoogleCalendarError("not found", status_code=404)
 
     args = _create_args()
     client = Gone404(existing=[_fetched_block(args, "block_x")])
@@ -405,18 +407,18 @@ def test_remove_treats_delete_404_as_idempotent_success():
 
 
 def test_remove_propagates_non_404_delete_error():
-    class Boom(FakeComposio):
+    class Boom(FakeCalendar):
         def delete_event(self, arguments):
-            raise ComposioError("server error", status_code=500)
+            raise GoogleCalendarError("server error", status_code=500)
 
     client = Boom(existing=[_fetched_block(_create_args(), "block_x")])
     now = datetime(2026, 7, 2, 9, 0, tzinfo=CT)
-    with pytest.raises(ComposioError):
+    with pytest.raises(GoogleCalendarError):
         apply._remove_mode({"meeting_id": "evt_42", "now": now.isoformat()}, client)
 
 
 def test_create_tolerates_non_list_create_args():
-    client = FakeComposio(existing=[])
+    client = FakeCalendar(existing=[])
     request = {"meetings": [{"meeting_id": "evt_42", "create_args": None}]}
     result = apply._create_mode(request, client)  # must not raise
     assert result["created"] == []
@@ -425,7 +427,7 @@ def test_create_tolerates_non_list_create_args():
 def test_remove_only_touches_the_named_meeting():
     keep = _fetched_block(_create_args(meeting_id="evt_OTHER"), "keep")
     drop = _fetched_block(_create_args(meeting_id="evt_42"), "drop")
-    client = FakeComposio(existing=[keep, drop])
+    client = FakeCalendar(existing=[keep, drop])
     now = datetime(2026, 7, 2, 9, 0, tzinfo=CT)
     request = {"meeting_id": "evt_42", "now": now.isoformat(), "meeting_end": ARRIVE.isoformat()}
     apply._remove_mode(request, client)
@@ -434,7 +436,7 @@ def test_remove_only_touches_the_named_meeting():
 
 def test_remove_requires_meeting_id():
     with pytest.raises(ValueError, match="meeting_id"):
-        apply._remove_mode({"now": "x", "meeting_end": "y"}, FakeComposio())
+        apply._remove_mode({"now": "x", "meeting_end": "y"}, FakeCalendar())
 
 
 def test_calendar_id_tolerates_non_dict_first_arg():
@@ -444,7 +446,7 @@ def test_calendar_id_tolerates_non_dict_first_arg():
 
 def test_create_skips_malformed_meeting_without_crashing():
     # A meeting entry with no usable id is recorded as failed, not a KeyError.
-    client = FakeComposio(existing=[])
+    client = FakeCalendar(existing=[])
     request = {"meetings": [{"create_args": [_create_args()]}, None]}
     result = apply._create_mode(request, client)
     assert client.created == []
@@ -456,7 +458,7 @@ def test_create_skips_malformed_meeting_without_crashing():
 
 
 def test_suppress_patches_description():
-    client = FakeComposio()
+    client = FakeCalendar()
     desc = 'Drive: X\n[drive-planner:meeting=evt_42:dir=outbound]\n<!--dp:{"v":1,"al":"growth"}-->'
     request = {"patches": [{"event_id": "block_x", "calendar_id": "primary", "description": desc}]}
     result = apply._suppress_mode(request, client)
@@ -470,10 +472,10 @@ def test_suppress_patches_description():
 def test_suppress_treats_patch_404_as_idempotent_skip():
     # A concurrently-deleted block 404s on patch; that must not fail
     # suppression for the other alerts.
-    class Patch404(FakeComposio):
+    class Patch404(FakeCalendar):
         def patch_event(self, arguments):
             if arguments["event_id"] == "gone":
-                raise ComposioError("not found", status_code=404)
+                raise GoogleCalendarError("not found", status_code=404)
             self.patched.append(arguments)
             return {}
 
@@ -489,18 +491,18 @@ def test_suppress_treats_patch_404_as_idempotent_skip():
 
 
 def test_suppress_propagates_non_404_patch_error():
-    class Boom(FakeComposio):
+    class Boom(FakeCalendar):
         def patch_event(self, arguments):
-            raise ComposioError("server error", status_code=500)
+            raise GoogleCalendarError("server error", status_code=500)
 
     client = Boom()
     request = {"patches": [{"event_id": "x", "description": "d"}]}
-    with pytest.raises(ComposioError):
+    with pytest.raises(GoogleCalendarError):
         apply._suppress_mode(request, client)
 
 
 def test_suppress_skips_malformed_patch():
-    client = FakeComposio()
+    client = FakeCalendar()
     request = {
         "patches": [{"event_id": "", "description": "d"}, {"event_id": "ok", "description": 5}]
     }
@@ -513,7 +515,7 @@ def test_remove_derives_skip_expiry_from_block_when_no_meeting_end():
     # The skip-reply path carries only the meeting id + now; expiry is derived
     # from the deleted block's arrive-by (the meeting start).
     args = _create_args()
-    client = FakeComposio(existing=[_fetched_block(args, "block_x")])
+    client = FakeCalendar(existing=[_fetched_block(args, "block_x")])
     now = datetime(2026, 7, 2, 9, 0, tzinfo=CT)
     result = apply._remove_mode({"meeting_id": "evt_42", "now": now.isoformat()}, client)
     assert result["skip_recorded"] is True
@@ -704,7 +706,7 @@ def test_notification_missing_direction_phrasing_no_double_drive():
 
 
 def test_create_mode_emits_ready_to_send_message():
-    client = FakeComposio(existing=[])
+    client = FakeCalendar(existing=[])
     request = {
         "meetings": [
             {
@@ -725,3 +727,78 @@ def test_create_mode_emits_ready_to_send_message():
         "(25-min drive with current traffic).\n"
         "Reply skip if you're not driving."
     )
+
+
+# --- outer contract: config failures stay parseable ----------------------
+
+
+def test_gateway_not_injecting_surfaces_as_json_not_a_traceback(monkeypatch, capsys):
+    """The agent parses ONLY this script's output, so a config failure must
+    still come back as `{"error": ...}` + exit 1.
+
+    Regression guard for the #638 swap: a 401 used to arrive as an HTTPError,
+    which `_WRITE_ERRORS` caught. `GatewayNotInjecting` is a RuntimeError and
+    would have sailed past that tuple into a traceback the agent reads as "no
+    result at all".
+    """
+
+    def _boom():
+        raise apply.GatewayNotInjecting("the OneCLI gateway is not authenticating this request")
+
+    monkeypatch.setattr(apply, "_load_calendar", _boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"now": "2026-07-01T08:00:00-05:00"})))
+
+    assert apply.main(["apply.py", "list"]) == 1
+    err = json.loads(capsys.readouterr().err.strip())
+    assert "gateway" in err["error"]
+
+
+def test_tier_restricted_surfaces_as_json_not_a_traceback(monkeypatch, capsys):
+    def _boom():
+        raise apply.TierAccessRestricted("untrusted tier is gated from Google by design")
+
+    monkeypatch.setattr(apply, "_load_calendar", _boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"now": "2026-07-01T08:00:00-05:00"})))
+
+    assert apply.main(["apply.py", "list"]) == 1
+    err = json.loads(capsys.readouterr().err.strip())
+    assert "tier" in err["error"]
+
+
+# --- find shaping ---------------------------------------------------------
+
+
+def test_every_find_expands_recurring_events():
+    """`scan.py` classifies events fetched with singleEvents=True, so the
+    skip store's meeting_id is an INSTANCE id. Every find here matches fetched
+    ids against those, so all three must expand too — an unexpanded fetch
+    returns recurring masters whose ids never match, and a daily standup would
+    silently fail to resolve. events.list defaults this OFF.
+    """
+
+    class _Recorder(FakeCalendar):
+        def __init__(self):
+            super().__init__(existing=[])
+            self.finds = []
+
+        def find_events(self, arguments):
+            self.finds.append(arguments)
+            return super().find_events(arguments)
+
+    now = datetime(2026, 7, 2, 8, 0, tzinfo=CT).isoformat()
+
+    client = _Recorder()
+    apply._list_mode({"now": now}, client)
+
+    client_remove = _Recorder()
+    apply._remove_mode({"summary": "Nothing", "now": now}, client_remove)
+
+    client_create = _Recorder()
+    apply._create_mode(
+        {"meetings": [{"meeting_id": "evt_42", "create_args": [_create_args()]}]}, client_create
+    )
+
+    for recorder in (client, client_remove, client_create):
+        assert recorder.finds, "expected a find"
+        for args in recorder.finds:
+            assert args["singleEvents"] is True

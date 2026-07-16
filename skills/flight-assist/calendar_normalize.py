@@ -1,7 +1,8 @@
 """Normalize raw Google Calendar events into the planner's event shape.
 
-The reconcile script (PR3b) fetches events via Composio's
-`GOOGLECALENDAR_FIND_EVENT`, which returns Google Calendar event resources.
+The reconcile script (PR3b) fetches events via Google Calendar's
+`google_calendar_client.find_events`, which returns Google Calendar event
+resources.
 `plan_reconciliation` (see `calendar_plan.py`) consumes a flat normalized
 shape: `{event_id, calendar_id, summary, start, end, private_props,
 is_reclaim_travel}`. This module is the deterministic adapter between the

@@ -1,5 +1,207 @@
 # Changelog
 
+### Fixed — the Gmail freshness fallback no longer puts raw email in the session
+
+`nightly-travel-sync` Step 3's `stale` branch had the AGENT call a Gmail tool
+and hand-build the JSON array for `filter-tripit-bookings.py`. That put raw
+third-party subjects straight into the session transcript — the exact hole
+`/workspace/group/nanoclaw-poison-defense.md` exists to close after the
+2026-04-24 incident, where invisible-Unicode padding in a marketing preview
+killed a maintenance session. The new `scripts/fetch-tripit-emails.py` fetches
+AND sanitizes in-container and prints only `{id, from, subject, date}`; bodies
+and snippets are never projected, because nothing downstream reads them and
+every field omitted is untrusted text the agent never sees.
+
+- **It was also already broken.** The step told the agent to discover the tool
+  via `COMPOSIO_SEARCH_TOOLS(query="gmail fetch emails")`, which returns a
+  recommended PLAN, not a callable slug (nanoclaw#649). It never screamed
+  because the branch only fires when the schedule goes stale (>7 days).
+- **Fails closed, loudly.** A missing sanitizer aborts before any fetch —
+  emitting unsanitized output would defeat the point of the script. Gateway
+  (401) / tier (403 `access_restricted`) exit 2 with an actionable diagnostic,
+  the same split as `reconcile.py`'s `{"error": "gateway"|"tier"}`. A failed
+  Gmail call exits 1 and emits NOTHING: this probe reports "no booking found"
+  by printing an empty array, so a partial list would read as a false silence —
+  the one outcome the step exists to prevent.
+- **`format=metadata`, not `full`.** The probe reads only the subject, so
+  bodies are never pulled over the wire at all.
+- **Bounded, no pagination.** One `list` capped at 100 (`gmail-ops` refuses to
+  paginate — the unbounded-crawl shape from nanoclaw#656), then one `get` per
+  stub.
+
+### Fixed — a bounded fetch that admits its bound
+
+The cap above can hide a confirmation behind a burst of TripIt Pro alerts or
+marketing, because the query is sender-scoped. Left there, that is not just a
+missed alert — it feeds back. The window is `after:<schedule mtime>`, so a
+missed confirmation leaves the schedule stale, which WIDENS the window, which
+makes the next truncation likelier: stale -> wider -> more truncation ->
+staler, converging on permanently broken with nothing ever surfaced. It is
+nanoclaw#171's shape — a partial view read as the whole one — wearing different
+clothes.
+
+- **The signal is the fix; the cap is only a mitigation.** Any cap can be
+  exceeded, so raising it cannot close this. When the list returns full, the
+  script exits `3` (`EXIT_TRUNCATED`) with a `WINDOW_TRUNCATED` marker on
+  stderr, and SKILL.md Step 3 reports the blind spot instead of applying its
+  silent-on-zero rule. Silence is correct only on exit 0, where the whole
+  window was actually seen. The cap did go 25 -> 100, so the signal stays the
+  rare exception rather than routine noise.
+- **stdout is still emitted on exit 3.** The rows found are genuine and a match
+  among them is still a match; what changes is that a zero count proves
+  nothing. `filter-tripit-bookings.py`'s stdin contract is untouched — it stays
+  the authority on what a booking is, which is also why the confirmation prefix
+  was NOT pushed into the Gmail query: `subject:` phrase-matches fuzzily, so a
+  miss there would become a false silence server-side, where the filter could
+  never see it.
+- **Detected as `len(stubs) >= MAX_RESULTS`.** Gmail signals "more exist" with
+  a `nextPageToken`, but `gmail-ops.list_messages` returns the stub list and
+  drops it — and that helper is admin's, not this plugin's to change. A full
+  page over-reports by exactly one case (a window holding precisely the cap and
+  no more), which is the safe direction: a spurious note costs the operator a
+  line, a missed one costs a booking.
+- **`set -o pipefail` is now required** in Step 3's command, and the stderr
+  marker backs the exit code up: without pipefail the filter's exit 0 masks the
+  fetch's code, and this probe must not go quiet because a shell option was
+  dropped. Either signal is sufficient.
+- **Tested both directions**, since the whole point is that they are
+  distinguishable: a truncated window and a genuinely-empty one both make the
+  real filter report `count: 0`, and the test asserts that — then asserts the
+  exit codes differ anyway.
+
+### Changed — a co-loaded dependency on nanoclaw-admin, for Gmail only
+
+`fetch-tripit-emails.py` imports `google-rest.py`, `gmail-ops.py`,
+`gmail-message.py` and `sanitize-email-body.py` from admin's heartbeat skill
+over the `tessl__heartbeat` mount, exactly as `nanoclaw-orders` does. Gmail is
+not this plugin's domain, and re-implementing RFC822 MIME parsing plus the
+poison sanitizer here would be strictly worse than depending on the one tested
+copy. Calendar is the opposite case and stays self-contained.
+
+Admin's helpers are unavailable to this repo's CI (it checks out one repo) and
+vendoring them is forbidden, so the tests inject doubles via
+`NANOCLAW_HEARTBEAT_SCRIPTS` — the same override the script uses for a dev
+clone. The doubles are not re-implementations: the `gmail_message` double
+asserts it was handed an untouched native Gmail resource (raw RFC822 header
+list, base64url body in a nested MIME tree, `internalDate` as an epoch-ms
+string), so a regression that pre-digests the resource fails the test. Parsing
+that shape is admin's contract, tested in admin. Transport is real `urllib`
+against a local `http.server`.
+
+### Changed — Google Calendar over native REST, no credential in the container
+
+This plugin held the last Composio Google transport in the fleet. `nanoclaw#638`
+retired it: calendar access is now the native Google Calendar v3 REST API,
+brokered by OneCLI's TLS-MITM gateway, which injects the OAuth `Bearer` on the
+wire and refreshes it. `nanoclaw-admin@0.1.458` and `nanoclaw-orders@0.1.20`
+already shipped and live-verified this shape; this is the same move.
+
+- **`composio_client.py` → `google_calendar_client.py`.** `ComposioClient` →
+  `GoogleCalendarClient`, `ComposioError` → `GoogleCalendarError`. The single
+  `POST /tools/execute/{SLUG}` becomes the five real endpoints (`calendarList`,
+  `events` list/insert/patch/delete), so the action-slug constants are gone.
+  Still stdlib-only, still one client per process, still the `byair_client` /
+  `maps_client` shape.
+- **No credential, anywhere.** `from_env`, `api_key`, `user_id`,
+  `COMPOSIO_API_KEY`, `COMPOSIO_USER_ID`, `COMPOSIO_BASE_URL` and the
+  `x-api-key` header are all deleted; construction takes nothing. A test pins
+  that no `Authorization` header is ever sent — one would mean a credential
+  leaked into the container. `GOOGLE_CALENDAR_API_BASE` remains as a test-only
+  base override.
+- **`.status_code` survives.** Composio faked the upstream status inside an
+  HTTP-200 `successful: false` envelope; Google returns a real one. The envelope
+  dies, the attribute does not — callers gate idempotency on `404 = already gone
+  = success` in five places, and all five still read it, now from the actual
+  HTTP status.
+- **Two config failures are no longer per-op failures.** A 401 raises
+  `GatewayNotInjecting` and a 403 + `access_restricted` raises
+  `TierAccessRestricted`, neither a `GoogleCalendarError` — so the per-op
+  handlers that collect a failure and retry next cycle can't swallow them and
+  defer forever. `reconcile.py` reports them as `{"error": "gateway"}` /
+  `{"error": "tier"}`, replacing the `{"error": "credentials"}` exit for a
+  credential that no longer exists.
+
+### Changed — create/patch bodies are native event resources
+
+The Composio tool schema had leaked past the transport into four arg builders
+(`calendar_reconcile`, `calendar_apply`, `block_props`, `airport_block`) and
+their consumers. Flat `start_datetime` + `event_duration_hour` /
+`event_duration_minutes` + `timezone` is a Composio invention with no native
+equivalent — Calendar takes nested `start` / `end` objects — so it went with it.
+
+- **Three workarounds deleted, not ported.** `_create_time_fields`' offset →
+  `Etc/GMT±N` synthesis (#82/#83) existed because Composio's adapter ignored a
+  bare `start_datetime`'s offset and re-read the wall-clock as UTC; Calendar
+  honours the offset, so the create sends `dateTime` and no `timeZone`.
+  `exclude_organizer: true` (#158) suppressed the `needsAction` self-attendee
+  Composio injected; `events.insert` adds no attendees, so there is nothing to
+  suppress. `_find_window` reconstructed each block's end from its duration
+  fields; the end is now simply read off `end.dateTime`.
+- **#131's mechanism is gone; its behaviour is kept.** The drive codecs still
+  render `dateTime` in the block's IANA zone and declare that zone in
+  `timeZone`, so the two agree and the event is self-describing — but the offset
+  alone now fixes the instant, so a mismatch could no longer land a block 6h
+  early. An unresolvable zone (a raw `+01:00`) is dropped rather than forwarded:
+  Calendar requires an IANA name and would reject the offset form.
+- **A `_min_end` floor is now explicit.** The flat contract clamped to
+  `max(minutes, 1)` for free; nested start/end has to say so, or a zero-length
+  block renders as an unclickable hairline.
+- **#158's colour half is unblocked.** It was deferred because no Composio
+  action exposed `colorId`. Calendar does, so it is now merely unimplemented.
+
+### Fixed — two defaults Composio was quietly supplying
+
+Both would have been silent behaviour changes: no test failed on either, and
+neither surfaces as an error at runtime — they just produce wrong answers.
+
+- **`drive-planner/apply.py` now asks for `singleEvents`.** Its three finds
+  never passed it, because Composio's `FIND_EVENT` slug defaulted it on;
+  `events.list` defaults it OFF. `scan.py` classifies events fetched WITH the
+  expansion, so the `meeting_id` in the skip store is an instance id, and
+  `_remove_mode` / `_resolve_candidates` match fetched ids against exactly
+  those. Unexpanded, a recurring meeting comes back as a master whose id
+  matches nothing — a daily standup would have silently failed to skip.
+- **`apply.py` catches the config errors at its boundary.** A 401 used to
+  arrive as `HTTPError`, which `_WRITE_ERRORS` caught, so the agent got its
+  documented `{"error": ...}` JSON. `GatewayNotInjecting` is a `RuntimeError`
+  and would have sailed past that tuple into a traceback — which the agent,
+  parsing only this script's output, reads as "no result at all".
+
+### Changed — one calendar transport, not three
+
+`drive-planner/fetch_events.py` carried a second, self-contained Composio
+transport — its own POST, auth headers, envelope handling, pagination loop and
+`FetchError` type — making the same calls to the same API as flight-assist's. It
+now delegates to `GoogleCalendarClient` and keeps only what is genuinely
+drive-planner's: the window contract and the projection to what `scan.py` reads.
+`CalendarFetcher.from_env()` → `CalendarFetcher()`.
+
+- **`FetchError` deleted.** Nothing outside the module caught it, and its
+  "successful response with no event list" guard only existed because Composio's
+  envelope could carry the list under any of several keys, or none — a mis-read
+  that looked exactly like an empty calendar and would have made the sweep a
+  silent no-op. `events.list` has one shape.
+- **The shape-guessing goes with it.** `_items` / `_find_event_containers` /
+  `_extract_events` walked tuples of candidate containers (`calendars`,
+  `event_data`, `event_data.event_data`, `response_data`, `items`) because
+  Composio's shape varied per action and drifted between toolkit versions. Both
+  list surfaces put their rows in `items`, and `find_events` merges its pages
+  into that same shape, so each is a one-line read.
+- **#171 stays fixed.** `maxResults=2500` + the `nextPageToken` drain + the
+  `_MAX_PAGES` bound moved into the client intact, and are tested there once for
+  every caller rather than twice.
+
+### Changed — `check-env.py` no longer reports on retired variables
+
+`composio_key_present` / `composio_user_present` described env vars that no
+longer exist. They are removed rather than replaced: calendar access has no
+env-var precondition any more — the gateway either reaches this process or it
+does not, and only a real API call can tell. Synthesizing a flag from
+`HTTPS_PROXY` would be a guess about orchestrator wiring this skill does not
+own, and `check-env` makes no network call by contract. `reconcile.py` is where
+that failure surfaces, actionably. A test pins that a stale `COMPOSIO_API_KEY`
+left in the env cannot resurrect a flag.
+
 ## 0.2.47 — 2026-07-16
 
 ### Changed — drive blocks are Busy, not Free

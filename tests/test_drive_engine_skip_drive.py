@@ -1,7 +1,7 @@
 """Tests for the skip action (`skip_drive.py`).
 
 `resolve_skip` is pure (raw events -> a skip target or same-name candidates) and
-tested here without any Composio I/O. Deterministic fixtures: hand-built events
+tested here without any calendar I/O. Deterministic fixtures: hand-built events
 whose descriptions round-trip through the unified block codec.
 """
 
@@ -106,17 +106,17 @@ def test_non_drive_events_ignored():
 
 
 def test_cli_wraps_operational_failure_as_json_and_nonzero(capsys, monkeypatch):
-    # An uncaught exception (bad Composio env, transport error, skip-store
+    # An uncaught exception (an unauthenticated gateway, transport error, skip-store
     # failure) must surface as the documented error shape + exit 1, not a
     # traceback the skill can't parse.
     def boom(request):
-        raise RuntimeError("composio down")
+        raise RuntimeError("calendar down")
 
     monkeypatch.setattr(skip_drive, "skip_meeting_drive", boom)
     rc = skip_drive.main(["skip_drive.py", '{"summary": "Massage"}'])
     assert rc == 1
     out = json.loads(capsys.readouterr().out)
-    assert out["skipped"] is False and "composio down" in out["error"]
+    assert out["skipped"] is False and "calendar down" in out["error"]
 
 
 def test_cli_happy_path_returns_zero(capsys, monkeypatch):

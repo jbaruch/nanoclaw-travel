@@ -228,7 +228,7 @@ def test_timed_event_emits_iso_datetime(refresh_travel_schedule, monkeypatch, ca
     surface their time-of-day in the emitted `start`/`end` per
     `nanoclaw-admin#289`. Pre-fix the emit step stripped the time so
     downstream consumers couldn't answer "what time does today's flight
-    depart?" without a Composio round-trip even though the source ICS
+    depart?" without a calendar round-trip even though the source ICS
     carried `DTSTART:20260522T070000Z`."""
     module, url_path, output_path = refresh_travel_schedule
     url_path.write_text("https://tripit.example.test/feed.ics\n")
