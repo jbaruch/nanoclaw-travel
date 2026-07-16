@@ -112,6 +112,12 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
     the correct local time; the unified codec description carries the leg identity
     + machine state for round-trip.
 
+    The block is Busy (`transparency: "opaque"`): a drive is time the operator is
+    physically unavailable, so scheduling tools must not book over it. Only
+    `GOOGLECALENDAR_CREATE_EVENT` accepts `transparency` — `PATCH_EVENT` carries no
+    such param (verified against the live toolkit), so the shift path cannot change
+    it and a block's busy-ness is fixed at create time.
+
     `exclude_organizer: true` keeps Composio from injecting the connected user as
     a `needsAction` self-attendee — otherwise a personal drive block renders as an
     unconfirmed invite the operator must RSVP to. With it, the block has no
@@ -131,7 +137,7 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
         "location": desired.destination,
         "description": _desired_description(desired),
         "timezone": tz_name,
-        "transparency": "transparent",
+        "transparency": "opaque",
         "exclude_organizer": True,
     }
 

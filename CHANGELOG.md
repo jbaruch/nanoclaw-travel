@@ -1,5 +1,23 @@
 # Changelog
 
+### Changed — drive blocks are Busy, not Free
+
+A drive block showed as Free (`transparency: "transparent"`, the Epic #59 §5 /
+#90 decision), so scheduling tools happily booked meetings on top of time the
+operator is in a car. Blocks are now created Busy (`transparency: "opaque"`).
+
+- **Create-time only.** `GOOGLECALENDAR_CREATE_EVENT` is the only Composio action
+  that accepts `transparency` — `PATCH_EVENT` has no such param (verified against
+  the live toolkit: 14 params, none of them `transparency`). So the shift path
+  cannot flip an existing block's busy-ness, and a block's Free/Busy state is
+  fixed when it is created. `UPDATE_EVENT` does accept it, but it is a full PUT
+  replacement with no `exclude_organizer`, which would risk re-opening the #158
+  self-invite regression — the shift path stays on PATCH.
+- **No drift check.** With no way to patch transparency, the reconcile does not
+  detect or heal a Free block; there is nothing it could do about one. Existing
+  Free blocks were drained by a one-time delete of future blocks, letting the
+  next sweep recreate them Busy.
+
 ## 0.2.46 — 2026-07-14
 
 ### Changed — drive-engine notifies only on what the operator can act on
