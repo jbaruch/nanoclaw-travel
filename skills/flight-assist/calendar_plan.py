@@ -5,7 +5,7 @@ facts) and a normalized snapshot of what is currently on the relevant
 Google Calendars, compute the set of create / update / delete / adopt
 operations that converge the calendar to the desired state. The planner
 is a pure function: no network, no clock reads, no I/O. The caller
-(`reconcile` script, PR3) fetches the events via Composio, runs this
+(`reconcile` script, PR3) fetches the events from Google Calendar, runs this
 planner, executes the returned ops, and writes the resulting event IDs
 back into the ledger.
 
@@ -84,7 +84,7 @@ class PlanError(ValueError):
     """Raised when a flight or event input is missing a field the planner needs.
 
     A ValueError subclass: the caller's recovery is "pass a well-formed
-    input", not "retry". The reconcile script validates Composio output
+    input", not "retry". The reconcile script validates Calendar output
     into the normalized shape before calling the planner, so a PlanError
     signals a caller bug, not bad calendar data.
     """

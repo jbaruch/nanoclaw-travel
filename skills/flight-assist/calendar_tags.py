@@ -3,7 +3,8 @@
 flight-assist recognizes its own managed calendar events (boarding blocks it
 created, byAir flight events it adopted) by a small tag map — `faFlightId`,
 `faKind`, `faManaged`. The original design stamped these into
-`extendedProperties.private`, but the live Composio v3 calendar toolkit exposes
+`extendedProperties.private`, but the Composio v3 toolkit this plugin shipped
+on exposed
 NO writable `extendedProperties` on any create/patch/update action (verified
 against the NAS). The only durable, writable surface is the event
 **description**, so the tags ride in a compact `<!--fa:{...}-->` JSON comment

@@ -3,7 +3,7 @@
 Covers the round trip the calendar-as-state design depends on: build the
 create-event arguments for a block, then parse a fetched event carrying that
 same description back into a `BlockState`. State lives in the event
-**description** (the live Composio v3 toolkit has no writable
+**description** (the Composio v3 toolkit this plugin shipped on had no writable
 extendedProperties), so the codec encodes a `<!--dp:{...}-->` JSON comment plus
 the `scan` marker, and parses both back. Pins two contracts that, if they
 drift, break silently in production:
@@ -91,7 +91,7 @@ def test_description_carries_scan_marker():
     assert match is not None and match["id"] == "evt_42" and match["dir"] == "outbound"
 
 
-# --- create-arg shape (live v3 contract) ---------------------------------
+# --- create-arg shape (native events.insert body) ------------------------
 
 
 def test_block_is_free_by_default():
@@ -102,66 +102,84 @@ def test_busy_block_is_opaque():
     assert _build_args(busy=True)["transparency"] == "opaque"
 
 
-def test_create_args_use_flat_start_and_duration():
+def test_create_args_use_nested_start_and_end():
     args = _build_args()
-    # flat start_datetime, no nested start/end
-    assert args["start_datetime"] == LEG_START.isoformat()
-    assert "start" not in args and "end" not in args
-    # 12:30 -> 13:00 is 30 minutes
-    assert args["event_duration_hour"] == 0
-    assert args["event_duration_minutes"] == 30
-    # destination on the location field, no extendedProperties
+    # nested start/end objects, no flat duration fields
+    assert args["start"] == {"dateTime": LEG_START.isoformat()}
+    # 12:30 -> 13:00
+    assert args["end"] == {"dateTime": ARRIVE.isoformat()}
+    assert "start_datetime" not in args
+    assert "event_duration_hour" not in args and "event_duration_minutes" not in args
+    # destination on the location field; state rides in the description
     assert args["location"] == "100 Broadway, Nashville, TN"
     assert "extendedProperties" not in args
 
 
+def test_zero_length_leg_is_floored_to_one_minute():
+    # Calendar accepts start == end, but the block would render as an
+    # invisible hairline. The flat duration contract clamped to >= 1 minute;
+    # nested start/end has to do it explicitly.
+    args = _build_args(leg_start=LEG_START, arrive_by=LEG_START)
+    assert args["start"]["dateTime"] == LEG_START.isoformat()
+    assert args["end"]["dateTime"] == (LEG_START + timedelta(minutes=1)).isoformat()
+
+
 def test_create_args_carry_explicit_timezone():
-    # Without an explicit IANA timezone the live CREATE reads the wall-clock as
-    # UTC and the block lands hours off (#83). When the meeting carries one, it
-    # must reach the create args.
+    # The IANA zone names the event's own timeZone, so a reader sees the block
+    # in the venue's clock rather than a bare offset.
     args = _build_args(timezone="America/Chicago")
-    assert args["timezone"] == "America/Chicago"
+    assert args["start"]["timeZone"] == "America/Chicago"
+    assert args["end"]["timeZone"] == "America/Chicago"
 
 
 def test_create_args_omit_timezone_when_absent():
     args = _build_args()
-    assert "timezone" not in args
+    assert "timeZone" not in args["start"]
+    assert "timeZone" not in args["end"]
 
 
 def test_create_wall_clock_expressed_in_target_timezone():
-    """#131 live case: a leg computed in the home offset (−05:00) but created
-    with the venue tz (Europe/London) must carry the London wall-clock. The
-    Composio adapter drops the offset in `start_datetime` and re-reads the
-    wall-clock in `timezone`, so a Chicago wall-clock landed the Rye block
-    6h early."""
+    """#131's live case: a leg computed in the home offset (−05:00) created
+    with the venue tz (Europe/London) carries the London wall-clock, so the
+    rendered dateTime and the declared timeZone agree.
+
+    Under Composio this was load-bearing for correctness — its adapter dropped
+    the offset and re-read the wall-clock in `timezone`, so a Chicago
+    wall-clock landed the Rye block 6h early. Natively the offset alone fixes
+    the instant; the conversion now only keeps the two fields consistent.
+    """
     args = _build_args(
         leg_start=datetime(2026, 7, 10, 9, 15, 46, tzinfo=CT),
         arrive_by=datetime(2026, 7, 10, 9, 45, 0, tzinfo=CT),
         timezone="Europe/London",
     )
-    assert args["start_datetime"] == "2026-07-10T15:15:46+01:00"
-    assert args["timezone"] == "Europe/London"
+    assert args["start"] == {
+        "dateTime": "2026-07-10T15:15:46+01:00",
+        "timeZone": "Europe/London",
+    }
 
 
 def test_create_wall_clock_converts_etc_gmt_fallback_zone():
-    """`_extract_timezone`'s offset fallback (`Etc/GMT±N`) is a resolvable
+    """`scan._extract_timezone`'s offset fallback (`Etc/GMT±N`) is a resolvable
     zone key and converts like a real IANA name (Etc/GMT-1 == UTC+1)."""
     args = _build_args(
         leg_start=datetime(2026, 7, 10, 9, 15, 0, tzinfo=CT),
         arrive_by=datetime(2026, 7, 10, 9, 45, 0, tzinfo=CT),
         timezone="Etc/GMT-1",
     )
-    assert args["start_datetime"] == "2026-07-10T15:15:00+01:00"
+    assert args["start"]["dateTime"] == "2026-07-10T15:15:00+01:00"
+    assert args["start"]["timeZone"] == "Etc/GMT-1"
 
 
-def test_create_wall_clock_left_alone_for_unresolvable_timezone():
-    """A tz string ZoneInfo can't resolve (defensive — raw offset strings
-    never come out of `_extract_timezone`, but a future caller could pass
-    one) leaves leg_start's own offset untouched: that offset is already
-    the correct instant."""
+def test_unresolvable_timezone_is_dropped_not_sent():
+    """A tz string ZoneInfo can't resolve (a raw offset — never emitted by
+    `scan._extract_timezone`, but a caller could pass one) must NOT be sent:
+    Calendar requires an IANA name and rejects the offset form, which would
+    fail the whole create. leg_start's own offset already carries the instant,
+    so the block lands correctly with no timeZone at all."""
     args = _build_args(timezone="+01:00")
-    assert args["start_datetime"] == LEG_START.isoformat()
-    assert args["timezone"] == "+01:00"
+    assert args["start"] == {"dateTime": LEG_START.isoformat()}
+    assert "timeZone" not in args["end"]
 
 
 def test_description_state_round_trips_via_parse_block():

@@ -204,7 +204,7 @@ def main():
 
         # Preserve time-of-day for timed VEVENTs (flights, lodging
         # check-ins, rentals) so downstream consumers can answer
-        # "what time does today's flight depart?" without a Composio
+        # "what time does today's flight depart?" without a calendar
         # round-trip. Date-only VEVENTs (trip-level wrappers) stay
         # `YYYY-MM-DD` — emitting midnight on those would invent a
         # precision the source feed doesn't have.

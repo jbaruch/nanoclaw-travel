@@ -3,14 +3,16 @@
 drive-planner does not keep a local store of the blocks it created; the created
 calendar event itself carries everything the recheck poll needs to re-evaluate
 it (Epic #59 §4 — calendar event as state, read back by a direct API fetch).
-This module is that codec: it builds the `GOOGLECALENDAR_CREATE_EVENT`
-arguments for a block on the way out, and parses a fetched event back into a
-typed `BlockState` on the way in.
+This module is that codec: it builds the native events.insert body for a block
+on the way out, and parses a fetched event back into a typed `BlockState` on
+the way in.
 
-State lives entirely in the event **description** — the live Composio v3
-calendar toolkit exposes NO `extendedProperties` on any create/patch/update
-action (verified against the NAS during Phase 1), so the earlier
-extendedProperties.private design is impossible there. The description carries:
+State lives entirely in the event **description**. This was forced by the
+Composio toolkit, which exposed no writable `extendedProperties` on any
+create/patch/update action; the native Calendar API this now speaks does have
+`extendedProperties.private`, but every block already deployed carries its
+state in the description, so moving is a migration (tracked separately), not a
+side effect of the transport swap. The description carries:
 
   * the human line (`Drive: <summary>`),
   * the self-marker `[drive-planner:meeting=<id>:dir=<dir>]` — `scan.py` reads
@@ -22,12 +24,11 @@ extendedProperties.private design is impossible there. The description carries:
     alert-suppression record. Parsed defensively — a malformed comment yields
     `None`, never raises.
 
-The write contract (live v3): flat `start_datetime` + `event_duration_*` (no
-nested `start.dateTime`, no `end_datetime`); `location` carries the venue;
-`transparency` is "transparent" (Free) unless `busy` (Epic #59 §5). Suppression
-updates re-write the description via `GOOGLECALENDAR_PATCH_EVENT` (which does
-support `description`), so `build_description` is the single source of the
-description format for both create and the suppression patch.
+The write contract (native Calendar events.insert): nested `start` / `end`
+objects; `location` carries the venue; `transparency` is "transparent" (Free)
+unless `busy` (Epic #59 §5). Suppression updates re-write the description via
+events.patch, so `build_description` is the single source of the description
+format for both create and the suppression patch.
 
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
@@ -161,36 +162,42 @@ def build_description(
     return f"{summary}\n{marker}\n<!--dp:{blob}-->"
 
 
-def _duration_minutes(leg_start: datetime, leg_end: datetime) -> int:
-    """Whole-minute duration for the create call (always at least 1 minute)."""
-    minutes = round((leg_end - leg_start).total_seconds() / 60)
-    return max(minutes, 1)
+def _min_end(leg_start: datetime, leg_end: datetime) -> datetime:
+    """`leg_end`, floored to at least a minute after `leg_start`.
+
+    Calendar accepts a zero-length event, but one renders as a hairline the
+    operator cannot see or click. The flat Composio contract this replaced got
+    the same floor for free (it sent whole-minute durations and clamped to
+    `max(minutes, 1)`); nested start/end has to say so explicitly.
+    """
+    return max(leg_end, leg_start + timedelta(minutes=1))
 
 
-def _wall_clock_in(dt: datetime, tz_name: str | None) -> datetime:
-    """Express `dt` in the CREATE's `timezone` arg so wall-clock and tz agree.
+def _event_time(dt: datetime, tz_name: str | None) -> dict:
+    """A native Calendar event time object for `dt`, rendered in `tz_name`.
 
-    The Composio `GOOGLECALENDAR_CREATE_EVENT` adapter ignores the offset in
-    `start_datetime` and re-reads its wall-clock in the `timezone` arg, so a
-    leg computed in the home offset but created with the venue tz lands
-    shifted by the home↔venue delta (#131 — 6h early on a UK trip).
+    `dateTime`'s offset IS the instant — Calendar reads it verbatim — so this
+    can never land the block at the wrong time the way #131 did (Composio's
+    adapter dropped the offset and re-read the wall-clock in its `timezone`
+    arg, so a leg computed in the home offset but created with the venue tz
+    landed 6h early on a UK trip). What `timeZone` still does natively is name
+    the event's own zone, which is what a reader sees in the event details.
 
-    `dt` is returned as-is in two cases: `tz_name` absent (the caller then
-    omits the CREATE's `timezone` arg entirely, and `dt`'s own offset is
-    the correct instant), or `tz_name` not a resolvable zone key (real IANA
-    names and `_extract_timezone`'s `Etc/GMT±N` fallback both resolve —
-    this is defensive). In the unresolvable case the caller still passes
-    `tz_name` through as the `timezone` arg, preserving the pre-#131
-    behavior for that path: no conversion this helper could do would be
-    more correct than the wall-clock `dt` already carries.
+    So `dt` is rendered in `tz_name` and `timeZone` names it — the two agree
+    and the event is self-describing. A `tz_name` ZoneInfo cannot resolve (a
+    raw offset string like "+01:00" — never emitted by `scan._extract_timezone`,
+    whose `Etc/GMT±N` fallback is a real zone key, but a caller could pass one)
+    is DROPPED rather than forwarded: Calendar requires an IANA name and
+    rejects the offset form, and `dt`'s own offset already carries the instant,
+    so the block lands correctly with no `timeZone` at all.
     """
     if not tz_name:
-        return dt
+        return {"dateTime": dt.isoformat()}
     try:
         zone = ZoneInfo(tz_name)
     except (ZoneInfoNotFoundError, ValueError):
-        return dt
-    return dt.astimezone(zone)
+        return {"dateTime": dt.isoformat()}
+    return {"dateTime": dt.astimezone(zone).isoformat(), "timeZone": tz_name}
 
 
 def build_block_args(
@@ -208,12 +215,11 @@ def build_block_args(
     busy: bool = False,
     timezone: str | None = None,
 ) -> dict:
-    """Build the `GOOGLECALENDAR_CREATE_EVENT` arguments for a drive block.
+    """Build the native events.insert body for a drive block.
 
-    The live v3 contract: flat `start_datetime` + `event_duration_hour` /
-    `event_duration_minutes` (no nested start/end, no extendedProperties);
-    `location` is the destination; the machine state rides in the description
-    (see `build_description`). The block is Free (`transparency: "transparent"`)
+    Nested `start` / `end` objects carry the times; `location` is the
+    destination; the machine state rides in the description (see
+    `build_description`). The block is Free (`transparency: "transparent"`)
     unless `busy`.
 
     Args:
@@ -231,15 +237,13 @@ def build_block_args(
             exactly this pair).
         leg_end: block end; defaults to `arrive_by`.
         busy: create the block Busy instead of Free.
-        timezone: the meeting's IANA timezone (e.g. "America/Chicago"). Emitted
-            as the live CREATE's `timezone` arg so the block lands at the right
-            instant — without it Composio reads the wall-clock as UTC and the
-            block lands hours off (#83). Omitted from the args when None.
+        timezone: the meeting's IANA timezone (e.g. "America/Chicago"). Names
+            the event's own zone (see `_event_time`). Omitted from the body
+            when None or unresolvable.
 
     Returns:
-        a dict of create-event arguments (calendar_id, summary, description,
-        location, start_datetime, event_duration_hour/minutes, transparency,
-        and `timezone` when provided).
+        a native events.insert body (calendar_id, summary, description,
+        location, nested start/end, transparency).
 
     Raises:
         ValueError: on a naive datetime, an empty endpoint, a negative or
@@ -263,8 +267,7 @@ def build_block_args(
     if not origin or not destination:
         raise ValueError("build_block_args: `origin` and `destination` must be non-empty")
 
-    end = leg_end if leg_end is not None else arrive_by
-    total_minutes = _duration_minutes(leg_start, end)
+    end = _min_end(leg_start, leg_end if leg_end is not None else arrive_by)
     description = build_description(
         summary=summary,
         meeting_id=meeting_id,
@@ -274,25 +277,15 @@ def build_block_args(
         origin=origin,
         destination=destination,
     )
-    args = {
+    return {
         "calendar_id": calendar_id,
         "summary": summary,
         "description": description,
         "location": destination,
-        "start_datetime": _wall_clock_in(leg_start, timezone).isoformat(),
-        "event_duration_hour": total_minutes // 60,
-        "event_duration_minutes": total_minutes % 60,
+        "start": _event_time(leg_start, timezone),
+        "end": _event_time(end, timezone),
         "transparency": "opaque" if busy else "transparent",
     }
-    # The live CREATE needs an explicit IANA `timezone`, or it reads the
-    # wall-clock as UTC and the block lands hours off (#83). When the meeting
-    # carries no timeZone, omit it rather than guess — the caller anchors the
-    # block to the same instant either way. The wall-clock above is expressed
-    # in this same zone (#131) — the adapter drops the offset and re-reads the
-    # wall-clock in `timezone`, so the two must agree.
-    if timezone:
-        args["timezone"] = timezone
-    return args
 
 
 @dataclass(frozen=True)

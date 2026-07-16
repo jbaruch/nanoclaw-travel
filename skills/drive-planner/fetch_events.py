@@ -1,96 +1,78 @@
 """Wide-window primary-calendar event fetch for the drive-planner sweep.
 
 The sweep needs the upcoming calendar events in one shot so `scan.py` can
-classify them (Epic #59 §4). This module is that fetch: Composio
-tool-execution calls against `GOOGLECALENDAR_EVENTS_LIST` (calendarId
-"primary", singleEvents, maxResults=2500) over a time window, following
-`nextPageToken` until the window is drained, returning the raw Google
-Calendar event dicts in the exact
-shape `scan(events=...)` consumes (`id`, `summary`, `location`, `start`,
-`end`, `description`). `maxResults` drains any realistic window in one call;
-without it the action caps at the default 250 and silently truncates a busy
-calendar (#171). The recheck poll reads the drive-planner block's machine
-state back out of the same `description` field (Epic #59 §4 — the live v3
-toolkit has no writable extendedProperties). drive-planner owns its own fetch
-rather than sharing
-flight-assist's per-calendar `composio_client` — a different action, a
-different skill bundle — but mirrors that module's transport faithfully:
-stdlib-only `urllib`, HTTP-mockable in CI, the Composio success/failure
-envelope, one client per process.
+classify them (Epic #59 §4). This module is that fetch: an events.list over
+the primary calendar (singleEvents, a wide `[timeMin, timeMax]` window),
+returning the raw Google Calendar event dicts in the exact shape
+`scan(events=...)` consumes (`id`, `summary`, `location`, `start`, `end`,
+`description`). The recheck poll reads the drive-planner block's machine state
+back out of the same `description` field (Epic #59 §4 — the calendar event IS
+the state, fetched by API).
 
-Composio executes the action with a single POST keyed by the slug:
+This used to be a second, self-contained Composio transport — its own HTTP
+POST, its own auth headers, its own success/failure envelope handling, its own
+pagination loop and its own error type — sitting next to flight-assist's. Both
+were the same calls to the same API, so #638 collapsed them: the transport,
+the page draining (including the `maxResults` + bound that keep #171 fixed),
+and the error taxonomy now come from `google_calendar_client`, and what is
+left here is what is genuinely drive-planner's own — the window contract and
+the projection down to what `scan.py` reads.
 
-    POST {base}/tools/execute/{action}
-    headers: x-api-key: <key>, Content-Type: application/json
-    body:    {"user_id": "<id>", "arguments": {"calendarId": "primary",
-             "singleEvents": true, "timeMin": "...", "timeMax": "..."}}
-    -> 200   {"data": {...events...}, "successful": true,  "error": null}
-    -> 200   {"data": {...}, "successful": false, "error": "..."}
-
-The exact `data` container for the events list is Composio-toolkit-version
-specific (like the action slugs in `composio_client.py`); the candidate
-keys are isolated in `_EVENT_CONTAINER_KEYS` at the top of the file — verify
-against the live toolkit when first wiring against the NAS. A `successful:
-true` response whose `data` carries none of those keys raises `FetchError`
-rather than silently returning zero events (a silent empty fetch would make
-the sweep a no-op and quietly stop planning).
+`GoogleCalendarClient` ships in the co-located flight-assist bundle; it is
+imported via the runtime-mount-with-dev-fallback pattern, the same way
+`apply.py` reaches it.
 
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
-Caveat: Composio is mid-retirement (nanoclaw#638 → OneCLI workspace MCP);
-this fetch is the one piece that re-points later, same as `composio-fetch`.
-
 Public API:
-    from fetch_events import CalendarFetcher, FetchError
+    from fetch_events import CalendarFetcher
 
-    fetcher = CalendarFetcher.from_env()
+    fetcher = CalendarFetcher()
     events = fetcher.fetch_window(time_min=now, time_max=now + timedelta(days=14))
     results = scan(events, now=now, home_address=home, skip_state=active)
 """
 
 from __future__ import annotations
 
-import json
-import os
-import urllib.error
-import urllib.request
+import sys
 from datetime import datetime
+from pathlib import Path
 
-_DEFAULT_BASE_URL = "https://backend.composio.dev/api/v3"
+_BUNDLE_DIR = Path(__file__).resolve().parent
+_FLIGHT_ASSIST_RUNTIME = Path("/home/node/.claude/skills/tessl__flight-assist")
+_FLIGHT_ASSIST_DEV = _BUNDLE_DIR.parent / "flight-assist"
 
-# GoogleCalendar action slug — verified against the live v3 toolkit
-# (`GET /api/v3/tools/GOOGLECALENDAR_EVENTS_LIST`), matching the proven
-# nanoclaw-admin `composio-fetch` precheck. The earlier
-# `GOOGLECALENDAR_EVENTS_LIST_ALL_CALENDARS` slug does not exist and 404s.
-ACTION_LIST_EVENTS = "GOOGLECALENDAR_EVENTS_LIST"
 
-# The action's required/contract arguments (camelCase). `calendarId` is
-# required by the v3 schema; "primary" is the operator's main calendar (where
-# meetings live). `singleEvents` expands recurring events into instances so a
-# weekly standup surfaces as datable occurrences `scan.py` can classify.
-# `maxResults` is Google Calendar's max page size: without it the action caps
-# at the default 250 and silently truncates a busy window (#171), so the sweep
-# would scan a partial calendar. The wide `[timeMin, timeMax]` window is added
-# per-call in `fetch_window`.
-_BASE_ARGS = {"calendarId": "primary", "singleEvents": True, "maxResults": 2500}
+def _flight_assist_dir() -> Path:
+    if _FLIGHT_ASSIST_RUNTIME.is_dir():
+        return _FLIGHT_ASSIST_RUNTIME
+    if _FLIGHT_ASSIST_DEV.is_dir():
+        return _FLIGHT_ASSIST_DEV
+    raise FileNotFoundError(
+        "drive-planner fetch_events: cannot locate the co-shipped flight-assist skill at "
+        f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev) — "
+        "google_calendar_client ships there; both skills are part of jbaruch/nanoclaw-travel"
+    )
 
-# Pagination bound: 2500/page drains any realistic window in one call, but a
-# window that still exceeds one page is followed via `nextPageToken`. _MAX_PAGES
-# stops a token that never clears from spinning forever.
-_MAX_PAGES = 40
 
-# Candidate keys under the Composio `data` envelope that hold the event list.
-# The live v3 response is the Google-native events.list resource, whose list is
-# under `items`; `events` and the `response_data` nesting are tolerated for
-# other toolkit shapes. Checked in order; the first present list wins.
-_EVENT_CONTAINER_KEYS = ("items", "events")
+if str(_flight_assist_dir()) not in sys.path:
+    sys.path.insert(0, str(_flight_assist_dir()))
+
+from google_calendar_client import (  # noqa: E402
+    GoogleCalendarClient,
+    GoogleCalendarError,
+)
+
+# The primary calendar is the operator's main one (where meetings live).
+# `singleEvents` expands recurring events into instances so a weekly standup
+# surfaces as datable occurrences `scan.py` can classify.
+_BASE_ARGS = {"calendar_id": "primary", "singleEvents": True}
 
 # Event fields carried through verbatim from the raw event. `scan.py` reads
 # id/summary/location/start/end/description; the recheck poll also reads
-# `description` — that's where the drive-planner block's machine state lives
-# (the live v3 toolkit has no writable extendedProperties), so `description`
-# alone carries it back (Epic #59 §4 — calendar event IS the state, fetched by
-# API).
+# `description` — that's where the drive-planner block's machine state lives,
+# so `description` alone carries it back (Epic #59 §4 — calendar event IS the
+# state, fetched by API).
 _EVENT_FIELDS = (
     "id",
     "summary",
@@ -103,85 +85,23 @@ _EVENT_FIELDS = (
 )
 
 
-class FetchError(Exception):
-    """Raised when the calendar fetch fails at the tool level or returns an
-    unrecognized shape.
-
-    Distinct from a transport error (`urllib.error.*`, which propagates): a
-    `FetchError` means Composio answered but the answer was a tool-level
-    failure (`successful: false`) or a `successful: true` body whose `data`
-    held no recognizable event container. The fix is to check the Composio
-    connection / re-verify the action's response shape, not to retry.
-    """
-
-    def __init__(self, message: str, *, status_code: int | None = None):
-        super().__init__(message)
-        self.message = message
-        self.status_code = status_code
-
-
 class CalendarFetcher:
-    """Thin Composio client for the wide-window primary-calendar event fetch.
+    """The drive-planner sweep's primary-calendar fetch.
 
-    Auth (`x-api-key`) and user scoping (`user_id`) are fixed per instance.
-    Not thread-safe — one instance per process, matching `composio_client`.
+    Holds a `GoogleCalendarClient` (no credential — the OneCLI gateway injects
+    the Bearer on the wire; see that module). Not thread-safe — one instance
+    per process.
     """
 
-    def __init__(
-        self,
-        api_key: str,
-        user_id: str,
-        *,
-        base_url: str = _DEFAULT_BASE_URL,
-        timeout: float = 30.0,
-    ):
-        if not api_key:
-            raise ValueError(
-                "CalendarFetcher: api_key is empty — set COMPOSIO_API_KEY in the env "
-                "(from https://app.composio.dev settings) or pass it explicitly"
-            )
-        if not user_id:
-            raise ValueError(
-                "CalendarFetcher: user_id is empty — set COMPOSIO_USER_ID in the env "
-                "(the Composio entity the Google Calendar account is connected under) "
-                "or pass it explicitly"
-            )
-        self._api_key = api_key
-        self._user_id = user_id
-        self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
-
-    @classmethod
-    def from_env(
-        cls,
-        *,
-        api_key_var: str = "COMPOSIO_API_KEY",
-        user_id_var: str = "COMPOSIO_USER_ID",
-        base_url_var: str = "COMPOSIO_BASE_URL",
-        timeout: float = 30.0,
-    ) -> CalendarFetcher:
-        """Construct from COMPOSIO_API_KEY + COMPOSIO_USER_ID env vars.
-
-        COMPOSIO_BASE_URL optionally overrides the endpoint; unset uses the
-        public v3 backend.
-        """
-        api_key = os.environ.get(api_key_var, "")
-        if not api_key:
-            raise ValueError(
-                f"CalendarFetcher.from_env: ${api_key_var} is unset — add the Composio API "
-                f"key (https://app.composio.dev settings) to OneCLI vault and restart the container"
-            )
-        user_id = os.environ.get(user_id_var, "")
-        if not user_id:
-            raise ValueError(
-                f"CalendarFetcher.from_env: ${user_id_var} is unset — add the Composio user/"
-                f"entity id (the entity the Google Calendar account is connected under) to vault"
-            )
-        base_url = os.environ.get(base_url_var) or _DEFAULT_BASE_URL
-        return cls(api_key, user_id, base_url=base_url, timeout=timeout)
+    def __init__(self, *, client=None, timeout: float = 30.0):
+        self._client = client if client is not None else GoogleCalendarClient(timeout=timeout)
 
     def fetch_window(self, *, time_min: datetime, time_max: datetime) -> list:
         """Fetch primary-calendar events in [time_min, time_max] as scan-shaped dicts.
+
+        The client drains the whole window across pages, so a busy calendar can
+        never come back truncated and leave the sweep planning against a
+        partial view (#171).
 
         Args:
             time_min: window start (tz-aware).
@@ -195,111 +115,27 @@ class CalendarFetcher:
 
         Raises:
             ValueError: on a naive datetime or time_max <= time_min.
-            FetchError: on a Composio tool-level failure or an unrecognized
-                successful-response shape.
-            urllib.error.HTTPError / URLError: on transport failure.
+            GoogleCalendarError: on an API-level failure (incl. a window that
+                will not drain within the client's page bound).
+            urllib.error.URLError: on transport failure.
         """
         if time_min.tzinfo is None or time_max.tzinfo is None:
             raise ValueError("fetch_window: time_min and time_max must be timezone-aware")
         if time_max <= time_min:
             raise ValueError("fetch_window: time_max must be after time_min")
 
-        events: list = []
-        args = {**_BASE_ARGS, "timeMin": time_min.isoformat(), "timeMax": time_max.isoformat()}
-        for _ in range(_MAX_PAGES):
-            data = self._execute(ACTION_LIST_EVENTS, args)
-            events.extend(_extract_events(data))
-            token = _next_page_token(data)
-            if not token:
-                return [_project_event(event) for event in events]
-            args = {**args, "pageToken": token}
-        raise FetchError(
-            f"calendar fetch did not drain within {_MAX_PAGES} pages "
-            f"(>{_MAX_PAGES * _BASE_ARGS['maxResults']} events) — the window is implausibly "
-            f"large or nextPageToken is not clearing; narrow [timeMin, timeMax]"
+        resource = self._client.find_events(
+            {**_BASE_ARGS, "timeMin": time_min.isoformat(), "timeMax": time_max.isoformat()}
         )
-
-    def _execute(self, action: str, arguments: dict) -> dict:
-        """Execute one Composio action; return its `data` payload.
-
-        Mirrors `composio_client.ComposioClient.execute`: raises FetchError
-        on `successful: false`, normalizes a read timeout to URLError.
-        """
-        url = f"{self._base_url}/tools/execute/{action}"
-        payload = json.dumps({"user_id": self._user_id, "arguments": arguments}).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "x-api-key": self._api_key,
-        }
-        request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                raw = response.read().decode("utf-8")
-        except TimeoutError as timeout_err:
-            raise urllib.error.URLError(f"timed out: {timeout_err}") from timeout_err
-
-        body = json.loads(raw)
-        if not body.get("successful", False):
-            data = body.get("data") or {}
-            status_code = data.get("status_code") if isinstance(data, dict) else None
-            message = body.get("error") or (data.get("message") if isinstance(data, dict) else None)
-            raise FetchError(
-                f"{action} failed: {message or 'Composio reported successful=false'}",
-                status_code=status_code,
-            )
-        return body.get("data") or {}
-
-
-def _extract_events(data: object) -> list:
-    """Pull the event list out of the Composio `data` envelope.
-
-    Tries each `_EVENT_CONTAINER_KEYS` in order and returns the first that is
-    a list — verbatim, including any non-dict entries. A `data` with none of
-    the keys raises FetchError: a successful response we cannot read is a
-    shape regression to surface, not a silent empty fetch that would stop the
-    sweep planning. Individual malformed entries are NOT filtered here —
-    `scan.py` classifies a non-dict event as `filtered` (it never crashes and
-    never silently drops one), so preserving them keeps a partial shape
-    regression visible in the sweep's audit rather than hidden.
-    """
-    if not isinstance(data, dict):
-        raise FetchError(
-            f"calendar fetch returned a non-object data payload: {type(data).__name__}"
-        )
-    # Look in the top-level `data` and, for toolkit shapes that wrap the
-    # Google payload one level down, in `data.response_data` (the same nesting
-    # flight-assist's reconcile `_items` tolerates).
-    nested = data.get("response_data")
-    containers = [data, nested] if isinstance(nested, dict) else [data]
-    for container in containers:
-        for key in _EVENT_CONTAINER_KEYS:
-            value = container.get(key)
-            if isinstance(value, list):
-                return value
-    raise FetchError(
-        "calendar fetch succeeded but no event list found under "
-        f"{_EVENT_CONTAINER_KEYS} (top-level or response_data) — verify the action's "
-        "response shape against the live toolkit"
-    )
-
-
-def _next_page_token(data: object) -> str | None:
-    """The `nextPageToken` from an EVENTS_LIST page, or None when no page follows.
-
-    The live v3 response carries it flat under `data.nextPageToken`; the same
-    `response_data` wrap `_extract_events` tolerates is honored here too. A
-    terminal page omits it (it carries `nextSyncToken` instead), which ends the
-    fetch loop.
-    """
-    if not isinstance(data, dict):
-        return None
-    nested = data.get("response_data")
-    for container in (data, nested) if isinstance(nested, dict) else (data,):
-        token = container.get("nextPageToken")
-        if isinstance(token, str) and token:
-            return token
-    return None
+        # `find_events` guarantees `items` (it merges every page into that one
+        # shape), so there is nothing to probe for. The old `FetchError` guard
+        # here existed because Composio's `data` envelope could carry the list
+        # under any of several keys, or none, and a mis-read looked exactly
+        # like an empty calendar — which would have made the sweep a silent
+        # no-op. Malformed ENTRIES are still passed through untouched:
+        # `_project_event` leaves a non-dict alone so `scan.py` can classify it
+        # as `filtered` rather than have the fetch quietly drop it.
+        return [_project_event(event) for event in resource["items"]]
 
 
 def _project_event(event: object) -> object:
@@ -312,3 +148,8 @@ def _project_event(event: object) -> object:
     if not isinstance(event, dict):
         return event
     return {field: event[field] for field in _EVENT_FIELDS if field in event}
+
+
+# GoogleCalendarError is re-exported so callers that catch fetch failures can
+# name the API-level type without reaching across bundles for it themselves.
+__all__ = ["CalendarFetcher", "GoogleCalendarError"]

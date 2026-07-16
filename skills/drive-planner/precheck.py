@@ -15,7 +15,7 @@ deterministic, so it lives here per `coding-policy: script-delegation`).
 Each `meetings` entry is one actionable meeting with its summary, bucket,
 display-ready `leave_by` / `drive_minutes` (so the SKILL.md carries no
 arithmetic, per `coding-policy: script-as-black-box`), and the per-leg
-`create_args` ready to pass to `GOOGLECALENDAR_CREATE_EVENT`. A leg the router
+`create_args` ready to pass to Calendar's events.insert. A leg the router
 could not price is reported (with its error) rather than dropped — the agent
 surfaces "couldn't compute drive time" instead of the planner going silently
 blind (the meta-lesson of Epic #59 §5: no silent miss).
@@ -198,8 +198,8 @@ def _route_seconds(client, origin: str, destination: str) -> int:
         result = client.travel_time(origin=origin, destination=destination)
     except (MapsError, urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
         # maps_client does a raw response.read() without normalizing a read
-        # timeout to URLError (unlike composio_client), so catch TimeoutError
-        # too and translate the whole set to RouteError.
+        # timeout to URLError (unlike google_calendar_client), so catch
+        # TimeoutError too and translate the whole set to RouteError.
         raise RouteError(str(exc)) from exc
     if result.in_traffic_seconds is not None:
         return result.in_traffic_seconds
@@ -366,7 +366,7 @@ def plan_meetings(
             )
             create_args.append(arg)
             if leg.direction in ("outbound", "bridge"):
-                leave_by = arg["start_datetime"]
+                leave_by = arg["start"]["dateTime"]
                 drive_minutes = round(baseline / 60)
         # A meeting with no legs produced nothing to do — a `back_to_back`
         # meeting stays put (legs == ()), so it has no block and no route to
@@ -404,7 +404,7 @@ def main() -> int:
     try:
         now = datetime.now(timezone.utc)
         home_address = read_current_home()
-        fetcher = CalendarFetcher.from_env()
+        fetcher = CalendarFetcher()
         events = fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
         skips = load_active_skips(now)
         flight_windows, flight_summaries = _build_flight_context()

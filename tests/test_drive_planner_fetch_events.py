@@ -1,11 +1,15 @@
 """Tests for the drive-planner calendar fetch (`fetch_events.py`).
 
-Mocks `urllib.request.urlopen` so the tests exercise request shaping, the
-Composio success/failure envelope, event extraction across the candidate
-container shapes, projection to the scan-event fields, and input guards —
-without touching the live Composio backend. Synthetic fixtures only (no real
-keys, no real calendar IDs). A final check confirms the projected events are
-exactly what `scan()` consumes.
+Mocks `urllib.request.urlopen` so the tests exercise request shaping, event
+extraction, projection to the scan-event fields, and input guards — without
+touching the live Google Calendar API. Synthetic fixtures only (no real
+calendar IDs). A final check confirms the projected events are exactly what
+`scan()` consumes.
+
+The transport, pagination and error taxonomy now live in
+`google_calendar_client` (#638 folded this module's duplicate Composio
+transport onto it), so they are tested once, there. What is tested here is what
+this module still owns: the window contract and the projection.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from __future__ import annotations
 import json
 import sys
 import urllib.error
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -21,17 +26,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-planner"))
+sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
-from fetch_events import (  # noqa: E402
-    ACTION_LIST_EVENTS,
-    CalendarFetcher,
-    FetchError,
-)
+from fetch_events import CalendarFetcher, GoogleCalendarError  # noqa: E402
 from scan import scan  # noqa: E402
-
-SYNTH_KEY = "synthetic_composio_key"
-SYNTH_USER = "synthetic_user_42"
-SYNTH_BASE = "https://composio.example/api/v3"
 
 CT = timezone(timedelta(hours=-5))
 NOW = datetime(2026, 7, 1, 8, 0, tzinfo=CT)
@@ -52,17 +50,16 @@ class _FakeResponse:
         return False
 
 
-def _ok(data: dict) -> _FakeResponse:
-    return _FakeResponse(json.dumps({"data": data, "successful": True, "error": None}).encode())
-
-
-def _fail(error: str, status_code: int | None = None) -> _FakeResponse:
-    data = {"status_code": status_code} if status_code is not None else {}
-    return _FakeResponse(json.dumps({"data": data, "successful": False, "error": error}).encode())
+def _ok(payload: dict) -> _FakeResponse:
+    return _FakeResponse(json.dumps(payload).encode())
 
 
 def _fetcher() -> CalendarFetcher:
-    return CalendarFetcher(SYNTH_KEY, SYNTH_USER, base_url=SYNTH_BASE)
+    return CalendarFetcher()
+
+
+def _query(url: str) -> dict:
+    return dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
 
 
 def _event(eid: str) -> dict:
@@ -80,65 +77,72 @@ def _event(eid: str) -> dict:
 # --- request shaping ------------------------------------------------------
 
 
-def test_fetch_posts_action_with_window_args():
+def test_fetch_calls_events_list_with_window_args():
     captured = {}
 
     def fake_urlopen(request, timeout=None):
         captured["url"] = request.full_url
-        captured["body"] = json.loads(request.data.decode())
-        captured["headers"] = {k.lower(): v for k, v in request.headers.items()}
-        return _ok({"events": []})
+        captured["headers"] = {k.lower() for k in request.headers}
+        return _ok({"items": []})
 
     with patch("urllib.request.urlopen", fake_urlopen):
         _fetcher().fetch_window(time_min=NOW, time_max=LATER)
 
-    assert captured["url"] == f"{SYNTH_BASE}/tools/execute/{ACTION_LIST_EVENTS}"
-    assert ACTION_LIST_EVENTS == "GOOGLECALENDAR_EVENTS_LIST"
-    assert captured["body"]["user_id"] == SYNTH_USER
-    args = captured["body"]["arguments"]
-    # the v3 schema requires calendarId; singleEvents expands recurrences
-    assert args["calendarId"] == "primary"
-    assert args["singleEvents"] is True
+    path = urllib.parse.urlsplit(captured["url"]).path
+    assert path == "/calendar/v3/calendars/primary/events"
+    args = _query(captured["url"])
+    # singleEvents expands recurrences so a weekly standup surfaces as instances
+    assert args["singleEvents"] == "true"
     assert args["timeMin"] == NOW.isoformat()
     assert args["timeMax"] == LATER.isoformat()
-    assert captured["headers"]["x-api-key"] == SYNTH_KEY
+    # #638: no credential in this container — the gateway injects the Bearer.
+    assert "authorization" not in captured["headers"]
+    assert "x-api-key" not in captured["headers"]
+
+
+def test_fetch_needs_no_composio_env(monkeypatch):
+    """The COMPOSIO_* vars are gone; the fetch must work without them."""
+    for var in ("COMPOSIO_API_KEY", "COMPOSIO_USER_ID", "COMPOSIO_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"items": [_event("a")]})):
+        assert [e["id"] for e in _fetcher().fetch_window(time_min=NOW, time_max=LATER)] == ["a"]
+
+
+def test_base_url_env_override_reaches_the_fetch(monkeypatch):
+    monkeypatch.setenv("GOOGLE_CALENDAR_API_BASE", "https://calendar.example/calendar/v3")
+    captured = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        return _ok({"items": []})
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert captured["url"].startswith("https://calendar.example/calendar/v3")
 
 
 # --- pagination (#171) ----------------------------------------------------
 
 
 def _page(events: list, token: str | None = None) -> _FakeResponse:
-    data: dict = {"items": events}
+    payload: dict = {"items": events}
     if token is not None:
-        data["nextPageToken"] = token
-    return _ok(data)
+        payload["nextPageToken"] = token
+    return _ok(payload)
 
 
 def test_fetch_requests_max_page_size():
-    # Without maxResults the action caps at Google's default 250 and silently
+    # Without maxResults events.list caps at Google's default 250 and silently
     # truncates a busy calendar (#171); the fetch must ask for the max page.
     captured = {}
 
     def fake_urlopen(request, timeout=None):
-        captured["args"] = json.loads(request.data.decode())["arguments"]
+        captured["args"] = _query(request.full_url)
         return _page([_event("a")])
 
     with patch("urllib.request.urlopen", fake_urlopen):
         _fetcher().fetch_window(time_min=NOW, time_max=LATER)
-    assert captured["args"]["maxResults"] == 2500
-
-
-def test_single_page_when_no_token():
-    calls = []
-
-    def fake_urlopen(request, timeout=None):
-        calls.append(json.loads(request.data.decode())["arguments"].get("pageToken"))
-        return _page([_event("a"), _event("b")])
-
-    with patch("urllib.request.urlopen", fake_urlopen):
-        events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
-    assert calls == [None]
-    assert [e["id"] for e in events] == ["a", "b"]
+    assert captured["args"]["maxResults"] == "2500"
 
 
 def test_drains_all_pages_following_next_page_token():
@@ -152,7 +156,7 @@ def test_drains_all_pages_following_next_page_token():
     sent_tokens = []
 
     def fake_urlopen(request, timeout=None):
-        sent_tokens.append(json.loads(request.data.decode())["arguments"].get("pageToken"))
+        sent_tokens.append(_query(request.full_url).get("pageToken"))
         return pages[len(sent_tokens) - 1]
 
     with patch("urllib.request.urlopen", fake_urlopen):
@@ -166,27 +170,21 @@ def test_non_clearing_token_is_bounded_not_infinite():
         return _page([_event("a")], token="always-more")
 
     with patch("urllib.request.urlopen", fake_urlopen):
-        with pytest.raises(FetchError, match="did not drain within"):
+        with pytest.raises(GoogleCalendarError, match="did not drain within"):
             _fetcher().fetch_window(time_min=NOW, time_max=LATER)
 
 
 # --- event extraction + projection ---------------------------------------
 
 
-def test_extracts_events_container():
-    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": [_event("a")]})):
-        events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
-    assert [e["id"] for e in events] == ["a"]
-
-
-def test_extracts_items_container():
+def test_extracts_items():
     with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"items": [_event("b")]})):
         events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
     assert [e["id"] for e in events] == ["b"]
 
 
 def test_projection_drops_extra_fields():
-    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": [_event("a")]})):
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"items": [_event("a")]})):
         [event] = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
     assert "etag" not in event
     assert set(event) == {"id", "summary", "location", "start", "end", "description"}
@@ -198,7 +196,7 @@ def test_projection_carries_attendees_and_status_for_decline_filter():
     raw = _event("a")
     raw["attendees"] = [{"self": True, "responseStatus": "declined"}]
     raw["status"] = "confirmed"
-    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": [raw]})):
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"items": [raw]})):
         [event] = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
     assert event["attendees"][0]["responseStatus"] == "declined"
     assert event["status"] == "confirmed"
@@ -206,26 +204,17 @@ def test_projection_carries_attendees_and_status_for_decline_filter():
 
 def test_projection_carries_description_for_recheck_poll():
     # The recheck poll reads the block's machine state back out of the
-    # `description` (the live v3 toolkit has no writable extendedProperties), so
-    # the fetch must carry `description` through verbatim.
+    # `description` (that is where calendar-as-state lives), so the fetch must
+    # carry `description` through verbatim.
     raw = _event("a")
     raw["description"] = 'Drive: X\n[drive-planner:meeting=evt_1:dir=outbound]\n<!--dp:{"v":1}-->'
-    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": [raw]})):
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"items": [raw]})):
         [event] = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
     assert event["description"] == raw["description"]
 
 
-def test_extracts_events_nested_under_response_data():
-    # Some toolkit shapes wrap the Google payload one level under
-    # `response_data`; the fetch must still find the list, not raise.
-    payload = {"response_data": {"items": [_event("n")]}}
-    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok(payload)):
-        events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
-    assert [e["id"] for e in events] == ["n"]
-
-
 def test_empty_window_returns_empty_list():
-    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": []})):
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"items": []})):
         assert _fetcher().fetch_window(time_min=NOW, time_max=LATER) == []
 
 
@@ -233,7 +222,7 @@ def test_non_dict_events_are_preserved_for_scan_not_silently_dropped():
     # A malformed (non-dict) entry must survive the fetch so scan() can
     # surface it as `filtered` — dropping it here would hide a partial
     # response-shape regression as an invisible empty sweep.
-    payload = {"events": [_event("a"), "garbage", 123]}
+    payload = {"items": [_event("a"), "garbage", 123]}
     with patch("urllib.request.urlopen", lambda r, timeout=None: _ok(payload)):
         events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
     assert len(events) == 3
@@ -247,23 +236,22 @@ def test_non_dict_events_are_preserved_for_scan_not_silently_dropped():
 # --- failure modes --------------------------------------------------------
 
 
-def test_tool_level_failure_raises_fetch_error():
-    with patch("urllib.request.urlopen", lambda r, timeout=None: _fail("calendar not connected")):
-        with pytest.raises(FetchError, match="calendar not connected"):
+def test_response_without_items_is_an_empty_window():
+    """Under Composio a missing event list meant "shape regression" and raised,
+    because the list could live under any of several keys. events.list has one
+    shape, so no `items` genuinely means no events."""
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({})):
+        assert _fetcher().fetch_window(time_min=NOW, time_max=LATER) == []
+
+
+def test_api_failure_propagates_as_google_calendar_error():
+    def fake_urlopen(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)  # type: ignore[arg-type]
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        with pytest.raises(GoogleCalendarError) as exc:
             _fetcher().fetch_window(time_min=NOW, time_max=LATER)
-
-
-def test_failure_surfaces_status_code():
-    with patch("urllib.request.urlopen", lambda r, timeout=None: _fail("nope", status_code=403)):
-        with pytest.raises(FetchError) as exc:
-            _fetcher().fetch_window(time_min=NOW, time_max=LATER)
-    assert exc.value.status_code == 403
-
-
-def test_unrecognized_shape_raises_rather_than_silent_empty():
-    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"surprise": []})):
-        with pytest.raises(FetchError, match="no event list found"):
-            _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert exc.value.status_code == 404
 
 
 def test_read_timeout_normalized_to_urlerror():
@@ -275,16 +263,7 @@ def test_read_timeout_normalized_to_urlerror():
             _fetcher().fetch_window(time_min=NOW, time_max=LATER)
 
 
-def test_http_error_propagates():
-    def fake_urlopen(request, timeout=None):
-        raise urllib.error.HTTPError(request.full_url, 500, "boom", {}, None)  # type: ignore[arg-type]
-
-    with patch("urllib.request.urlopen", fake_urlopen):
-        with pytest.raises(urllib.error.HTTPError):
-            _fetcher().fetch_window(time_min=NOW, time_max=LATER)
-
-
-# --- input guards + construction -----------------------------------------
+# --- input guards ---------------------------------------------------------
 
 
 def test_naive_window_raises():
@@ -297,40 +276,28 @@ def test_inverted_window_raises():
         _fetcher().fetch_window(time_min=LATER, time_max=NOW)
 
 
-def test_from_env_requires_key(monkeypatch):
-    monkeypatch.delenv("COMPOSIO_API_KEY", raising=False)
-    monkeypatch.setenv("COMPOSIO_USER_ID", SYNTH_USER)
-    with pytest.raises(ValueError, match="COMPOSIO_API_KEY"):
-        CalendarFetcher.from_env()
+def test_injected_client_is_used():
+    """The fetcher takes a client so a caller can share one per process."""
 
+    class _Stub:
+        def __init__(self):
+            self.calls = []
 
-def test_from_env_requires_user(monkeypatch):
-    monkeypatch.setenv("COMPOSIO_API_KEY", SYNTH_KEY)
-    monkeypatch.delenv("COMPOSIO_USER_ID", raising=False)
-    with pytest.raises(ValueError, match="COMPOSIO_USER_ID"):
-        CalendarFetcher.from_env()
+        def find_events(self, arguments):
+            self.calls.append(arguments)
+            return {"items": [_event("z")]}
 
-
-def test_from_env_honors_base_url_override(monkeypatch):
-    monkeypatch.setenv("COMPOSIO_API_KEY", SYNTH_KEY)
-    monkeypatch.setenv("COMPOSIO_USER_ID", SYNTH_USER)
-    monkeypatch.setenv("COMPOSIO_BASE_URL", SYNTH_BASE)
-    captured = {}
-
-    def fake_urlopen(request, timeout=None):
-        captured["url"] = request.full_url
-        return _ok({"events": []})
-
-    with patch("urllib.request.urlopen", fake_urlopen):
-        CalendarFetcher.from_env().fetch_window(time_min=NOW, time_max=LATER)
-    assert captured["url"].startswith(SYNTH_BASE)
+    stub = _Stub()
+    events = CalendarFetcher(client=stub).fetch_window(time_min=NOW, time_max=LATER)
+    assert [e["id"] for e in events] == ["z"]
+    assert stub.calls[0]["calendar_id"] == "primary"
 
 
 # --- integration: fetched events are scan-compatible ---------------------
 
 
 def test_fetched_events_feed_scan():
-    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"events": [_event("a")]})):
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"items": [_event("a")]})):
         events = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
     [result] = scan(events, now=NOW, home_address="Home")
     assert result.meeting_id == "a"

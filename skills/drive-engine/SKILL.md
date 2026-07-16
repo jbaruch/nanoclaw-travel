@@ -33,7 +33,7 @@ The script deletes that meeting's drive blocks and records a skip so no future s
 - `{"skipped": true, "meeting": ...}` (exit 0) — confirm what you skipped.
 - `{"skipped": false, "unmatched": ...}` (exit 0) — the name wasn't found; say so.
 - `{"skipped": false, "ambiguous": ..., "candidates": [...]}` (exit 0) — several same-named meetings; ask the operator which `when` they mean, then re-invoke.
-- `{"skipped": false, "error": ...}` (exit 1) — an operational failure (bad Composio env, transport error); tell the operator the skip couldn't be recorded and to retry. Exit 2 is a usage/JSON error in how it was invoked — fix the call.
+- `{"skipped": false, "error": ...}` (exit 1) — an operational failure (an unauthenticated gateway, transport error); tell the operator the skip couldn't be recorded and to retry. Exit 2 is a usage/JSON error in how it was invoked — fix the call.
 
 Reply in one message. Finish here.
 

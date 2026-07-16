@@ -51,7 +51,7 @@ Migration:
 
 A created drive block has no local record — the calendar event itself IS the state (Epic #59 §4). The recheck poll re-fetches the near-term window by a direct API call and reads each of its own blocks back off the event. There is no `blocks.json`; the only local state file is `skip-state.json` above. Owned by `block_props.py` (`build_block_args` / `build_description` write, `parse_block` reads).
 
-All state lives in the event **`description`** — the live Composio v3 calendar toolkit exposes NO writable `extendedProperties` on any create/patch/update action (verified against the NAS during Phase 1), so the description is the only durable, writable surface. It carries three parts:
+All state lives in the event **`description`**. The Composio v3 toolkit this plugin shipped on exposed NO writable `extendedProperties` on any create/patch/update action, which forced the choice; the native Calendar API it now speaks (nanoclaw#638) does expose `extendedProperties.private`, but every deployed block already carries its state in the description, so moving is a migration in its own right, not a side effect of the transport swap. It carries three parts:
 
 - the human line `Drive: <summary>`;
 - the self-marker `[drive-planner:meeting=<id>:dir=<dir>]` — `scan.py` reads it to recognize the planner's own blocks (idempotency, lombot #50); pinned against `scan._MARKER_RE` by a test;
@@ -65,11 +65,11 @@ All state lives in the event **`description`** — the live Composio v3 calendar
 | `o` / `d` | the routed leg endpoints (the poll re-routes exactly this pair) |
 | `al` | comma-joined record of alerts already pushed — `growth` and/or `leave_now` — so a later poll never re-pings the same condition |
 
-The leg `direction` and served meeting id come from the marker; the block's start/duration carry the times (CREATE uses flat `start_datetime` + `event_duration_*`).
+The leg `direction` and served meeting id come from the marker; the block's start/end carry the times (CREATE uses native nested `start` / `end` objects).
 
 Writer / reader contract:
 
-- **Writer** — the sweep creates blocks via `apply.py create` (idempotent: finds existing markers first via `GOOGLECALENDAR_FIND_EVENT`, never double-books). When an alert fires, the recheck poll emits a patch and the recheck SKILL.md applies it via `apply.py suppress` AFTER the send; the patch carries the full rebuilt `description` with only `al` updated (`GOOGLECALENDAR_PATCH_EVENT` supports a partial `description` update).
+- **Writer** — the sweep creates blocks via `apply.py create` (idempotent: finds existing markers first via an events.list, never double-books). When an alert fires, the recheck poll emits a patch and the recheck SKILL.md applies it via `apply.py suppress` AFTER the send; the patch carries the full rebuilt `description` with only `al` updated (events.patch supports a partial `description` update).
 - **Reader** — the recheck poll calls `parse_block(event)`; a non-block or malformed event yields `None` (never raises), so one bad event can't abort the poll. Only arrival-anchored legs (`outbound` / `bridge`) are rechecked; a `return` leg is created for visibility but not watched.
 
 Migration (per `coding-policy: stateful-artifacts`):
@@ -79,4 +79,4 @@ Migration (per `coding-policy: stateful-artifacts`):
 Tolerance:
 
 - A block whose state is missing or malformed (no marker, unparseable JSON, unparseable baseline / arrive-by, empty endpoints, unknown direction) parses to `None` and is treated as "not a block I recheck" — never raised on.
-- Composio is mid-retirement (nanoclaw#638 → OneCLI workspace MCP); the API fetch / create / find / patch are the pieces that re-point later, same as `composio-fetch` and `fetch_events.py`.
+- The API fetch / create / find / patch go through `google_calendar_client` — the native Calendar REST API, brokered by OneCLI's gateway (nanoclaw#638).

@@ -52,7 +52,7 @@ def _desired(identity="m1", kind="meeting_return", baseline=900, summary="Drive:
     )
 
 
-class FakeComposio:
+class FakeCalendar:
     def create_event(self, args):
         return {"id": "new"}
 
@@ -125,7 +125,7 @@ def test_boundary_alert_reaches_apply_plan():
     plan = plan_reconcile([_desired("m1", "meeting_return", 720)], [_current(600)])
     assert len(plan.updates) == 1
     assert plan.updates[0].prior_baseline_seconds == 600
-    result = apply_plan(plan, composio=FakeComposio(), calendar_id="primary")
+    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary")
     assert [(u["minutes"], u["direction"]) for u in result.material_updates] == [(2, "sooner")]
 
 
@@ -135,7 +135,7 @@ def test_sub_tolerance_change_produces_no_update_and_no_alert():
     # the patch gate agree, so a "material" claim never outruns the reconcile.
     plan = plan_reconcile([_desired("m1", "meeting_return", 660)], [_current(600)])
     assert plan.updates == ()
-    result = apply_plan(plan, composio=FakeComposio(), calendar_id="primary")
+    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary")
     assert result.material_updates == []
 
 
@@ -149,7 +149,7 @@ def test_meeting_create_recorded_airport_create_not():
             Create(_desired("flt", "airport_departure", 1200, "Drive: STN")),
         )
     )
-    result = apply_plan(plan, composio=FakeComposio(), calendar_id="primary")
+    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary")
     assert result.created == 2
     # only the MEETING add is a notification (airport drives aren't skippable)
     assert [leg["meeting"] for leg in result.added_meeting_legs] == ["Massage"]
@@ -162,7 +162,7 @@ def test_material_update_recorded_routine_update_not():
             Update("e2", _desired("mtg2", "meeting_return", 630), prior_baseline_seconds=600),
         )
     )
-    result = apply_plan(plan, composio=FakeComposio(), calendar_id="primary")
+    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary")
     assert result.updated == 2  # both patched (calendar stays accurate)
     assert len(result.material_updates) == 1  # only the +50% one alerts
     alert = result.material_updates[0]
@@ -174,7 +174,7 @@ def test_deferred_update_is_not_recorded():
     plan = ReconcilePlan(
         updates=(Update("e1", _desired("m", "meeting_return", 900), prior_baseline_seconds=600),)
     )
-    result = apply_plan(plan, composio=FakeComposio(), calendar_id="primary", budget_seconds=0.0)
+    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary", budget_seconds=0.0)
     assert result.deferred == 1
     assert result.material_updates == []
 

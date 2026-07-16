@@ -12,8 +12,12 @@ namespace, directions, and anchor semantics, and a shared module would need
 cross-skill mounting that isn't worth the coupling (#90 decision). drive-planner
 is untouched.
 
-State lives entirely in the event **description** (the live Composio v3 calendar
-toolkit exposes no writable `extendedProperties`):
+State lives entirely in the event **description**. The Composio toolkit this
+plugin shipped on exposed no writable `extendedProperties`, which forced the
+choice; the native Calendar API it now speaks does expose them, but every block
+already deployed carries its state in the description, so moving is a migration
+(tracked separately), not a side effect of the transport swap. The description
+carries:
 
   * the human line (`Drive: → BNA (DL123)` / `Drive: BNA → home`),
   * the self-marker `[flight-assist:flight=<id>:dir=<to_airport|from_airport>]`,
@@ -28,10 +32,10 @@ Anchor semantics by direction (the `a` field):
   * `from_airport`— the earliest the drive home can START (`actual_arr +
     post_arrival_delay`). The block runs `[anchor, anchor + drive]`.
 
-The write contract (live v3): flat `start_datetime` + `event_duration_*`;
-`location` carries the destination; `transparency` is "transparent" (Free) by
-default (#90 decision); an explicit IANA `timezone` (the airport's) anchors the
-block at the right instant (#83).
+The write contract (native Calendar events.insert): nested `start` / `end`
+objects; `location` carries the destination; `transparency` is "transparent"
+(Free) by default (#90 decision); the airport's IANA zone names the event's own
+`timeZone` (see `_event_time`).
 
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
@@ -155,36 +159,42 @@ def build_description(
     return f"{summary}\n{marker}\n<!--fadrive:{blob}-->"
 
 
-def _wall_clock_in(dt: datetime, tz_name: str | None) -> datetime:
-    """Express `dt` in the CREATE's `timezone` arg so wall-clock and tz agree.
+def _event_time(dt: datetime, tz_name: str | None) -> dict:
+    """A native Calendar event time object for `dt`, rendered in `tz_name`.
 
-    The Composio `GOOGLECALENDAR_CREATE_EVENT` adapter ignores the offset in
-    `start_datetime` and re-reads its wall-clock in the `timezone` arg, so a
-    leg computed in one offset but created with a different `timezone` lands
-    shifted by the delta (#131 — same class as drive-planner's 6h-early UK
-    block; here the airport tz vs the offset `leg_start` happens to carry).
+    `dateTime`'s offset IS the instant — Calendar reads it verbatim — so this
+    can never land the block at the wrong time the way #131 did (Composio's
+    adapter dropped the offset and re-read the wall-clock in its `timezone`
+    arg, so a leg computed in the home offset but created with the venue tz
+    landed shifted by the delta). What `timeZone` still does natively is name
+    the event's own zone, which is what a reader sees in the event details.
 
-    `dt` is returned as-is in two cases: `tz_name` absent (the caller then
-    omits the CREATE's `timezone` arg entirely, and `dt`'s own offset is
-    the correct instant), or `tz_name` not a resolvable zone key
-    (defensive). In the unresolvable case the caller still passes `tz_name`
-    through as the `timezone` arg, preserving the pre-#131 behavior for
-    that path: no conversion this helper could do would be more correct
-    than the wall-clock `dt` already carries.
+    So `dt` is rendered in `tz_name` and `timeZone` names it — the two agree
+    and the event is self-describing. A `tz_name` ZoneInfo cannot resolve (a
+    raw offset string like "+01:00" — never emitted by `_extract_timezone`,
+    but a caller could pass one) is DROPPED rather than forwarded: Calendar
+    requires an IANA name and rejects the offset form, and `dt`'s own offset
+    already carries the instant, so the block lands correctly with no
+    `timeZone` at all.
     """
     if not tz_name:
-        return dt
+        return {"dateTime": dt.isoformat()}
     try:
         zone = ZoneInfo(tz_name)
     except (ZoneInfoNotFoundError, ValueError):
-        return dt
-    return dt.astimezone(zone)
+        return {"dateTime": dt.isoformat()}
+    return {"dateTime": dt.astimezone(zone).isoformat(), "timeZone": tz_name}
 
 
-def _duration_minutes(leg_start: datetime, leg_end: datetime) -> int:
-    """Whole-minute duration for the create call (always at least 1 minute)."""
-    minutes = round((leg_end - leg_start).total_seconds() / 60)
-    return max(minutes, 1)
+def _min_end(leg_start: datetime, leg_end: datetime) -> datetime:
+    """`leg_end`, floored to at least a minute after `leg_start`.
+
+    Calendar accepts a zero-length event, but one renders as a hairline the
+    operator cannot see or click. The flat Composio contract this replaced got
+    the same floor for free (it sent whole-minute durations and clamped to
+    `max(minutes, 1)`); nested start/end has to say so explicitly.
+    """
+    return max(leg_end, leg_start + timedelta(minutes=1))
 
 
 def build_block_args(
@@ -202,11 +212,11 @@ def build_block_args(
     busy: bool = False,
     timezone: str | None = None,
 ) -> dict:
-    """Build the `GOOGLECALENDAR_CREATE_EVENT` arguments for an airport block.
+    """Build the native events.insert body for an airport block.
 
-    The live v3 contract: flat `start_datetime` + `event_duration_hour` /
-    `event_duration_minutes`; `location` is the destination; the machine state
-    rides in the description. Free (`transparency: "transparent"`) unless `busy`.
+    Nested `start` / `end` objects carry the times; `location` is the
+    destination; the machine state rides in the description. Free
+    (`transparency: "transparent"`) unless `busy`.
 
     Args:
         calendar_id: the calendar to create the block on (primary, per #90).
@@ -224,8 +234,8 @@ def build_block_args(
         leg_end: block end; defaults to `anchor` (correct for to_airport, where
             the drive ends at the deadline). from_airport passes `anchor + drive`.
         busy: create Busy instead of Free.
-        timezone: the airport's IANA timezone; emitted as the CREATE `timezone`
-            so the block lands at the right instant (#83). Omitted when None.
+        timezone: the airport's IANA timezone; names the event's own zone (see
+            `_event_time`). Omitted from the body when None or unresolvable.
 
     Raises:
         ValueError: on a naive datetime, an empty endpoint, a negative or
@@ -255,7 +265,7 @@ def build_block_args(
             "build_block_args: block end must not be before `leg_start` "
             "(a leg_end earlier than leg_start, or leg_start later than anchor)"
         )
-    total_minutes = _duration_minutes(leg_start, end)
+    end = _min_end(leg_start, end)
     description = build_description(
         summary=summary,
         flight_id=flight_id,
@@ -265,21 +275,15 @@ def build_block_args(
         origin=origin,
         destination=destination,
     )
-    args = {
+    return {
         "calendar_id": calendar_id,
         "summary": summary,
         "description": description,
         "location": destination,
-        "start_datetime": _wall_clock_in(leg_start, timezone).isoformat(),
-        "event_duration_hour": total_minutes // 60,
-        "event_duration_minutes": total_minutes % 60,
+        "start": _event_time(leg_start, timezone),
+        "end": _event_time(end, timezone),
         "transparency": "opaque" if busy else "transparent",
     }
-    # The wall-clock above is expressed in this same zone (#131) — the adapter
-    # drops the offset and re-reads the wall-clock in `timezone`.
-    if timezone:
-        args["timezone"] = timezone
-    return args
 
 
 @dataclass(frozen=True)

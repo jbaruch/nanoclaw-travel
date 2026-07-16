@@ -235,7 +235,7 @@ def _event_end(event: dict) -> datetime | None:
         return None
 
 
-def _boarding_block_end_times(composio, find_events_args, items, byair_calendar_id, now):
+def _boarding_block_end_times(calendar, find_events_args, items, byair_calendar_id, now):
     """End instants of boarding blocks on the byAir calendar, for trivial-leg
     suppression (V3 — the presence check lives on the byAir calendar, not primary).
 
@@ -246,17 +246,17 @@ def _boarding_block_end_times(composio, find_events_args, items, byair_calendar_
         return []
     import urllib.error
 
-    from composio_client import ComposioError
+    from google_calendar_client import GoogleCalendarError
 
     try:
-        raw = composio.find_events(
+        raw = calendar.find_events(
             find_events_args(
                 calendar_id=byair_calendar_id,
                 time_min=(now - timedelta(hours=6)).isoformat(),
                 time_max=(now + timedelta(days=21)).isoformat(),
             )
         )
-    except (ComposioError, urllib.error.URLError):
+    except (GoogleCalendarError, urllib.error.URLError):
         return []
     ends: list[datetime] = []
     for event in items(raw):
@@ -372,8 +372,8 @@ def _run_sweep() -> dict:
     from airport_drive_inputs import airport_context
     from byair_client import ByAirClient
     from calendar_reconcile import _find_events_args, _items
-    from composio_client import ComposioClient
     from fetch_events import CalendarFetcher
+    from google_calendar_client import GoogleCalendarClient
     from home_address import HomeAddressError, read_current_home
     from maps_client import MapsClient
     from scan import scan
@@ -432,11 +432,11 @@ def _run_sweep() -> dict:
     for summary in flight_summaries(schedule):
         known_codes |= flight_codes(summary)
 
-    composio = ComposioClient.from_env()
+    calendar = GoogleCalendarClient()
 
     # --- V3: boarding-block presence on the byAir calendar ---
     boarding_ends = _boarding_block_end_times(
-        composio, _find_events_args, _items, config.get("byair_calendar_id"), now
+        calendar, _find_events_args, _items, config.get("byair_calendar_id"), now
     )
 
     def boarding_present(flight) -> bool:
@@ -452,7 +452,7 @@ def _run_sweep() -> dict:
     meeting_blocks: list[DesiredBlock] = []
     meeting_skipped: list[str] = []
     if home:
-        fetcher = CalendarFetcher.from_env()
+        fetcher = CalendarFetcher()
         events = exclude_drive_block_events(
             fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
         )
@@ -513,7 +513,7 @@ def _run_sweep() -> dict:
         return airport_cache[airport_id]
 
     # --- current blocks ---
-    raw = composio.find_events(
+    raw = calendar.find_events(
         _find_events_args(
             calendar_id="primary",
             time_min=(now - timedelta(days=2)).isoformat(),
@@ -543,7 +543,7 @@ def _run_sweep() -> dict:
     # write phase stops with margin before the host precheck kill (#164).
     apply_budget = max(_SWEEP_WALL_CLOCK_BUDGET_SECONDS - (time.monotonic() - sweep_start), 0.0)
     applied = apply_plan(
-        result.plan, composio=composio, calendar_id="primary", budget_seconds=apply_budget
+        result.plan, calendar=calendar, calendar_id="primary", budget_seconds=apply_budget
     )
 
     skipped = list(result.skipped) + list(meeting_skipped)

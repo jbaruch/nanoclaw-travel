@@ -189,7 +189,7 @@ Top-level fields:
 Each entry's fields:
 
 - `event_id` (string, required) — the Google Calendar event identifier
-- `calendar_id` (string, required) — the calendar the event lives in (the byAir calendar for both the boarding block and adopted flight events; byAir writes the flight events there and flight-assist places the boarding block alongside them). The byAir calendar's ID is resolved at runtime via Composio from the operator's flights calendar — never hardcoded in the plugin
+- `calendar_id` (string, required) — the calendar the event lives in (the byAir calendar for both the boarding block and adopted flight events; byAir writes the flight events there and flight-assist places the boarding block alongside them). The byAir calendar's ID is resolved at runtime from the operator's flights calendar — never hardcoded in the plugin
 - `managed` (string, required) — `"created"` (flight-assist authored it) or `"adopted"` (flight-assist tagged a byAir-authored event). Drives delete semantics: `created` is freely deletable, `adopted` is deleted only on a true switch/cancel
 - `synced_signature` (string, required) — the `<start>/<end>` instant pair flight-assist last wrote, so the planner can no-op when the live event already matches byAir truth instead of re-writing every cycle
 
@@ -278,7 +278,7 @@ When adding or renaming a field:
 
 A created airport drive block has no local record — the calendar event itself IS the state (Epic #59 §4, same design as drive-planner's meeting blocks but a self-contained sibling codec; see `#90`). The recheck poll re-fetches the near-term window by a direct API call and reads each of its own blocks back off the event. There is no `airport-blocks.json`. Owned by `airport_block.py` (`build_block_args` / `build_description` write, `parse_block` reads). This `BLOCK_SCHEMA_VERSION` is **distinct from** the on-disk `STATE_SCHEMA_VERSION` above — a separate, calendar-carried record with its own version line.
 
-All state lives in the event **`description`** — the live Composio v3 calendar toolkit exposes NO writable `extendedProperties` (verified against the NAS during Phase 1), so the description is the only durable, writable surface. It carries three parts:
+All state lives in the event **`description`**. The Composio v3 toolkit this plugin shipped on exposed NO writable `extendedProperties`, which forced the choice; the native Calendar API it now speaks (nanoclaw#638) does expose `extendedProperties.private`, but every deployed event already carries its state in the description, so moving is a migration in its own right, not a side effect of the transport swap. The description carries three parts:
 
 - the human line `Drive: → <CODE> (<flight>)` (to_airport) or `Drive: <CODE> → home` (from_airport);
 - the self-marker `[flight-assist:flight=<id>:dir=<to_airport|from_airport>]` — recognizes flight-assist's own airport blocks for idempotent create; pinned against the codec's marker regex by a test;
@@ -292,11 +292,11 @@ All state lives in the event **`description`** — the live Composio v3 calendar
 | `o` / `d` | the routed leg endpoints (the poll re-routes exactly this pair) |
 | `al` | comma-joined record of alerts already pushed — `growth` and/or `leave_now` — so a later poll never re-pings the same condition |
 
-The served `flight_id` and leg `direction` come from the marker; the block's start/duration carry the times (CREATE uses flat `start_datetime` + `event_duration_*` plus the airport's IANA `timezone`).
+The served `flight_id` and leg `direction` come from the marker; the block's start/end carry the times (CREATE uses native nested `start` / `end` objects, each naming the airport's IANA zone in `timeZone`).
 
 Writer / reader contract:
 
-- **Writer** — flight-assist creates blocks via the calendar-reconcile path (idempotent: finds an existing marker first, never double-books). When an alert fires, the recheck poll rebuilds the full `description` with only `al` updated and applies it via a partial `GOOGLECALENDAR_PATCH_EVENT` AFTER the send. `build_block_args` / `build_description` are the single source of the description format for both create and the suppression patch.
+- **Writer** — flight-assist creates blocks via the calendar-reconcile path (idempotent: finds an existing marker first, never double-books). When an alert fires, the recheck poll rebuilds the full `description` with only `al` updated and applies it via a partial events.patch AFTER the send. `build_block_args` / `build_description` are the single source of the description format for both create and the suppression patch.
 - **Reader** — the recheck poll calls `parse_block(event)`; a non-block or malformed event yields `None` (never raises), so one bad event can't abort the poll.
 
 Migration (per `coding-policy: stateful-artifacts`):
@@ -306,4 +306,4 @@ Migration (per `coding-policy: stateful-artifacts`):
 Tolerance:
 
 - A block whose state is missing or malformed (no marker, unparseable JSON, unparseable baseline / anchor, empty endpoints, unknown direction, missing event id) parses to `None` and is treated as "not a block I recheck" — never raised on.
-- Composio is mid-retirement (nanoclaw#638 → OneCLI workspace MCP); the API fetch / create / find / patch are the pieces that re-point later, same as the flight-assist reconcile path.
+- The API fetch / create / find / patch go through `google_calendar_client` — the native Calendar REST API, brokered by OneCLI's gateway (nanoclaw#638).

@@ -189,7 +189,7 @@ def evaluate_blocks(events: list, *, now: datetime, route) -> dict:
             }
         )
         # Rebuild the block's full description with the updated alert record.
-        # The state lives in the description, and `GOOGLECALENDAR_PATCH_EVENT`
+        # The state lives in the description, and events.patch
         # supports a partial `description` update, so the patch is that one
         # field. The patch is applied AFTER the agent confirms the ping was
         # sent (the SKILL.md calls `apply.py suppress`), never here — a patch
@@ -257,7 +257,7 @@ def main() -> int:
         from fetch_events import CalendarFetcher
 
         now = datetime.now(timezone.utc)
-        fetcher = CalendarFetcher.from_env()
+        fetcher = CalendarFetcher()
         events = fetcher.fetch_window(
             time_min=now - RECHECK_FETCH_BEHIND, time_max=now + RECHECK_FETCH_AHEAD
         )

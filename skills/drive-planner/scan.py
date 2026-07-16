@@ -314,7 +314,7 @@ def _etc_zone(dt: datetime | None) -> str | None:
 def _extract_timezone(block: object) -> str | None:
     """The IANA `timeZone` for a start/end block, with an offset fallback.
 
-    The live `GOOGLECALENDAR_CREATE_EVENT` needs a `timezone` argument or it
+    The block create needs an IANA `timeZone` or it
     reads the block's wall-clock as UTC and the drive block lands hours off
     (#83). Real Google events carry `timeZone` (e.g. "America/Chicago"); when a
     block omits it but its `dateTime` carries an offset, fall back to a

@@ -17,7 +17,7 @@ that feeds them live data.
 `run_airport_drive_reconcile` is the orchestration on top: for each active
 flight it assembles the desired blocks, fetches the primary calendar once across
 the spanning window, runs `plan_drive_block` per block, and executes the create /
-shift ops via Composio. Calendar-as-state, no ledger — an existing block is found
+shift ops against Google Calendar. Calendar-as-state, no ledger — an existing block is found
 by its marker and its no-op `signature` is derived from the block's OWN stored
 state (the `anchor` + baseline it carries), not from Google's start/end echo, so
 the comparison is round-trip-stable regardless of how the calendar API formats
@@ -86,12 +86,12 @@ from airport_drive_inputs import (  # noqa: E402
 )
 from byair_client import ByAirClient, ByAirError  # noqa: E402
 
-# Reuse the live-verified Composio event-fetch shaping from calendar_reconcile
+# Reuse the event-fetch shaping from calendar_reconcile
 # (the v3 response nesting in `_items` was verified against the NAS) rather than
 # duplicate it here — same skill bundle, no circular import (calendar_reconcile
 # does not import this module).
 from calendar_reconcile import _created_event_id, _find_events_args, _items  # noqa: E402
-from composio_client import ComposioError  # noqa: E402
+from google_calendar_client import GoogleCalendarError  # noqa: E402
 from maps_client import MapsClient, MapsError  # noqa: E402
 from state import (  # noqa: E402
     read_active_flights,
@@ -488,22 +488,22 @@ def _fetch_window(states: list[dict], blocks: list[DesiredDriveBlock]) -> tuple[
 
 
 def _fetch_block_events(
-    composio, *, calendar_id: str, states: list[dict], blocks: list[DesiredDriveBlock]
+    calendar, *, calendar_id: str, states: list[dict], blocks: list[DesiredDriveBlock]
 ) -> list[dict]:
     """Fetch the primary-calendar events in the window spanning the desired blocks
     and the flights' scheduled times (see `_fetch_window`).
 
-    Returns the raw Composio events (description intact, so `parse_block` reads
+    Returns the raw Calendar events (description intact, so `parse_block` reads
     the `<!--fadrive:-->` state), each annotated with its state-derived signature.
     """
     time_min, time_max = _fetch_window(states, blocks)
-    raw = composio.find_events(
+    raw = calendar.find_events(
         _find_events_args(calendar_id=calendar_id, time_min=time_min, time_max=time_max)
     )
     return _annotate_signatures(_items(raw))
 
 
-def _execute_op(op: dict, *, composio) -> None:
+def _execute_op(op: dict, *, calendar) -> None:
     """Execute one planner op against the calendar. create / update only.
 
     A shift (`update`) is a recreate-then-delete, so the replacement always goes
@@ -517,20 +517,20 @@ def _execute_op(op: dict, *, composio) -> None:
     (old already gone) leaves the new block standing alone — an idempotent success.
     """
     if op["op"] == "create":
-        composio.create_event(op["create_args"])
+        calendar.create_event(op["create_args"])
         return
     if op["op"] == "update":
-        created = composio.create_event(op["create_args"])
+        created = calendar.create_event(op["create_args"])
         try:
-            composio.delete_event({"calendar_id": op["calendar_id"], "event_id": op["event_id"]})
-        except (ComposioError, urllib.error.URLError) as exc:
+            calendar.delete_event({"calendar_id": op["calendar_id"], "event_id": op["event_id"]})
+        except (GoogleCalendarError, urllib.error.URLError) as exc:
             if getattr(exc, "status_code", None) == 404:
                 return  # old already gone — the replacement stands alone
             new_id = _created_event_id(created)
             if new_id is not None:
                 try:
-                    composio.delete_event({"calendar_id": op["calendar_id"], "event_id": new_id})
-                except (ComposioError, urllib.error.URLError) as rollback_exc:
+                    calendar.delete_event({"calendar_id": op["calendar_id"], "event_id": new_id})
+                except (GoogleCalendarError, urllib.error.URLError) as rollback_exc:
                     # Rollback failed too — a duplicate may remain until the next
                     # cycle reconciles it. Log it, but re-raise the ORIGINAL delete
                     # failure so the caller records the real reason, not this one.
@@ -548,7 +548,7 @@ def _execute_op(op: dict, *, composio) -> None:
 def run_airport_drive_reconcile(
     states: list[dict],
     *,
-    composio,
+    calendar,
     byair,
     maps,
     origin: str | None,
@@ -573,7 +573,7 @@ def run_airport_drive_reconcile(
 
     Args:
         states: the active flights' state records.
-        composio: a Composio client (`find_events` / `create_event` /
+        calendar: a GoogleCalendarClient (`find_events` / `create_event` /
             `delete_event`).
         byair / maps: the airport-context and routing clients (see
             `build_drive_blocks_for_flight`); either None builds nothing.
@@ -593,7 +593,7 @@ def run_airport_drive_reconcile(
         return {"status": "ok", "planned": 0, "executed": 0, "suppressed": 0, "failed": []}
 
     events = _fetch_block_events(
-        composio,
+        calendar,
         calendar_id=calendar_id,
         states=[state for state, _ in desired],
         blocks=[block for _, block in desired],
@@ -623,13 +623,13 @@ def run_airport_drive_reconcile(
         for op in ops:
             planned += 1
             try:
-                _execute_op(op, composio=composio)
-            except (ComposioError, urllib.error.URLError) as exc:
+                _execute_op(op, calendar=calendar)
+            except (GoogleCalendarError, urllib.error.URLError) as exc:
                 print(
                     f"flight-assist airport-drive: op {op['op']}/{op['kind']} for flight "
                     f"{flight_id} failed — deferred, retried next cycle. If this repeats, check "
-                    f"Composio/Google Calendar connectivity and credentials (COMPOSIO_API_KEY / "
-                    f"COMPOSIO_USER_ID). Cause: {exc}",
+                    f"Google Calendar connectivity and that the OneCLI gateway still reaches "
+                    f"Calendar (`onecli apps list` on the NAS). Cause: {exc}",
                     file=sys.stderr,
                 )
                 failed.append({"flight_id": flight_id, "op": op["op"], "kind": op["kind"]})
@@ -673,7 +673,7 @@ def _maybe_maps_client() -> MapsClient | None:
     return MapsClient.from_env(timeout=_MAPS_CALL_TIMEOUT_SECONDS)
 
 
-def run_airport_drive_pass(composio, *, now: datetime) -> dict:
+def run_airport_drive_pass(calendar, *, now: datetime) -> dict:
     """The wake-cycle airport-drive reconcile: resolve inputs from env + state,
     then run `run_airport_drive_reconcile`.
 
@@ -711,7 +711,7 @@ def run_airport_drive_pass(composio, *, now: datetime) -> dict:
 
     return run_airport_drive_reconcile(
         states,
-        composio=composio,
+        calendar=calendar,
         byair=byair,
         maps=maps,
         origin=origin,

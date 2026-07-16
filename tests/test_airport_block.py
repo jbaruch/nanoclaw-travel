@@ -90,21 +90,28 @@ def test_build_block_args_to_airport_free_with_timezone():
     )
     assert args["calendar_id"] == "primary"
     assert args["location"] == "BNA"
-    assert args["start_datetime"] == LEAVE_BY.isoformat()
-    # 30-minute drive
-    assert args["event_duration_hour"] == 0
-    assert args["event_duration_minutes"] == 30
+    # 30-minute drive, as a native nested start/end in the airport's zone
+    assert args["start"] == {
+        "dateTime": LEAVE_BY.isoformat(),
+        "timeZone": "America/Chicago",
+    }
+    assert args["end"] == {
+        "dateTime": BE_AT_AIRPORT.isoformat(),
+        "timeZone": "America/Chicago",
+    }
     assert args["transparency"] == "transparent"  # Free per #90
-    assert args["timezone"] == "America/Chicago"
     assert "[flight-assist:flight=12345:dir=to_airport]" in args["description"]
 
 
 def test_build_block_args_wall_clock_expressed_in_airport_timezone():
     """#131 (same class as drive-planner's 6h-early UK block): a leg_start
-    carrying a non-airport offset must be re-expressed in the CREATE's
-    `timezone` — the Composio adapter drops the offset and re-reads the
-    wall-clock in that zone. A UTC leg_start with a Chicago airport tz
-    would otherwise land the block 5h late."""
+    carrying a non-airport offset is re-expressed in the airport's zone, so the
+    emitted `dateTime` and the declared `timeZone` agree.
+
+    Under Composio this was load-bearing for correctness — its adapter dropped
+    the offset and re-read the wall-clock in `timezone`, so a UTC leg_start
+    with a Chicago airport tz landed the block 5h late. Calendar honours the
+    offset, so the conversion now only keeps the two fields consistent."""
     leave_by_utc = LEAVE_BY.astimezone(timezone.utc)
     args = build_block_args(
         calendar_id="primary",
@@ -118,9 +125,12 @@ def test_build_block_args_wall_clock_expressed_in_airport_timezone():
         destination="BNA",
         timezone="America/Chicago",
     )
-    # Same instant, Chicago wall-clock (CDT −05:00 on 2026-07-02).
-    assert args["start_datetime"] == "2026-07-02T12:30:00-05:00"
-    assert args["timezone"] == "America/Chicago"
+    # Same instant, Chicago wall-clock (CDT −05:00 on 2026-07-02), and the
+    # declared timeZone agrees with the offset it is rendered in.
+    assert args["start"] == {
+        "dateTime": "2026-07-02T12:30:00-05:00",
+        "timeZone": "America/Chicago",
+    }
 
 
 def test_build_block_args_from_airport_uses_explicit_leg_end():
@@ -138,10 +148,10 @@ def test_build_block_args_from_airport_uses_explicit_leg_end():
         destination="home",
         leg_end=home_eta,
     )
-    assert args["start_datetime"] == arr_anchor.isoformat()
-    assert args["event_duration_hour"] == 0
-    assert args["event_duration_minutes"] == 45
-    assert "timezone" not in args  # omitted when None
+    assert args["start"] == {"dateTime": arr_anchor.isoformat()}
+    # end is the explicit leg_end (anchor + 45min drive home)
+    assert args["end"] == {"dateTime": home_eta.isoformat()}
+    assert "timeZone" not in args["start"]  # omitted when None
 
 
 def test_build_block_args_busy_is_opaque():

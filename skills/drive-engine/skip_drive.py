@@ -26,7 +26,7 @@ result to stdout (never a bare traceback — the skill parses stdout):
 
 Exit codes: 0 = a result was produced (including unmatched / ambiguous — the
 script ran fine, the meeting just wasn't uniquely resolved); 1 = an operational
-failure (bad Composio env, transport error, skip-store write failure) — the
+failure (a gateway/tier problem, transport error, skip-store write failure) — the
 `error` shape above; 2 = a caller/usage error (missing or non-JSON argument).
 """
 
@@ -121,11 +121,11 @@ def resolve_skip(
     return SkipTarget(identity, tuple(slot["event_ids"]), latest + _SKIP_EXPIRY_PAD), []
 
 
-def _fetch_drive_events(composio, now: datetime) -> list:
+def _fetch_drive_events(calendar, now: datetime) -> list:
     _on_path("flight-assist")
     from calendar_reconcile import _find_events_args, _items
 
-    raw = composio.find_events(
+    raw = calendar.find_events(
         _find_events_args(
             calendar_id="primary",
             time_min=(now - timedelta(days=2)).isoformat(),
@@ -135,7 +135,7 @@ def _fetch_drive_events(composio, now: datetime) -> list:
     return _items(raw)
 
 
-def skip_meeting_drive(request: dict, *, composio=None, now: datetime | None = None) -> dict:
+def skip_meeting_drive(request: dict, *, calendar=None, now: datetime | None = None) -> dict:
     """Resolve + apply a skip. See module docstring for the request/result shapes."""
     summary = request.get("summary")
     if not isinstance(summary, str) or not summary.strip():
@@ -145,12 +145,12 @@ def skip_meeting_drive(request: dict, *, composio=None, now: datetime | None = N
         now = datetime.now(timezone.utc)
 
     _on_path("flight-assist")
-    from composio_client import ComposioClient, ComposioError
+    from google_calendar_client import GoogleCalendarClient, GoogleCalendarError
 
-    if composio is None:
-        composio = ComposioClient.from_env()
+    if calendar is None:
+        calendar = GoogleCalendarClient()
 
-    events = _fetch_drive_events(composio, now)
+    events = _fetch_drive_events(calendar, now)
     target, candidates = resolve_skip(events, summary=summary, now=now)
     if target is None:
         if candidates:
@@ -167,8 +167,8 @@ def skip_meeting_drive(request: dict, *, composio=None, now: datetime | None = N
     removed = 0
     for event_id in target.event_ids:
         try:
-            composio.delete_event({"calendar_id": "primary", "event_id": event_id})
-        except ComposioError as exc:
+            calendar.delete_event({"calendar_id": "primary", "event_id": event_id})
+        except GoogleCalendarError as exc:
             if getattr(exc, "status_code", None) != 404:  # 404 = already gone = done
                 raise
         removed += 1
@@ -195,7 +195,7 @@ def main(argv: list[str]) -> int:
         result = skip_meeting_drive(request)
     except Exception as exc:  # noqa: BLE001 — outer-boundary-process-contract
         # The skill invokes this as a subprocess and parses ONLY stdout JSON. An
-        # uncaught exception (bad env from `ComposioClient.from_env`, a transport
+        # uncaught exception (an unauthenticated gateway, a transport
         # error from the fetch / delete, a skip-store write failure) would emit a
         # Python traceback the skill can't read — it would look like "no result".
         # Emit the documented `{"skipped": false, "error": ...}` shape (plus a

@@ -123,7 +123,7 @@ def test_create_when_no_block_on_calendar():
     args = op["create_args"]
     assert args["location"] == "BNA"
     assert args["transparency"] == "transparent"  # Free
-    assert args["timezone"] == "America/Chicago"
+    assert args["start"]["timeZone"] == "America/Chicago"
     assert args["calendar_id"] == op["calendar_id"]  # never diverge
     assert "[flight-assist:flight=12345:dir=to_airport]" in args["description"]
     assert op["signature"] == _dep_desired().signature()
@@ -152,7 +152,7 @@ def test_create_from_airport_kind():
     )
     ops = _plan(desired, events=[])
     assert ops[0]["kind"] == KIND_AIRPORT_DRIVE_ARR
-    assert "timezone" not in ops[0]["create_args"]
+    assert "timeZone" not in ops[0]["create_args"]["start"]
 
 
 # --- plan_drive_block: no-op / shift -----------------------------------

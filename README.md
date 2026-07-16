@@ -33,17 +33,26 @@ additionalTiles: ["jbaruch/nanoclaw-travel"]
 |----------|---------|--------------|
 | `BYAIR_MCP_URL` | byAir streamable-HTTP MCP endpoint (includes API key) | https://byairapp.com/mcp/ — Pro subscription, personal MCP link |
 | `GOOGLE_MAPS_API_KEY` | Distance Matrix API key for time-to-leave | https://console.cloud.google.com/apis/credentials |
-| `COMPOSIO_API_KEY` | Composio project API key — Google Calendar actions (boarding-block reconciliation, drive-block create/remove, calendar fetches) | https://app.composio.dev — project settings |
-| `COMPOSIO_USER_ID` | Composio user/entity the Google Calendar account is connected under; scopes every tool execution | https://app.composio.dev — connected accounts |
+
+Google Calendar access (boarding-block reconciliation, drive-block
+create/remove, calendar fetches) needs **no variable**: it calls the native
+Calendar REST API, and OneCLI's gateway injects the OAuth Bearer on the wire
+(nanoclaw#638). The container holds no Google credential. The retired
+`COMPOSIO_API_KEY` / `COMPOSIO_USER_ID` pair can be deleted from the vault.
 
 Optional:
 
 | Variable | Purpose |
 |----------|---------|
-| `COMPOSIO_BASE_URL` | Override of the Composio REST endpoint; unset uses the public v3 backend |
 | `TOMTOM_API_KEY` | Backup routing provider, used only when the Google Distance Matrix call fails; absent it, a Google failure propagates |
 
 Store all required credentials in OneCLI vault. Never commit. See [.env.example](.env.example) for the contract; GitHub Actions secrets configuration link is in its file header.
+
+## Co-loaded plugin dependency
+
+`nightly-travel-sync`'s Gmail freshness fallback (`scripts/fetch-tripit-emails.py`) imports four shared Gmail helpers — `google-rest.py`, `gmail-ops.py`, `gmail-message.py`, `sanitize-email-body.py` — from **`jbaruch/nanoclaw-admin`**'s heartbeat skill, over the co-loaded `tessl__heartbeat` mount. So this plugin's `additionalTiles` must also carry `jbaruch/nanoclaw-admin` for that one branch to run; it fails closed with an actionable message otherwise, and no other capability here depends on it.
+
+Gmail is not this plugin's domain, so it depends on the one tested copy of the RFC822 MIME parser and the poison sanitizer rather than re-implementing them (`nanoclaw-orders` consumes them the same way). Calendar is different — this plugin owns its per-service clients, so `google_calendar_client.py` stays self-contained here.
 
 ## Rules
 
@@ -69,7 +78,7 @@ Store all required credentials in OneCLI vault. Never commit. See [.env.example]
 
 The skill bundle includes executable scripts the agent invokes via the SKILL.md actions:
 
-- `scripts/check-env.py` — verifies BYAIR_MCP_URL, GOOGLE_MAPS_API_KEY, COMPOSIO_API_KEY, and COMPOSIO_USER_ID are set
+- `scripts/check-env.py` — verifies BYAIR_MCP_URL and GOOGLE_MAPS_API_KEY are set (calendar access has no env var to check — see above)
 - `scripts/set-home-base.py` — persists home address to plugin config for time-to-leave queries
 - `scripts/get-flight-state.py` — fetches a flight's last-known snapshot to enrich notifications
 - `scripts/read-current-tz.py` — resolves the operator's `current_tz` from `tz_state` so surfaces phrase relative dates in the operator's local zone (see `operator-local-tz-phrasing` rule)
@@ -80,7 +89,7 @@ Plus scheduler-invoked scripts (not user-facing):
 - `sync-tripit/precheck.py` — runs every 5 min, adaptive-gated; delegates to `flight-assist/sync_tripit.py` only when a flight is imminent or the index is stale (see the `sync-tripit` skill for gate predicate + thresholds)
 - `flight-assist/sync_tripit.py` — the byAir → state reconciliation invoked by the sync-tripit scheduler
 - `nightly-travel-sync/precheck.py` — runs daily, gates the travel-data refresh on `travel-db.json` freshness (see the `nightly-travel-sync` skill + `precheck.py` for the cadence predicate)
-- `nightly-travel-sync/scripts/refresh-travel-schedule.py`, `check-travel-freshness.py`, `filter-tripit-bookings.py` — the travel-source writers + freshness probe the bundle drives
+- `nightly-travel-sync/scripts/refresh-travel-schedule.py`, `check-travel-freshness.py`, `fetch-tripit-emails.py`, `filter-tripit-bookings.py` — the travel-source writers + the freshness probe's Gmail fallback (fetch sanitizes in-container, filter matches the TripIt confirmation prefix)
 - `drive-engine/reconcile_sweep.py` — runs every ~30 min, plans airport + meeting drives, reconciles against the primary calendar, and applies the changes (create / update / delete of its own blocks)
 - `drive-planner/scan.py`, `fetch_events.py`, `skip_state.py` — retired to a library: the meeting-detection core (classifier, calendar fetch, skip store) imported by drive-engine's sweep
 

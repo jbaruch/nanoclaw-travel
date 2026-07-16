@@ -10,9 +10,11 @@ SCRIPT = (
     Path(__file__).resolve().parent.parent / "skills" / "flight-assist" / "scripts" / "check-env.py"
 )
 
-# Every credential the script reports on. Stripped from the base env before
-# each run so ambient values (a maintainer's real COMPOSIO_API_KEY) never
-# leak into the assertions — overrides then re-add only what a case sets.
+# Every credential the script reports on, plus the retired COMPOSIO_* pair.
+# Stripped from the base env before each run so ambient values never leak into
+# the assertions — overrides then re-add only what a case sets. The retired
+# vars stay in this list so `test_retired_composio_vars_are_not_reported` can
+# set them and prove they are ignored.
 CREDS = (
     "BYAIR_MCP_URL",
     "GOOGLE_MAPS_API_KEY",
@@ -23,8 +25,6 @@ CREDS = (
 ALL_FLAGS = {
     "byair_url_present",
     "maps_key_present",
-    "composio_key_present",
-    "composio_user_present",
 }
 
 
@@ -59,16 +59,19 @@ def test_maps_key_present_true_when_set():
     assert out["byair_url_present"] is False
 
 
-def test_composio_key_present_true_when_set():
-    out = _run({"COMPOSIO_API_KEY": "comp_synthetic_test_value"})
-    assert out["composio_key_present"] is True
-    assert out["composio_user_present"] is False
-
-
-def test_composio_user_present_true_when_set():
-    out = _run({"COMPOSIO_USER_ID": "user_synthetic_test_value"})
-    assert out["composio_user_present"] is True
-    assert out["composio_key_present"] is False
+def test_retired_composio_vars_are_not_reported():
+    """#638 moved calendar access to the OneCLI-brokered native Google REST
+    API: the container holds no Google credential, so COMPOSIO_API_KEY /
+    COMPOSIO_USER_ID mean nothing. A stale value left in the env must not
+    resurrect a flag — reporting one would tell the operator a retired variable
+    still gates the calendar."""
+    out = _run(
+        {
+            "COMPOSIO_API_KEY": "comp_synthetic_test_value",
+            "COMPOSIO_USER_ID": "user_synthetic_test_value",
+        }
+    )
+    assert out == {flag: False for flag in ALL_FLAGS}
 
 
 def test_all_present_returns_true_flags():
@@ -76,22 +79,13 @@ def test_all_present_returns_true_flags():
         {
             "BYAIR_MCP_URL": "https://api.byairapp.com/mcp?api_key=test_synthetic_value",
             "GOOGLE_MAPS_API_KEY": "AIzaSy_synthetic_test_value",
-            "COMPOSIO_API_KEY": "comp_synthetic_test_value",
-            "COMPOSIO_USER_ID": "user_synthetic_test_value",
         }
     )
     assert out == {flag: True for flag in ALL_FLAGS}
 
 
 def test_empty_string_is_treated_as_missing():
-    out = _run(
-        {
-            "BYAIR_MCP_URL": "",
-            "GOOGLE_MAPS_API_KEY": "",
-            "COMPOSIO_API_KEY": "",
-            "COMPOSIO_USER_ID": "",
-        }
-    )
+    out = _run({"BYAIR_MCP_URL": "", "GOOGLE_MAPS_API_KEY": ""})
     assert out == {flag: False for flag in ALL_FLAGS}
 
 

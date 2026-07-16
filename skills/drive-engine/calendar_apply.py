@@ -1,6 +1,6 @@
 """Apply a reconcile plan to the calendar — the engine's WRITE path.
 
-Executes a `ReconcilePlan` against a Composio calendar client: deletes orphans,
+Executes a `ReconcilePlan` against a Google Calendar client: deletes orphans,
 creates new drive blocks, converts prior-gen blocks (create new + delete legacy),
 and shifts changed blocks with an in-place PATCH. This is what makes the engine
 authoritative instead of merely observant.
@@ -15,9 +15,9 @@ returns a clean payload under the host precheck timeout, deferring the rest to t
 next (idempotent) sweep instead of being killed mid-write (#164).
 
 Deletes need only an event id, so the drive-planner cleanup runs through the delete
-path with no create/timezone concerns. The create path builds the v3 flat
-`start_datetime` + duration args and carries the unified codec description so the
-block round-trips.
+path with no create/timezone concerns. The create path builds a native
+events.insert body with nested start/end and carries the unified codec
+description so the block round-trips.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import time
 import urllib.error
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -42,7 +42,7 @@ from reconcile import DesiredBlock, ReconcilePlan, material_update_delta  # noqa
 # recovers the name the operator recognizes for a notification.
 _DRIVE_SUMMARY_PREFIX = "Drive: "
 
-# flight-assist ships ComposioError; resolve it cross-bundle for the caught type.
+# flight-assist ships GoogleCalendarError; resolve it cross-bundle for the caught type.
 _FA = Path("/home/node/.claude/skills/tessl__flight-assist")
 if not _FA.is_dir():
     _FA = _BUNDLE_DIR.parent / "flight-assist"
@@ -50,9 +50,9 @@ if str(_FA) not in sys.path:
     sys.path.insert(0, str(_FA))
 
 from calendar_reconcile import _created_event_id  # noqa: E402
-from composio_client import ComposioError  # noqa: E402
+from google_calendar_client import GoogleCalendarError  # noqa: E402
 
-_WRITE_ERRORS = (ComposioError, urllib.error.URLError)
+_WRITE_ERRORS = (GoogleCalendarError, urllib.error.URLError)
 
 
 @dataclass
@@ -93,9 +93,11 @@ def _local_when(desired: DesiredBlock) -> str:
 def _start_in_local(start: datetime, tz_name: str | None) -> tuple[datetime, str]:
     """Express `start` (a UTC instant) as wall-clock in `tz_name`, or UTC.
 
-    A meeting/airport block created in its local IANA tz shows the right local
+    A meeting/airport block rendered in its local IANA tz shows the right local
     time on the calendar (an 08:45 Tennessee practice reads 08:45, not a foreign
-    offset). An unknown / missing tz falls back to unambiguous UTC.
+    offset), and the zone name it returns is what `timeZone` declares. An
+    unknown / missing tz falls back to unambiguous UTC — a real IANA name, so
+    it is always safe to send as `timeZone`.
     """
     if tz_name:
         try:
@@ -106,39 +108,37 @@ def _start_in_local(start: datetime, tz_name: str | None) -> tuple[datetime, str
 
 
 def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
-    """Build the Composio v3 create-event args for a desired drive block.
+    """Build the native events.insert body for a desired drive block.
 
-    The block is created in its local timezone (`desired.timezone`) so it shows
+    The block is rendered in its local timezone (`desired.timezone`) so it shows
     the correct local time; the unified codec description carries the leg identity
     + machine state for round-trip.
 
     The block is Busy (`transparency: "opaque"`): a drive is time the operator is
-    physically unavailable, so scheduling tools must not book over it. Only
-    `GOOGLECALENDAR_CREATE_EVENT` accepts `transparency` — `PATCH_EVENT` carries no
-    such param (verified against the live toolkit), so the shift path cannot change
-    it and a block's busy-ness is fixed at create time.
+    physically unavailable, so scheduling tools must not book over it. Calendar
+    accepts `transparency` on patch as well as insert, but the shift path does not
+    send it — a block's busy-ness stays fixed at create time, as it was under the
+    toolkit that could not patch it at all.
 
-    `exclude_organizer: true` keeps Composio from injecting the connected user as
-    a `needsAction` self-attendee — otherwise a personal drive block renders as an
-    unconfirmed invite the operator must RSVP to. With it, the block has no
-    attendees and shows as a plain accepted event (#158, verified against the live
-    Composio toolkit). A distinct `colorId` is NOT set here: no Composio Google
-    Calendar action (create/update/patch) exposes an event color field, so the
-    colour half of #158 is deferred to the post-Composio calendar backend.
+    No self-attendee is injected: Calendar creates an event with no attendees, so
+    the block shows as a plain accepted event rather than an unconfirmed invite
+    the operator must RSVP to. That was #158's attendee half, and it needed an
+    `exclude_organizer: true` flag to suppress under Composio; natively there is
+    nothing to suppress. #158's colour half (a distinct `colorId`) is still not
+    set here — Calendar does expose `colorId`, so it is now merely unimplemented
+    rather than impossible.
     """
-    total_minutes = max(round((desired.end - desired.start).total_seconds() / 60), 1)
+    end = max(desired.end, desired.start + timedelta(minutes=1))
     local_start, tz_name = _start_in_local(desired.start, desired.timezone)
+    local_end, _ = _start_in_local(end, desired.timezone)
     return {
         "calendar_id": calendar_id,
         "summary": desired.summary,
-        "start_datetime": local_start.isoformat(),
-        "event_duration_hour": total_minutes // 60,
-        "event_duration_minutes": total_minutes % 60,
+        "start": {"dateTime": local_start.isoformat(), "timeZone": tz_name},
+        "end": {"dateTime": local_end.isoformat(), "timeZone": tz_name},
         "location": desired.destination,
         "description": _desired_description(desired),
-        "timezone": tz_name,
         "transparency": "opaque",
-        "exclude_organizer": True,
     }
 
 
@@ -157,46 +157,43 @@ def _desired_description(desired: DesiredBlock) -> str:
 
 
 def build_patch_args(desired: DesiredBlock, *, event_id: str, calendar_id: str) -> dict:
-    """Build `GOOGLECALENDAR_PATCH_EVENT` args to shift an existing block IN PLACE.
+    """Build the native events.patch body to shift an existing block IN PLACE.
 
     An update is a single atomic patch of the same event — new start/end (the
     leave-by moved), refreshed description + location — never a recreate-then-
     delete. So a sweep killed mid-write can no longer leave the new block next to
-    an undeleted old one: the duplicate storm's mechanism is gone (#164). `end_time`
-    is expressed in the same local zone as `start_time` so Composio re-reads both
-    wall-clocks in `timezone` and the block lands at the right instant (#83).
+    an undeleted old one: the duplicate storm's mechanism is gone (#164).
     """
+    end = max(desired.end, desired.start + timedelta(minutes=1))
     local_start, tz_name = _start_in_local(desired.start, desired.timezone)
-    local_end, _ = _start_in_local(desired.end, desired.timezone)
+    local_end, _ = _start_in_local(end, desired.timezone)
     return {
         "calendar_id": calendar_id,
         "event_id": event_id,
         "summary": desired.summary,
-        "start_time": local_start.isoformat(),
-        "end_time": local_end.isoformat(),
+        "start": {"dateTime": local_start.isoformat(), "timeZone": tz_name},
+        "end": {"dateTime": local_end.isoformat(), "timeZone": tz_name},
         "location": desired.destination,
         "description": _desired_description(desired),
-        "timezone": tz_name,
     }
 
 
 def _created_id(created: object) -> str | None:
-    """Extract the new event id from a Composio create response.
+    """Extract the new event id from an events.insert response.
 
-    Delegates to flight-assist's `_created_event_id`, the live-verified extractor
-    that handles Composio's real (nested `data.response_data.id`) shape — a
-    hand-rolled subset would miss it and leave a rollback unable to delete the
-    replacement, so both writers use the same extractor.
+    Delegates to flight-assist's `_created_event_id` so both writers read the
+    create response through one extractor — a rollback that could not find the
+    replacement's id would be unable to delete it.
     """
     return _created_event_id(created)
 
 
-def _delete(composio, *, calendar_id: str, event_id: str | None, result: ApplyResult) -> bool:
+def _delete(calendar, *, calendar_id: str, event_id: str | None, result: ApplyResult) -> bool:
     """Delete one event. A 404 (already gone) counts as done. Returns success."""
     if event_id is None:
         return False
     try:
-        composio.delete_event({"calendar_id": calendar_id, "event_id": event_id})
+        calendar.delete_event({"calendar_id": calendar_id, "event_id": event_id})
     except _WRITE_ERRORS as exc:
         if getattr(exc, "status_code", None) == 404:
             return True
@@ -208,7 +205,7 @@ def _delete(composio, *, calendar_id: str, event_id: str | None, result: ApplyRe
 def apply_plan(
     plan: ReconcilePlan,
     *,
-    composio,
+    calendar,
     calendar_id: str = "primary",
     budget_seconds: float | None = None,
     monotonic: Callable[[], float] = time.monotonic,
@@ -241,7 +238,7 @@ def apply_plan(
         if over_budget():
             result.deferred += 1
             continue
-        if _delete(composio, calendar_id=calendar_id, event_id=d.event_id, result=result):
+        if _delete(calendar, calendar_id=calendar_id, event_id=d.event_id, result=result):
             result.deleted += 1
 
     for c in plan.creates:
@@ -249,7 +246,7 @@ def apply_plan(
             result.deferred += 1
             continue
         try:
-            composio.create_event(build_create_args(c.desired, calendar_id=calendar_id))
+            calendar.create_event(build_create_args(c.desired, calendar_id=calendar_id))
         except _WRITE_ERRORS as exc:
             result.errors.append(f"create {c.desired.identity}: {exc}")
             continue
@@ -271,7 +268,7 @@ def apply_plan(
             result.deferred += 1
             continue
         try:
-            created = composio.create_event(build_create_args(cv.desired, calendar_id=calendar_id))
+            created = calendar.create_event(build_create_args(cv.desired, calendar_id=calendar_id))
         except _WRITE_ERRORS as exc:
             result.errors.append(f"convert-create {cv.desired.identity}: {exc}")
             continue
@@ -280,14 +277,14 @@ def apply_plan(
         # blocks are gone; if any survived, the new block would duplicate it, so
         # roll the replacement back (same treatment as a failed update delete).
         deletes_ok = [
-            _delete(composio, calendar_id=calendar_id, event_id=event_id, result=result)
+            _delete(calendar, calendar_id=calendar_id, event_id=event_id, result=result)
             for event_id in cv.legacy_event_ids
         ]
         if all(deletes_ok):
             result.converted += 1
         else:
             new_id = _created_id(created)
-            _delete(composio, calendar_id=calendar_id, event_id=new_id, result=result)
+            _delete(calendar, calendar_id=calendar_id, event_id=new_id, result=result)
 
     for u in plan.updates:
         if over_budget():
@@ -300,7 +297,7 @@ def apply_plan(
             result.errors.append(f"update {u.desired.identity}: no event_id to patch")
             continue
         try:
-            composio.patch_event(
+            calendar.patch_event(
                 build_patch_args(u.desired, event_id=u.event_id, calendar_id=calendar_id)
             )
         except _WRITE_ERRORS as exc:
