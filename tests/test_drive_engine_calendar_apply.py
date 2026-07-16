@@ -84,8 +84,14 @@ def test_create_args_render_in_local_tz():
     # 08:18 UTC in America/Chicago (CDT, -05:00) is 03:18 local
     assert args["timezone"] == "America/Chicago"
     assert args["start_datetime"].startswith("2020-07-13T03:18")
-    assert args["transparency"] == "transparent"
     assert "[drive-engine:leg=m1:kind=meeting_outbound]" in args["description"]
+
+
+def test_create_args_block_is_busy():
+    # A drive is time the operator is unavailable — scheduling tools must not book
+    # over it. CREATE is the only path that can set this (PATCH takes no
+    # `transparency`), so every block is stamped Busy at create time.
+    assert build_create_args(_desired(), calendar_id="primary")["transparency"] == "opaque"
 
 
 def test_create_args_unknown_tz_falls_back_to_utc():
