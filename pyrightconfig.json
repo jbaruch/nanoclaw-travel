@@ -1,68 +1,12 @@
 {
   "executionEnvironments": [
-    {
-      "root": "skills/drive-engine",
-      "extraPaths": [
-        "skills/drive-engine",
-        "skills/travel-core",
-        "skills/flight-assist",
-        "skills/drive-planner"
-      ]
-    },
-    {
-      "root": "skills/drive-planner",
-      "extraPaths": [
-        "skills/drive-planner",
-        "skills/flight-assist",
-        "skills/travel-core"
-      ]
-    },
-    {
-      "root": "skills/flight-assist",
-      "extraPaths": [
-        "skills/flight-assist",
-        "skills/travel-core"
-      ]
-    },
-    {
-      "root": "skills/travel-core",
-      "extraPaths": [
-        "skills/travel-core"
-      ]
-    },
-    {
-      "root": "skills/check-travel-bookings",
-      "extraPaths": [
-        "skills/check-travel-bookings"
-      ]
-    },
-    {
-      "root": "skills/nightly-travel-sync",
-      "extraPaths": [
-        "skills/nightly-travel-sync",
-        "skills/flight-assist",
-        "skills/travel-core"
-      ]
-    },
-    {
-      "root": "skills/sync-tripit",
-      "extraPaths": [
-        "skills/sync-tripit",
-        "skills/flight-assist",
-        "skills/travel-core"
-      ]
-    },
-    {
-      "root": "tests",
-      "extraPaths": [
-        "skills/drive-engine",
-        "skills/flight-assist",
-        "skills/travel-core",
-        "skills/drive-planner",
-        "skills/check-travel-bookings",
-        "skills/nightly-travel-sync",
-        "skills/sync-tripit"
-      ]
-    }
+    { "root": "skills/drive-engine", "extraPaths": ["skills/drive-engine", "skills/travel-core", "skills/flight-assist", "skills/drive-planner"] },
+    { "root": "skills/drive-planner", "extraPaths": ["skills/drive-planner", "skills/flight-assist", "skills/travel-core"] },
+    { "root": "skills/flight-assist", "extraPaths": ["skills/flight-assist", "skills/travel-core"] },
+    { "root": "skills/travel-core", "extraPaths": ["skills/travel-core"] },
+    { "root": "skills/check-travel-bookings", "extraPaths": ["skills/check-travel-bookings"] },
+    { "root": "skills/nightly-travel-sync", "extraPaths": ["skills/nightly-travel-sync", "skills/flight-assist", "skills/travel-core"] },
+    { "root": "skills/sync-tripit", "extraPaths": ["skills/sync-tripit", "skills/flight-assist", "skills/travel-core"] },
+    { "root": "tests", "extraPaths": ["skills/drive-engine", "skills/flight-assist", "skills/travel-core", "skills/drive-planner", "skills/check-travel-bookings", "skills/nightly-travel-sync", "skills/sync-tripit"] }
   ]
 }
