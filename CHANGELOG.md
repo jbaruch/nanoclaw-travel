@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.48 — 2026-07-16
+
 ### Removed — the retired `drive-planner-recheck` skill
 
 `#156` retired `drive-planner-recheck` when the unified drive-engine took over drive blocks: its `cadence` was removed, so it never fires, and it is `user-invocable: false` + `disable-model-invocation: true`, so nothing can reach it. Unlike `drive-planner` — which stays declared because drive-engine's reconcile sweep imports its meeting-detection modules as a library — nothing imports `drive-planner-recheck`. It was a directory the registry shipped to every container for a skill that cannot run and cannot be called.
