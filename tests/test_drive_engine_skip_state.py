@@ -1,7 +1,7 @@
-"""Tests for the drive-planner skip store (`skip_state.py`).
+"""Tests for the drive-engine skip store (`skip_state.py`).
 
 Exercises the documented contract (per `coding-policy: stateful-artifacts`
-and `skills/drive-planner/state-schema.md`): add / load / clear / prune,
+and `skills/drive-engine/state-schema.md`): add / load / clear / prune,
 auto-expiry, schema validation, corrupt-file refusal, missing-file
 tolerance, atomic writes, and input guards. The state directory is
 redirected at a tmp_path via `DRIVE_PLANNER_STATE_DIR`. A final integration

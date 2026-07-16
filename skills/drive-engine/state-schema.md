@@ -1,15 +1,19 @@
-# Drive-Planner State Schema
+# Drive-Engine State Schema
 
-Documents the on-disk state files the drive-planner skill reads and writes. Per `coding-policy: stateful-artifacts`.
+Documents the on-disk state files the drive-engine skill reads and writes. Per `coding-policy: stateful-artifacts`.
 
 ## Owner Skill
 
-`drive-planner`'s `skip_state.py` (now a library — the drive-planner sweep is retired, #156) owns the schema: only it migrates `schema_version`. The live writer and reader is **drive-engine**, through that owner API — its skip action (`skip_drive.py`) writes via `add_skip`, and its sweep (`reconcile_sweep.py`) reads via `load_active_skips`. No skill rewrites the file directly, so the owner's shape control is intact; no other skill reads or writes it.
+`drive-engine`'s `skip_state.py` owns the schema: only it migrates `schema_version`. Writer and reader are both co-bundled and go through that owner API — the skip action (`skip_drive.py`) writes via `add_skip`, and the sweep (`reconcile_sweep.py`) reads via `load_active_skips`. No skill rewrites the file directly, so the owner's shape control is intact; no other skill reads or writes it.
+
+The module came from the retired `drive-planner` (#156), whose bundle was folded into drive-engine once drive-engine was its only importer (#181).
 
 ## State Directory
 
 - Production: `/workspace/state/drive-planner/`
 - Tests override via the `DRIVE_PLANNER_STATE_DIR` environment variable
+
+The `drive-planner` name in both is deployed state, not a live reference — the store predates the #181 fold and renaming either would strand the skips already on disk. Rename only behind a migration.
 
 ## Files
 
@@ -33,8 +37,8 @@ Fields:
 
 Writer / reader contract:
 
-- **Writer** — drive-engine's skip-reply path, `skip_drive.py` (the retired drive-planner `apply.py remove` no longer runs). It resolves the meeting by summary, deletes its drive blocks, and calls `add_skip(meeting_id, expires=, now=)` with the expiry derived from the latest matched block anchor (meeting end) plus a pad, so the skip lapses once the meeting is past. `clear_skip(meeting_id, now=)` undoes a skip; `prune(now)` reclaims disk. All three go through the owner (`skip_state.py`) API.
-- **Reader** — drive-engine's sweep (`reconcile_sweep.py`) calls `load_active_skips(now)` and passes the result to `scan(skip_state=...)` (the meeting classifier it shares with the retired drive-planner). `scan.py` consumes the returned `{meeting_id: expiry}` mapping; it never touches the file.
+- **Writer** — the skip-reply path, `skip_drive.py`. It resolves the meeting by summary, deletes its drive blocks, and calls `add_skip(meeting_id, expires=, now=)` with the expiry derived from the latest matched block anchor (meeting end) plus a pad, so the skip lapses once the meeting is past. `clear_skip(meeting_id, now=)` undoes a skip; `prune(now)` reclaims disk. All three go through the owner (`skip_state.py`) API.
+- **Reader** — the sweep (`reconcile_sweep.py`) calls `load_active_skips(now)` and passes the result to `scan(skip_state=...)`. `scan.py` consumes the returned `{meeting_id: expiry}` mapping; it never touches the file.
 
 Tolerance:
 
@@ -49,34 +53,19 @@ Migration:
 
 ## Calendar-as-State: Drive Blocks
 
-A created drive block has no local record — the calendar event itself IS the state (Epic #59 §4). A reader re-fetches the near-term window by a direct API call and reads each block back off the event. There is no `blocks.json`; the only local state file is `skip-state.json` above. Owned by `block_props.py` (`build_block_args` / `build_description` write, `parse_block` reads).
+A drive block has no local record — the calendar event itself IS the state (Epic #59 §4). The sweep re-fetches the near-term window by a direct API call and reads each block back off the event. There is no `blocks.json`; the only local state file is `skip-state.json` above.
 
-All state lives in the event **`description`**. The Composio v3 toolkit this plugin shipped on exposed NO writable `extendedProperties` on any create/patch/update action, which forced the choice; the native Calendar API it now speaks (nanoclaw#638) does expose `extendedProperties.private`, but every deployed block already carries its state in the description, so moving is a migration in its own right, not a side effect of the transport swap. It carries three parts:
+Every block the engine writes is owned by `block_codec.py` — marker template, machine-state keys, the generations it recognizes, and its version/tolerance rules all live there as named constants and its module docstring. Per `coding-policy: script-as-black-box`, this file does not restate them.
 
-- the human line `Drive: <summary>`;
-- the self-marker `[drive-planner:meeting=<id>:dir=<dir>]` — `scan.py` reads it to recognize the planner's own blocks (idempotency, lombot #50); pinned against `scan._MARKER_RE` by a test;
-- a `<!--dp:{...}-->` JSON comment (compact, hidden in most calendar UIs) with the machine state:
+The API fetch / create / patch / delete go through `google_calendar_client` — the native Calendar REST API, brokered by OneCLI's gateway (nanoclaw#638).
 
-| state key | meaning |
-|-----------|---------|
-| `v` | record schema version (currently `2`) |
-| `b` | routed drive seconds captured at creation (recheck baseline) |
-| `a` | arrival-anchor timestamp, ISO-8601 — the hard arrival deadline for `outbound` / `bridge`; for a `return` leg it is the leg end (informational, the poll never rechecks returns) |
-| `o` / `d` | the routed leg endpoints (the poll re-routes exactly this pair) |
-| `al` | comma-joined record of alerts already pushed — `growth` and/or `leave_now` — so a later poll never re-pings the same condition |
+### Legacy drive-planner blocks — recognized, never written
 
-The leg `direction` and served meeting id come from the marker; the block's start/end carry the times (CREATE uses native nested `start` / `end` objects).
+Blocks the retired drive-planner (#156) left on the calendar carry a `[drive-planner:meeting=<id>:dir=<dir>]` marker and a `<!--dp:{...}-->` state comment. **Nothing writes this shape** — the sweep that did is retired and its codec is deleted (#181). Two readers still care, and both read the marker only:
 
-Writer / reader contract:
+- `scan.py` (`_MARKER_RE`) buckets the served meeting as `has_block`, so the engine does not plan a duplicate drive on top of a block that already exists;
+- `block_codec.parse_block` classifies the event as `GEN_LEGACY_DP` on the marker plus the *presence* of the `<!--dp:-->` comment, so `meeting_source.exclude_drive_block_events` can keep it in the scan input while dropping the engine's own blocks.
 
-- **Writer** — `apply.py create` writes a block (idempotent: finds existing markers first via an events.list, never double-books), and `apply.py suppress` patches an alert record onto one. Both modes are currently **uninvoked**: this plugin's sweep is disabled (#156) and `drive-planner-recheck`, `suppress`'s only caller, is removed. drive-engine writes its blocks through its own `calendar_apply.py`.
-- **Reader** — `parse_block(event)` reads a block back; a non-block or malformed event yields `None` (never raises), so one bad event can't abort a caller. Only arrival-anchored legs (`outbound` / `bridge`) were ever rechecked; a `return` leg is created for visibility but not watched. This format remains the contract for blocks already on the calendar — the reader that polled them is gone, not the blocks.
+The `<!--dp:-->` payload's keys (`v`, `b`, `a`, `o`, `d`, `al`) are **not decoded by anything** — `block_props.parse_block` was their only reader and went with #181. They are inert bytes on deployed events; the comment survives as a recognition signal, not a record.
 
-Migration (per `coding-policy: stateful-artifacts`):
-
-- `v` `2` is the current version. `v` `1` was the original `extendedProperties.private` string-map shape — defunct: the live v3 toolkit has no writable extendedProperties, so no v1 record was ever written, and the description-based parser cannot read that shape anyway (it carries no `<!--dp:-->` comment). Bump on any further shape change to the description state JSON and add the owner-side upgrade in `parse_block`. A record stamped NEWER than this plugin supports — or carrying a non-int `v` — parses to `None` (no-usable-prior-state, the safe non-disruptive fallback). A missing `v` is treated as the current shape for back-compat.
-
-Tolerance:
-
-- A block whose state is missing or malformed (no marker, unparseable JSON, unparseable baseline / arrive-by, empty endpoints, unknown direction) parses to `None` and is treated as "not a block I recheck" — never raised on.
-- The API fetch / create / find / patch go through `google_calendar_client` — the native Calendar REST API, brokered by OneCLI's gateway (nanoclaw#638).
+The engine never converges or deletes these blocks (`_MANAGED_LEGACY` is empty) — the operator cleans them up. Once none remain on the calendar, both readers above are dead code and can go.

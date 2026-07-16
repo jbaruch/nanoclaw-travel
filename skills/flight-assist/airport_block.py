@@ -1,16 +1,18 @@
 """Encode/decode a flight-assist airport drive block — the calendar IS the state.
 
 The airport drive blocks (#90) carry the drive to/from an airport around a
-flight. Like drive-planner's meeting blocks (Epic #59 §4), flight-assist keeps
-no local store of them: the created calendar event itself carries everything a
-recheck poll needs to re-evaluate it, read back by a direct API fetch. This
-module is that codec.
+flight. Like the retired drive-planner's meeting blocks (Epic #59 §4),
+flight-assist keeps no local store of them: the created calendar event itself
+carries everything needed to re-evaluate it, read back by a direct API fetch.
+This module is that codec.
 
-It is deliberately a SELF-CONTAINED sibling of drive-planner's `block_props.py`,
-not a shared extraction — the two codecs share a shape but differ in marker
-namespace, directions, and anchor semantics, and a shared module would need
-cross-skill mounting that isn't worth the coupling (#90 decision). drive-planner
-is untouched.
+It was written as a deliberately SELF-CONTAINED sibling of drive-planner's
+`block_props.py` rather than a shared extraction — the two codecs shared a
+shape but differed in marker namespace, directions, and anchor semantics, and
+a shared module would have needed cross-skill mounting that wasn't worth the
+coupling (#90 decision). That sibling is gone (#181, with the rest of the
+retired planner); drive-engine's `block_codec.py` is the codec for every block
+the engine writes, and this one stays flight-assist's own.
 
 State lives entirely in the event **description**. The Composio toolkit this
 plugin shipped on exposed no writable `extendedProperties`, which forced the

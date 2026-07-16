@@ -1,13 +1,15 @@
-"""Wide-window primary-calendar event fetch for the drive-planner sweep.
+"""Wide-window primary-calendar event fetch for the drive-engine reconcile sweep.
 
 The sweep needs the upcoming calendar events in one shot so `scan.py` can
 classify them (Epic #59 §4). This module is that fetch: an events.list over
 the primary calendar (singleEvents, a wide `[timeMin, timeMax]` window),
 returning the raw Google Calendar event dicts in the exact shape
 `scan(events=...)` consumes (`id`, `summary`, `location`, `start`, `end`,
-`description`). The recheck poll reads the drive-planner block's machine state
-back out of the same `description` field (Epic #59 §4 — the calendar event IS
-the state, fetched by API).
+`description`). Block state rides in that same `description` field (Epic #59
+§4 — the calendar event IS the state, fetched by API), so it comes back
+verbatim: `exclude_drive_block_events` reads it to drop the engine's own
+blocks from the scan input, and `scan.py` reads it to recognize a legacy
+drive-planner block by its marker.
 
 This used to be a second, self-contained Composio transport — its own HTTP
 POST, its own auth headers, its own success/failure envelope handling, its own
@@ -15,12 +17,12 @@ pagination loop and its own error type — sitting next to flight-assist's. Both
 were the same calls to the same API, so #638 collapsed them: the transport,
 the page draining (including the `maxResults` + bound that keep #171 fixed),
 and the error taxonomy now come from `google_calendar_client`, and what is
-left here is what is genuinely drive-planner's own — the window contract and
-the projection down to what `scan.py` reads.
+left here is this fetch's own — the window contract and the projection down
+to what `scan.py` reads.
 
 `GoogleCalendarClient` ships in the co-located flight-assist bundle; it is
 imported via the runtime-mount-with-dev-fallback pattern, the same way
-`apply.py` reaches it.
+`reconcile_sweep.py` reaches its own cross-bundle imports.
 
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
@@ -49,7 +51,7 @@ def _flight_assist_dir() -> Path:
     if _FLIGHT_ASSIST_DEV.is_dir():
         return _FLIGHT_ASSIST_DEV
     raise FileNotFoundError(
-        "drive-planner fetch_events: cannot locate the co-shipped flight-assist skill at "
+        "drive-engine fetch_events: cannot locate the co-shipped flight-assist skill at "
         f"{_FLIGHT_ASSIST_RUNTIME} (runtime) or {_FLIGHT_ASSIST_DEV} (dev) — "
         "google_calendar_client ships there; both skills are part of jbaruch/nanoclaw-travel"
     )
@@ -69,10 +71,10 @@ from google_calendar_client import (  # noqa: E402
 _BASE_ARGS = {"calendar_id": "primary", "singleEvents": True}
 
 # Event fields carried through verbatim from the raw event. `scan.py` reads
-# id/summary/location/start/end/description; the recheck poll also reads
-# `description` — that's where the drive-planner block's machine state lives,
-# so `description` alone carries it back (Epic #59 §4 — calendar event IS the
-# state, fetched by API).
+# id/summary/location/start/end/description — `description` is where every
+# generation of drive block keeps its marker and machine state (Epic #59 §4 —
+# calendar event IS the state, fetched by API), so it is what lets
+# `exclude_drive_block_events` and `scan` tell a block from a meeting.
 _EVENT_FIELDS = (
     "id",
     "summary",
@@ -86,7 +88,7 @@ _EVENT_FIELDS = (
 
 
 class CalendarFetcher:
-    """The drive-planner sweep's primary-calendar fetch.
+    """The drive-engine reconcile sweep's primary-calendar fetch.
 
     Holds a `GoogleCalendarClient` (no credential — the OneCLI gateway injects
     the Bearer on the wire; see that module). Not thread-safe — one instance

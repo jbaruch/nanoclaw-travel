@@ -1,8 +1,8 @@
-"""Tests for the drive-planner home-address reader (`home_address.py`).
+"""Tests for the drive-engine home-address reader (`home_address.py`).
 
 Builds the canonical `## Addresses` block programmatically in a tmp file (no
 fixtures checked in, per `coding-policy: testing-standards`) and exercises the
-parse plus the actionable-error paths. drive-planner refuses to guess an
+parse plus the actionable-error paths. drive-engine refuses to guess an
 origin, so a missing block must raise — these tests pin that.
 """
 

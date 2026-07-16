@@ -1,12 +1,17 @@
-"""Classify calendar events into drive-planner transit buckets — the brain.
+"""Classify calendar events into meeting-drive transit buckets — the brain.
 
-drive-planner's job is "for every in-person ground meeting, make sure a
-traffic-aware drive block exists (or was deliberately skipped), and never
-nag about one that doesn't need it." Every bug in LoMBot's `drive_planner`
-(16 closed issues, see Epic #59 §5) was a *scan-classification* error that
-produced either a nag (false positive) or a silent miss (false negative).
-So the scan is the brain: get the bucketing right, bake in the scars, and
-make the output auditable rather than silently dropping events.
+The job is "for every in-person ground meeting, make sure a traffic-aware
+drive block exists (or was deliberately skipped), and never nag about one
+that doesn't need it." Every bug in LoMBot's `drive_planner` (16 closed
+issues, see Epic #59 §5) was a *scan-classification* error that produced
+either a nag (false positive) or a silent miss (false negative). So the scan
+is the brain: get the bucketing right, bake in the scars, and make the output
+auditable rather than silently dropping events.
+
+Written for the drive-planner sweep, kept through that skill's retirement
+(#156) because the classification is what it got right; folded into
+drive-engine with the rest of the surviving library (#181). Imported by
+`reconcile_sweep.py` (via `meeting_source.py`) — the sole caller.
 
 This module is the deterministic core (per `coding-policy: script-
 delegation` — classification is a pure function of known inputs). It takes
@@ -74,9 +79,7 @@ script-delegation` / `file-hygiene`):
 
 from __future__ import annotations
 
-import json
 import re
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -93,9 +96,14 @@ PAST_TOLERANCE = timedelta(minutes=5)
 # override via `tight_gap_seconds=` and tests pin the boundary.
 DEFAULT_TIGHT_GAP_SECONDS = 90 * 60
 
-# The marker drive-planner stamps into the description of every block it
-# creates, so it recognizes its own work (idempotency, lombot #50) and can
-# attribute a block to the meeting it serves. Example:
+# The marker the retired drive-planner stamped into the description of every
+# block it created, attributing it to the meeting it served (idempotency,
+# lombot #50). Nothing writes it now — drive-engine's own blocks carry a
+# `<!--de:-->` marker and are filtered out before they reach the scan
+# (`meeting_source.exclude_drive_block_events`). This regex is a READER of
+# blocks left on the calendar from before the retirement: it is what buckets
+# their meeting as `has_block` so the engine doesn't plan a duplicate on top.
+# Frozen by what is already deployed, not by a writer. Example:
 #     [drive-planner:meeting=evt_42:dir=outbound]
 _MARKER_RE = re.compile(r"\[drive-planner:meeting=(?P<id>[^:\]]+):dir=(?P<dir>[^:\]]+)\]")
 
@@ -520,7 +528,7 @@ def scan(
     flight_windows: list[tuple[datetime, datetime]] | None = None,
     flight_summaries: list[str] | None = None,
 ) -> list[MeetingClass]:
-    """Classify every event into a drive-planner bucket.
+    """Classify every event into a transit bucket.
 
     Pure and deterministic: same inputs → same output, no I/O. Returns one
     `MeetingClass` per input event (nothing is silently dropped — filtered
@@ -857,107 +865,3 @@ def actionable(results: list[MeetingClass]) -> list[MeetingClass]:
     """
     actionable_buckets = {"needs_decision", "bridge", "back_to_back"}
     return [r for r in results if r.bucket in actionable_buckets]
-
-
-def _leg_to_dict(leg: TransitLeg) -> dict:
-    """JSON-serializable view of a TransitLeg (datetimes → ISO-8601)."""
-    return {
-        "direction": leg.direction,
-        "origin": leg.origin,
-        "destination": leg.destination,
-        "arrive_by": leg.arrive_by.isoformat() if leg.arrive_by else None,
-        "depart_after": leg.depart_after.isoformat() if leg.depart_after else None,
-        "gap_seconds": leg.gap_seconds,
-        "anchor_note": leg.anchor_note,
-    }
-
-
-def _class_to_dict(result: MeetingClass) -> dict:
-    """JSON-serializable view of a MeetingClass (datetimes → ISO-8601)."""
-    return {
-        "meeting_id": result.meeting_id,
-        "summary": result.summary,
-        "bucket": result.bucket,
-        "reason": result.reason,
-        "location": result.location,
-        "start": result.start.isoformat() if result.start else None,
-        "end": result.end.isoformat() if result.end else None,
-        "legs": [_leg_to_dict(leg) for leg in result.legs],
-        "present_directions": list(result.present_directions),
-        "timezone": result.timezone,
-    }
-
-
-def main() -> int:
-    """CLI wrapper around the pure `scan()` — the script process contract.
-
-    stdin: a JSON object
-        {"events": [<gcal event>, ...], "now": "<tz-aware ISO-8601>",
-         "home_address": "...", "skip_state": {<id>: "<ISO expiry>"},
-         "tight_gap_seconds": <int, optional>}
-    stdout: {"results": [<MeetingClass dict>, ...]} (exit 0)
-    stderr: {"error": "..."} with a non-zero exit on invalid JSON, a missing
-        or timezone-naive `now`, an empty `home_address`, or any ScanError.
-
-    The pure `scan()` stays importable for unit tests; this is the
-    deterministic-operation-as-script surface per `coding-policy:
-    script-delegation` / `file-hygiene`.
-
-    This CLI is anchor-static and schedule-unaware: legs anchor at
-    `home_address` only, and no flight windows / summaries are supplied. The
-    trip-aware anchor (#122) and the schedule-backed flight signals (#85) are
-    Python-side inputs that don't cross this JSON boundary — the sweep precheck
-    passes `anchor_for`, `flight_windows`, `flight_summaries`. The intrinsic
-    flight-template summary signal still fires here (it needs no schedule).
-    """
-    try:
-        request = json.load(sys.stdin)
-    except json.JSONDecodeError as exc:
-        print(json.dumps({"error": f"invalid JSON on stdin: {exc}"}), file=sys.stderr)
-        return 1
-    if not isinstance(request, dict):
-        print(json.dumps({"error": "stdin must be a JSON object"}), file=sys.stderr)
-        return 1
-
-    now = _parse_iso(request.get("now"))
-    if now is None:
-        print(
-            json.dumps(
-                {
-                    "error": "`now` must be a timezone-aware ISO-8601 string "
-                    f"(got {request.get('now')!r})"
-                }
-            ),
-            file=sys.stderr,
-        )
-        return 1
-
-    tight_gap = request.get("tight_gap_seconds", DEFAULT_TIGHT_GAP_SECONDS)
-    # bool is an int subclass — exclude it so `true`/`false` is not a "gap".
-    if not isinstance(tight_gap, int) or isinstance(tight_gap, bool) or tight_gap <= 0:
-        print(
-            json.dumps(
-                {"error": f"`tight_gap_seconds` must be a positive integer (got {tight_gap!r})"}
-            ),
-            file=sys.stderr,
-        )
-        return 1
-
-    try:
-        results = scan(
-            request.get("events", []),
-            now=now,
-            home_address=request.get("home_address", ""),
-            skip_state=request.get("skip_state"),
-            tight_gap_seconds=tight_gap,
-        )
-    except ScanError as exc:
-        print(json.dumps({"error": str(exc)}), file=sys.stderr)
-        return 1
-
-    print(json.dumps({"results": [_class_to_dict(result) for result in results]}, indent=2))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

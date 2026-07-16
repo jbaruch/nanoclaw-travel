@@ -1,11 +1,12 @@
 """HTTP client for the native Google Calendar REST API (v3).
 
 Replaces `composio_client.py` (nanoclaw#638). Used by the calendar
-`reconcile` script, the drive-engine sweep, and the drive-planner apply /
-fetch paths to converge calendars deterministically — list calendars, find
-events in a time window, create / patch / delete events — without the agent
-in the loop. Mirrors `byair_client.py` / `maps_client.py`: stdlib-only
-`urllib`, HTTP-mockable in CI, one client per process.
+`reconcile` script and by the drive-engine sweep (both its `calendar_apply`
+writes and its `fetch_events` window read) to converge calendars
+deterministically — list calendars, find events in a time window, create /
+patch / delete events — without the agent in the loop. Mirrors
+`byair_client.py` / `maps_client.py`: stdlib-only `urllib`, HTTP-mockable in
+CI, one client per process.
 
 Credential model (the whole point of #638)
 ------------------------------------------

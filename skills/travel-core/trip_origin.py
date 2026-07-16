@@ -28,8 +28,8 @@ its state-schema.md); this module is a non-owner READER per
 forward-incompatible file resolves to "no usable schedule" (static-home
 behavior), never an exception, and never a migration.
 
-Shared across bundles: drive-planner's sweep precheck imports this module
-cross-bundle the same way it already imports `maps_client` from this skill.
+Shared across bundles: drive-engine's reconcile sweep imports this module
+cross-bundle the same way it already imports `maps_client` from flight-assist.
 
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
@@ -277,7 +277,7 @@ def _flight_records(schedule: list[dict] | None) -> list[dict]:
 def flight_windows(schedule: list[dict] | None) -> list[tuple[datetime, datetime]]:
     """UTC (start, end) spans for every timed `Flight` segment in the schedule.
 
-    drive-planner's `scan` uses these to filter TripIt flight events out of
+    drive-engine's `scan` uses these to filter TripIt flight events out of
     ground-meeting classification (#85): a calendar event overlapping a flight
     window is air travel — owned by flight-assist — never a ground meeting to
     draw a drive block for (the London-hotel→JFK-layover "drive"). A None /

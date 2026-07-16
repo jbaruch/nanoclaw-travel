@@ -1,4 +1,4 @@
-"""Tests for the drive-planner calendar fetch (`fetch_events.py`).
+"""Tests for the drive-engine calendar fetch (`fetch_events.py`).
 
 Mocks `urllib.request.urlopen` so the tests exercise request shaping, event
 extraction, projection to the scan-event fields, and input guards — without
