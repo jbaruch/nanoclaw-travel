@@ -10,8 +10,7 @@
     "skills/sync-tripit",
     "skills/check-travel-bookings",
     "skills/nightly-travel-sync",
-    "skills/drive-planner",
-    "skills/drive-planner-recheck"
+    "skills/drive-planner"
   ],
   "rules": [
     "rules/flight-data-locality.md",

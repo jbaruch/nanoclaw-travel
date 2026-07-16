@@ -72,7 +72,6 @@ Gmail is not this plugin's domain, so it depends on the one tested copy of the R
 | [check-travel-bookings](skills/check-travel-bookings/SKILL.md) | Checks upcoming trips for missing bookings (flights, hotels, accommodation) by reading the nightly-built `travel-db.json`. Reports gaps for all upcoming trips — no date limit. Supports snooze state. Silent when all bookings are complete or snoozed. Use when the user asks about upcoming travel plans, itinerary completeness, missing reservations, or TripIt trip status. |
 | [nightly-travel-sync](skills/nightly-travel-sync/SKILL.md) | Daily travel-data refresh bundle: TripIt → Reclaim timezone sync, refresh `travel-schedule.json` from the TripIt iCal feed with a two-tier Gmail freshness probe, rebuild `travel-db.json`, then run `check-travel-bookings`. Precheck-gated on `travel-db.json` freshness; surfaces failures and relies on the daily cron + freshness probe to recover. Self-contained writer of the data `check-travel-bookings` reads. |
 | [drive-planner](skills/drive-planner/SKILL.md) | **RETIRED (#156)** — superseded by drive-engine, which now plans and writes meeting drives. Non-invocable, no schedule; kept only as a library so drive-engine can import its meeting-detection code (`scan.py`, `fetch_events.py`, `skip_state.py`). |
-| [drive-planner-recheck](skills/drive-planner-recheck/SKILL.md) | **RETIRED (#156)** — superseded by drive-engine. Non-invocable, no schedule; no longer polls or alerts. |
 
 ## Skill scripts
 

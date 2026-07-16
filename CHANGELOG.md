@@ -1,5 +1,17 @@
 # Changelog
 
+### Removed — the retired `drive-planner-recheck` skill
+
+`#156` retired `drive-planner-recheck` when the unified drive-engine took over drive blocks: its `cadence` was removed, so it never fires, and it is `user-invocable: false` + `disable-model-invocation: true`, so nothing can reach it. Unlike `drive-planner` — which stays declared because drive-engine's reconcile sweep imports its meeting-detection modules as a library — nothing imports `drive-planner-recheck`. It was a directory the registry shipped to every container for a skill that cannot run and cannot be called.
+
+The skill-review gate had been saying so. Its `SKILL.md` scored 77% against the 85% threshold, marked down for lacking positive trigger terms and a `Use when...` clause — which a retirement notice correctly does not have. The reviewer's own first suggestion was to remove it from the registry rather than keep tuning a description whose purpose is to never match.
+
+It surfaced during `jbaruch/nanoclaw#638`: that migration made a two-line credential fix inside the directory (`CalendarFetcher.from_env()` -> `CalendarFetcher()`, since `from_env` no longer exists), and the changed-skills loop reviews any skill whose files move. A required fix in a dead skill blocked the publish. Removing it is the fix; scoring the notice higher would only defer this.
+
+`tests/test_drive_planner_recheck.py` stays — despite the name it exercises `skills/drive-planner/recheck.py`, part of the kept library, not the removed skill.
+
+**Surface sync:** removed `skills/drive-planner-recheck/` and `tests/test_drive_planner_recheck_precheck.py`; dropped the entry from `.tessl-plugin/plugin.json`, the row from `README.md`, and the execution environment + `extraPaths` mentions from `pyrightconfig.json`.
+
 ### Fixed — the Gmail freshness fallback no longer puts raw email in the session
 
 `nightly-travel-sync` Step 3's `stale` branch had the AGENT call a Gmail tool
