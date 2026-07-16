@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-planner"))
+sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
 from scan import (  # noqa: E402
     DEFAULT_TIGHT_GAP_SECONDS,
