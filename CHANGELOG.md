@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.47 — 2026-07-16
+
 ### Changed — drive blocks are Busy, not Free
 
 A drive block showed as Free (`transparency: "transparent"`, the Epic #59 §5 /
