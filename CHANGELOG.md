@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.49 — 2026-07-17
+
 ### Removed — `drive-planner`, folded into `drive-engine`
 
 `#156` retired `drive-planner` and kept it declared as a library, on the stated grounds that drive-engine's reconcile sweep imports its meeting-detection modules. That was true of three modules. The bundle shipped nine.
