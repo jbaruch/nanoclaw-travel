@@ -68,13 +68,9 @@ Public API:
         if r.bucket == "needs_decision":
             ...  # ask drive/skip, route r.legs
 
-CLI (the deterministic-operation-as-script contract, per `coding-policy:
-script-delegation` / `file-hygiene`):
-
-    echo '{"now": "...", "home_address": "...", "events": [...]}' \\
-        | python scan.py
-    # stdout: {"results": [<MeetingClass dict>, ...]}; exit 0
-    # stderr: {"error": "..."} + non-zero exit on bad input
+Import-only — there is no CLI. The JSON-stdin entry point this module used to
+expose was invoked by drive-planner's `SKILL.md` and went with it (#181); the
+sweep imports `scan()` directly.
 """
 
 from __future__ import annotations
