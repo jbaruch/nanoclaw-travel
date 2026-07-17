@@ -387,7 +387,8 @@ def build_sweep_payload(applied, skipped: list[str]) -> dict:
 
     `data.message` is the deterministically rendered operator notice (#187): the
     wake agent sends it verbatim rather than composing one, so a resumed session
-    cannot escalate. It is present iff the sweep wakes."""
+    cannot escalate. The key is always present; its value is the notice string iff
+    the sweep wakes, and `None` on a silent sweep."""
     added = _group_meeting_adds(applied.added_meeting_legs)
     material = _dedup_material(applied.material_updates)
     return {
