@@ -460,3 +460,84 @@ def test_shadow_payload_is_json_serializable():
     break the scheduler's stdout contract."""
     payload = reconcile_sweep.build_shadow_payload(_shadow_plan(), [])
     assert json.loads(json.dumps(payload))["data"]["shadow"] is True
+
+
+# --- the shadow branch's safety contract (#183) --------------------------
+#
+# `finish_sweep` is the seam `_run_sweep` delegates the shadow-vs-apply
+# decision to, so the no-write guarantee is testable without live clients.
+
+
+class _ApplySpy:
+    """Stands in for `apply_plan`; records whether it was ever called."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, plan, **kwargs):
+        self.calls.append((plan, kwargs))
+        return _ApplyResult()
+
+
+class _ApplyResult:
+    created = updated = deleted = converted = 0
+    added_meeting_legs = ()
+    material_updates = ()
+    deferred = 0
+    errors = ()
+
+
+def test_shadow_branch_never_calls_apply(monkeypatch, capsys):
+    """The safety contract: a shadow run must not touch the calendar."""
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", "1")
+    spy = _ApplySpy()
+    reconcile_sweep.finish_sweep(_shadow_plan(), [], calendar=object(), elapsed=0.0, apply=spy)
+    assert spy.calls == []
+
+
+def test_shadow_branch_renders_to_stderr_not_stdout(monkeypatch, capsys):
+    """stdout carries the scheduler's JSON payload — the diff must not land there."""
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", "1")
+    reconcile_sweep.finish_sweep(
+        _shadow_plan(), [], calendar=object(), elapsed=0.0, apply=_ApplySpy()
+    )
+    out, err = capsys.readouterr()
+    assert "[shadow] reconcile plan" in err
+    assert "+ CREATE airport_departure" in err
+    assert out == ""
+
+
+def test_shadow_branch_returns_the_shadow_payload(monkeypatch):
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", "1")
+    payload = reconcile_sweep.finish_sweep(
+        _shadow_plan(), ["a skip"], calendar=object(), elapsed=0.0, apply=_ApplySpy()
+    )
+    assert payload["wake_agent"] is False
+    assert payload["data"]["shadow"] is True
+    assert payload["data"]["planned"]["creates"] == 1
+
+
+def test_live_branch_applies_when_shadow_is_off(monkeypatch):
+    """The scheduled sweep is untouched: shadow off → apply is called as before."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    spy = _ApplySpy()
+    cal = object()
+    payload = reconcile_sweep.finish_sweep(_shadow_plan(), [], calendar=cal, elapsed=0.0, apply=spy)
+    assert len(spy.calls) == 1
+    plan, kwargs = spy.calls[0]
+    assert kwargs["calendar"] is cal and kwargs["calendar_id"] == "primary"
+    assert "shadow" not in payload["data"]
+
+
+def test_live_branch_passes_remaining_budget_to_apply(monkeypatch):
+    """#164: apply gets what the fetch/plan phase left, never a negative budget."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    spy = _ApplySpy()
+    reconcile_sweep.finish_sweep(_shadow_plan(), [], calendar=object(), elapsed=5.0, apply=spy)
+    assert spy.calls[0][1]["budget_seconds"] == pytest.approx(
+        reconcile_sweep._SWEEP_WALL_CLOCK_BUDGET_SECONDS - 5.0
+    )
+
+    spy2 = _ApplySpy()
+    reconcile_sweep.finish_sweep(_shadow_plan(), [], calendar=object(), elapsed=9_999.0, apply=spy2)
+    assert spy2.calls[0][1]["budget_seconds"] == 0.0  # clamped, never negative

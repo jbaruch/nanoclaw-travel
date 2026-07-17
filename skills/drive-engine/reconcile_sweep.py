@@ -390,6 +390,45 @@ def _shadow_mode() -> bool:
     return os.environ.get(_SHADOW_ENV, "").strip().lower() in _SHADOW_TRUTHY
 
 
+def finish_sweep(
+    plan: ReconcilePlan,
+    skipped: list[str],
+    *,
+    calendar,
+    elapsed: float,
+    apply: Callable = apply_plan,
+) -> dict:
+    """Shadow-render or apply the plan, and return the sweep's stdout payload.
+
+    The shadow-vs-live decision and the write itself, split out of `_run_sweep`
+    so the safety contract is unit-testable without the live I/O clients (#183,
+    the same seam #172 cut for `build_sweep_payload`). `apply` is injected for
+    that: a test asserts a shadow run never calls it.
+
+    SHADOW: renders to STDERR — stdout carries the JSON payload the scheduler
+    parses, so writing the diff there would corrupt the contract — and returns
+    BEFORE `apply` is called, so a shadow run cannot touch the calendar.
+
+    LIVE: gives apply whatever of the sweep budget the fetch/plan phase left
+    (`elapsed`), so the write phase stops with margin before the host precheck
+    kill (#164)."""
+    if _shadow_mode():
+        print(render_plan(plan), file=sys.stderr)
+        for line in skipped:
+            print(f"[drive-engine] skip: {line}", file=sys.stderr)
+        return build_shadow_payload(plan, skipped)
+
+    apply_budget = max(_SWEEP_WALL_CLOCK_BUDGET_SECONDS - elapsed, 0.0)
+    applied = apply(plan, calendar=calendar, calendar_id="primary", budget_seconds=apply_budget)
+
+    for line in skipped:
+        print(f"[drive-engine] skip: {line}", file=sys.stderr)
+    for line in applied.errors:
+        print(f"[drive-engine] error: {line}", file=sys.stderr)
+
+    return build_sweep_payload(applied, skipped)
+
+
 def _run_sweep() -> dict:
     """Run the live unified reconcile, APPLY it, and return the stdout payload.
 
@@ -574,30 +613,12 @@ def _run_sweep() -> dict:
 
     skipped = list(result.skipped) + list(meeting_skipped)
 
-    # --- SHADOW (no write) ---
-    # Render to stderr, not stdout: stdout carries the JSON payload the
-    # scheduler parses, so the diff would corrupt the contract. Returns before
-    # apply, so a shadow run cannot touch the calendar.
-    if _shadow_mode():
-        print(render_plan(result.plan), file=sys.stderr)
-        for line in skipped:
-            print(f"[drive-engine] skip: {line}", file=sys.stderr)
-        return build_shadow_payload(result.plan, skipped)
-
-    # --- APPLY (write) ---
-    # Give apply whatever of the sweep budget the fetch/plan phase left, so the
-    # write phase stops with margin before the host precheck kill (#164).
-    apply_budget = max(_SWEEP_WALL_CLOCK_BUDGET_SECONDS - (time.monotonic() - sweep_start), 0.0)
-    applied = apply_plan(
-        result.plan, calendar=calendar, calendar_id="primary", budget_seconds=apply_budget
+    return finish_sweep(
+        result.plan,
+        skipped,
+        calendar=calendar,
+        elapsed=time.monotonic() - sweep_start,
     )
-
-    for line in skipped:
-        print(f"[drive-engine] skip: {line}", file=sys.stderr)
-    for line in applied.errors:
-        print(f"[drive-engine] error: {line}", file=sys.stderr)
-
-    return build_sweep_payload(applied, skipped)
 
 
 def main() -> int:
