@@ -11,7 +11,8 @@ auditable rather than silently dropping events.
 Written for the drive-planner sweep, kept through that skill's retirement
 (#156) because the classification is what it got right; folded into
 drive-engine with the rest of the surviving library (#181). Imported by
-`reconcile_sweep.py` (via `meeting_source.py`) — the sole caller.
+`reconcile_sweep.py` (the sole production caller); its results feed
+`meeting_source.meeting_desired_blocks`.
 
 This module is the deterministic core (per `coding-policy: script-
 delegation` — classification is a pure function of known inputs). It takes
