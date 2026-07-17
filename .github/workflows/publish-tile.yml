@@ -49,7 +49,7 @@ jobs:
         run: |
           # Pipefail so a failing `git diff` propagates instead of silently
           # producing an empty changed-skills set (which would skip the
-          # mandatory review per `rules/context-artifacts.md`).
+          # mandatory review per jbaruch/coding-policy `context-artifacts`).
           set -eo pipefail
 
           if [ -n "$BASE_OVERRIDE" ]; then
