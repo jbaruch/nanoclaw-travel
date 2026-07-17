@@ -12,7 +12,9 @@ The one engine that manages every `Drive:` block. On each ~30-min sweep it:
    redeye survives), with travel-away suppression so a home drive is never invented
    while abroad;
 3. diffs both against the calendar's current blocks in ONE reconcile; and
-4. APPLIES the plan — creating, updating, and deleting its own blocks.
+4. APPLIES the plan — creating, updating, and deleting its own blocks — unless
+   `DRIVE_ENGINE_SHADOW` is set, in which case it renders the plan to stderr and
+   writes nothing (#183; the dry run that de-risks a block-shape cutover).
 
 It does NOT touch legacy drive-planner / flight-assist blocks (`managed_legacy` is
 empty): those are left for the operator to clean up, and the two old engines are
@@ -430,7 +432,11 @@ def finish_sweep(
 
 
 def _run_sweep() -> dict:
-    """Run the live unified reconcile, APPLY it, and return the stdout payload.
+    """Run the live unified reconcile and return the stdout payload.
+
+    Wires the real clients, plans, then hands off to `finish_sweep`, which
+    APPLIES the plan — or, under `DRIVE_ENGINE_SHADOW`, renders it and writes
+    nothing (#183). The write itself lives there, not here.
 
     Raises `PlanBudgetExceeded` when routing (meeting or airport side, both
     sharing the budget-aware `route`) runs past budget — `main()` maps that to the
@@ -622,7 +628,9 @@ def _run_sweep() -> dict:
 
 
 def main() -> int:
-    """Run the live unified reconcile and APPLY it. Fails closed on any error.
+    """Run the live unified reconcile and APPLY it — or, under
+    `DRIVE_ENGINE_SHADOW`, render the plan and write nothing (#183). Fails
+    closed on any error.
 
     outer-boundary-process-contract:
       caller's silent-failure shape — the scheduler reads a non-zero exit OR
