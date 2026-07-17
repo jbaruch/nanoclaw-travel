@@ -1,6 +1,6 @@
 """Persist user "skip this meeting" decisions with auto-expiry — the skip store.
 
-When drive-planner asks "drive or skip?" and the user says skip, that answer
+When drive-engine asks "drive or skip?" and the user says skip, that answer
 has to stick: re-asking about the same skipped meeting every sweep is the
 trust-eroding nag LoMBot hit (Epic #59 §5 #49). This module is the on-disk
 store of those skips. `scan.py` consumes the `{meeting_id: expiry}` mapping
@@ -18,11 +18,12 @@ State file (per `coding-policy: stateful-artifacts`; see `state-schema.md`):
     {"schema_version": 1, "skips": {"<meeting_id>": "<ISO-8601 expiry>"}}
 
 Owner / contract:
-    This module owns the SHAPE — only it migrates `schema_version`. The
-    drive-planner sweep that used to write is retired (#156); the live writer
-    and reader is drive-engine, through this module's API: `skip_drive.py`
-    WRITES via `add_skip` / `clear_skip` / `prune`, and `reconcile_sweep.py`
-    READS via `load_active_skips`, feeding the result to `scan(skip_state=...)`.
+    This module owns the SHAPE — only it migrates `schema_version`. Its writer
+    and reader are both co-bundled: `skip_drive.py` WRITES via `add_skip` /
+    `clear_skip` / `prune`, and `reconcile_sweep.py` READS via
+    `load_active_skips`, feeding the result to `scan(skip_state=...)`. The
+    drive-planner sweep that used to write is retired (#156) and its bundle is
+    folded into this one (#181).
 
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
@@ -60,11 +61,15 @@ class SkipStateError(ValueError):
 
 
 def state_dir() -> Path:
-    """The drive-planner state directory.
+    """The skip-store state directory.
 
     Defaults to `/workspace/state/drive-planner`; overridable via the
     `DRIVE_PLANNER_STATE_DIR` env var (tests point it at a tmp_path). The
     directory is created on first write, not here.
+
+    The `drive-planner` name in both is deployed state, not a live reference:
+    the store predates the #181 fold into drive-engine and renaming either
+    would strand the skips already on disk. Rename only behind a migration.
     """
     return Path(os.environ.get(_STATE_DIR_ENV, _DEFAULT_STATE_DIR))
 
@@ -147,7 +152,7 @@ def _read_skips(*, for_write: bool) -> dict[str, str]:
             raise SkipStateError(
                 f"skip-state file {path} has schema_version {version}, newer than this "
                 f"plugin supports ({SKIP_SCHEMA_VERSION}) — refusing to overwrite it; "
-                "upgrade the drive-planner plugin before writing"
+                "upgrade the nanoclaw-travel plugin before writing"
             )
         return {}
     if version < SKIP_SCHEMA_VERSION:

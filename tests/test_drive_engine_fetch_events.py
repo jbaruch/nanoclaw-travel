@@ -1,4 +1,4 @@
-"""Tests for the drive-planner calendar fetch (`fetch_events.py`).
+"""Tests for the drive-engine calendar fetch (`fetch_events.py`).
 
 Mocks `urllib.request.urlopen` so the tests exercise request shaping, event
 extraction, projection to the scan-event fields, and input guards — without
@@ -25,7 +25,7 @@ from unittest.mock import patch
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-planner"))
+sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
 from fetch_events import CalendarFetcher, GoogleCalendarError  # noqa: E402

@@ -49,7 +49,7 @@ sys.path.insert(0, str(_BUNDLE_DIR))
 
 # trip_origin ships in the co-located travel-core bundle (same plugin). Resolve
 # it at the runtime mount, falling back to the dev-clone sibling so the import
-# works both on the NAS and in CI — same cross-bundle pattern as drive-planner.
+# works both on the NAS and in CI — same cross-bundle pattern as drive-engine.
 _TRAVEL_CORE = Path("/home/node/.claude/skills/tessl__travel-core")
 if not _TRAVEL_CORE.is_dir():
     _TRAVEL_CORE = _BUNDLE_DIR.parent / "travel-core"

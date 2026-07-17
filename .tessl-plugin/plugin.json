@@ -9,8 +9,7 @@
     "skills/flight-assist",
     "skills/sync-tripit",
     "skills/check-travel-bookings",
-    "skills/nightly-travel-sync",
-    "skills/drive-planner"
+    "skills/nightly-travel-sync"
   ],
   "rules": [
     "rules/flight-data-locality.md",

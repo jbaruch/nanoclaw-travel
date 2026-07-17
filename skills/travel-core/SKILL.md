@@ -1,6 +1,6 @@
 ---
 name: travel-core
-description: "Shared travel-domain library bundle for the nanoclaw-travel plugin. Hosts the cross-skill Python modules trip_origin (TripIt-over-home position/anchor resolution) and airport_lead (clearance / post-arrival buffer policy) so flight-assist, drive-planner, and the drive engine import one source of truth instead of duplicating them. Not a user workflow — background code the other skills load at runtime; never invoke directly."
+description: "Shared travel-domain library bundle for the nanoclaw-travel plugin. Hosts the cross-skill Python modules trip_origin (TripIt-over-home position/anchor resolution) and airport_lead (clearance / post-arrival buffer policy) so flight-assist and the drive engine import one source of truth instead of duplicating them. Not a user workflow — background code the other skills load at runtime; never invoke directly."
 user-invocable: false
 disable-model-invocation: true
 ---
@@ -13,12 +13,12 @@ It ships the travel-domain Python modules that more than one skill depends on, s
 
 ## Hosted modules
 
-- `trip_origin.py` — resolves the operator's planned position/anchor at a given instant (TripIt truth over the static home, #122). Public surface: `resolve_anchor`, `resolve_effective_home`, `load_travel_schedule`, and the flight-window / flight-summary helpers the meeting sweep uses. The resolution ladder itself lives in `trip_origin.py` and its tests — do not restate it here. Consumed by flight-assist (`precheck`, `airport_drive_reconcile`) and drive-planner (`precheck`).
+- `trip_origin.py` — resolves the operator's planned position/anchor at a given instant (TripIt truth over the static home, #122). Public surface: `resolve_anchor`, `resolve_effective_home`, `load_travel_schedule`, and the flight-window / flight-summary helpers the meeting sweep uses. The resolution ladder itself lives in `trip_origin.py` and its tests — do not restate it here. Consumed by flight-assist (`precheck`, `airport_drive_reconcile`) and the drive engine (`reconcile_sweep`).
 - `airport_lead.py` — the airport clearance / post-arrival buffer policy. Public surface: `resolve_departure_clearance_minutes`, `resolve_post_arrival_minutes`, `departure_class`, `arrival_class`. The classification rules and buffer values live in `airport_lead.py` and its tests. Consumed by flight-assist (`airport_drive_inputs`) and the drive engine.
 
 ## Consumer contract
 
-Resolve this bundle cross-bundle before importing — try the runtime mount, fall back to the dev-clone sibling, then `sys.path.insert` (the same pattern flight-assist's `maps_client` uses from drive-planner):
+Resolve this bundle cross-bundle before importing — try the runtime mount, fall back to the dev-clone sibling, then `sys.path.insert` (the same pattern drive-engine's `fetch_events` uses to reach flight-assist's `google_calendar_client`):
 
 ```python
 from pathlib import Path

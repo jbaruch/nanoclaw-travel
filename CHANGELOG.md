@@ -1,5 +1,25 @@
 # Changelog
 
+### Removed — `drive-planner`, folded into `drive-engine`
+
+`#156` retired `drive-planner` and kept it declared as a library, on the stated grounds that drive-engine's reconcile sweep imports its meeting-detection modules. That was true of three modules. The bundle shipped nine.
+
+Establishing what drive-engine actually imports (`reconcile_sweep.py` + `skip_drive.py`) against what shipped found the list was wrong in both directions. It named `scan.py`, `fetch_events.py`, `skip_state.py` — and missed `home_address.py`, which the sweep has imported since #162 to resolve the home origin. The other five had no production caller at all: `apply.py` (create / remove were invoked by the sweep #156 disabled; suppress by the recheck skill #180 removed), `precheck.py` (the removed cadence), `recheck.py` (the removed skill — #180's note that it was "part of the kept library" was wrong; nothing imported it), `block_props.py` and `route_error.py` (imported only by the two dead modules above). ~91k of code held alive by its own tests.
+
+`scan.py` carried a tenth surface: a JSON-stdin CLI whose only caller was drive-planner's `SKILL.md`. drive-engine imports the `scan()` function, never the process. Removed with its tests; the pure classifier is untouched.
+
+With the dead five gone, four library modules remained and drive-engine was their only consumer — so the bundle is folded into it and `skills/drive-planner/` is deleted. Keeping it as a declared skill meant shipping a retired non-invocable directory to every container and through the skill-review gate on every change, for code with one importer that lives next door. The fold also removes a latent hazard: drive-planner's `precheck.py` shared the bare module name `precheck` with flight-assist's, and the sweep put both bundles on `sys.path` — flight-assist won by insertion order. `tests/test_drive_planner_sweep_precheck.py` carried a `_load()` helper working around exactly that collision.
+
+The skip store keeps its `/workspace/state/drive-planner/` directory and `DRIVE_PLANNER_STATE_DIR` env var. The name is now deployed state, not a reference — renaming either would strand the skips already on disk, and that is a migration, not a side effect of moving code. Both the module and `state-schema.md` say so.
+
+**Prose.** `#180` fixed the two contracts the policy reviewer named and deliberately left the module-level narrative for this issue. Swept: `fetch_events.py` described "the recheck poll" as a present-tense reader of the block description (the field survives because `scan` reads the legacy marker off it and `exclude_drive_block_events` filters on it — not because a poll re-evaluates it); `scan.py`'s marker comment described drive-planner stamping the marker into blocks it creates, when nothing has written it since #156 — the regex is a reader of blocks left on the calendar, frozen by what is deployed rather than by a writer. `state-schema.md`'s Calendar-as-State section documented `block_props`' full record — `v`/`b`/`a`/`o`/`d`/`al` — whose only reader (`block_props.parse_block`) is now deleted; `block_codec` recognizes a legacy block by its marker plus the *presence* of the `<!--dp:-->` comment and never decodes the payload, so those keys are inert bytes on deployed events. The section now says that instead of documenting a live format.
+
+Four modules in sibling bundles named deleted code as their caller and were corrected: `travel-core/trip_origin.py` and `travel-core/SKILL.md` ("drive-planner's sweep precheck imports this module"), `flight-assist/google_calendar_client.py` ("the drive-planner apply / fetch paths"), `flight-assist/airport_block.py` (a "self-contained sibling of drive-planner's `block_props.py`" — the #90 decision is kept as history, the live twin claim is not), `flight-assist/maps_client.py`.
+
+The `drive-planner` name survives where it is accurate: the frozen on-calendar marker literal, and history ("legacy drive-planner blocks", "the retired planner"). drive-engine still leaves those blocks for the operator (`_MANAGED_LEGACY` is empty); once none remain, `scan._MARKER_RE` and `block_codec`'s legacy branch are dead code and can go.
+
+**Surface sync:** deleted `skills/drive-planner/`; moved `scan.py`, `fetch_events.py`, `skip_state.py`, `home_address.py`, `state-schema.md` to `skills/drive-engine/`; renamed their tests to the `test_drive_engine_*` convention; dropped the entry from `.tessl-plugin/plugin.json`, the row + script line from `README.md`, and the execution environment + `extraPaths` mentions from `pyrightconfig.json`; removed the now-needless `_on_path("drive-planner")` from `reconcile_sweep.py` and `skip_drive.py`.
+
 ## 0.2.48 — 2026-07-16
 
 ### Removed — the retired `drive-planner-recheck` skill

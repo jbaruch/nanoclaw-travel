@@ -4,7 +4,7 @@ Used by `phase_markers.py` to compute the "leave by" deadline for the
 time-to-leave capability: given the user's current origin and the
 flight's departure airport, return the duration with current traffic.
 The same client is the shared ground-transit time source for the
-`drive-planner` skill (meetings and airports alike).
+`drive-engine` sweep (meetings and airports alike).
 
 Routing chain (mission-critical — "I don't like to be late"):
     1. Google Distance Matrix (primary). Free-form origin/destination

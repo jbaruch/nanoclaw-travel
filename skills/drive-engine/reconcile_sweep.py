@@ -367,7 +367,6 @@ def _run_sweep() -> dict:
     sweep_start = time.monotonic()
     _on_path("flight-assist")
     _on_path("travel-core")
-    _on_path("drive-planner")
 
     from airport_drive_inputs import airport_context
     from byair_client import ByAirClient

@@ -4,11 +4,14 @@ Every home-anchored drive leg (outbound from home, return to home) starts or
 ends at the operator's current residence. That address has ONE canonical home
 (Epic #59 §4): the machine-readable `## Addresses` block in the owner profile
 `/workspace/trusted/user_profile.md`, owned by the `trusted-memory` skill in
-the `nanoclaw-trusted` plugin. drive-planner is a READER of that block, never a
+the `nanoclaw-trusted` plugin. drive-engine is a READER of that block, never a
 writer — the trusted plugin owns its shape and migration. (Epic #59 §4/§7 name
 `nanoclaw-admin`; that is stale — the owning `trusted-memory` skill lives in
-`nanoclaw-trusted` (whose `state-schema.md` names this reader), and
-drive-planner itself lives in the `jbaruch/nanoclaw-travel` plugin.)
+`nanoclaw-trusted` (whose `state-schema.md` names this reader), and this
+reader itself lives in the `jbaruch/nanoclaw-travel` plugin.)
+
+Read by `reconcile_sweep.py`, which resolves the home origin for every
+home-anchored leg it plans.
 
 The block the trusted plugin writes (Epic #59 §4):
 
@@ -76,7 +79,7 @@ class HomeAddressError(Exception):
     """Raised when the canonical home address cannot be read.
 
     The fix is always "make the trusted plugin's `## Addresses` block present and
-    well-formed", not "retry" — the message says so. drive-planner refuses to
+    well-formed", not "retry" — the message says so. drive-engine refuses to
     guess an origin rather than route every drive from the wrong place.
     """
 

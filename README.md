@@ -65,13 +65,12 @@ Gmail is not this plugin's domain, so it depends on the one tested copy of the R
 
 | Skill | Description |
 |-------|-------------|
-| [travel-core](skills/travel-core/SKILL.md) | Shared library bundle (not user-invocable): hosts the cross-skill `trip_origin` (TripIt-over-home position/anchor resolution) and `airport_lead` (clearance / post-arrival buffer policy) modules so flight-assist, drive-planner, and the drive engine import one source of truth. |
+| [travel-core](skills/travel-core/SKILL.md) | Shared library bundle (not user-invocable): hosts the cross-skill `trip_origin` (TripIt-over-home position/anchor resolution) and `airport_lead` (clearance / post-arrival buffer policy) modules so flight-assist and the drive engine import one source of truth. |
 | [drive-engine](skills/drive-engine/SKILL.md) | Unified leg-based drive-block engine (#156). On a ~30-min sweep it plans airport drives from the byAir itinerary and meeting drives from the calendar, diffs both against the primary calendar, and **applies** the changes — creating / updating / deleting its own blocks. Suppresses drives that can't be made (connection airports, home meetings while travelling), renders in local time, and leaves legacy blocks for the operator. Notifies the operator ONLY on a new meeting drive (which they can skip by replying "skip", enumerated by local index) or a material (≥10%) drive-time change ("leave N min sooner/later"); removes, airport-drive adds, and routine re-times apply silently. Replaces the flight-assist airport-drive pass and drive-planner. |
 | [flight-assist](skills/flight-assist/SKILL.md) | Action router: diagnose credentials, set home base, or compose a user-facing notification from a precheck wake event (delay, gate change, cancellation, boarding, time-to-leave, carousel, day-before, arrival logistics, tracked-flight add/remove) |
 | [sync-tripit](skills/sync-tripit/SKILL.md) | Adaptive scheduler that fires the byAir → `active-flights.json` refresh on a precheck-gated 5-min cadence — responsive on flight days, idle between travel windows. Diagnostic-only LLM surface (the gate + sync happen in the precheck script) |
 | [check-travel-bookings](skills/check-travel-bookings/SKILL.md) | Checks upcoming trips for missing bookings (flights, hotels, accommodation) by reading the nightly-built `travel-db.json`. Reports gaps for all upcoming trips — no date limit. Supports snooze state. Silent when all bookings are complete or snoozed. Use when the user asks about upcoming travel plans, itinerary completeness, missing reservations, or TripIt trip status. |
 | [nightly-travel-sync](skills/nightly-travel-sync/SKILL.md) | Daily travel-data refresh bundle: TripIt → Reclaim timezone sync, refresh `travel-schedule.json` from the TripIt iCal feed with a two-tier Gmail freshness probe, rebuild `travel-db.json`, then run `check-travel-bookings`. Precheck-gated on `travel-db.json` freshness; surfaces failures and relies on the daily cron + freshness probe to recover. Self-contained writer of the data `check-travel-bookings` reads. |
-| [drive-planner](skills/drive-planner/SKILL.md) | **RETIRED (#156)** — superseded by drive-engine, which now plans and writes meeting drives. Non-invocable, no schedule; kept only as a library so drive-engine can import its meeting-detection code (`scan.py`, `fetch_events.py`, `skip_state.py`). |
 
 ## Skill scripts
 
@@ -90,7 +89,6 @@ Plus scheduler-invoked scripts (not user-facing):
 - `nightly-travel-sync/precheck.py` — runs daily, gates the travel-data refresh on `travel-db.json` freshness (see the `nightly-travel-sync` skill + `precheck.py` for the cadence predicate)
 - `nightly-travel-sync/scripts/refresh-travel-schedule.py`, `check-travel-freshness.py`, `fetch-tripit-emails.py`, `filter-tripit-bookings.py` — the travel-source writers + the freshness probe's Gmail fallback (fetch sanitizes in-container, filter matches the TripIt confirmation prefix)
 - `drive-engine/reconcile_sweep.py` — runs every ~30 min, plans airport + meeting drives, reconciles against the primary calendar, and applies the changes (create / update / delete of its own blocks)
-- `drive-planner/scan.py`, `fetch_events.py`, `skip_state.py` — retired to a library: the meeting-detection core (classifier, calendar fetch, skip store) imported by drive-engine's sweep
 
 ## Status
 

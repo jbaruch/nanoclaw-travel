@@ -43,6 +43,7 @@ if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
 from block_codec import parse_block  # noqa: E402
+from skip_state import add_skip  # noqa: E402
 
 # A skip must outlast the meeting so no sweep between now and the meeting's end
 # recreates the block; once the meeting is past, `scan` filters it anyway. This
@@ -159,9 +160,6 @@ def skip_meeting_drive(request: dict, *, calendar=None, now: datetime | None = N
 
     # Record the skip first so a sweep that races this delete still suppresses the
     # meeting (the block reappearing for one cycle is worse than a redundant skip).
-    _on_path("drive-planner")
-    from skip_state import add_skip
-
     add_skip(target.identity, expires=target.expires, now=now)
 
     removed = 0
