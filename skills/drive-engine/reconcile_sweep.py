@@ -12,7 +12,9 @@ The one engine that manages every `Drive:` block. On each ~30-min sweep it:
    redeye survives), with travel-away suppression so a home drive is never invented
    while abroad;
 3. diffs both against the calendar's current blocks in ONE reconcile; and
-4. APPLIES the plan — creating, updating, and deleting its own blocks.
+4. APPLIES the plan — creating, updating, and deleting its own blocks — unless
+   `DRIVE_ENGINE_SHADOW` is set, in which case it renders the plan to stderr and
+   writes nothing (#183; the dry run that de-risks a block-shape cutover).
 
 It does NOT touch legacy drive-planner / flight-assist blocks (`managed_legacy` is
 empty): those are left for the operator to clean up, and the two old engines are
@@ -26,6 +28,7 @@ payload on any error so a transient outage skips one sweep.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -45,6 +48,7 @@ from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noq
 from meeting_source import exclude_drive_block_events, meeting_desired_blocks  # noqa: E402
 from normalize import flight_from_byair  # noqa: E402
 from reconcile import DesiredBlock, ReconcilePlan  # noqa: E402
+from shadow import plan_counts, render_plan  # noqa: E402
 from tripit_flights import flights_from_schedule  # noqa: E402
 
 RouteFn = Callable[[str, str], "timedelta | None"]
@@ -55,6 +59,12 @@ RouteFn = Callable[[str, str], "timedelta | None"]
 _MANAGED_LEGACY: frozenset[str] = frozenset()
 
 SWEEP_WINDOW = timedelta(days=14)
+
+# Shadow / dry-run opt-in (#156 R4): plan and render, write nothing. Lets a
+# block-shape change be validated against the production calendar before the
+# cutover applies anything. The rendering itself lives in `shadow.py`.
+_SHADOW_ENV = "DRIVE_ENGINE_SHADOW"
+_SHADOW_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 # Wall-clock budget for the whole sweep. The host kills this precheck at ~33s
 # (#164); bound the write phase so `apply_plan` stops starting new ops with margin
@@ -355,8 +365,78 @@ def build_sweep_payload(applied, skipped: list[str]) -> dict:
     }
 
 
+def build_shadow_payload(plan: ReconcilePlan, skipped: list[str]) -> dict:
+    """Assemble the stdout payload for a shadow sweep — planned, never applied.
+
+    Never wakes: a dry run changed nothing, so there is nothing for the operator
+    to act on. `data.shadow` marks the payload so a reader can't mistake a
+    rendered plan for applied work, and `planned` carries `shadow.plan_counts`
+    (the #156 R4 acceptance surface — "the delete-diff matches the counted
+    garbage") rather than the `applied` counts a live sweep reports."""
+    return {
+        "wake_agent": False,
+        "data": {
+            "shadow": True,
+            "planned": plan_counts(plan),
+            "skipped": len(skipped),
+        },
+    }
+
+
+def _shadow_mode() -> bool:
+    """True when `DRIVE_ENGINE_SHADOW` asks the sweep to plan and write nothing.
+
+    Off unless explicitly set to a truthy value, so the scheduled sweep applies
+    as normal; an operator opts a single run in from the shell (#156 R4, #183).
+    """
+    return os.environ.get(_SHADOW_ENV, "").strip().lower() in _SHADOW_TRUTHY
+
+
+def finish_sweep(
+    plan: ReconcilePlan,
+    skipped: list[str],
+    *,
+    calendar,
+    elapsed: float,
+    apply: Callable = apply_plan,
+) -> dict:
+    """Shadow-render or apply the plan, and return the sweep's stdout payload.
+
+    The shadow-vs-live decision and the write itself, split out of `_run_sweep`
+    so the safety contract is unit-testable without the live I/O clients (#183,
+    the same seam #172 cut for `build_sweep_payload`). `apply` is injected for
+    that: a test asserts a shadow run never calls it.
+
+    SHADOW: renders to STDERR — stdout carries the JSON payload the scheduler
+    parses, so writing the diff there would corrupt the contract — and returns
+    BEFORE `apply` is called, so a shadow run cannot touch the calendar.
+
+    LIVE: gives apply whatever of the sweep budget the fetch/plan phase left
+    (`elapsed`), so the write phase stops with margin before the host precheck
+    kill (#164)."""
+    if _shadow_mode():
+        print(render_plan(plan), file=sys.stderr)
+        for line in skipped:
+            print(f"[drive-engine] skip: {line}", file=sys.stderr)
+        return build_shadow_payload(plan, skipped)
+
+    apply_budget = max(_SWEEP_WALL_CLOCK_BUDGET_SECONDS - elapsed, 0.0)
+    applied = apply(plan, calendar=calendar, calendar_id="primary", budget_seconds=apply_budget)
+
+    for line in skipped:
+        print(f"[drive-engine] skip: {line}", file=sys.stderr)
+    for line in applied.errors:
+        print(f"[drive-engine] error: {line}", file=sys.stderr)
+
+    return build_sweep_payload(applied, skipped)
+
+
 def _run_sweep() -> dict:
-    """Run the live unified reconcile, APPLY it, and return the stdout payload.
+    """Run the live unified reconcile and return the stdout payload.
+
+    Wires the real clients, plans, then hands off to `finish_sweep`, which
+    APPLIES the plan — or, under `DRIVE_ENGINE_SHADOW`, renders it and writes
+    nothing (#183). The write itself lives there, not here.
 
     Raises `PlanBudgetExceeded` when routing (meeting or airport side, both
     sharing the budget-aware `route`) runs past budget — `main()` maps that to the
@@ -537,25 +617,20 @@ def _run_sweep() -> dict:
         live_origin=live_origin,
     )
 
-    # --- APPLY (write) ---
-    # Give apply whatever of the sweep budget the fetch/plan phase left, so the
-    # write phase stops with margin before the host precheck kill (#164).
-    apply_budget = max(_SWEEP_WALL_CLOCK_BUDGET_SECONDS - (time.monotonic() - sweep_start), 0.0)
-    applied = apply_plan(
-        result.plan, calendar=calendar, calendar_id="primary", budget_seconds=apply_budget
-    )
-
     skipped = list(result.skipped) + list(meeting_skipped)
-    for line in skipped:
-        print(f"[drive-engine] skip: {line}", file=sys.stderr)
-    for line in applied.errors:
-        print(f"[drive-engine] error: {line}", file=sys.stderr)
 
-    return build_sweep_payload(applied, skipped)
+    return finish_sweep(
+        result.plan,
+        skipped,
+        calendar=calendar,
+        elapsed=time.monotonic() - sweep_start,
+    )
 
 
 def main() -> int:
-    """Run the live unified reconcile and APPLY it. Fails closed on any error.
+    """Run the live unified reconcile and APPLY it — or, under
+    `DRIVE_ENGINE_SHADOW`, render the plan and write nothing (#183). Fails
+    closed on any error.
 
     outer-boundary-process-contract:
       caller's silent-failure shape — the scheduler reads a non-zero exit OR

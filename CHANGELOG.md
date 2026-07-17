@@ -1,5 +1,15 @@
 # Changelog
 
+### Added — `DRIVE_ENGINE_SHADOW`, a dry-run for the reconcile sweep
+
+`shadow.py` has rendered a reconcile plan without writing since #156 R4, and nothing has ever called it. Its only importer was its own test — the same shape as the uncalled modules #181 deleted. `reconcile.py` meanwhile described shadow mode in the present tense ("the I/O layer applies the returned plan — or, in shadow mode, just logs it") when `reconcile_sweep` had no such branch and called `apply_plan` unconditionally.
+
+Wired rather than deleted (#183). The renderer was already written and tested, and #178 — moving block state out of the event description — is exactly the block-shape cutover a dry run against the production calendar exists to de-risk. Deleting it would have meant rebuilding it for #178; wiring it gives it the named caller its absence made it debt for, and makes `reconcile.py`'s claim true instead of needing a correction.
+
+`DRIVE_ENGINE_SHADOW=1` (or `true` / `yes` / `on`) makes the sweep plan, render, and return before the write phase. Off unless explicitly set, so the scheduled sweep is untouched; an operator opts a single run in from the shell.
+
+Two contracts the wiring respects. The rendered diff goes to **stderr** — stdout carries the JSON payload the scheduler parses, so writing the plan there would corrupt it. And a shadow sweep **never wakes**: it changed nothing, so there is nothing for the operator to act on. Its payload is marked `data.shadow` and reports `planned` counts (from `shadow.plan_counts`, the #156 R4 acceptance surface) rather than the `applied` counts a live sweep returns, so a reader cannot mistake a rendered plan for applied work.
+
 ## 0.2.50 — 2026-07-17
 
 ### Fixed — a future-version skip file no longer re-nags every declined meeting

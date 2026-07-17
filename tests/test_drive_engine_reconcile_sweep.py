@@ -27,7 +27,7 @@ from block_codec import GEN_LEGACY_DP, ParsedBlock  # noqa: E402
 from engine import PlanBudgetExceeded  # noqa: E402
 from flight_identity import TRIPIT, Flight  # noqa: E402
 from maps_client import MapsError, TravelTime  # noqa: E402
-from reconcile import DesiredBlock  # noqa: E402
+from reconcile import Create, Delete, DesiredBlock, ReconcilePlan  # noqa: E402
 from reconcile_sweep import ResolvedAirport, build_plan, make_route  # noqa: E402
 
 UTC = timezone.utc
@@ -394,3 +394,150 @@ def test_main_prints_run_sweep_payload_on_success(monkeypatch, capsys):
     rc = reconcile_sweep.main()
     assert rc == 0
     assert json.loads(capsys.readouterr().out) == payload
+
+
+# --- shadow mode (#156 R4, wired in #183) --------------------------------
+
+
+def _shadow_plan():
+    a = datetime(2020, 7, 12, 8, tzinfo=UTC)
+    desired = DesiredBlock(
+        identity="STN-CPH-20200712T0900Z",
+        kind="airport_departure",
+        summary="Drive: STN-CPH",
+        start=a,
+        end=a,
+        origin="Hotel",
+        destination="APT",
+        baseline_seconds=1800,
+        anchor=a,
+    )
+    return ReconcilePlan(creates=(Create(desired),), deletes=(Delete("evt9", "legacy orphan"),))
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+def test_shadow_mode_on_for_truthy_values(monkeypatch, value):
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", value)
+    assert reconcile_sweep._shadow_mode() is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "maybe"])
+def test_shadow_mode_off_for_everything_else(monkeypatch, value):
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", value)
+    assert reconcile_sweep._shadow_mode() is False
+
+
+def test_shadow_mode_off_when_unset(monkeypatch):
+    """The scheduled sweep applies; shadow is opt-in only."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    assert reconcile_sweep._shadow_mode() is False
+
+
+def test_shadow_payload_never_wakes():
+    """A dry run changed nothing, so there is nothing to wake the operator for."""
+    payload = reconcile_sweep.build_shadow_payload(_shadow_plan(), [])
+    assert payload["wake_agent"] is False
+
+
+def test_shadow_payload_reports_planned_counts_not_applied():
+    payload = reconcile_sweep.build_shadow_payload(_shadow_plan(), ["skipped a leg"])
+    data = payload["data"]
+    assert data["shadow"] is True
+    assert data["planned"] == {
+        "creates": 1,
+        "updates": 0,
+        "deletes": 1,
+        "converts": 0,
+        "legacy_converted": 0,
+    }
+    assert data["skipped"] == 1
+    # a shadow run applied nothing, so it must not report `applied` counts
+    assert "applied" not in data
+
+
+def test_shadow_payload_is_json_serializable():
+    """main() prints the payload with json.dumps — an unserializable value would
+    break the scheduler's stdout contract."""
+    payload = reconcile_sweep.build_shadow_payload(_shadow_plan(), [])
+    assert json.loads(json.dumps(payload))["data"]["shadow"] is True
+
+
+# --- the shadow branch's safety contract (#183) --------------------------
+#
+# `finish_sweep` is the seam `_run_sweep` delegates the shadow-vs-apply
+# decision to, so the no-write guarantee is testable without live clients.
+
+
+class _ApplySpy:
+    """Stands in for `apply_plan`; records whether it was ever called."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, plan, **kwargs):
+        self.calls.append((plan, kwargs))
+        return _ApplyResult()
+
+
+class _ApplyResult:
+    created = updated = deleted = converted = 0
+    added_meeting_legs = ()
+    material_updates = ()
+    deferred = 0
+    errors = ()
+
+
+def test_shadow_branch_never_calls_apply(monkeypatch, capsys):
+    """The safety contract: a shadow run must not touch the calendar."""
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", "1")
+    spy = _ApplySpy()
+    reconcile_sweep.finish_sweep(_shadow_plan(), [], calendar=object(), elapsed=0.0, apply=spy)
+    assert spy.calls == []
+
+
+def test_shadow_branch_renders_to_stderr_not_stdout(monkeypatch, capsys):
+    """stdout carries the scheduler's JSON payload — the diff must not land there."""
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", "1")
+    reconcile_sweep.finish_sweep(
+        _shadow_plan(), [], calendar=object(), elapsed=0.0, apply=_ApplySpy()
+    )
+    out, err = capsys.readouterr()
+    assert "[shadow] reconcile plan" in err
+    assert "+ CREATE airport_departure" in err
+    assert out == ""
+
+
+def test_shadow_branch_returns_the_shadow_payload(monkeypatch):
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", "1")
+    payload = reconcile_sweep.finish_sweep(
+        _shadow_plan(), ["a skip"], calendar=object(), elapsed=0.0, apply=_ApplySpy()
+    )
+    assert payload["wake_agent"] is False
+    assert payload["data"]["shadow"] is True
+    assert payload["data"]["planned"]["creates"] == 1
+
+
+def test_live_branch_applies_when_shadow_is_off(monkeypatch):
+    """The scheduled sweep is untouched: shadow off → apply is called as before."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    spy = _ApplySpy()
+    cal = object()
+    payload = reconcile_sweep.finish_sweep(_shadow_plan(), [], calendar=cal, elapsed=0.0, apply=spy)
+    assert len(spy.calls) == 1
+    plan, kwargs = spy.calls[0]
+    assert kwargs["calendar"] is cal and kwargs["calendar_id"] == "primary"
+    assert "shadow" not in payload["data"]
+
+
+def test_live_branch_passes_remaining_budget_to_apply(monkeypatch):
+    """#164: apply gets what the fetch/plan phase left, never a negative budget."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    spy = _ApplySpy()
+    reconcile_sweep.finish_sweep(_shadow_plan(), [], calendar=object(), elapsed=5.0, apply=spy)
+    assert spy.calls[0][1]["budget_seconds"] == pytest.approx(
+        reconcile_sweep._SWEEP_WALL_CLOCK_BUDGET_SECONDS - 5.0
+    )
+
+    spy2 = _ApplySpy()
+    reconcile_sweep.finish_sweep(_shadow_plan(), [], calendar=object(), elapsed=9_999.0, apply=spy2)
+    assert spy2.calls[0][1]["budget_seconds"] == 0.0  # clamped, never negative
