@@ -337,6 +337,45 @@ def _dedup_material(updates: list[dict]) -> list[dict]:
     ]
 
 
+def render_notification(
+    material_updates: list[dict], added_meeting_drives: list[dict]
+) -> str | None:
+    """Render the operator notice deterministically from the sweep's structured
+    material — the fixed one-liners the wake agent used to compose by hand (#187).
+
+    Returns None when there is nothing to say (both lists empty), matching the
+    sweep's own wake gate. Building the message here instead of in the Haiku wake
+    removes the cross-wake escalation vector root-caused in #187: a resumed
+    weak-model session can no longer treat its own earlier (hallucinated) alarms as
+    fact and ratchet them, because the notice is fixed text the agent relays
+    verbatim, not a prompt it reasons over.
+
+    `material_updates` are the projected `{meeting, minutes, direction, when}`
+    dicts and `added_meeting_drives` the projected `{meeting, when}` dicts — both
+    already grouped and ordered by `build_sweep_payload`. `direction` is `sooner`
+    (drive got longer, leave earlier) or `later` (shorter)."""
+    lines: list[str] = []
+    for u in material_updates:
+        lines.append(
+            f"Traffic: leave {u['minutes']} min {u['direction']} "
+            f"for your {u['meeting']} at {u['when']}"
+        )
+    if len(added_meeting_drives) == 1:
+        d = added_meeting_drives[0]
+        lines.append(
+            f"Added a drive for {d['meeting']} at {d['when']} — "
+            "reply 'skip' if you're not driving to it."
+        )
+    elif added_meeting_drives:
+        lines.append(
+            "Added drives — reply 'skip 1', 'skip 2', or e.g. 'skip 1 and 2' "
+            "for any you're not driving to:"
+        )
+        for i, d in enumerate(added_meeting_drives, start=1):
+            lines.append(f"{i}. {d['meeting']} at {d['when']}")
+    return "\n".join(lines) if lines else None
+
+
 def build_sweep_payload(applied, skipped: list[str]) -> dict:
     """Assemble the sweep's stdout payload and wake decision from an ApplyResult.
 
@@ -344,7 +383,11 @@ def build_sweep_payload(applied, skipped: list[str]) -> dict:
     drive (which they can skip) or a MATERIAL drive-time change (leave earlier /
     later). Removes, airport-drive adds, converts, and routine sub-threshold
     re-times all apply SILENTLY — no wake, no message (the noise this gating
-    exists to kill). `applied` is a `calendar_apply.ApplyResult`."""
+    exists to kill). `applied` is a `calendar_apply.ApplyResult`.
+
+    `data.message` is the deterministically rendered operator notice (#187): the
+    wake agent sends it verbatim rather than composing one, so a resumed session
+    cannot escalate. It is present iff the sweep wakes."""
     added = _group_meeting_adds(applied.added_meeting_legs)
     material = _dedup_material(applied.material_updates)
     return {
@@ -358,6 +401,7 @@ def build_sweep_payload(applied, skipped: list[str]) -> dict:
             },
             "added_meeting_drives": added,
             "material_updates": material,
+            "message": render_notification(material, added),
             "deferred": applied.deferred,
             "skipped": len(skipped),
             "errors": len(applied.errors),

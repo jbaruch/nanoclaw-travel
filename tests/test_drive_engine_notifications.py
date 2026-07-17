@@ -28,7 +28,7 @@ from reconcile import (  # noqa: E402
     material_update_delta,
     plan_reconcile,
 )
-from reconcile_sweep import build_sweep_payload  # noqa: E402
+from reconcile_sweep import build_sweep_payload, render_notification  # noqa: E402
 
 UTC = timezone.utc
 
@@ -253,3 +253,89 @@ def test_material_deduped_per_meeting_largest_swing():
     payload = build_sweep_payload(applied, [])
     material = payload["data"]["material_updates"]
     assert len(material) == 1 and material[0]["minutes"] == 8
+
+
+# --- render_notification: deterministic operator notice (#187) ---------------
+
+
+def test_render_none_when_nothing_to_say():
+    assert render_notification([], []) is None
+
+
+def test_render_single_material_line():
+    material = [{"meeting": "Massage", "minutes": 5, "direction": "sooner", "when": "Sat 10:35"}]
+    assert (
+        render_notification(material, [])
+        == "Traffic: leave 5 min sooner for your Massage at Sat 10:35"
+    )
+
+
+def test_render_material_later_direction():
+    material = [{"meeting": "Dentist", "minutes": 3, "direction": "later", "when": "Mon 08:00"}]
+    assert render_notification(material, []) == (
+        "Traffic: leave 3 min later for your Dentist at Mon 08:00"
+    )
+
+
+def test_render_multiple_material_lines_in_order():
+    material = [
+        {"meeting": "Massage", "minutes": 5, "direction": "sooner", "when": "Sat 10:35"},
+        {"meeting": "Dentist", "minutes": 2, "direction": "later", "when": "Mon 08:00"},
+    ]
+    assert render_notification(material, []) == (
+        "Traffic: leave 5 min sooner for your Massage at Sat 10:35\n"
+        "Traffic: leave 2 min later for your Dentist at Mon 08:00"
+    )
+
+
+def test_render_single_added_drive():
+    added = [{"meeting": "Massage", "when": "Sat 09:50"}]
+    assert render_notification([], added) == (
+        "Added a drive for Massage at Sat 09:50 — reply 'skip' if you're not driving to it."
+    )
+
+
+def test_render_several_added_drives_enumerated():
+    added = [
+        {"meeting": "Massage", "when": "Sat 09:50"},
+        {"meeting": "Dentist", "when": "Mon 08:00"},
+    ]
+    assert render_notification([], added) == (
+        "Added drives — reply 'skip 1', 'skip 2', or e.g. 'skip 1 and 2' "
+        "for any you're not driving to:\n"
+        "1. Massage at Sat 09:50\n"
+        "2. Dentist at Mon 08:00"
+    )
+
+
+def test_render_material_then_added_combined():
+    material = [{"meeting": "Massage", "minutes": 5, "direction": "sooner", "when": "Sat 10:35"}]
+    added = [{"meeting": "Dentist", "when": "Mon 08:00"}]
+    assert render_notification(material, added) == (
+        "Traffic: leave 5 min sooner for your Massage at Sat 10:35\n"
+        "Added a drive for Dentist at Mon 08:00 — reply 'skip' if you're not driving to it."
+    )
+
+
+def test_payload_carries_rendered_message_on_wake():
+    applied = ApplyResult(updated=1)
+    applied.material_updates = [
+        {
+            "identity": "m",
+            "meeting": "Massage",
+            "minutes": 5,
+            "direction": "sooner",
+            "when": "Sat 10:35",
+            "anchor": "2020-07-18T15:35:00+00:00",
+        }
+    ]
+    payload = build_sweep_payload(applied, [])
+    assert payload["wake_agent"] is True
+    assert payload["data"]["message"] == "Traffic: leave 5 min sooner for your Massage at Sat 10:35"
+
+
+def test_payload_message_none_when_no_wake():
+    applied = ApplyResult(created=0, updated=3, deleted=4, converted=1)
+    payload = build_sweep_payload(applied, [])
+    assert payload["wake_agent"] is False
+    assert payload["data"]["message"] is None

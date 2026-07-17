@@ -12,14 +12,11 @@ This skill is an action router — pick the step that matches the situation and 
 
 The precheck (`reconcile_sweep.py`) plans and applies every `Drive:` block change — airport and meeting drives — every ~30 minutes, diffing against the calendar and touching only its own blocks. It leaves legacy drive-planner / flight-assist blocks alone (you clean those up). Its contract — inputs, apply counts, the fail-closed no-wake payload on error, and the wake gating — lives in `reconcile_sweep.py` (module docstring, `build_sweep_payload`) and `calendar_apply.apply_plan`. Do not restate its logic here.
 
-## Step 1 — Report what the sweep changed
+## Step 1 — Send the sweep's notice
 
-Run this after a cadence sweep that woke you (`wake_agent: true`). The payload's `data` carries `material_updates` and `added_meeting_drives`; compose ONE message via `mcp__nanoclaw__send_message` from them, then finish. The sweep already gated the noise — it wakes ONLY for these two, so if both are empty, proceed silently and finish.
+Run this after a cadence sweep that woke you (`wake_agent: true`). The precheck has already rendered the operator notice deterministically (`render_notification` in `reconcile_sweep.py` — the one-line templates and enumeration live there). Send `data.message` verbatim via `mcp__nanoclaw__send_message`, then finish.
 
-- **Material drive-time changes** (`material_updates` — a `{meeting, minutes, direction, when}` list): one line each, e.g. "Traffic: leave {minutes} min {direction} for your {meeting} at {when}" — `direction` is `sooner` (drive got longer) or `later` (shorter).
-- **New meeting drives** (`added_meeting_drives` — a `{meeting, when}` list the operator may skip): with one, "Added a drive for {meeting} at {when} — reply 'skip' if you're not driving to it." With several, enumerate them 1..N ("1. {meeting} at {when}") and tell the operator to reply "skip 1", "skip 2", or e.g. "skip 1 and 2" for any they are not driving.
-
-Never mention removed blocks, airport drives, or routine (sub-threshold) re-times — those applied silently by design. Finish here.
+Relay the string as-is: do not rewrite, summarize, add to it, or reference anything from a prior wake — each notice stands alone, composed only from this sweep's payload. If `data.message` is absent or empty, proceed silently and finish. Finish here.
 
 ## Step 2 — Skip a meeting drive the operator declined
 
