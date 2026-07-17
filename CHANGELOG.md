@@ -8,7 +8,7 @@ Root cause was a session-lifecycle defect in the host, but Step 1 handed it the 
 
 `build_sweep_payload` already emits fully structured `material_updates` and `added_meeting_drives`; Step 1's "compose" was pure string interpolation over them — the one job that added no value and all the escalation risk. `render_notification` now builds the one-line notice in the precheck and puts it in `data.message`; Step 1 relays it verbatim. The LLM has nothing to compose, so a resumed session cannot escalate regardless of the host's session behavior. The templates moved out of `SKILL.md` into the script per `coding-policy: script-as-black-box`.
 
-This is fix #2 of the two in #187. Fix #1 — stopping the isolated cadence row from resuming a pinned session — is host-runner behavior tracked in a companion `jbaruch/nanoclaw` issue.
+This is fix #2 of the two in #187. Fix #1 — stopping the isolated cadence row from resuming a pinned session — is host-runner behavior tracked in `jbaruch/nanoclaw#801`.
 
 ## 0.2.51 — 2026-07-17
 
