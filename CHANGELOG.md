@@ -1,5 +1,19 @@
 # Changelog
 
+### Fixed — a future-version skip file no longer re-nags every declined meeting
+
+`load_active_skips` read a `skip-state.json` stamped newer than this plugin as "no usable prior state" — an empty map — citing `coding-policy: stateful-artifacts`' lagging-reader clause. That clause also requires the fallback be "safe and non-disruptive — never a path that escalates work (wake-always, full recompute, alert storm)", and an empty skip map is not inert. It drops every active skip, so the sweep re-plans each meeting the operator declined, creates drive blocks for them, and pings about each one: the trust-eroding nag of lombot #49, which is the scar `skip_state.py` exists to prevent. The file's own defence — "worst case the sweep re-asks; it never escalates work" — was self-contradictory, since re-asking *is* the wake.
+
+Both paths now raise. The write path already refused (a write would rewrite the file as v1 and clobber a newer writer); the read path now matches it.
+
+The objection to failing closed was that it trades a nag storm for a silent outage — `load_active_skips` raising surfaces at `reconcile_sweep`'s fail-closed boundary, so the sweep plans nothing until the plugin is upgraded. That turned out not to be a new failure mode. The engine already skips the whole cycle cleanly whenever it cannot build a trustworthy desired set — `PlanBudgetExceeded` does exactly this, because "a partial `desired` set reads as orphaned blocks to delete". Unreadable skip state is that same condition, so failing closed routes a new cause into an existing, deliberate path rather than inventing one. The cost stays explicit in `state-schema.md`: while the file is future-versioned, no drive blocks are planned.
+
+A third option — read empty but suppress meeting planning for that sweep — was rejected as actively destructive. Handing the reconcile an empty meeting desired-set does not mean "do nothing"; it means every existing meeting block is an orphan, and the engine would delete the operator's drive blocks.
+
+Reachable only via a plugin downgrade after a future v2 ships, or a hand-edited file: `#181` folded writer and reader into one bundle in one plugin, published together, so there is no cross-pipeline skew window.
+
+`_read_skips`' `for_write` parameter is gone — it existed only to branch read-vs-write on this case, and both branches are now the same raise.
+
 ## 0.2.49 — 2026-07-17
 
 ### Removed — `drive-planner`, folded into `drive-engine`
