@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.52 — 2026-07-17
+
 ### Fixed — drive-engine notice is rendered deterministically, no longer composed by the wake
 
 On 2026-07-17 the drive-engine cadence wake posted an escalating series of *false* "the engine is broken / disable it" alarms to the main chat (#187). The engine was fine — its telemetry shows `created:0, deleted:0` on every run that day; the only activity was routine drive-time recomputes. The alarms were hallucinated.
