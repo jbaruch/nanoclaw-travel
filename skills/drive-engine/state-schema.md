@@ -44,12 +44,15 @@ Tolerance:
 
 - A **missing** file is not an error — it is indistinguishable from "no skips yet" and reads as an empty map.
 - A **present but corrupt** file (unparseable JSON, non-object root, missing/invalid `schema_version`, or a `schema_version` below the current floor) raises `SkipStateError` rather than being silently treated as "no skips" — silently resetting would resurrect every skipped meeting as a nag.
-- A `schema_version` **newer** than this plugin reads as **"no usable prior state"** (an empty map) on the **read** path (`load_active_skips`), per `coding-policy: stateful-artifacts` — the reader is lagging, not awaiting migration, and an empty map is the safe, non-disruptive fallback (worst case the sweep re-asks; it never escalates work). The fix is to update the plugin to accept the new version. On the **write** path (`add_skip` / `clear_skip` / `prune`) a newer file is **refused** with `SkipStateError` — the no-prior-state fallback is read-only, and writing would downgrade the future-version file to v1 and clobber a newer writer's state.
+- A `schema_version` **newer** than this plugin is **refused** with `SkipStateError` on **both** paths — read (`load_active_skips`) and write (`add_skip` / `clear_skip` / `prune`). The fix is to upgrade the plugin to accept the new version.
+  - The **read** path fails closed (#184) rather than taking `stateful-artifacts`' no-prior-state branch. An empty skip map is not inert: it drops every active skip, so the sweep re-plans each meeting the operator declined and pings them about it — the "escalates work" a no-prior-state fallback is forbidden to become, and precisely the lombot #49 nag this file exists to prevent. Raising surfaces at `reconcile_sweep`'s fail-closed boundary as a clean no-wake skip: the same whole-cycle skip the engine already takes when it cannot build a trustworthy desired set (`PlanBudgetExceeded`). No partial plan, no nag. The cost is explicit — while the file is future-versioned, no drive blocks are planned at all.
+  - The **write** path additionally must not proceed because it would rewrite the future-version file as v1 and clobber a newer writer's state.
+  - Reachable only via a plugin **downgrade** after a future v2 ships, or a hand-edited file: writer and reader co-ship in one bundle in one plugin, published together, so there is no cross-pipeline skew window (`coding-policy: stateful-artifacts`, Cross-Pipeline Schema Bumps).
 - Malformed individual entries (non-string id or expiry, unparseable/naive expiry) are dropped, not fatal.
 
 Migration:
 
-- `schema_version` `1` is the initial version; no migration exists yet. A future shape change bumps the version and adds the owner-side upgrade-on-read per `coding-policy: stateful-artifacts`. A version below the current floor has no migration path (v1 is first) and is refused; a version above is treated as no-usable-prior-state until the plugin is updated to accept it.
+- `schema_version` `1` is the initial version; no migration exists yet. A future shape change bumps the version and adds the owner-side upgrade-on-read per `coding-policy: stateful-artifacts`. A version below the current floor has no migration path (v1 is first) and is refused; a version above is refused on both paths until the plugin is upgraded to accept it (see Tolerance — this artifact fails closed rather than reading a newer file as no-usable-prior-state, #184).
 
 ## Calendar-as-State: Drive Blocks
 

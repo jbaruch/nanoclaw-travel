@@ -146,9 +146,12 @@ def test_missing_schema_version_raises(skip_env):
         load_active_skips(NOW)
 
 
-def test_newer_schema_version_reads_as_no_prior_state(skip_env):
-    # Per stateful-artifacts, a newer record is "no usable prior state" for a
-    # lagging reader — an empty map, NOT an error (safe, non-disruptive).
+def test_newer_schema_version_read_fails_closed(skip_env):
+    # #184: a newer file must NOT read as an empty map. Empty is not inert —
+    # it drops every active skip, so the sweep re-plans meetings the operator
+    # declined and pings them about each: the "escalates work" a no-prior-state
+    # fallback is forbidden to become. Raising instead surfaces at
+    # reconcile_sweep's fail-closed boundary as a clean no-wake skip.
     skip_env.parent.mkdir(parents=True, exist_ok=True)
     skip_env.write_text(
         json.dumps(
@@ -158,26 +161,36 @@ def test_newer_schema_version_reads_as_no_prior_state(skip_env):
             }
         )
     )
-    assert load_active_skips(NOW) == {}
+    with pytest.raises(SkipStateError, match="newer than this plugin supports"):
+        load_active_skips(NOW)
+
+
+def test_newer_schema_version_error_says_what_to_do(skip_env):
+    # Per coding-policy: error-handling, the message names the fix (upgrade the
+    # plugin) rather than only the symptom.
+    skip_env.parent.mkdir(parents=True, exist_ok=True)
+    skip_env.write_text(json.dumps({"schema_version": SKIP_SCHEMA_VERSION + 1, "skips": {}}))
+    with pytest.raises(SkipStateError, match="upgrade the nanoclaw-travel plugin"):
+        load_active_skips(NOW)
 
 
 def test_writers_refuse_to_clobber_a_newer_version_file(skip_env):
-    # The no-prior-state fallback is read-only. A write must NOT downgrade a
-    # future-version file to v1 — add/clear/prune refuse instead.
+    # A write must NOT downgrade a future-version file to v1 — add/clear/prune
+    # refuse instead, and the file is left byte-identical.
     skip_env.parent.mkdir(parents=True, exist_ok=True)
     newer = json.dumps(
         {"schema_version": SKIP_SCHEMA_VERSION + 1, "skips": {"evt_x": LATER.isoformat()}}
     )
     skip_env.write_text(newer)
 
-    with pytest.raises(SkipStateError, match="refusing to overwrite"):
+    with pytest.raises(SkipStateError, match="newer than this plugin supports"):
         add_skip("evt_1", expires=LATER, now=NOW)
-    with pytest.raises(SkipStateError, match="refusing to overwrite"):
+    with pytest.raises(SkipStateError, match="newer than this plugin supports"):
         clear_skip("evt_x", now=NOW)
-    with pytest.raises(SkipStateError, match="refusing to overwrite"):
+    with pytest.raises(SkipStateError, match="newer than this plugin supports"):
         prune(NOW)
-    # the newer file is untouched
-    assert json.loads(skip_env.read_text())["schema_version"] == SKIP_SCHEMA_VERSION + 1
+    # the newer file is untouched, byte for byte
+    assert skip_env.read_text() == newer
 
 
 def test_older_schema_version_is_refused_not_passed_through(skip_env):
