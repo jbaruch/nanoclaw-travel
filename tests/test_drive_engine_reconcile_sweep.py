@@ -27,7 +27,7 @@ from block_codec import GEN_LEGACY_DP, ParsedBlock  # noqa: E402
 from engine import PlanBudgetExceeded  # noqa: E402
 from flight_identity import TRIPIT, Flight  # noqa: E402
 from maps_client import MapsError, TravelTime  # noqa: E402
-from reconcile import DesiredBlock  # noqa: E402
+from reconcile import Create, Delete, DesiredBlock, ReconcilePlan  # noqa: E402
 from reconcile_sweep import ResolvedAirport, build_plan, make_route  # noqa: E402
 
 UTC = timezone.utc
@@ -394,3 +394,69 @@ def test_main_prints_run_sweep_payload_on_success(monkeypatch, capsys):
     rc = reconcile_sweep.main()
     assert rc == 0
     assert json.loads(capsys.readouterr().out) == payload
+
+
+# --- shadow mode (#156 R4, wired in #183) --------------------------------
+
+
+def _shadow_plan():
+    a = datetime(2020, 7, 12, 8, tzinfo=UTC)
+    desired = DesiredBlock(
+        identity="STN-CPH-20200712T0900Z",
+        kind="airport_departure",
+        summary="Drive: STN-CPH",
+        start=a,
+        end=a,
+        origin="Hotel",
+        destination="APT",
+        baseline_seconds=1800,
+        anchor=a,
+    )
+    return ReconcilePlan(creates=(Create(desired),), deletes=(Delete("evt9", "legacy orphan"),))
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+def test_shadow_mode_on_for_truthy_values(monkeypatch, value):
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", value)
+    assert reconcile_sweep._shadow_mode() is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "maybe"])
+def test_shadow_mode_off_for_everything_else(monkeypatch, value):
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", value)
+    assert reconcile_sweep._shadow_mode() is False
+
+
+def test_shadow_mode_off_when_unset(monkeypatch):
+    """The scheduled sweep applies; shadow is opt-in only."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    assert reconcile_sweep._shadow_mode() is False
+
+
+def test_shadow_payload_never_wakes():
+    """A dry run changed nothing, so there is nothing to wake the operator for."""
+    payload = reconcile_sweep.build_shadow_payload(_shadow_plan(), [])
+    assert payload["wake_agent"] is False
+
+
+def test_shadow_payload_reports_planned_counts_not_applied():
+    payload = reconcile_sweep.build_shadow_payload(_shadow_plan(), ["skipped a leg"])
+    data = payload["data"]
+    assert data["shadow"] is True
+    assert data["planned"] == {
+        "creates": 1,
+        "updates": 0,
+        "deletes": 1,
+        "converts": 0,
+        "legacy_converted": 0,
+    }
+    assert data["skipped"] == 1
+    # a shadow run applied nothing, so it must not report `applied` counts
+    assert "applied" not in data
+
+
+def test_shadow_payload_is_json_serializable():
+    """main() prints the payload with json.dumps — an unserializable value would
+    break the scheduler's stdout contract."""
+    payload = reconcile_sweep.build_shadow_payload(_shadow_plan(), [])
+    assert json.loads(json.dumps(payload))["data"]["shadow"] is True

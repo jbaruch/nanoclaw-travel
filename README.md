@@ -88,7 +88,7 @@ Plus scheduler-invoked scripts (not user-facing):
 - `flight-assist/sync_tripit.py` — the byAir → state reconciliation invoked by the sync-tripit scheduler
 - `nightly-travel-sync/precheck.py` — runs daily, gates the travel-data refresh on `travel-db.json` freshness (see the `nightly-travel-sync` skill + `precheck.py` for the cadence predicate)
 - `nightly-travel-sync/scripts/refresh-travel-schedule.py`, `check-travel-freshness.py`, `fetch-tripit-emails.py`, `filter-tripit-bookings.py` — the travel-source writers + the freshness probe's Gmail fallback (fetch sanitizes in-container, filter matches the TripIt confirmation prefix)
-- `drive-engine/reconcile_sweep.py` — runs every ~30 min, plans airport + meeting drives, reconciles against the primary calendar, and applies the changes (create / update / delete of its own blocks)
+- `drive-engine/reconcile_sweep.py` — runs every ~30 min, plans airport + meeting drives, reconciles against the primary calendar, and applies the changes (create / update / delete of its own blocks). Set `DRIVE_ENGINE_SHADOW=1` to dry-run it: the plan is rendered to stderr and nothing is written — use it to validate a block-shape change against the real calendar before the cutover applies anything
 
 ## Status
 

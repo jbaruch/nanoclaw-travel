@@ -26,6 +26,7 @@ payload on any error so a transient outage skips one sweep.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -45,6 +46,7 @@ from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noq
 from meeting_source import exclude_drive_block_events, meeting_desired_blocks  # noqa: E402
 from normalize import flight_from_byair  # noqa: E402
 from reconcile import DesiredBlock, ReconcilePlan  # noqa: E402
+from shadow import plan_counts, render_plan  # noqa: E402
 from tripit_flights import flights_from_schedule  # noqa: E402
 
 RouteFn = Callable[[str, str], "timedelta | None"]
@@ -55,6 +57,12 @@ RouteFn = Callable[[str, str], "timedelta | None"]
 _MANAGED_LEGACY: frozenset[str] = frozenset()
 
 SWEEP_WINDOW = timedelta(days=14)
+
+# Shadow / dry-run opt-in (#156 R4): plan and render, write nothing. Lets a
+# block-shape change be validated against the production calendar before the
+# cutover applies anything. The rendering itself lives in `shadow.py`.
+_SHADOW_ENV = "DRIVE_ENGINE_SHADOW"
+_SHADOW_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 # Wall-clock budget for the whole sweep. The host kills this precheck at ~33s
 # (#164); bound the write phase so `apply_plan` stops starting new ops with margin
@@ -355,6 +363,33 @@ def build_sweep_payload(applied, skipped: list[str]) -> dict:
     }
 
 
+def build_shadow_payload(plan: ReconcilePlan, skipped: list[str]) -> dict:
+    """Assemble the stdout payload for a shadow sweep — planned, never applied.
+
+    Never wakes: a dry run changed nothing, so there is nothing for the operator
+    to act on. `data.shadow` marks the payload so a reader can't mistake a
+    rendered plan for applied work, and `planned` carries `shadow.plan_counts`
+    (the #156 R4 acceptance surface — "the delete-diff matches the counted
+    garbage") rather than the `applied` counts a live sweep reports."""
+    return {
+        "wake_agent": False,
+        "data": {
+            "shadow": True,
+            "planned": plan_counts(plan),
+            "skipped": len(skipped),
+        },
+    }
+
+
+def _shadow_mode() -> bool:
+    """True when `DRIVE_ENGINE_SHADOW` asks the sweep to plan and write nothing.
+
+    Off unless explicitly set to a truthy value, so the scheduled sweep applies
+    as normal; an operator opts a single run in from the shell (#156 R4, #183).
+    """
+    return os.environ.get(_SHADOW_ENV, "").strip().lower() in _SHADOW_TRUTHY
+
+
 def _run_sweep() -> dict:
     """Run the live unified reconcile, APPLY it, and return the stdout payload.
 
@@ -537,6 +572,18 @@ def _run_sweep() -> dict:
         live_origin=live_origin,
     )
 
+    skipped = list(result.skipped) + list(meeting_skipped)
+
+    # --- SHADOW (no write) ---
+    # Render to stderr, not stdout: stdout carries the JSON payload the
+    # scheduler parses, so the diff would corrupt the contract. Returns before
+    # apply, so a shadow run cannot touch the calendar.
+    if _shadow_mode():
+        print(render_plan(result.plan), file=sys.stderr)
+        for line in skipped:
+            print(f"[drive-engine] skip: {line}", file=sys.stderr)
+        return build_shadow_payload(result.plan, skipped)
+
     # --- APPLY (write) ---
     # Give apply whatever of the sweep budget the fetch/plan phase left, so the
     # write phase stops with margin before the host precheck kill (#164).
@@ -545,7 +592,6 @@ def _run_sweep() -> dict:
         result.plan, calendar=calendar, calendar_id="primary", budget_seconds=apply_budget
     )
 
-    skipped = list(result.skipped) + list(meeting_skipped)
     for line in skipped:
         print(f"[drive-engine] skip: {line}", file=sys.stderr)
     for line in applied.errors:
