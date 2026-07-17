@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.51 — 2026-07-17
+
 ### Added — `DRIVE_ENGINE_SHADOW`, a dry-run for the reconcile sweep
 
 `shadow.py` has rendered a reconcile plan without writing since #156 R4, and nothing has ever called it. Its only importer was its own test — the same shape as the uncalled modules #181 deleted. `reconcile.py` meanwhile described shadow mode in the present tense ("the I/O layer applies the returned plan — or, in shadow mode, just logs it") when `reconcile_sweep` had no such branch and called `apply_plan` unconditionally.
