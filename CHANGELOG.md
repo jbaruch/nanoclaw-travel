@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.50 — 2026-07-17
+
 ### Fixed — a future-version skip file no longer re-nags every declined meeting
 
 `load_active_skips` read a `skip-state.json` stamped newer than this plugin as "no usable prior state" — an empty map — citing `coding-policy: stateful-artifacts`' lagging-reader clause. That clause also requires the fallback be "safe and non-disruptive — never a path that escalates work (wake-always, full recompute, alert storm)", and an empty skip map is not inert. It drops every active skip, so the sweep re-plans each meeting the operator declined, creates drive blocks for them, and pings about each one: the trust-eroding nag of lombot #49, which is the scar `skip_state.py` exists to prevent. The file's own defence — "worst case the sweep re-asks; it never escalates work" — was self-contradictory, since re-asking *is* the wake.
