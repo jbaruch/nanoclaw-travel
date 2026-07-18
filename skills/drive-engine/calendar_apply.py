@@ -42,6 +42,13 @@ from reconcile import DesiredBlock, ReconcilePlan, material_update_delta  # noqa
 # recovers the name the operator recognizes for a notification.
 _DRIVE_SUMMARY_PREFIX = "Drive: "
 
+# Every drive block is stamped Tangerine (Google Calendar event `colorId` "6") so
+# it reads as visually distinct from meetings and flights (#167, owner decision
+# 2026-07-12). Calendar event colorId is a string enum "1".."11"; "6" is the only
+# orange. Set on both create and shift, so a block created before this recolors on
+# its next patch rather than needing a backfill pass.
+_DRIVE_BLOCK_COLOR_ID = "6"
+
 # flight-assist ships GoogleCalendarError; resolve it cross-bundle for the caught type.
 _FA = Path("/home/node/.claude/skills/tessl__flight-assist")
 if not _FA.is_dir():
@@ -124,9 +131,8 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
     the block shows as a plain accepted event rather than an unconfirmed invite
     the operator must RSVP to. That was #158's attendee half, and it needed an
     `exclude_organizer: true` flag to suppress under Composio; natively there is
-    nothing to suppress. #158's colour half (a distinct `colorId`) is still not
-    set here — Calendar does expose `colorId`, so it is now merely unimplemented
-    rather than impossible.
+    nothing to suppress. #158's colour half — a distinct `colorId` — ships here as
+    `_DRIVE_BLOCK_COLOR_ID`: impossible under the old toolkit, native now (#167).
     """
     end = max(desired.end, desired.start + timedelta(minutes=1))
     local_start, tz_name = _start_in_local(desired.start, desired.timezone)
@@ -139,6 +145,7 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
         "location": desired.destination,
         "description": _desired_description(desired),
         "transparency": "opaque",
+        "colorId": _DRIVE_BLOCK_COLOR_ID,
     }
 
 
@@ -163,6 +170,9 @@ def build_patch_args(desired: DesiredBlock, *, event_id: str, calendar_id: str) 
     leave-by moved), refreshed description + location — never a recreate-then-
     delete. So a sweep killed mid-write can no longer leave the new block next to
     an undeleted old one: the duplicate storm's mechanism is gone (#164).
+
+    The patch re-asserts `colorId` (#167) so a block created before the colour
+    landed is recoloured Tangerine on its next shift, with no separate backfill.
     """
     end = max(desired.end, desired.start + timedelta(minutes=1))
     local_start, tz_name = _start_in_local(desired.start, desired.timezone)
@@ -175,6 +185,7 @@ def build_patch_args(desired: DesiredBlock, *, event_id: str, calendar_id: str) 
         "end": {"dateTime": local_end.isoformat(), "timeZone": tz_name},
         "location": desired.destination,
         "description": _desired_description(desired),
+        "colorId": _DRIVE_BLOCK_COLOR_ID,
     }
 
 

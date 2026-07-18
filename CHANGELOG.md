@@ -1,5 +1,11 @@
 # Changelog
 
+### Added — drive blocks are Tangerine so they stand out from meetings and flights
+
+Every drive block the engine writes now carries Google Calendar `colorId` "6" (Tangerine), the accepted half of #158's colour split tracked in #167 (owner decision 2026-07-12). Under the old Composio toolkit this was impossible — no create/patch action exposed a colour field, and a patch carrying `color_id` was a silent no-op. The native Calendar API (nanoclaw#638) exposes `colorId` on both `events.insert` and `events.patch`, so `calendar_apply.py` sets it on create and re-asserts it on every shift. A block created before this recolours on its next patch, so no separate backfill pass is needed.
+
+Tangerine is the only orange among Calendar's 11 preset event colours. It currently also matches the Reclaim travel-block colour, but that overlap is transient — the owner is retiring Reclaim travel blocks as NanoClaw drive blocks take over.
+
 ## 0.2.52 — 2026-07-17
 
 ### Fixed — drive-engine notice is rendered deterministically, no longer composed by the wake
