@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.58 — 2026-07-18
+
 ### Removed — the retired flight-assist airport-drive reconcile (#193)
 
 `skills/flight-assist/airport_drive_reconcile.py` (and its test) is deleted. It was the flight-assist airport-drive assembler, orphaned when airport drives moved to the unified drive-engine in #156 — nothing but its own test imported it, and the live reconcile entry (`scripts/reconcile.py`) drives `calendar_reconcile.run_reconcile` instead. The rest of the airport codec (`airport_block`, `airport_drive`, `airport_drive_inputs`) stays — it is reused live by the drive-engine sweep (`reconcile_sweep` → `airport_drive_inputs` → `airport_drive` → `airport_block`), so only this genuinely-dead module goes. Stale doc references in `travel-core/SKILL.md` and `precheck.py` are repointed.
