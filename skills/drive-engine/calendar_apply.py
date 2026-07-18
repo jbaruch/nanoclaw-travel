@@ -16,8 +16,10 @@ next (idempotent) sweep instead of being killed mid-write (#164).
 
 Deletes need only an event id, so the drive-planner cleanup runs through the delete
 path with no create/timezone concerns. The create path builds a native
-events.insert body with nested start/end and carries the unified codec
-description so the block round-trips.
+events.insert body with nested start/end and writes the block's machine state to
+`extendedProperties.private` (#178); the description carries only the operator-
+facing route line. A shift PATCH re-asserts that state, migrating a block still
+carrying its state in the description from before the writer flip.
 """
 
 from __future__ import annotations
@@ -171,9 +173,12 @@ def _human_description(desired: DesiredBlock) -> str:
 def _desired_extended_properties(desired: DesiredBlock) -> dict:
     """The machine-state `extendedProperties` body for a desired leg (#178).
 
-    Nested under the event's top-level `extendedProperties` key; Calendar merges
-    the `private` map into the event's existing private properties on patch, so a
-    shift re-asserts the state without clobbering a neighbour's tag.
+    Nested under the event's top-level `extendedProperties` key. drive-engine
+    CREATES these events itself and takes exclusive ownership of their
+    `extendedProperties.private` map — no other integration writes private
+    properties on a drive block — so whether Calendar merges or replaces the map
+    on patch does not matter: every write re-asserts the COMPLETE `dengine_*` set,
+    and there is no foreign private key on a managed block to preserve.
     """
     return build_extended_properties(
         identity=desired.identity,
