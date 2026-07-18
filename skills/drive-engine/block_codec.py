@@ -208,12 +208,15 @@ def build_extended_properties(
     window_end: datetime | None = None,
     alerted: frozenset | set = frozenset(),
 ) -> dict:
-    """The `extendedProperties` body carrying the same machine state as the JSON
-    comment — the #178 migration target and the schema's source of truth.
+    """The `extendedProperties` field VALUE carrying the same machine state as the
+    JSON comment — the #178 migration target and the schema's source of truth.
 
-    Returns `{"private": {...}}`, the shape `events.insert` / `events.patch` take
-    (Calendar merges the map into the event's existing private properties). Every
-    value is a string — the only type `extendedProperties.private` accepts — so
+    Returns `{"private": {...}}`, the value of the event resource's
+    `extendedProperties` field — NOT a full event body. A writer nests it under
+    the top-level key: `events.insert` / `events.patch` receive
+    `{..., "extendedProperties": build_extended_properties(...)}` (Calendar merges
+    the map into the event's existing private properties). Every value is a
+    string — the only type `extendedProperties.private` accepts — so
     `baseline_seconds` and the datetimes are stringified here and parsed back in
     `parse_block`. `window_end` is emitted only for transfer legs, matching
     `build_description`.
