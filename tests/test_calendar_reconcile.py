@@ -22,7 +22,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
 import calendar_reconcile as cr  # noqa: E402
 from calendar_plan import _signature as _sig  # noqa: E402
-from calendar_tags import encode_tags  # noqa: E402
+from calendar_tags import decode_private_props, encode_tags  # noqa: E402
 from google_calendar_client import GoogleCalendarError  # noqa: E402
 from state import (  # noqa: E402
     read_config,
@@ -168,14 +168,19 @@ def _raw_event(
 # --- write-arg shapes (native events.insert / events.patch bodies) ----------
 
 
-def test_create_event_args_are_native_with_tags_in_description():
+def test_create_event_args_are_native_with_tags_in_extended_properties():
+    # #193 writer flip: tags live in extendedProperties.private; the description
+    # carries only the human content (tag-free). The tag set is COMPLETE (all of
+    # calendar_plan's TAG_*, as the real boarding create writes), so the written
+    # event round-trips back through the completeness-gated reader.
+    tags = {"faFlightId": "1", "faKind": "boarding", "faManaged": "created"}
     op = {
         "calendar_id": BYAIR_CAL,
         "body": {
             "summary": "Boarding AA100",
             "start": "2026-07-01T09:30:00-05:00",
             "end": "2026-07-01T10:00:00-05:00",
-            "private_props": {"faFlightId": "1", "faKind": "boarding"},
+            "private_props": tags,
         },
     }
     args = cr._create_event_args(op)
@@ -183,9 +188,10 @@ def test_create_event_args_are_native_with_tags_in_description():
     assert args["end"] == {"dateTime": "2026-07-01T10:00:00-05:00"}
     assert "start_datetime" not in args
     assert "event_duration_hour" not in args and "event_duration_minutes" not in args
-    assert "extendedProperties" not in args
-    # tags ride in the description
-    assert '"faFlightId":"1"' in args["description"]
+    assert args["extendedProperties"] == {"private": tags}
+    assert "<!--fa:" not in args["description"]
+    # Round-trips: the reader recognizes the block off the written event.
+    assert decode_private_props({"extendedProperties": args["extendedProperties"]}) == tags
 
 
 def test_create_event_args_send_no_timezone():
@@ -240,7 +246,9 @@ def test_patch_event_args_delta_shift_uses_native_times():
     assert "start_time" not in args and "extendedProperties" not in args
 
 
-def test_patch_event_args_adopt_appends_tags_to_existing_description():
+def test_patch_event_args_adopt_writes_tags_to_extended_properties():
+    # #193 writer flip: an adopt writes tags to extendedProperties.private and
+    # leaves byAir's description tag-free (never clobbered with a tag comment).
     op = {
         "calendar_id": BYAIR_CAL,
         "event_id": "e1",
@@ -250,10 +258,30 @@ def test_patch_event_args_adopt_appends_tags_to_existing_description():
         },
     }
     args = cr._patch_event_args(op)
-    # byAir's description is preserved, tags appended — not clobbered.
-    assert args["description"].startswith("✈ BNA→YYZ • UA 8018")
-    assert '"faManaged":"adopted"' in args["description"]
+    assert args["extendedProperties"] == {
+        "private": {"faFlightId": "1", "faKind": "flight", "faManaged": "adopted"}
+    }
+    # byAir's description is preserved, tag-free.
+    assert args["description"] == "✈ BNA→YYZ • UA 8018"
+    assert "<!--fa:" not in args["description"]
     assert "start" not in args
+
+
+def test_patch_event_args_adopt_strips_legacy_description_tag():
+    # A pre-flip adopted event carries a <!--fa:--> comment in its description;
+    # the flipped adopt migrates it — strips the comment, writes extendedProperties.
+    op = {
+        "calendar_id": BYAIR_CAL,
+        "event_id": "e1",
+        "body": {
+            "description": encode_tags("✈ BNA→YYZ • UA 8018", {"faFlightId": "1"}),
+            "private_props": {"faFlightId": "1", "faKind": "flight", "faManaged": "adopted"},
+        },
+    }
+    args = cr._patch_event_args(op)
+    assert args["description"] == "✈ BNA→YYZ • UA 8018"
+    assert "<!--fa:" not in args["description"]
+    assert args["extendedProperties"]["private"]["faManaged"] == "adopted"
 
 
 def test_items_reads_the_native_items_list():
