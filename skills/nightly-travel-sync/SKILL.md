@@ -16,9 +16,25 @@ A step that hits a technical failure surfaces a one-line note and finishes the r
 
 ## Step 1 — TripIt → Reclaim sync
 
-`mcp__nanoclaw__sync_tripit()`. Report changes (new timezones, OOO blocks). Flag overlapping trips as a warning. Surface tool errors.
+Run the sync in-container; credentials are swapped at the OneCLI gateway (#748):
 
-If the MCP call fails, surface the error via `mcp__nanoclaw__send_message`, emit `<internal>nightly-travel-sync exited step-1: mcp-fail</internal>` as your final turn text, and finish. Otherwise proceed to Step 2.
+```bash
+bash /home/node/.claude/skills/tessl__nightly-travel-sync/scripts/sync-tripit.sh
+```
+
+The script runs `reclaim-tripit-timezones-sync` (agent-image global) and prints one JSON object: `{ noChanges, homeTimezone, timezoneChanges[], segments[], ooo, conflicts[], errors[] }`. Parse it:
+
+- **`errors` non-empty** — surface the messages via `mcp__nanoclaw__send_message`, emit `<internal>nightly-travel-sync exited step-1: sync-error</internal>` as your final turn text, and finish. (A missing-credential or gateway-auth failure lands here.)
+- **Persist the timezone segments to the host** — always call this on a clean run so the owner-tz backbone (scheduler local-tz, the 30-min heartbeat advisory) stays current:
+
+  ```
+  mcp__nanoclaw__persist_tz_segments({ segments: <the parsed `segments` array> })
+  ```
+
+  Call it even when `segments` is `[]` — an empty array is the correct "no active travel" state and clears stale segments.
+- **Report changes** via `mcp__nanoclaw__send_message` when any are non-empty: `timezoneChanges` (new/updated zones), `ooo` (OOO blocks applied), `conflicts` (overlapping trips — flag as a warning). Silent when the run is clean with nothing to report.
+
+If the script itself exits non-zero (the CLI/package missing, or `ONECLI_URL` unset / the gateway unreachable so the sync could not run), surface its stderr via `mcp__nanoclaw__send_message`, emit `<internal>nightly-travel-sync exited step-1: sync-fail</internal>`, and finish. Otherwise proceed to Step 2.
 
 ## Step 2 — Refresh travel-schedule.json from TripIt ICS
 
