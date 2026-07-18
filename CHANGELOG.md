@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.57 — 2026-07-18
+
 ### Changed — `nightly-travel-sync` Step 1 runs the TripIt → Reclaim sync in-container (#748)
 
 Step 1 no longer calls the `mcp__nanoclaw__sync_tripit()` host-op. It now runs `reclaim-tripit-timezones-sync` inside the agent container via `scripts/sync-tripit.sh`, with TripIt / Reclaim / Google credentials swapped at the OneCLI gateway (the script sends placeholders and requires `ONECLI_URL` to be engaged, failing fast otherwise). The parsed `segments[]` are handed back to the host through the new credential-free `mcp__nanoclaw__persist_tz_segments` tool, which keeps the owner-timezone backbone (scheduler local-tz, the 30-min heartbeat advisory) exactly as the host-op's success path did; `timezoneChanges` / `ooo` / `conflicts` / `errors` still drive the chat summary. The wrapper's contract test gains coverage for the gateway-placeholder exports and the `ONECLI_URL` guard. Requires the host side of #748 (agent-image dependency, `ONECLI_URL` + `ENABLE_OOO=1` on the spawn, the `persist_tz_segments` handler) deployed and the TripIt/Reclaim vault entries configured before this activates.
