@@ -4,25 +4,26 @@ flight-assist recognizes its own managed calendar events (boarding blocks it
 created, byAir flight events it adopted) by a small tag map — `faFlightId`,
 `faKind`, `faManaged`.
 
-Where the tags live (the #178 migration)
+Where the tags live (the #193 migration)
 ----------------------------------------
 The original design stamped these into `extendedProperties.private`, but the
 Composio v3 toolkit this plugin shipped on exposed NO writable
 `extendedProperties` on any create/patch/update action (verified against the
 NAS). The only durable, writable surface was the event **description**, so the
-tags ride in a compact `<!--fa:{...}-->` JSON comment appended to the human
+tags rode in a compact `<!--fa:{...}-->` JSON comment appended to the human
 description. The native Calendar API (nanoclaw#638) exposes
-`extendedProperties.private`, so the tags are migrating back into that
-machine-only field — the same live-data migration #178 ran for drive blocks:
-the READER accepts BOTH before the writer flips.
+`extendedProperties.private`, so the tags moved back into that machine-only
+field — the same live-data migration #178 ran for drive blocks.
 
-`decode_private_props` reads `extendedProperties.private` FIRST and the
-`<!--fa:-->` description comment SECOND, so an event tagged either way is
-recognized. `normalize_event` calls it on read; the reconcile write helpers
-still ENCODE into the description on create/adopt (the writer flip is a later
-phase). The human description (a byAir flight event's own content, when
-adopting) is preserved — the tag comment is appended, and stripped back off on
-the next read so it never accumulates.
+`calendar_reconcile` now WRITES the tags to `extendedProperties.private` on
+create/adopt, and `decode_private_props` READS them dual-source:
+`extendedProperties.private` FIRST (accepted only as a COMPLETE tag set), the
+`<!--fa:-->` description comment SECOND — so a block written either way
+round-trips and a pre-flip description-tagged event is still recognized until it
+ages out or its next adopt migrates it. The human description (a byAir flight
+event's own content, when adopting) is preserved tag-free; `strip_tags` drops a
+legacy comment on read and `encode_tags` remains for tests and the description
+reader's fixtures.
 
 stdlib-only per `coding-policy: dependency-management`.
 """

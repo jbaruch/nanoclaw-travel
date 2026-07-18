@@ -61,7 +61,7 @@ from calendar_plan import (
     MANAGED_CREATED,
     plan_reconciliation,
 )
-from calendar_tags import encode_tags
+from calendar_tags import strip_tags
 from disposition import resolve_disposition
 from google_calendar_client import GoogleCalendarError
 from state import (
@@ -148,17 +148,19 @@ def _create_event_args(op: dict) -> dict:
     """A native events.insert body from a planner `create` op.
 
     The planner's `body` is `{summary, start, end, private_props}`; Calendar
-    takes nested `start` / `end` objects. The managed tags ride in the
-    `description` via `encode_tags` — see the state-schema note on why the
-    description, not `extendedProperties`, is the state surface.
+    takes nested `start` / `end` objects. The managed tags ride in
+    `extendedProperties.private` (#193 writer flip); the `description` carries
+    only the human content (tag-free). `strip_tags` guards against a description
+    that somehow already carries a legacy `<!--fa:-->` comment.
     """
     body = op["body"]
     return {
         "calendar_id": op["calendar_id"],
         "summary": body["summary"],
-        "description": encode_tags(body.get("description", ""), body["private_props"]),
+        "description": strip_tags(body.get("description", "")),
         "start": _event_time(body["start"]),
         "end": _event_time(body["end"]),
+        "extendedProperties": {"private": body["private_props"]},
     }
 
 
@@ -166,10 +168,12 @@ def _patch_event_args(op: dict) -> dict:
     """A native events.patch body from an `update` / `adopt` op.
 
     `update` carries `{start, end}` (a delta-shift to byAir truth); `adopt`
-    carries `{private_props, description}` (claims a byAir event) → the tags
-    are appended to the event's existing description via `encode_tags`. Only
-    the keys present in the op body are sent, so the patch never clobbers a
-    field it did not touch.
+    carries `{private_props, description}` (claims a byAir event) → the tags go
+    into `extendedProperties.private` (#193 writer flip) and the description is
+    rewritten tag-free (`strip_tags` drops any legacy `<!--fa:-->` comment a
+    pre-flip adopt left there, migrating the event on this patch). Only the keys
+    present in the op body are sent, so the patch never clobbers a field it did
+    not touch.
     """
     body = op["body"]
     args: dict = {"calendar_id": op["calendar_id"], "event_id": op["event_id"]}
@@ -178,7 +182,8 @@ def _patch_event_args(op: dict) -> dict:
     if "end" in body:
         args["end"] = _event_time(body["end"])
     if "private_props" in body:
-        args["description"] = encode_tags(body.get("description", ""), body["private_props"])
+        args["description"] = strip_tags(body.get("description", ""))
+        args["extendedProperties"] = {"private": body["private_props"]}
     return args
 
 
