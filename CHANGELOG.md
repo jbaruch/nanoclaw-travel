@@ -1,5 +1,13 @@
 # Changelog
 
+### Added — drive blocks read their state from `extendedProperties.private` too (dual-read, #178)
+
+Drive-block machine state is migrating off the human-visible event `description` into `extendedProperties.private`, a machine-only field the native Calendar API (nanoclaw#638) exposes and the retired Composio toolkit did not. This is the first, safe step of that live-data migration: `block_codec.parse_block` now reads `extendedProperties.private` FIRST and the description SECOND, so a block written either way round-trips, and `fetch_events` carries `extendedProperties` through its field projection so the reader actually receives it.
+
+Nothing writes the extended-properties form yet — the writer flip is a later phase — so every deployed block still parses off its description and the new branch lies dormant until the writer starts emitting it. Shipping the dual-accept reader before the writer flips is what keeps a deployed block from being orphaned mid-rollout (`coding-policy: stateful-artifacts`, Cross-Pipeline Schema Bumps; #178 acceptance: "dual-read ships before the writer flips").
+
+`block_codec.build_extended_properties` is the schema's source of truth and the writer's phase-2 target: a flat `dengine_`-namespaced string map (the only value type the field accepts), one key per state field, carrying the same fields and `UNIFIED_BLOCK_SCHEMA_VERSION` as the description JSON — only the carrier moves. `drive-engine/state-schema.md` documents the full rollout order and the map's keys. The human line stays in the description on purpose (it is what the operator sees in the calendar UI); only the machine state migrates. Follow-up work (writer flip + `scan.py` / `meeting_source` marker-source move, then dropping the description reader once no description-state block remains) is tracked separately, along with whether flight-assist's own description-squatting codecs (`airport_block`, `calendar_tags`) migrate independently or are subsumed by the drive-engine cutover.
+
 ## 0.2.54 — 2026-07-18
 
 ### Added — drive blocks are Tangerine so they stand out from meetings and flights

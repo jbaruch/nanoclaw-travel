@@ -23,6 +23,7 @@ from block_codec import (  # noqa: E402
     GEN_LEGACY_FADRIVE,
     GEN_UNIFIED,
     build_description,
+    build_extended_properties,
     canonical_flight_key,
     leg_identity,
     parse_block,
@@ -36,6 +37,15 @@ UTC = timezone.utc
 
 def _dt(h, mi=0, *, day=12):
     return datetime(2020, 7, day, h, mi, tzinfo=UTC)
+
+
+def ext_event(ext: dict) -> dict:
+    """Wrap a `build_extended_properties` result as the event-level key.
+
+    `build_extended_properties` returns `{"private": {...}}`; a fetched event
+    nests that under `extendedProperties`.
+    """
+    return {"extendedProperties": ext}
 
 
 def flight(dep, arr, sched_dep, sched_arr=None, *, fid=1, ids=None):
@@ -125,6 +135,182 @@ def test_transfer_round_trip_carries_window_end():
     assert parsed is not None
     assert parsed.window_end == _dt(14, 0)
     assert parsed.alerted == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
+
+
+# --- dual-source reader: extendedProperties (the #178 migration) ------------
+
+
+def test_extended_properties_build_parse_round_trip():
+    ext = build_extended_properties(
+        identity="BNA-JFK-20200712T0900Z",
+        kind="airport_departure",
+        baseline_seconds=1500,
+        anchor=_dt(8, 0),
+        origin="Hotel X",
+        destination="BNA",
+        alerted={ALERT_GROWTH},
+    )
+    # Only the human line stays in the description; the machine state is in the map.
+    event = {"id": "evt1", "description": "Drive: → BNA (DL4908)", **ext_event(ext)}
+    parsed = parse_block(event)
+    assert parsed is not None
+    assert parsed.generation == GEN_UNIFIED
+    assert parsed.event_id == "evt1"
+    assert parsed.identity == "BNA-JFK-20200712T0900Z"
+    assert parsed.kind == "airport_departure"
+    assert parsed.baseline_seconds == 1500  # parsed back from its string form
+    assert parsed.anchor == _dt(8, 0)
+    assert parsed.origin == "Hotel X"
+    assert parsed.destination == "BNA"
+    assert parsed.alerted == frozenset({ALERT_GROWTH})
+
+
+def test_extended_properties_values_are_all_strings():
+    # extendedProperties.private accepts only string values — the builder must
+    # stringify the int baseline and the datetimes, or Calendar rejects the write.
+    ext = build_extended_properties(
+        identity="BNA-JFK-20200712T0900Z",
+        kind="airport_departure",
+        baseline_seconds=1500,
+        anchor=_dt(8, 0),
+        origin="Hotel X",
+        destination="BNA",
+        window_end=_dt(9, 0),
+    )
+    assert all(isinstance(v, str) for v in ext["private"].values())
+
+
+def test_extended_transfer_round_trip_carries_window_end():
+    ext = build_extended_properties(
+        identity="LHR-LHR-20200712T0900Z|LGW-JFK-20200712T1600Z",
+        kind="airport_transfer",
+        baseline_seconds=3600,
+        anchor=_dt(11, 0),
+        origin="LHR",
+        destination="LGW",
+        window_end=_dt(14, 0),
+        alerted={ALERT_GROWTH, ALERT_LEAVE_NOW},
+    )
+    parsed = parse_block({"id": "evtT", **ext_event(ext)})
+    assert parsed is not None
+    assert parsed.window_end == _dt(14, 0)
+    assert parsed.alerted == frozenset({ALERT_GROWTH, ALERT_LEAVE_NOW})
+
+
+def test_extended_properties_read_with_no_description_at_all():
+    # A block that carries state ONLY in extendedProperties (post-flip shape,
+    # human line absent) still round-trips.
+    ext = build_extended_properties(
+        identity="BNA-JFK-20200712T0900Z",
+        kind="airport_departure",
+        baseline_seconds=1500,
+        anchor=_dt(8, 0),
+        origin="Hotel X",
+        destination="BNA",
+    )
+    parsed = parse_block({"id": "evt1", **ext_event(ext)})
+    assert parsed is not None
+    assert parsed.generation == GEN_UNIFIED
+    assert parsed.identity == "BNA-JFK-20200712T0900Z"
+
+
+def test_extended_properties_preferred_over_description():
+    # A block carrying BOTH (transition window) reads its state from
+    # extendedProperties, not the description.
+    ext = build_extended_properties(
+        identity="EXT-IDENTITY-20200712T0900Z",
+        kind="airport_departure",
+        baseline_seconds=1500,
+        anchor=_dt(8, 0),
+        origin="ExtOrigin",
+        destination="BNA",
+    )
+    desc = build_description(
+        summary="Drive: → BNA",
+        identity="DESC-IDENTITY-20200712T0900Z",
+        kind="airport_departure",
+        baseline_seconds=999,
+        anchor=_dt(7, 0),
+        origin="DescOrigin",
+        destination="BNA",
+    )
+    parsed = parse_block({"id": "evt1", "description": desc, **ext_event(ext)})
+    assert parsed is not None
+    assert parsed.identity == "EXT-IDENTITY-20200712T0900Z"
+    assert parsed.origin == "ExtOrigin"
+    assert parsed.baseline_seconds == 1500
+
+
+def test_extended_unknown_version_falls_back_to_description():
+    # An extendedProperties map at a version this codec does not accept is "no
+    # unified state here" — the reader falls back to a valid description.
+    ext = build_extended_properties(
+        identity="EXT-IDENTITY-20200712T0900Z",
+        kind="airport_departure",
+        baseline_seconds=1500,
+        anchor=_dt(8, 0),
+        origin="ExtOrigin",
+        destination="BNA",
+    )
+    ext["private"]["dengine_schema_version"] = "999"
+    desc = build_description(
+        summary="Drive: → BNA",
+        identity="DESC-IDENTITY-20200712T0900Z",
+        kind="airport_departure",
+        baseline_seconds=999,
+        anchor=_dt(7, 0),
+        origin="DescOrigin",
+        destination="BNA",
+    )
+    parsed = parse_block({"id": "evt1", "description": desc, **ext_event(ext)})
+    assert parsed is not None
+    assert parsed.identity == "DESC-IDENTITY-20200712T0900Z"
+
+
+def test_extended_missing_leg_identity_falls_back_to_description():
+    ext = build_extended_properties(
+        identity="EXT-IDENTITY-20200712T0900Z",
+        kind="airport_departure",
+        baseline_seconds=1500,
+        anchor=_dt(8, 0),
+        origin="ExtOrigin",
+        destination="BNA",
+    )
+    del ext["private"]["dengine_leg"]  # version matches but no identity → fall back
+    desc = build_description(
+        summary="Drive: → BNA",
+        identity="DESC-IDENTITY-20200712T0900Z",
+        kind="airport_departure",
+        baseline_seconds=999,
+        anchor=_dt(7, 0),
+        origin="DescOrigin",
+        destination="BNA",
+    )
+    parsed = parse_block({"id": "evt1", "description": desc, **ext_event(ext)})
+    assert parsed is not None
+    assert parsed.identity == "DESC-IDENTITY-20200712T0900Z"
+
+
+def test_unrelated_extended_properties_ignored_description_still_read():
+    # A neighbour tool's private props (no dengine_* keys) must not shadow the
+    # description reader.
+    desc = build_description(
+        summary="Drive: → BNA",
+        identity="DESC-IDENTITY-20200712T0900Z",
+        kind="airport_departure",
+        baseline_seconds=1200,
+        anchor=_dt(8, 0),
+        origin="home",
+        destination="BNA",
+    )
+    event = {
+        "id": "evt1",
+        "description": desc,
+        "extendedProperties": {"private": {"someOtherTool": "x"}},
+    }
+    parsed = parse_block(event)
+    assert parsed is not None
+    assert parsed.identity == "DESC-IDENTITY-20200712T0900Z"
 
 
 # --- three-shape reader (cutover) -------------------------------------------
