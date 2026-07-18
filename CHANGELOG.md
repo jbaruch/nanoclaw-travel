@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.56 — 2026-07-18
+
 ### Changed — drive blocks now write their state to `extendedProperties.private` (writer flip, #178)
 
 The drive-engine writer flip, the second phase of #178 (after the dual-read reader shipped in 0.2.55 and materialized in production). `calendar_apply` now writes the block's machine state to `extendedProperties.private` via `build_extended_properties` on both create and patch, and the event `description` carries only the operator-facing route line (`origin → destination`) — the leg marker and `<!--dengine:-->` state comment no longer squat in the human-visible field. State squatted there only because the retired Composio toolkit exposed no writable `extendedProperties`; the native Calendar API (nanoclaw#638) does.
