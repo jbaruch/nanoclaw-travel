@@ -68,6 +68,16 @@ def test_script_fails_loudly_when_package_absent():
     assert "not found" in result.stderr
 
 
+def test_script_declares_onecli_url_guard():
+    """Static coverage for the gateway guard so a regression is caught even in
+    CI, where the global package is absent and the subprocess check below skips:
+    the script must test ONECLI_URL and exit before running the sync."""
+    text = SCRIPT.read_text()
+    assert '[ -z "${ONECLI_URL:-}" ]' in text
+    assert "exit 1" in text
+    assert "ONECLI_URL is not set" in text
+
+
 def test_script_requires_onecli_url_when_package_present():
     """With the package present but ONECLI_URL unset, the wrapper must exit
     non-zero naming ONECLI_URL rather than sending placeholder credentials to
