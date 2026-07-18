@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.55 — 2026-07-18
+
 ### Added — drive blocks read their state from `extendedProperties.private` too (dual-read, #178)
 
 Drive-block machine state is migrating off the human-visible event `description` into `extendedProperties.private`, a machine-only field the native Calendar API (nanoclaw#638) exposes and the retired Composio toolkit did not. This is the first, safe step of that live-data migration: `block_codec.parse_block` now reads `extendedProperties.private` FIRST and the description SECOND, so a block written either way round-trips, and `fetch_events` carries `extendedProperties` through its field projection so the reader actually receives it.
