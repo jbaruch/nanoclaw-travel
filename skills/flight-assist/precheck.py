@@ -599,8 +599,8 @@ def _resolve_time_to_leave_origin(
     """Origin-resolution ladder for the time-to-leave Distance Matrix query.
 
     Delegates to `state.resolve_live_origin` — the single ladder shared with the
-    airport-drive reconcile (fresh `current-location.json` → `home_address` →
-    None), so the two never disagree on where the user is. Issue
+    drive-engine airport reconcile (fresh `current-location.json` → `home_address`
+    → None), so the two never disagree on where the user is. Issue
     `jbaruch/nanoclaw-flight-assist#18`. The `home_address` rung is the
     trip-aware effective home resolved at cycle start (#122): the static
     residence off-trip, the current lodging on-trip.
