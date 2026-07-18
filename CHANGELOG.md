@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.61 — 2026-07-18
+
 ### Changed — flight-assist managed-event tags now write to `extendedProperties.private` (writer flip, #193)
 
 The flight-assist writer flip, the second phase of the #193 tag migration (after the dual-read reader shipped in 0.2.59). `calendar_reconcile` now stamps the managed tags (`faFlightId`, `faKind`, `faManaged`) into `extendedProperties.private` on create and adopt via `_create_event_args` / `_patch_event_args`, and the event `description` carries only the human content — tag-free. An adopt rewrites byAir's description through `strip_tags`, so a pre-flip event still carrying a `<!--fa:-->` comment is migrated on its next adopt (the comment dropped, the tags moved to `extendedProperties`); one that never re-adopts ages out.
