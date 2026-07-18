@@ -140,6 +140,38 @@ def test_normalize_extracts_private_props_from_description_tag():
     assert norm["description"] == "Gate B12"
 
 
+def test_normalize_extracts_private_props_from_extended_properties():
+    # #193 dual-read: a post-flip event carries a COMPLETE managed-tag set in
+    # extendedProperties.private and only the human line in the description.
+    # normalize_event must surface those tags to the planner (the reconciliation-
+    # facing outcome) — not just the direct codec.
+    tags = {"faFlightId": "100", "faKind": "boarding", "faManaged": "created"}
+    raw = {
+        "id": "boarding-1",
+        "summary": "Boarding UA8018",
+        "description": "Gate B12",
+        "extendedProperties": {"private": tags},
+        **_timed("2026-06-26T09:35:00-05:00", "2026-06-26T10:05:00-05:00"),
+    }
+    norm = normalize_event(raw, calendar_id=FLIGHTY_CAL)
+    assert norm["private_props"] == tags
+    assert norm["description"] == "Gate B12"
+
+
+def test_normalize_prefers_extended_over_description_tags():
+    # An event carrying BOTH reads its tags from extendedProperties.
+    ext = {"faFlightId": "999", "faKind": "flight", "faManaged": "adopted"}
+    raw = {
+        "id": "flight-1",
+        "summary": "UA8018",
+        "description": 'Gate B12\n<!--fa:{"faFlightId":"100","faKind":"boarding"}-->',
+        "extendedProperties": {"private": ext},
+        **_timed("2026-06-26T09:35:00-05:00", "2026-06-26T10:05:00-05:00"),
+    }
+    norm = normalize_event(raw, calendar_id=FLIGHTY_CAL)
+    assert norm["private_props"] == ext
+
+
 def test_normalize_malformed_tag_becomes_empty_dict():
     # A malformed tag comment (API/client bug) must normalize to {} so the
     # planner's .get() never crashes.

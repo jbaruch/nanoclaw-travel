@@ -1,5 +1,11 @@
 # Changelog
 
+### Added — flight-assist managed-event tags read from `extendedProperties.private` too (dual-read, #193)
+
+The flight-assist boarding-block / flight-adoption tags (`faFlightId`, `faKind`, `faManaged`) are migrating off the human-visible event `description` into `extendedProperties.private`, the same live-data migration #178 ran for drive blocks. This is the first, safe step: `calendar_tags.decode_private_props` reads `extendedProperties.private` FIRST and the `<!--fa:-->` description comment SECOND, and `calendar_normalize.normalize_event` now calls it, so an event tagged either way is recognized. The ext branch is taken only when the private map carries a COMPLETE managed-tag set, so a partial or malformed new-shape map never shadows a valid legacy description tag (`coding-policy: stateful-artifacts`, safe fallback).
+
+Nothing writes the extended-properties form yet — the writer (`calendar_reconcile` create/adopt) still encodes into the description, so the new branch is dormant until the writer flips (a later phase). Shipping the dual-accept reader first is what keeps a deployed boarding block or adopted flight event from being orphaned mid-rollout (`coding-policy: stateful-artifacts`, Cross-Pipeline Schema Bumps). The tag keys stay `fa`-namespaced (collision-safe in the shared private map) and are kept in sync with `calendar_plan`'s `TAG_*` by a drift-guard test. The flight-assist reconcile fetch already returns full event resources (no `fields` mask), so `extendedProperties` reaches the reader with no projection change.
+
 ## 0.2.58 — 2026-07-18
 
 ### Removed — the retired flight-assist airport-drive reconcile (#193)
