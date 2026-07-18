@@ -100,11 +100,19 @@ def test_decode_private_props_falls_back_to_description():
     assert decode_private_props(event) == TAGS
 
 
-def test_decode_private_props_without_managed_marker_falls_back():
-    # A private map lacking faManaged is "not tagged here" → try the description.
-    ext = {"faFlightId": "100"}  # no faManaged
+def test_decode_private_props_partial_extended_falls_back_to_description():
+    # A partial new-shape map (faManaged present but faFlightId missing) must NOT
+    # shadow a valid legacy description tag — the description is the safe fallback
+    # for incomplete new-shape data (coding-policy: stateful-artifacts).
+    ext = {"faKind": "boarding", "faManaged": "created"}  # no faFlightId
     event = _ext_event(ext, description=encode_tags("Gate B12", TAGS))
     assert decode_private_props(event) == TAGS
+
+
+def test_decode_private_props_incomplete_extended_with_no_description_is_empty():
+    # Incomplete ext AND no usable description → "not managed", never a partial map.
+    ext = {"faManaged": "created"}  # only the marker, nothing else
+    assert decode_private_props(_ext_event(ext)) == {}
 
 
 def test_decode_private_props_ignores_neighbour_private_keys():

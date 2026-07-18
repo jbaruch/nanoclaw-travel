@@ -41,7 +41,6 @@ _TAG_RE = re.compile(r"\s*<!--fa:(?P<json>\{.*?\})-->", re.DOTALL)
 # are collision-safe in the shared private map. Kept in sync with
 # `calendar_plan`'s `TAG_*` constants by a test (drift guard).
 TAG_KEYS = frozenset({"faFlightId", "faKind", "faManaged"})
-_TAG_MANAGED = "faManaged"  # its presence marks an event as flight-assist-managed
 
 
 def encode_tags(description: str, private_props: dict) -> str:
@@ -87,18 +86,22 @@ def decode_tags(description: object) -> dict:
 def _decode_extended_tags(event: dict) -> dict | None:
     """The managed tags from `extendedProperties.private`, or None to fall back.
 
-    Returns None (not `{}`) when the map carries no `faManaged` marker, so the
-    caller tries the description — an event with unrelated private properties is
-    "not tagged here", not "tagged empty". Extracts only the `fa*` tag keys, so a
-    neighbour tool's private keys on the same event are ignored.
+    Returns None unless the private map carries a COMPLETE managed-tag set (all
+    of `TAG_KEYS` present as strings). A partial or malformed new-shape map must
+    never shadow a valid legacy description tag — the description reader stays the
+    safe fallback for incomplete new-shape data (`coding-policy:
+    stateful-artifacts`). So `None` here also covers a map with no `fa*` tags at
+    all (an event with only a neighbour tool's private keys); only the `fa*` tag
+    keys are extracted, so a neighbour's keys are never returned.
     """
     ext = event.get("extendedProperties")
     if not isinstance(ext, dict):
         return None
     private = ext.get("private")
-    if not isinstance(private, dict) or not isinstance(private.get(_TAG_MANAGED), str):
+    if not isinstance(private, dict):
         return None
-    return {k: v for k, v in private.items() if k in TAG_KEYS and isinstance(v, str)}
+    tags = {k: v for k, v in private.items() if k in TAG_KEYS and isinstance(v, str)}
+    return tags if TAG_KEYS <= tags.keys() else None
 
 
 def decode_private_props(event: object) -> dict:
