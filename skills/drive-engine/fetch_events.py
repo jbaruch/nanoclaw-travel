@@ -73,14 +73,13 @@ from google_calendar_client import (  # noqa: E402
 _BASE_ARGS = {"calendar_id": "primary", "singleEvents": True}
 
 # Event fields carried through verbatim from the raw event. `scan.py` reads
-# id/summary/location/start/end/description — `description` is where every
-# generation of drive block keeps its marker and machine state (Epic #59 §4 —
-# calendar event IS the state, fetched by API), so it is what lets
-# `exclude_drive_block_events` and `scan` tell a block from a meeting.
-# `extendedProperties` carries a block's machine state since the #178 writer flip:
-# `block_codec.parse_block` reads it from `extendedProperties.private` first, the
-# description second, so this projection must carry it through or the reader would
-# never see a flipped block's state.
+# id/summary/location/start/end/description/extendedProperties. A drive block's
+# machine state is the calendar event itself (Epic #59 §4 — fetched by API):
+# since the #178 writer flip it rides in `extendedProperties.private`, and in the
+# `description` for pre-flip blocks and the legacy drive-planner marker `scan.py`
+# still recognizes. `block_codec.parse_block` reads `extendedProperties.private`
+# first, the description second, so both must be carried through — that is what
+# lets `exclude_drive_block_events` and `scan` tell a block from a meeting.
 _EVENT_FIELDS = (
     "id",
     "summary",
