@@ -1,24 +1,23 @@
-"""Smoke/contract test for skills/nightly-travel-sync/scripts/sync-tripit.sh.
+"""Behavioral contract test for skills/nightly-travel-sync/scripts/sync-tripit.sh.
 
 Post-#748 the wrapper runs the sync IN-CONTAINER (agent-image global
 `reclaim-tripit-timezones-sync`) instead of host-side via the deleted
 `mcp__nanoclaw__sync_tripit()` host-op. Credentials are swapped at the
 OneCLI gateway, so the script sends placeholders and requires the gateway
-to be engaged. This locks the contract the skill's Step 1 relies on: the
-script exists, is an executable valid-bash file, runs under
-`set -euo pipefail`, invokes the expected sync entrypoint, exports the
-gateway placeholders, fails loudly when the package is absent, fails
-loudly when `ONECLI_URL` is unset (so placeholder creds never hit the real
-TripIt/Reclaim endpoints), and runs the sync when the gateway is engaged.
+to be engaged.
 
-The behavioral guard tests are deterministic in CI (`ci-safety: Install,
-Don't Skip`): the wrapper honors `SYNC_TRIPIT_PKG_DIR`, so the tests point
-it at a controlled fake package instead of depending on the global install
-being present or absent on the host.
+The behavioral tests are deterministic in CI (`ci-safety: Install, Don't
+Skip`): the wrapper honors `SYNC_TRIPIT_PKG_DIR`, so the tests point it at
+a controlled fake package with a stub `sync.mjs` and assert what the script
+actually DOES (`testing-standards: assert outcomes, not implementation`) —
+it fails loudly with no package, fails fast without `ONECLI_URL`, and when
+the gateway is engaged it runs the sync entrypoint with the gateway
+placeholder defaults in the child environment.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -32,15 +31,31 @@ SCRIPT = (
     / "sync-tripit.sh"
 )
 
+# Vars the wrapper defaults under gateway mode — stripped from the child env so
+# the tests exercise the script's own `:-default` placeholders, not whatever the
+# host/CI environ happens to carry.
+_STRIPPED = ("ONECLI_URL", "TRIPIT_ICAL_URL", "RECLAIM_API_TOKEN")
+
 
 def _run(pkg_dir: Path, *, onecli_url: str | None) -> subprocess.CompletedProcess[str]:
     """Run the wrapper against a controlled fake package dir. `onecli_url=None`
-    removes ONECLI_URL from the environment to exercise the gateway guard."""
-    env = {k: v for k, v in os.environ.items() if k != "ONECLI_URL"}
+    leaves ONECLI_URL unset to exercise the gateway guard."""
+    env = {k: v for k, v in os.environ.items() if k not in _STRIPPED}
     env["SYNC_TRIPIT_PKG_DIR"] = str(pkg_dir)
     if onecli_url is not None:
         env["ONECLI_URL"] = onecli_url
     return subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, env=env)
+
+
+def _write_stub(pkg_dir: Path) -> None:
+    """A stub `sync.mjs` that echoes the credential env it received plus an empty
+    segment set, so a test can assert the child process got the right values."""
+    (pkg_dir / "sync.mjs").write_text(
+        "console.log(JSON.stringify({"
+        " tripit: process.env.TRIPIT_ICAL_URL,"
+        " reclaim: process.env.RECLAIM_API_TOKEN,"
+        " segments: [] }));\n"
+    )
 
 
 def test_script_exists_and_is_executable():
@@ -53,31 +68,6 @@ def test_script_is_valid_bash():
     assert result.returncode == 0, result.stderr
 
 
-def test_script_runs_under_strict_mode():
-    assert "set -euo pipefail" in SCRIPT.read_text()
-
-
-def test_script_invokes_sync_entrypoint():
-    assert "node sync.mjs sync --output=json" in SCRIPT.read_text()
-
-
-def test_script_exports_gateway_placeholders():
-    """Under gateway mode the CLI still requires TRIPIT_ICAL_URL and
-    RECLAIM_API_TOKEN to be present; the wrapper supplies non-secret
-    placeholders that the gateway swaps for the vaulted values."""
-    text = SCRIPT.read_text()
-    assert "export TRIPIT_ICAL_URL=" in text
-    assert "export RECLAIM_API_TOKEN=" in text
-
-
-def test_script_declares_onecli_url_guard():
-    """Static coverage for the gateway guard, complementing the behavioral
-    test below: the script must test ONECLI_URL and exit before running node."""
-    text = SCRIPT.read_text()
-    assert '[ -z "${ONECLI_URL:-}" ]' in text
-    assert "ONECLI_URL is not set" in text
-
-
 def test_script_fails_loudly_when_package_absent(tmp_path):
     """A missing package dir must exit non-zero with an actionable message —
     never reach `cd`/`node`. Deterministic via a guaranteed-absent PKG_DIR."""
@@ -86,22 +76,26 @@ def test_script_fails_loudly_when_package_absent(tmp_path):
     assert "not found" in result.stderr
 
 
-def test_script_requires_onecli_url_when_gateway_absent(tmp_path):
-    """With the package present but ONECLI_URL unset, the wrapper must exit
-    non-zero naming ONECLI_URL rather than sending placeholder credentials to
-    the real TripIt/Reclaim endpoints."""
-    result = _run(tmp_path, onecli_url=None)  # tmp_path exists → passes PKG_DIR check
+def test_script_fails_fast_without_gateway(tmp_path):
+    """Package present but ONECLI_URL unset: the wrapper must exit non-zero
+    naming ONECLI_URL and never run the sync, so placeholder credentials can't
+    reach the real TripIt/Reclaim endpoints."""
+    _write_stub(tmp_path)
+    result = _run(tmp_path, onecli_url=None)
     assert result.returncode != 0
     assert "ONECLI_URL" in result.stderr
+    assert result.stdout == ""  # never reached `node sync.mjs`
 
 
-def test_script_runs_sync_when_gateway_engaged(tmp_path):
-    """With the package present and the gateway engaged, the guards pass and the
-    wrapper cd's in and runs the sync entrypoint — exercised against a stub
-    `sync.mjs` so the happy path is deterministic in CI without the real CLI."""
-    (tmp_path / "sync.mjs").write_text(
-        "console.log(JSON.stringify({ noChanges: true, segments: [] }));\n"
-    )
+def test_script_runs_sync_with_placeholder_defaults_when_gateway_engaged(tmp_path):
+    """With the package present and the gateway engaged, the wrapper cd's in,
+    runs the sync entrypoint, and the child process receives the gateway
+    placeholder defaults for both credentials (the CLI requires them present;
+    the gateway swaps them for the vaulted values)."""
+    _write_stub(tmp_path)
     result = _run(tmp_path, onecli_url="http://gateway.test")
     assert result.returncode == 0, result.stderr
-    assert '"segments"' in result.stdout
+    data = json.loads(result.stdout)
+    assert data["tripit"].startswith("https://www.tripit.com/feed/ical/private/")
+    assert data["reclaim"], "RECLAIM_API_TOKEN placeholder must be non-empty"
+    assert data["segments"] == []
