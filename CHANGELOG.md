@@ -13,7 +13,6 @@ The drive-engine writer flip, the second phase of #178 (after the dual-read read
 Safe because the dual-read reader (0.2.55) was already live everywhere before this flipped, so no container runs the new writer against an old reader. No recognizer needed changing: `meeting_source.exclude_drive_block_events` recognizes a block through `parse_block`, so it inherited dual-read in phase 1, and `scan.py`'s marker matches the unrelated legacy `drive-planner` shape. A block still carrying description-state from before the flip is read by the fallback and migrated to `extendedProperties` on its first post-flip shift (the patch replaces its description); one that never shifts ages out of the near-term window. `UNIFIED_BLOCK_SCHEMA_VERSION` is unchanged — the state's fields and meaning are identical, only the carrier moved.
 
 Remaining: phase 3 (drop the description branch of `parse_block` once no description-state block remains in the near-term window) and the flight-assist `airport_block` / `calendar_tags` scope question, both tracked in #193.
->>>>>>> origin/main
 
 ## 0.2.55 — 2026-07-18
 
