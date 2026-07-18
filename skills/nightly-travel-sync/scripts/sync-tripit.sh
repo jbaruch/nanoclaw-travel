@@ -16,7 +16,11 @@
 # vars; pipefail is a safety net for any future pipe.
 set -euo pipefail
 
-PKG_DIR=/usr/local/lib/node_modules/reclaim-tripit-timezones-sync
+# Default to the agent-image global install. `SYNC_TRIPIT_PKG_DIR` overrides it
+# so the contract test can point at a controlled fake package and exercise the
+# guards deterministically in CI (`ci-safety: Install, Don't Skip`), where the
+# real global package is absent. Production never sets it.
+PKG_DIR="${SYNC_TRIPIT_PKG_DIR:-/usr/local/lib/node_modules/reclaim-tripit-timezones-sync}"
 if [ ! -d "$PKG_DIR" ]; then
     echo "sync-tripit: $PKG_DIR not found — the agent image must install it (\`npm install -g jbaruch/reclaim-tripit-timezones-sync\` in container/Dockerfile, jbaruch/nanoclaw #748)." >&2
     exit 1
