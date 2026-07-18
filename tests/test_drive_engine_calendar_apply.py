@@ -95,6 +95,12 @@ def test_create_args_block_is_busy():
     assert build_create_args(_desired(), calendar_id="primary")["transparency"] == "opaque"
 
 
+def test_create_args_block_is_tangerine():
+    # #167: every drive block is stamped Tangerine (colorId "6", the only orange)
+    # so it reads as visually distinct from meetings and flights on the calendar.
+    assert build_create_args(_desired(), calendar_id="primary")["colorId"] == "6"
+
+
 def test_create_args_unknown_tz_falls_back_to_utc():
     args = build_create_args(_desired(tz="Not/AZone"), calendar_id="primary")
     # UTC is a real IANA name, so it is always safe to declare as timeZone.
@@ -185,6 +191,9 @@ def test_update_patches_in_place_never_duplicates():
     assert comp.deleted == []  # never deletes the old block
     assert len(comp.patched) == 1
     assert comp.patched[0]["event_id"] == "old1"  # patched the SAME event
+    # #167: the shift re-asserts Tangerine, so a block created before the colour
+    # landed is recoloured in place with no separate backfill pass.
+    assert comp.patched[0]["colorId"] == "6"
 
 
 def test_update_patch_failure_is_recorded_not_counted():

@@ -60,6 +60,8 @@ A drive block has no local record — the calendar event itself IS the state (Ep
 
 Every block the engine writes is owned by `block_codec.py` — marker template, machine-state keys, the generations it recognizes, and its version/tolerance rules all live there as named constants and its module docstring. Per `coding-policy: script-as-black-box`, this file does not restate them.
 
+Blocks are stamped Tangerine (`colorId` "6") so they read as visually distinct from meetings and flights (#167). The colour is a write-only presentation attribute, not machine state read back off the event — `calendar_apply.py` sets it on both create and shift (named constant `_DRIVE_BLOCK_COLOR_ID`); no reader consults it.
+
 The API fetch / create / patch / delete go through `google_calendar_client` — the native Calendar REST API, brokered by OneCLI's gateway (nanoclaw#638).
 
 ### Legacy drive-planner blocks — recognized, never written
