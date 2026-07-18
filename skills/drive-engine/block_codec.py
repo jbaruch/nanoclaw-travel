@@ -8,23 +8,24 @@ Where the machine state lives (the #178 migration)
 Historically all state rode in the event **description** — the Composio v3 toolkit
 this plugin shipped on exposed no writable `extendedProperties`, so the description
 was the only field that round-tripped. The native Calendar API (nanoclaw#638) does
-expose `extendedProperties.private`, so state is moving off the human-visible
-description into that machine-only field. Every block already deployed carries its
-state in the description, so the move is a live-data migration with a transition
-window, not a field swap: the READER accepts BOTH before the writer flips (#178).
+expose `extendedProperties.private`, so state moved off the human-visible
+description into that machine-only field. Blocks deployed before the flip still
+carry their state in the description, so the move is a live-data migration with a
+transition window, not a field swap: the READER accepts BOTH.
 
 `parse_block` reads `extendedProperties.private` FIRST and the description SECOND —
-whichever a block carries, it round-trips. Nothing writes `extendedProperties` yet
-(the writer flip is a later phase), so today every live block still parses off its
-description; the extended-properties branch lies dormant until the writer starts
-emitting it. `build_extended_properties` is the schema's source of truth and the
-writer's phase-2 target; `build_description` still produces the create/patch
-description. The human line stays in the description on purpose — it is what the
-operator actually sees in the calendar UI; only the machine state migrates.
+whichever a block carries, it round-trips. `build_extended_properties` is the
+schema's source of truth and what `calendar_apply` now writes on create/patch;
+`build_description` produces the legacy description shape the reader still accepts
+for pre-flip blocks (and tests exercise). The human line stays in the description
+on purpose — it is what the operator sees in the calendar UI; only the machine
+state migrated. A pre-flip description-carried block is migrated to
+`extendedProperties` on its first shift, or ages out of the near-term window.
 
-Description shape: a human line, a self-marker, and a compact machine-state JSON
-comment. Extended-properties shape: a flat `dengine_*`-namespaced string map (the
-only value type `extendedProperties.private` accepts), one key per state field.
+Description shape (pre-flip / read-only): a human line, a self-marker, and a
+compact machine-state JSON comment. Extended-properties shape (current writer): a
+flat `dengine_*`-namespaced string map (the only value type
+`extendedProperties.private` accepts), one key per state field.
 
 Leg identity (the marker) follows #156 C1 / G4 and keys on the CANONICAL flight
 identity, never the designator:
@@ -214,16 +215,17 @@ def build_extended_properties(
     Returns `{"private": {...}}`, the value of the event resource's
     `extendedProperties` field — NOT a full event body. A writer nests it under
     the top-level key: `events.insert` / `events.patch` receive
-    `{..., "extendedProperties": build_extended_properties(...)}` (Calendar merges
-    the map into the event's existing private properties). Every value is a
-    string — the only type `extendedProperties.private` accepts — so
-    `baseline_seconds` and the datetimes are stringified here and parsed back in
-    `parse_block`. `window_end` is emitted only for transfer legs, matching
-    `build_description`.
+    `{..., "extendedProperties": build_extended_properties(...)}`. The writer owns
+    these events exclusively and re-asserts the COMPLETE `dengine_*` set every
+    write, so whether Calendar merges or replaces the private map on patch does not
+    matter. Every value is a string — the only type `extendedProperties.private`
+    accepts — so `baseline_seconds` and the datetimes are stringified here and
+    parsed back in `parse_block`. `window_end` is emitted only for transfer legs,
+    matching `build_description`.
 
-    The reader (`parse_block`) consumes this today; the writer adopts it in the
-    phase-2 flip. It carries no human line — the description keeps that, since it
-    is what the operator sees; only the machine state moves here.
+    Both the reader (`parse_block`) and the writer (`calendar_apply` create/patch)
+    use this. It carries no human line — the description keeps that, since it is
+    what the operator sees; only the machine state lives here.
     """
     private: dict[str, str] = {
         _EXT_KEY_VERSION: str(UNIFIED_BLOCK_SCHEMA_VERSION),

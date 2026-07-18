@@ -1,5 +1,13 @@
 # Changelog
 
+### Changed — drive blocks now write their state to `extendedProperties.private` (writer flip, #178)
+
+The drive-engine writer flip, the second phase of #178 (after the dual-read reader shipped in 0.2.55 and materialized in production). `calendar_apply` now writes the block's machine state to `extendedProperties.private` via `build_extended_properties` on both create and patch, and the event `description` carries only the operator-facing route line (`origin → destination`) — the leg marker and `<!--dengine:-->` state comment no longer squat in the human-visible field. State squatted there only because the retired Composio toolkit exposed no writable `extendedProperties`; the native Calendar API (nanoclaw#638) does.
+
+Safe because the dual-read reader (0.2.55) was already live everywhere before this flipped, so no container runs the new writer against an old reader. No recognizer needed changing: `meeting_source.exclude_drive_block_events` recognizes a block through `parse_block`, so it inherited dual-read in phase 1, and `scan.py`'s marker matches the unrelated legacy `drive-planner` shape. A block still carrying description-state from before the flip is read by the fallback and migrated to `extendedProperties` on its first post-flip shift (the patch replaces its description); one that never shifts ages out of the near-term window. `UNIFIED_BLOCK_SCHEMA_VERSION` is unchanged — the state's fields and meaning are identical, only the carrier moved.
+
+Remaining: phase 3 (drop the description branch of `parse_block` once no description-state block remains in the near-term window) and the flight-assist `airport_block` / `calendar_tags` scope question, both tracked in #193.
+
 ## 0.2.55 — 2026-07-18
 
 ### Added — drive blocks read their state from `extendedProperties.private` too (dual-read, #178)
