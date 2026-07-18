@@ -19,6 +19,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
+from block_codec import parse_block  # noqa: E402
 from calendar_apply import ApplyResult, apply_plan, build_create_args  # noqa: E402
 from google_calendar_client import GoogleCalendarError  # noqa: E402
 from reconcile import Convert, Create, Delete, DesiredBlock, ReconcilePlan, Update  # noqa: E402
@@ -85,7 +86,36 @@ def test_create_args_render_in_local_tz():
     assert args["start"]["timeZone"] == "America/Chicago"
     assert args["end"]["timeZone"] == "America/Chicago"
     assert args["start"]["dateTime"].startswith("2020-07-13T03:18")
-    assert "[drive-engine:leg=m1:kind=meeting_outbound]" in args["description"]
+
+
+def test_create_args_carry_state_in_extended_properties_not_description():
+    # #178 writer flip: machine state (leg identity + kind + fields) lives in
+    # extendedProperties.private; the description carries only the human route line.
+    args = build_create_args(_desired(), calendar_id="primary")
+    private = args["extendedProperties"]["private"]
+    assert private["dengine_leg"] == "m1"
+    assert private["dengine_kind"] == "meeting_outbound"
+    assert private["dengine_b"] == "1620"  # baseline stringified for the string map
+    # The marker + state comment no longer squat in the description.
+    assert "[drive-engine:leg=" not in args["description"]
+    assert "<!--dengine:" not in args["description"]
+
+
+def test_create_args_description_is_the_human_route():
+    # The operator-facing description is the drive's route, origin → destination.
+    args = build_create_args(_desired(), calendar_id="primary")
+    assert args["description"] == "Home → Pool"
+
+
+def test_create_args_round_trip_through_parse_block():
+    # The created event's extendedProperties round-trips back through the reader.
+    args = build_create_args(_desired(), calendar_id="primary")
+    event = {"id": "evt1", "extendedProperties": args["extendedProperties"]}
+    parsed = parse_block(event)
+    assert parsed is not None
+    assert parsed.identity == "m1"
+    assert parsed.kind == "meeting_outbound"
+    assert parsed.baseline_seconds == 1620
 
 
 def test_create_args_block_is_busy():
@@ -194,6 +224,10 @@ def test_update_patches_in_place_never_duplicates():
     # #167: the shift re-asserts Tangerine, so a block created before the colour
     # landed is recoloured in place with no separate backfill pass.
     assert comp.patched[0]["colorId"] == "6"
+    # #178: the shift writes state to extendedProperties and a human-only
+    # description, migrating a still-description-carried block on its first shift.
+    assert comp.patched[0]["extendedProperties"]["private"]["dengine_leg"] == "m1"
+    assert "<!--dengine:" not in comp.patched[0]["description"]
 
 
 def test_update_patch_failure_is_recorded_not_counted():

@@ -35,7 +35,7 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from block_codec import build_description  # noqa: E402
+from block_codec import build_extended_properties  # noqa: E402
 from reconcile import DesiredBlock, ReconcilePlan, material_update_delta  # noqa: E402
 
 # A drive block's human summary is "Drive: <meeting/leg>". Stripping the prefix
@@ -118,8 +118,14 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
     """Build the native events.insert body for a desired drive block.
 
     The block is rendered in its local timezone (`desired.timezone`) so it shows
-    the correct local time; the unified codec description carries the leg identity
-    + machine state for round-trip.
+    the correct local time. Machine state (leg identity + the fields the recheck
+    reads back) rides in `extendedProperties.private`, a machine-only field, and
+    the `description` carries only the operator-facing route line (#178 writer
+    flip). It squatted in the description only because the retired Composio toolkit
+    exposed no writable `extendedProperties`; the native API does, and the reader
+    has read both since the dual-read step, so a block written this way round-trips
+    and a still-description-carried block created before the flip is read by the
+    fallback until it ages out.
 
     The block is Busy (`transparency: "opaque"`): a drive is time the operator is
     physically unavailable, so scheduling tools must not book over it. Calendar
@@ -143,16 +149,33 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
         "start": {"dateTime": local_start.isoformat(), "timeZone": tz_name},
         "end": {"dateTime": local_end.isoformat(), "timeZone": tz_name},
         "location": desired.destination,
-        "description": _desired_description(desired),
+        "description": _human_description(desired),
         "transparency": "opaque",
         "colorId": _DRIVE_BLOCK_COLOR_ID,
+        "extendedProperties": _desired_extended_properties(desired),
     }
 
 
-def _desired_description(desired: DesiredBlock) -> str:
-    """The unified-codec description for a desired leg (identity + machine state)."""
-    return build_description(
-        summary=desired.summary,
+def _human_description(desired: DesiredBlock) -> str:
+    """The operator-facing block description — the drive's route, `origin → dest`.
+
+    Machine state no longer rides here (#178 writer flip): it moved to
+    `extendedProperties.private`. The description now carries only what the
+    operator reads in the calendar UI. The route complements the `summary` title
+    (the meeting/flight name) and the `location` (the destination) with the one
+    detail neither shows — where the drive starts.
+    """
+    return f"{desired.origin} → {desired.destination}"
+
+
+def _desired_extended_properties(desired: DesiredBlock) -> dict:
+    """The machine-state `extendedProperties` body for a desired leg (#178).
+
+    Nested under the event's top-level `extendedProperties` key; Calendar merges
+    the `private` map into the event's existing private properties on patch, so a
+    shift re-asserts the state without clobbering a neighbour's tag.
+    """
+    return build_extended_properties(
         identity=desired.identity,
         kind=desired.kind,
         baseline_seconds=desired.baseline_seconds,
@@ -171,8 +194,12 @@ def build_patch_args(desired: DesiredBlock, *, event_id: str, calendar_id: str) 
     delete. So a sweep killed mid-write can no longer leave the new block next to
     an undeleted old one: the duplicate storm's mechanism is gone (#164).
 
-    The patch re-asserts `colorId` (#167) so a block created before the colour
-    landed is recoloured Tangerine on its next shift, with no separate backfill.
+    The patch writes `extendedProperties` (the #178 machine-state home) and the
+    human-only description, so a block still carrying its state in the description
+    from before the writer flip is migrated to `extendedProperties` on its first
+    post-flip shift — the marker + state comment leave the description as this
+    replaces it. The patch also re-asserts `colorId` (#167) so a pre-colour block
+    is recoloured Tangerine on the same shift.
     """
     end = max(desired.end, desired.start + timedelta(minutes=1))
     local_start, tz_name = _start_in_local(desired.start, desired.timezone)
@@ -184,8 +211,9 @@ def build_patch_args(desired: DesiredBlock, *, event_id: str, calendar_id: str) 
         "start": {"dateTime": local_start.isoformat(), "timeZone": tz_name},
         "end": {"dateTime": local_end.isoformat(), "timeZone": tz_name},
         "location": desired.destination,
-        "description": _desired_description(desired),
+        "description": _human_description(desired),
         "colorId": _DRIVE_BLOCK_COLOR_ID,
+        "extendedProperties": _desired_extended_properties(desired),
     }
 
 
