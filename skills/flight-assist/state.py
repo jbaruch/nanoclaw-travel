@@ -382,9 +382,9 @@ MAX_LIVE_ORIGIN_AGE_MINUTES = 30
 def resolve_live_origin(home_address: str | None, *, now: datetime) -> str | None:
     """Resolve the drive origin: fresh live location → `home_address` → None.
 
-    The single origin-resolution ladder shared by the precheck's time-to-leave
-    query and the airport-drive reconcile, so the two never disagree on where the
-    user is:
+    The origin-resolution ladder for the precheck's time-to-leave query (its sole
+    caller since the airport-drive reconcile that once shared it moved to the
+    drive-engine, #156):
 
     1. `current-location.json` (orchestrator-written) when present and fresh —
        `0 <= now - captured_at <= MAX_LIVE_ORIGIN_AGE_MINUTES`. Returned as
