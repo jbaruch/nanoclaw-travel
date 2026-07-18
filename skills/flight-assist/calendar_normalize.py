@@ -34,7 +34,7 @@ stdlib-only per `coding-policy: dependency-management`.
 
 from __future__ import annotations
 
-from calendar_tags import decode_tags, strip_tags
+from calendar_tags import decode_private_props, strip_tags
 
 # Distinctive substring of the authorship link Reclaim stamps into every
 # event description. Two-factor with the travel marker below so a user
@@ -100,11 +100,11 @@ def normalize_event(raw_event: dict, *, calendar_id: str, classify_reclaim: bool
             primary); False for the byAir flight calendar.
 
     Returns the flat shape `plan_reconciliation` consumes. `private_props`
-    is flight-assist's managed-event tags, decoded from the description's
-    `<!--fa:{...}-->` comment (the live v3 toolkit has no writable
-    extendedProperties), `{}` when absent. `description` is the human content
-    with that comment stripped — the adopt path re-appends the tags so they
-    never accumulate.
+    is flight-assist's managed-event tags, read dual-source by
+    `decode_private_props` — `extendedProperties.private` first, the
+    description's `<!--fa:{...}-->` comment second (#178) — `{}` when absent.
+    `description` is the human content with any tag comment stripped — the adopt
+    path re-appends the tags so they never accumulate.
 
     Raises NormalizeError when the event has no `id`.
     """
@@ -124,6 +124,6 @@ def normalize_event(raw_event: dict, *, calendar_id: str, classify_reclaim: bool
         "start": _extract_instant(raw_event.get("start")),
         "end": _extract_instant(raw_event.get("end")),
         "description": strip_tags(raw_description),
-        "private_props": decode_tags(raw_description),
+        "private_props": decode_private_props(raw_event),
         "is_reclaim_travel": is_reclaim_travel(raw_event) if classify_reclaim else False,
     }
