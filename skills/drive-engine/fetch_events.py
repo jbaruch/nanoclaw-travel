@@ -75,6 +75,11 @@ _BASE_ARGS = {"calendar_id": "primary", "singleEvents": True}
 # generation of drive block keeps its marker and machine state (Epic #59 §4 —
 # calendar event IS the state, fetched by API), so it is what lets
 # `exclude_drive_block_events` and `scan` tell a block from a meeting.
+# `extendedProperties` is the #178 migration target: `block_codec.parse_block`
+# reads a block's state from `extendedProperties.private` first, the description
+# second, so this projection must carry it through or the extended-properties
+# branch would never see it once the writer flips. Dormant until then — no live
+# block writes it yet.
 _EVENT_FIELDS = (
     "id",
     "summary",
@@ -82,6 +87,7 @@ _EVENT_FIELDS = (
     "start",
     "end",
     "description",
+    "extendedProperties",
     "attendees",  # scan.py reads the operator's RSVP to skip declined meetings
     "status",  # scan.py skips cancelled events
 )

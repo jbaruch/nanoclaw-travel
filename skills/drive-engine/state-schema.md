@@ -60,6 +60,18 @@ A drive block has no local record — the calendar event itself IS the state (Ep
 
 Every block the engine writes is owned by `block_codec.py` — marker template, machine-state keys, the generations it recognizes, and its version/tolerance rules all live there as named constants and its module docstring. Per `coding-policy: script-as-black-box`, this file does not restate them.
 
+### Where the state lives — the #178 migration (dual-read)
+
+Machine state is moving off the human-visible event **description** into **`extendedProperties.private`**, a machine-only field. The description carried it only because the Composio v3 toolkit exposed no writable `extendedProperties`; the native Calendar API (nanoclaw#638) does, so the constraint is gone. Every deployed block still carries its state in the description, so the move is a live-data migration with a transition window, not a field swap.
+
+Rollout order (per `coding-policy: stateful-artifacts`, Cross-Pipeline Schema Bumps — dual-accept readers ship before the writer flips):
+
+1. **Dual-read (this step).** `block_codec.parse_block` reads `extendedProperties.private` FIRST and the description SECOND — a block written either way round-trips. `fetch_events` carries `extendedProperties` through its field projection so the reader receives it. Nothing writes the extended-properties form yet, so every live block still parses off its description and the new branch lies dormant. No deployed block is orphaned.
+2. **Writer flip (follow-up).** `calendar_apply` emits `build_extended_properties` on create/patch and drops the machine state (marker + `<!--dengine:-->` comment) from the description, keeping the human line the operator sees. `scan.py` and `meeting_source.exclude_drive_block_events` — which today recognize a block by its **description** marker — must move to the extended-properties signal in the same step, or a flipped block reads as an unmanaged meeting.
+3. **Age-out / drop the description reader (follow-up).** Once no description-state block remains in the near-term window, retire the description branch of `parse_block`.
+
+Extended-properties shape (`extendedProperties.private`, a flat string→string map; `block_codec.build_extended_properties` is the source of truth): every key is `dengine_`-namespaced to stay collision-safe in the shared map, every value is a string. `dengine_schema_version` (auditable version, spelled out per `coding-policy: stateful-artifacts`), `dengine_leg` (leg identity), `dengine_kind`, `dengine_b` (baseline seconds), `dengine_a` (anchor ISO-8601), `dengine_we` (transfer window end, optional), `dengine_o` / `dengine_d` (routed endpoints), `dengine_al` (comma-joined alert record). A map whose version is missing or not the current one reads as "no unified state here" and the reader falls back to the description, mirroring the description reader's unknown-version handling. `BLOCK_SCHEMA_VERSION` is unchanged — the state's fields and meaning are identical, only its carrier moves.
+
 Blocks are stamped Tangerine (`colorId` "6") so they read as visually distinct from meetings and flights (#167). The colour is a write-only presentation attribute, not machine state read back off the event — `calendar_apply.py` sets it on both create and shift (named constant `_DRIVE_BLOCK_COLOR_ID`); no reader consults it.
 
 The API fetch / create / patch / delete go through `google_calendar_client` — the native Calendar REST API, brokered by OneCLI's gateway (nanoclaw#638).

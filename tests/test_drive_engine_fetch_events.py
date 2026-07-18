@@ -213,6 +213,17 @@ def test_projection_carries_description_for_recheck_poll():
     assert event["description"] == raw["description"]
 
 
+def test_projection_carries_extended_properties_for_state_migration():
+    # #178: block state is moving from the description into
+    # `extendedProperties.private`; `block_codec.parse_block` reads it there
+    # first, so the fetch projection must carry the field through.
+    raw = _event("a")
+    raw["extendedProperties"] = {"private": {"dengine_schema_version": "1", "dengine_leg": "L"}}
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"items": [raw]})):
+        [event] = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert event["extendedProperties"] == raw["extendedProperties"]
+
+
 def test_empty_window_returns_empty_list():
     with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"items": []})):
         assert _fetcher().fetch_window(time_min=NOW, time_max=LATER) == []
