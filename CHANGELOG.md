@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.59 — 2026-07-18
+
 ### Added — flight-assist managed-event tags read from `extendedProperties.private` too (dual-read, #193)
 
 The flight-assist boarding-block / flight-adoption tags (`faFlightId`, `faKind`, `faManaged`) are migrating off the human-visible event `description` into `extendedProperties.private`, the same live-data migration #178 ran for drive blocks. This is the first, safe step: `calendar_tags.decode_private_props` reads `extendedProperties.private` FIRST and the `<!--fa:-->` description comment SECOND, and `calendar_normalize.normalize_event` now calls it, so an event tagged either way is recognized. The ext branch is taken only when the private map carries a COMPLETE managed-tag set, so a partial or malformed new-shape map never shadows a valid legacy description tag (`coding-policy: stateful-artifacts`, safe fallback).
