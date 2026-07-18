@@ -95,12 +95,14 @@ DEFAULT_TIGHT_GAP_SECONDS = 90 * 60
 
 # The marker the retired drive-planner stamped into the description of every
 # block it created, attributing it to the meeting it served (idempotency,
-# lombot #50). Nothing writes it now — drive-engine's own blocks carry a
-# `<!--de:-->` marker and are filtered out before they reach the scan
-# (`meeting_source.exclude_drive_block_events`). This regex is a READER of
-# blocks left on the calendar from before the retirement: it is what buckets
-# their meeting as `has_block` so the engine doesn't plan a duplicate on top.
-# Frozen by what is already deployed, not by a writer. Example:
+# lombot #50). Nothing writes it now — drive-engine's own blocks carry their
+# machine state in `extendedProperties.private` (#178 writer flip; the
+# description for pre-flip blocks) and are filtered out before they reach the
+# scan by `meeting_source.exclude_drive_block_events` (through `parse_block`).
+# This regex is a READER of blocks left on the calendar from before the
+# retirement: it is what buckets their meeting as `has_block` so the engine
+# doesn't plan a duplicate on top. Frozen by what is already deployed, not by a
+# writer. Example:
 #     [drive-planner:meeting=evt_42:dir=outbound]
 _MARKER_RE = re.compile(r"\[drive-planner:meeting=(?P<id>[^:\]]+):dir=(?P<dir>[^:\]]+)\]")
 
