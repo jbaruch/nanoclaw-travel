@@ -5,11 +5,13 @@ classify them (Epic #59 §4). This module is that fetch: an events.list over
 the primary calendar (singleEvents, a wide `[timeMin, timeMax]` window),
 returning the raw Google Calendar event dicts in the exact shape
 `scan(events=...)` consumes (`id`, `summary`, `location`, `start`, `end`,
-`description`). Block state rides in that same `description` field (Epic #59
-§4 — the calendar event IS the state, fetched by API), so it comes back
-verbatim: `exclude_drive_block_events` reads it to drop the engine's own
-blocks from the scan input, and `scan.py` reads it to recognize a legacy
-drive-planner block by its marker.
+`description`, `extendedProperties`). Block state IS the calendar event (Epic
+#59 §4 — fetched by API), carried in `extendedProperties.private` since the
+#178 writer flip (and in the `description` for pre-flip blocks the reader still
+accepts), so both come back verbatim: `exclude_drive_block_events` reads them
+through `parse_block` to drop the engine's own blocks from the scan input, and
+`scan.py` reads the `description` to recognize a legacy drive-planner block by
+its marker.
 
 This used to be a second, self-contained Composio transport — its own HTTP
 POST, its own auth headers, its own success/failure envelope handling, its own
@@ -75,11 +77,10 @@ _BASE_ARGS = {"calendar_id": "primary", "singleEvents": True}
 # generation of drive block keeps its marker and machine state (Epic #59 §4 —
 # calendar event IS the state, fetched by API), so it is what lets
 # `exclude_drive_block_events` and `scan` tell a block from a meeting.
-# `extendedProperties` is the #178 migration target: `block_codec.parse_block`
-# reads a block's state from `extendedProperties.private` first, the description
-# second, so this projection must carry it through or the extended-properties
-# branch would never see it once the writer flips. Dormant until then — no live
-# block writes it yet.
+# `extendedProperties` carries a block's machine state since the #178 writer flip:
+# `block_codec.parse_block` reads it from `extendedProperties.private` first, the
+# description second, so this projection must carry it through or the reader would
+# never see a flipped block's state.
 _EVENT_FIELDS = (
     "id",
     "summary",
