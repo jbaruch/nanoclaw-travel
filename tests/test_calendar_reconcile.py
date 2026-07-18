@@ -22,7 +22,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
 import calendar_reconcile as cr  # noqa: E402
 from calendar_plan import _signature as _sig  # noqa: E402
-from calendar_tags import encode_tags  # noqa: E402
+from calendar_tags import decode_private_props, encode_tags  # noqa: E402
 from google_calendar_client import GoogleCalendarError  # noqa: E402
 from state import (  # noqa: E402
     read_config,
@@ -170,14 +170,17 @@ def _raw_event(
 
 def test_create_event_args_are_native_with_tags_in_extended_properties():
     # #193 writer flip: tags live in extendedProperties.private; the description
-    # carries only the human content (tag-free).
+    # carries only the human content (tag-free). The tag set is COMPLETE (all of
+    # calendar_plan's TAG_*, as the real boarding create writes), so the written
+    # event round-trips back through the completeness-gated reader.
+    tags = {"faFlightId": "1", "faKind": "boarding", "faManaged": "created"}
     op = {
         "calendar_id": BYAIR_CAL,
         "body": {
             "summary": "Boarding AA100",
             "start": "2026-07-01T09:30:00-05:00",
             "end": "2026-07-01T10:00:00-05:00",
-            "private_props": {"faFlightId": "1", "faKind": "boarding"},
+            "private_props": tags,
         },
     }
     args = cr._create_event_args(op)
@@ -185,8 +188,10 @@ def test_create_event_args_are_native_with_tags_in_extended_properties():
     assert args["end"] == {"dateTime": "2026-07-01T10:00:00-05:00"}
     assert "start_datetime" not in args
     assert "event_duration_hour" not in args and "event_duration_minutes" not in args
-    assert args["extendedProperties"] == {"private": {"faFlightId": "1", "faKind": "boarding"}}
+    assert args["extendedProperties"] == {"private": tags}
     assert "<!--fa:" not in args["description"]
+    # Round-trips: the reader recognizes the block off the written event.
+    assert decode_private_props({"extendedProperties": args["extendedProperties"]}) == tags
 
 
 def test_create_event_args_send_no_timezone():
