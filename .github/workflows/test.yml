@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           # Mirrors the NanoClaw agent container's interpreter (nanoclaw-agent,
           # node:24-slim / Debian bookworm -> Python 3.11.2) where the skill
