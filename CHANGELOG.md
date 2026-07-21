@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.66 — 2026-07-21
+
 ### Added — `nightly-travel-sync` logs newly-appeared trips to daily memory (#204)
 
 A new Step 5 gives the main agent durable awareness of trips it did not book. The existing sync surfaces timezone changes, OOO, conflicts, and booking gaps to chat, but a newly-appeared trip that is already fully booked — no TZ change, no conflict — entered silently, leaving nothing in memory. The new `scripts/detect-new-trips.py` diffs the freshly-rebuilt `travel-db.json` trip set against a persisted snapshot (`travel-trips-seen.json`, this skill's second owned artifact) and reports the new trips; the skill appends one line per trip to the group daily log via the co-loaded `trusted-memory` `append-to-daily-log.py`, then commits the snapshot.
