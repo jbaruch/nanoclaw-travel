@@ -1,6 +1,6 @@
 # Nightly Travel Sync — State Schema
 
-Per `coding-policy: stateful-artifacts`. This skill owns one cross-invocation, cross-plugin JSON artifact: `travel-schedule.json`. (The day-indexed `travel-db.json` it rebuilds in Step 4 is owned by the sibling `check-travel-bookings` skill — see that skill's `state-schema.md`.)
+Per `coding-policy: stateful-artifacts`. This skill owns two cross-invocation JSON artifacts: `travel-schedule.json` (cross-plugin) and `travel-trips-seen.json` (the new-trip-detection snapshot, this skill only). (The day-indexed `travel-db.json` it rebuilds in Step 4 is owned by the sibling `check-travel-bookings` skill — see that skill's `state-schema.md`.)
 
 ## `/workspace/group/travel-schedule.json`
 
@@ -54,3 +54,44 @@ Additive: the record gains the optional `description` field. No stored state to 
 ### Migration policy
 
 Bump `SCHEMA_VERSION` in `refresh-travel-schedule.py` for any record-shape change. The file is fully regenerated each run. The next successful Step 2 rewrites every record at the new version. No stored old-version state exists to upgrade. Readers are non-owners per `coding-policy: stateful-artifacts`. They extract the fields they need and tolerate the per-record `schema_version` without migrating it. A reader that gates on the version treats an unfamiliar value as "no usable schedule" and falls back to its own degraded path.
+
+## `/workspace/group/travel-trips-seen.json`
+
+Last-seen snapshot of the upcoming trip set, used by Step 5 to detect trips that appeared since the previous nightly run (#204). New-trip detection only — never a source of truth for trip data (that is `travel-db.json`).
+
+- **Owner skill:** `nightly-travel-sync` (this skill)
+- **Writer:** `scripts/detect-new-trips.py --commit` (Step 5) — the sole writer
+- **Readers:** `scripts/detect-new-trips.py` (Step 5 detect mode) — the sole reader; no cross-plugin reader
+
+### Shape (schema_version 1)
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-20T06:00:00Z",
+  "trips": {
+    "madrid-trip-2026-06": {
+      "summary": "Madrid trip",
+      "start": "2026-06-01",
+      "end": "2026-06-05"
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `schema_version` | integer | yes | Currently `1`. |
+| `generated_at` | string | yes | UTC write time, `YYYY-MM-DDTHH:MM:SSZ`. Diagnostic only — never read back. |
+| `trips` | object | yes | Map of trip `slug` → `{summary, start, end}`. Keys are the `make_slug` slugs from `build-travel-db.py`; a new key on the next run is a new trip. |
+
+### Lifecycle
+
+- **Snapshot, not accumulator** — each `--commit` rewrites `trips` to exactly the current upcoming set (`end` on/after today), so a trip aging into the past drops out. It is bounded by the number of upcoming trips, not ever-seen trips.
+- **Seed run** — when the file is absent (or unreadable, or carries an unrecognised `schema_version`), detect mode reports `seeded: true` with an empty `new_trips`; the whole itinerary is never logged as new. The following `--commit` writes the first snapshot. Only trips appearing after the seed count as new.
+- **Write ordering** — the skill logs new trips *before* `--commit`, so a logging failure leaves the snapshot untouched and the next run retries. The trusted-memory daily-log helper's line-dedup guards against a double entry across that retry.
+- **Write atomicity** — same-dir `.tmp` sibling + `os.replace`, matching the other travel writers.
+
+### Migration policy
+
+Bump `SCHEMA_VERSION` in `detect-new-trips.py` (and this section) for any shape change. The owner is the sole reader and writer, and the snapshot is disposable — an unrecognised version reads as "no usable prior state" and triggers a seed rewrite at the current version, so no in-place migration path is needed. A lost snapshot costs at most one seed run (nothing logged that cycle).
