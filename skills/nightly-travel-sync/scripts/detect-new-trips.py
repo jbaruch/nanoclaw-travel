@@ -134,12 +134,28 @@ def _load_prior_slugs() -> set | None:
     usable prior snapshot exists (absent, corrupt, non-object, or an
     unrecognised schema_version). None triggers a seed run — the whole
     itinerary is never dumped as new (#204), and --commit rewrites a
-    clean snapshot at the current version."""
+    clean snapshot at the current version.
+
+    An *access* failure (permission, I/O error) is NOT a seed run: it
+    exits 1 loudly rather than silently reseeding, which would let the
+    following --commit clobber a possibly-good snapshot and miss a new
+    trip. This mirrors build-travel-db.py's content-vs-access split."""
     try:
         with open(SEEN_PATH, encoding="utf-8") as f:
             snap = json.load(f)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
+    except FileNotFoundError:
+        return None  # absent snapshot — first-ever run, seed
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None  # corrupt content — seed; --commit rewrites clean
+    except OSError as exc:
+        print(
+            f"ERROR: cannot read {SEEN_PATH} "
+            f"({type(exc).__name__}: {exc}) — fix the file's "
+            "permissions/mount, then re-run; refusing to reseed over a "
+            "possibly-good snapshot",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if not isinstance(snap, dict):
         return None
     if snap.get("schema_version") != SCHEMA_VERSION:

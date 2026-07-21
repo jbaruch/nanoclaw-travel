@@ -93,6 +93,29 @@ def test_unrecognised_version_is_seed_run(detect_new_trips, monkeypatch, capsys)
     assert json.loads(out)["seeded"] is True
 
 
+def test_snapshot_access_error_exits_1_not_seed(detect_new_trips, monkeypatch, capsys):
+    """A PermissionError (or other non-FileNotFound OSError) reading the
+    snapshot must fail loudly, NOT reseed — a silent seed would let the
+    following --commit clobber a good snapshot and miss a new trip."""
+    module, db_path, seen_path = detect_new_trips
+    _write_db(db_path, {"madrid-trip-2026-06": _MADRID})
+    seen_path.write_text(json.dumps({"schema_version": 1, "trips": {}}))
+
+    real_open = open
+
+    def _boom(path, *args, **kwargs):
+        if str(path) == str(seen_path):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _boom)
+    code, out, err = _run(module, monkeypatch, capsys, [])
+    assert code == 1
+    assert out == ""
+    assert str(seen_path) in err
+    assert "PermissionError" in err
+
+
 # --- commit ---------------------------------------------------------------
 
 
