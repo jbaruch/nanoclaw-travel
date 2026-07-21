@@ -44,7 +44,7 @@ jobs:
       # per jbaruch/coding-policy: context-artifacts "CHANGELOG Hygiene".
       # Must run immediately before patch-version-publish.
       - name: Stamp CHANGELOG
-        uses: jbaruch/coding-policy/.github/actions/stamp-changelog@754274a170f802466c7533ed7abf4a70d76ae645 # main
+        uses: jbaruch/coding-policy/.github/actions/stamp-changelog@e7f5e109a916f3154e8ddd9ab006010ebd74d455 # main
 
       - uses: tesslio/patch-version-publish@v1
         with:
