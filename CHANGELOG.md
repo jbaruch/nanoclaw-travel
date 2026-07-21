@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.66 — 2026-07-21
+
+### Added — `nightly-travel-sync` logs newly-appeared trips to daily memory (#204)
+
+A new Step 5 gives the main agent durable awareness of trips it did not book. The existing sync surfaces timezone changes, OOO, conflicts, and booking gaps to chat, but a newly-appeared trip that is already fully booked — no TZ change, no conflict — entered silently, leaving nothing in memory. The new `scripts/detect-new-trips.py` diffs the freshly-rebuilt `travel-db.json` trip set against a persisted snapshot (`travel-trips-seen.json`, this skill's second owned artifact) and reports the new trips; the skill appends one line per trip to the group daily log via the co-loaded `trusted-memory` `append-to-daily-log.py`, then commits the snapshot.
+
+Log-only by design — **no `send_message`**: the owner books the trips himself, so a per-trip chat ping is noise; the requirement is durable *agent* awareness only. The first run with no snapshot seeds silently (the itinerary is never dumped as "new"), detection is scoped to upcoming trips (`end` on/after today), and re-logging is guarded by both the snapshot and the daily-log helper's line-dedup. The snapshot is committed only after logging succeeds, so a logging failure retries on the next nightly run. Steps renumber: the travel-bookings check is now Step 6.
+
 ## 0.2.61 — 2026-07-18
 
 ### Changed — flight-assist managed-event tags now write to `extendedProperties.private` (writer flip, #193)
