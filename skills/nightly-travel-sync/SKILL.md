@@ -1,6 +1,6 @@
 ---
 name: nightly-travel-sync
-description: "Travel-data refresh bundle: TripIt → Reclaim timezone sync, refresh travel-schedule.json from the TripIt iCal feed with a two-tier Gmail freshness probe, rebuild travel-db.json, then check upcoming trips for booking gaps. Runs daily; precheck-gated on travel-db.json freshness. Triggers: 'sync trips', 'sync travel', 'update travel data', 'pull trip info', 'refresh travel schedule', 'rebuild travel db', 'check my bookings'."
+description: "Travel-data refresh bundle: TripIt → Reclaim timezone sync, refresh travel-schedule.json from the TripIt iCal feed with a two-tier Gmail freshness probe, rebuild travel-db.json, log newly-appeared trips to daily memory, then check upcoming trips for booking gaps. Runs daily; precheck-gated on travel-db.json freshness. Triggers: 'sync trips', 'sync travel', 'update travel data', 'pull trip info', 'refresh travel schedule', 'rebuild travel db', 'check my bookings'."
 cadence: "0 6 * * * (TZ=local)"
 agentModel: "claude-haiku-4-5-20251001"
 script: "precheck.py"
@@ -82,9 +82,40 @@ Never read a non-zero exit as "no bookings found" — silence is correct only on
 python3 /home/node/.claude/skills/tessl__check-travel-bookings/scripts/build-travel-db.py
 ```
 
-Produces `/workspace/group/travel-db.json`. The script lives in the sibling `check-travel-bookings` skill's dir. On non-zero exit, surface a one-line note via `mcp__nanoclaw__send_message`, emit `<internal>nightly-travel-sync exited step-4: build-nonzero</internal>` as your final turn text, and finish (Step 5 hard-fails on a missing DB, and the next cron re-runs from Step 1). Otherwise proceed to Step 5.
+Produces `/workspace/group/travel-db.json`. The script lives in the sibling `check-travel-bookings` skill's dir. On non-zero exit, surface a one-line note via `mcp__nanoclaw__send_message`, emit `<internal>nightly-travel-sync exited step-4: build-nonzero</internal>` as your final turn text, and finish (Step 5's detection and Step 6 both hard-fail on a missing DB, and the next cron re-runs from Step 1). Otherwise proceed to Step 5.
 
-## Step 5 — Travel bookings check
+## Step 5 — Log newly-appeared trips to daily memory
+
+Record trips that appeared in `travel-db.json` since the last run to the group daily log, so the main agent gains durable awareness of them. **This step is silent to chat by design (#204)** — the owner books the trips himself, so a per-trip `mcp__nanoclaw__send_message` is noise. The only chat output here is the one-line technical-failure note the run-wide convention already prescribes.
+
+First detect (reads the DB + snapshot, writes nothing):
+
+```bash
+python3 /home/node/.claude/skills/tessl__nightly-travel-sync/scripts/detect-new-trips.py
+```
+
+Parse the JSON output (detection predicate and snapshot handling live in the script — `detect-new-trips.py` module docstring):
+
+- **`seeded` is `true`** — first run with no usable prior snapshot. Log nothing (do NOT dump the itinerary), then commit the seed snapshot below and proceed to Step 6.
+- **`new_trips` is empty** — nothing new. Commit below (a harmless snapshot refresh) and proceed to Step 6.
+- **`new_trips` non-empty** — for each entry, append its `log_line` to the group daily log, prefixed with the current time as `- HH:MM UTC `:
+
+  ```bash
+  echo "- HH:MM UTC <log_line>" \
+    | python3 /home/node/.claude/skills/tessl__trusted-memory/scripts/append-to-daily-log.py --target group
+  ```
+
+  The helper handles locking, line-dedup, and atomic append — do NOT write the log file directly. If an append exits non-zero, surface a one-line note via `mcp__nanoclaw__send_message`, **skip the commit** (leave the snapshot so the next run retries), and proceed to Step 6.
+
+After logging every new trip (or immediately on a seed / empty result), persist the snapshot — this is the sole writer of `travel-trips-seen.json`, and it must run only after the logging above succeeds:
+
+```bash
+python3 /home/node/.claude/skills/tessl__nightly-travel-sync/scripts/detect-new-trips.py --commit
+```
+
+On a non-zero exit from either `detect-new-trips.py` invocation, surface a one-line note via `mcp__nanoclaw__send_message` and proceed to Step 6 (the next cron re-runs from Step 1). Proceed to Step 6.
+
+## Step 6 — Travel bookings check
 
 ```
 Skill(skill: "tessl__check-travel-bookings")
@@ -92,4 +123,4 @@ Skill(skill: "tessl__check-travel-bookings")
 
 Finds missing flights/hotels for upcoming trips. The inner skill reports gaps and is silent when all bookings are complete or snoozed.
 
-Emit exactly one `<internal>` line so a silent-success watchdog can distinguish healthy quiet from broken-silently runs: `<internal>nightly-travel-sync ran <slot_key>: clean</internal>` when no step surfaced anything in Steps 1–5, or `<internal>nightly-travel-sync ran <slot_key>: surfaced</internal>` when at least one did. `<slot_key>` is today's UTC date in `YYYY-MM-DD` form. No user-facing output. Finish here.
+Emit exactly one `<internal>` line so a silent-success watchdog can distinguish healthy quiet from broken-silently runs: `<internal>nightly-travel-sync ran <slot_key>: clean</internal>` when no step surfaced anything in Steps 1–6, or `<internal>nightly-travel-sync ran <slot_key>: surfaced</internal>` when at least one did. New-trip logging in Step 5 is not a chat surface — a run that only logged new trips is still `clean`. `<slot_key>` is today's UTC date in `YYYY-MM-DD` form. No user-facing output. Finish here.
