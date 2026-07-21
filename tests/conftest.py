@@ -77,6 +77,24 @@ def build_travel_db(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def detect_new_trips(tmp_path, monkeypatch):
+    """Load nightly-travel-sync/scripts/detect-new-trips.py with
+    DB_PATH + SEEN_PATH redirected at tmp_path. Returned tuple is
+    (module, db_path, seen_path) — neither file is created so callers
+    choose between absent / present. Freeze `module.date` for
+    future-scoping determinism (see build-travel-db.py tests)."""
+    db_path = tmp_path / "travel-db.json"
+    seen_path = tmp_path / "travel-trips-seen.json"
+    module = _load(
+        "detect_new_trips_under_test",
+        "skills/nightly-travel-sync/scripts/detect-new-trips.py",
+    )
+    monkeypatch.setattr(module, "DB_PATH", str(db_path))
+    monkeypatch.setattr(module, "SEEN_PATH", str(seen_path))
+    return module, db_path, seen_path
+
+
+@pytest.fixture
 def check_travel_bookings(tmp_path, monkeypatch):
     """Load check-travel-bookings/scripts/check-travel-bookings.py
     with `DB_PATH` and `STATE_PATH` redirected at tmp_path. Returned
