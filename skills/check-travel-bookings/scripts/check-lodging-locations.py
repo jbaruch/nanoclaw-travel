@@ -37,10 +37,21 @@ import json
 import re
 import sys
 from datetime import date, datetime, timezone
+from pathlib import Path
+
+# travel-core owns the `Check-in:` / `Check-out:` discriminator. Runtime mount
+# first, dev-clone sibling fallback for CI (travel-core's SKILL.md pattern; this
+# script sits one level deeper, under `scripts/`).
+_BUNDLE_DIR = Path(__file__).resolve().parent.parent
+_TRAVEL_CORE = Path("/home/node/.claude/skills/tessl__travel-core")
+if not _TRAVEL_CORE.is_dir():
+    _TRAVEL_CORE = _BUNDLE_DIR.parent / "travel-core"
+if str(_TRAVEL_CORE) not in sys.path:
+    sys.path.insert(0, str(_TRAVEL_CORE))
+
+from lodging import CHECK_IN, hotel_name, lodging_role  # noqa: E402
 
 SCHEDULE_PATH = "/workspace/group/travel-schedule.json"
-
-_CHECKIN_PREFIX = "Check-in:"
 
 # --- garbage signals (enumerable non-address shapes only) -------------------
 
@@ -100,7 +111,10 @@ def find_garbage_lodging(schedule: list | None, today: date) -> list[dict]:
         if not isinstance(record, dict) or record.get("type") != "Lodging":
             continue
         summary = record.get("summary")
-        if not (isinstance(summary, str) and summary.startswith(_CHECKIN_PREFIX)):
+        if lodging_role(summary) != CHECK_IN:
+            continue
+        hotel = hotel_name(summary)
+        if hotel is None:
             continue
         checkin = _parse_day(record.get("start"))
         if checkin is None or checkin < today:
@@ -110,7 +124,7 @@ def find_garbage_lodging(schedule: list | None, today: date) -> list[dict]:
             continue
         warnings.append(
             {
-                "hotel": summary[len(_CHECKIN_PREFIX) :].strip(),
+                "hotel": hotel,
                 "location": record.get("location")
                 if isinstance(record.get("location"), str)
                 else "",

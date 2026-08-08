@@ -142,7 +142,7 @@ def load_travel_schedule(path: str | None = None) -> list[dict] | None:
     return records
 
 
-def _parse_when(value) -> datetime | None:
+def parse_schedule_time(value) -> datetime | None:
     """A schedule `start`/`end` string as a tz-aware UTC datetime, else None.
 
     The feed emits `YYYY-MM-DDTHH:MM:SSZ` for timed VEVENTs and `YYYY-MM-DD`
@@ -163,7 +163,7 @@ def _parse_when(value) -> datetime | None:
 
 def _parse_day(value) -> date | None:
     """A schedule `start`/`end` string as a UTC calendar date, else None."""
-    parsed = _parse_when(value)
+    parsed = parse_schedule_time(value)
     return parsed.date() if parsed is not None else None
 
 
@@ -215,7 +215,7 @@ def _first_trip_flight_departure(
         # flight_windows; a date-only Flight leaves the anchor as it was.
         if not (isinstance(raw_start, str) and "T" in raw_start):
             continue
-        when = _parse_when(raw_start)
+        when = parse_schedule_time(raw_start)
         if when is None:
             continue
         if (
@@ -286,7 +286,7 @@ def resolve_anchor(
         location = record.get("location")
         if not isinstance(location, str) or not location.strip():
             continue
-        when = _parse_when(record.get("start"))
+        when = parse_schedule_time(record.get("start"))
         if when is None or when > at_utc:
             continue
         # Bound lodging to the active trip's span so a prior trip's
@@ -362,8 +362,8 @@ def flight_windows(schedule: list[dict] | None) -> list[tuple[datetime, datetime
             continue
         if not (isinstance(raw_end, str) and "T" in raw_end):
             continue
-        start = _parse_when(raw_start)
-        end = _parse_when(raw_end)
+        start = parse_schedule_time(raw_start)
+        end = parse_schedule_time(raw_end)
         if start is None or end is None or end <= start:
             continue
         windows.append((start, end))

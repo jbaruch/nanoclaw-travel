@@ -339,3 +339,52 @@ def test_payload_message_none_when_no_wake():
     payload = build_sweep_payload(applied, [])
     assert payload["wake_agent"] is False
     assert payload["data"]["message"] is None
+
+
+# --- drive-or-fly question: the third wake reason (#231) ---------------------
+
+
+_QUESTION = (
+    "TN Tigers: no flight booked, and it's a 3h40m drive to Fairfield Inn. "
+    "Reply 'drive' and I'll plan the drive, or 'fly' and I'll flag the missing flight."
+)
+
+
+def test_a_drive_or_fly_question_alone_wakes_the_agent():
+    """The operator owes an answer, so this is the one lodging-side event worth
+    interrupting for."""
+    payload = build_sweep_payload(ApplyResult(), [], [_QUESTION])
+    assert payload["wake_agent"] is True
+    assert payload["data"]["message"] == _QUESTION
+    assert payload["data"]["drive_or_fly_questions"] == [_QUESTION]
+
+
+def test_a_created_lodging_drive_stays_silent():
+    """A lodging drive is not skippable — getting to the trip is the trip — so
+    it applies like an airport drive: no wake, no message."""
+    plan = ReconcilePlan(
+        creates=(Create(_desired(identity="tn-tigers-2020-08", kind="lodging_outbound")),)
+    )
+    applied = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary")
+    payload = build_sweep_payload(applied, [])
+    assert applied.created == 1
+    assert applied.added_meeting_legs == []
+    assert payload["wake_agent"] is False
+
+
+def test_a_question_appends_below_the_drive_notices():
+    """One notice, questions last — the operator reads what changed, then what
+    is being asked of them."""
+    applied = ApplyResult()
+    applied.added_meeting_legs = _legs(
+        ("mtgA", "Massage", "Sat Jul 18, 09:50", "2020-07-18T14:50:00+00:00"),
+    )
+    payload = build_sweep_payload(applied, [], [_QUESTION])
+    lines = payload["data"]["message"].split("\n")
+    assert lines[0].startswith("Added a drive for Massage")
+    assert lines[-1] == _QUESTION
+
+
+def test_no_questions_leaves_the_notice_unchanged():
+    assert render_notification([], [], []) is None
+    assert render_notification([], [], None) is None

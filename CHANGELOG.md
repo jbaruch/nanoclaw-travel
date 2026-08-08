@@ -1,5 +1,39 @@
 # Changelog
 
+### Added — drive-engine: the getting-there legs of a trip you drive to (#231)
+
+A trip booked with lodging and no flight fell through every net the engine has. The intra-trip drives worked — a hotel→event drive is an ordinary meeting leg whose origin `position_at` resolves to the hotel — but nothing planned the drive that gets the operator there, because the airport chain anchors on flights and a hotel check-in is not one. Nothing warned either: for a genuine drive trip a missing flight is normal, so `check-travel-bookings` counted the trip complete. Live case that surfaced it — TripIt "TN TIGERS VS Faith Christian School" (Gatlinburg, TN, Aug 14-15 2026): the hotel→game drive appeared on the calendar, the home→hotel drive never did, and no alert fired.
+
+New `lodging_source.py` finds flight-less trips with lodging and plans the outbound `home → lodging` leg and its `lodging → home` return. Two decisions in it are load-bearing:
+
+**The origin is home by construction, never `position_at`.** Every other leg resolves its non-fixed endpoint through the planned-position ladder, and for this one that ladder gives the wrong answer twice over: at the outbound leg's own anchor the operator is already checked in by its reckoning, so it answers "the hotel" and the leg collapses to zero length; anchor earlier and it answers the trip's own `location` — the destination city — because `trip_origin.resolve_anchor`'s "still at home" guard keys on the trip's first FLIGHT, which a flight-less trip has none of. That guard's hole is real for meeting legs too (a meeting on the trip's first day, before check-in, anchors in the destination city rather than at home) and is filed separately rather than widened here, since `resolve_anchor` is shared with flight-assist.
+
+**The outbound lands by the first local drive, not by check-in.** TripIt stamps a nominal mid-afternoon check-in whether or not anyone agreed to it; the hotel→event drive is anchored on a real commitment. Arriving after that drive leaves means missing the event, so `context_from_blocks` reads the already-planned local drives and the outbound targets the earliest one. The return symmetrically departs after the later of check-out and the last local drive, so it is never planned across an event still under way.
+
+Drive-or-fly is read off the computed home→lodging drive in three bands (`classify_drive`): under 3h it is a drive and is planned silently, over 7h it is not and the booking gap is `check-travel-bookings`' to report, and between them the drive time is not evidence either way. In that middle band the engine asks the operator once and `drive_decision.py` persists the answer, which outranks the band from then on — `record_drive_time` never overwrites an unexpired operator verdict, and the ask stamp survives a re-derivation, so the question is asked once per trip rather than once per 30-minute sweep. The nag it avoids is the lombot #49 scar `skip_state` exists for.
+
+Worth noting for the thresholds: the trip that motivated the issue is roughly a 3h40m drive, so it lands in the ambiguous band and asks rather than building silently. That is the design working as specified, not a miss — but if the intent was "this one should just work", 3h is the number to move.
+
+The 3h ceiling is deliberately NOT shared with `meeting_source.DEFAULT_MAX_REASONABLE_DRIVE`, which is also three hours and means the opposite: there, a drive that long is evidence the operator is elsewhere and the leg is suppressed as implausible. Same number, opposite conclusion; a comment on each says so, since the obvious "consolidation" would be a bug.
+
+Lodging drives apply silently like airport drives, for the same reason — they are not skippable. The drive-or-fly question is a third wake reason beside a new meeting drive and a material re-time. The operator answers via `answer_drive_or_fly.py` (SKILL.md Step 3), which resolves the trip by the name the question used and records `drive` or `fly`.
+
+`check-travel-bookings` reports the other half: a new `отель есть, рейса нет` gap, the mirror of `рейсы есть, отеля нет`. Per the owner's call it lives with the rest of the booking-gap alerts rather than in the sweep, so it reads the verdict rather than computing a drive time it has no router for. It is gated on a `fly` verdict rather than on missing transport alone — a trip the operator drives to has no transport booking by design, and alerting on that would nag about every weekend away. `drive` and `unknown` are not gaps: the first means the drive is planned, the second that the operator has been asked and has not answered.
+
+That reader is deliberately looser than the owner's own: a missing, unreadable, or unrecognized-version store yields no gap rather than raising. A non-owner reader's no-prior-state path must stay non-disruptive (`coding-policy: stateful-artifacts`), and inventing missing-flight alerts out of an unreadable file is the alert storm that rule exists to forbid — under-reporting a gap is recoverable, a storm of false ones is not.
+
+An orphan check-in — a stay TripIt wrote with no check-out record, which `build_lodging_ranges` already handles for coverage — bounds the "at the destination" window at the trip wrapper's end rather than at the check-in instant. Collapsing it to the instant made every local drive invisible: the outbound ignored the onward drive it must land before, and the return leg was dropped as having nothing to depart after even with trailing drives on the calendar. (Caught in review on #232.)
+
+Rail counts alongside Flight as booked transport, so a train trip with a hotel is not mistaken for a drive. Car Rental deliberately does not: renting a car is compatible with driving there.
+
+Surface sync: `drive-decisions.json` documented in `skills/drive-engine/state-schema.md` (owner, writer/reader contract, tolerance on both sides).
+
+### Changed — travel-core: host the trip key and the lodging-role discriminator
+
+Two things had grown copies. The trip slug had two implementations, one in `build-travel-db.py` taking an ISO string and a dead divergent copy in `check-travel-bookings.py` taking a `date`, reachable only from its own test; the drive engine's verdict store keys on that same slug, so a third copy would have decided whether a cross-skill read hits or silently misses. The `Check-in:` / `Check-out:` prefix that discriminates the two `Lodging` records TripIt writes per stay was spelled in three places, and reading it wrong is silent — a check-out record answers `start` as happily as a check-in does, so a stay looks like it begins on its last morning.
+
+Both now live in `travel-core` (`trip_key.py`, `lodging.py`) with every consumer converted. `trip_origin._parse_when` is public as `parse_schedule_time` for the same reason: the schedule's date-only-wrapper-reads-as-UTC-midnight convention is a travel-core concern, and `lodging_source` needed it rather than a fourth parser with subtly stricter rules.
+
 ## 0.2.85 — 2026-08-05
 
 ### Changed — retire Dependabot again; Renovate stays the sole scanner

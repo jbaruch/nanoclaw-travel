@@ -21,6 +21,8 @@ Locks down the documented contract per `coding-policy: testing-standards`:
         nights of a trip already underway are never flagged (#120)
   - `build_lodging_ranges` pairs `Check-in:` / `Check-out:` events by
     hotel name; an orphan check-in defaults to a 1-day stay
+    (the trip slug itself is `travel-core`'s `trip_key`, covered by
+    `tests/test_trip_key.py`)
   - Issue derivation prioritizes empty > transport-without-lodging >
     transport-with-uncovered-nights; trips with all checks passing
     increment `complete_trips` and emit nothing
@@ -36,6 +38,8 @@ Tests freeze `module.date` (today) and `module.datetime` (now) so
 
 import json
 from datetime import date, datetime, timedelta, timezone
+
+import pytest
 
 _FROZEN_TODAY = date(2026, 4, 30)
 _FROZEN_NOW = datetime(2026, 4, 30, 12, 0, 0, tzinfo=timezone.utc)
@@ -113,14 +117,6 @@ def _run(module, monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
-
-
-def test_make_slug_format(check_travel_bookings):
-    """`make_slug` lowercases + dashifies + strips trailing year +
-    appends YYYY-MM."""
-    module, *_ = check_travel_bookings
-    slug = module.make_slug("Madrid Tech Days 2026", date(2026, 6, 15))
-    assert slug == "madrid-tech-days-2026-06"
 
 
 def test_build_lodging_ranges_pairs_by_hotel(check_travel_bookings):
@@ -1331,3 +1327,163 @@ def test_main_snooze_non_dict_entry_ignored(check_travel_bookings, monkeypatch, 
     _, out, _ = _run(module, monkeypatch, capsys)
     output = json.loads(out)
     assert len(output["gaps"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Missing-flight gap on a drive-or-fly "fly" verdict (#231)
+# ---------------------------------------------------------------------------
+
+
+_TRIP_SLUG = "tn-tigers-2026-05"
+
+
+def _lodging_only_db():
+    """A trip with a hotel and nothing to get there on."""
+    return _db_payload(
+        {
+            _TRIP_SLUG: _trip_record(
+                summary="TN Tigers 2026",
+                start=date(2026, 5, 15),
+                end=date(2026, 5, 17),
+                days={
+                    "2026-05-15": [
+                        _item(
+                            type="Lodging",
+                            summary="Check-in: Fairfield Inn",
+                            start=date(2026, 5, 15),
+                        )
+                    ],
+                    "2026-05-17": [
+                        _item(
+                            type="Lodging",
+                            summary="Check-out: Fairfield Inn",
+                            start=date(2026, 5, 17),
+                            uid="item-2@tripit",
+                        )
+                    ],
+                },
+            )
+        }
+    )
+
+
+def _write_verdict(tmp_path, verdict, *, slug=_TRIP_SLUG, version=1):
+    (tmp_path / "drive-decisions.json").write_text(
+        json.dumps(
+            {
+                "schema_version": version,
+                "trips": {
+                    slug: {
+                        "verdict": verdict,
+                        "decided_by": "operator",
+                        "drive_seconds": 30000,
+                        "asked_at": None,
+                        "expires": "2026-05-19T00:00:00+00:00",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_a_fly_verdict_turns_a_hotel_only_trip_into_a_gap(
+    check_travel_bookings, monkeypatch, capsys, tmp_path
+):
+    """The mirror of "рейсы есть, отеля нет" — hotel booked, no way there."""
+    module, db_path, _state = check_travel_bookings
+    db_path.write_text(json.dumps(_lodging_only_db()), encoding="utf-8")
+    _write_verdict(tmp_path, "fly")
+
+    code, out, _err = _run(module, monkeypatch, capsys)
+    payload = json.loads(out)
+    assert code == 0
+    assert [g["issue"] for g in payload["gaps"]] == ["отель есть, рейса нет"]
+
+
+@pytest.mark.parametrize("verdict", ["drive", "unknown"])
+def test_a_drive_or_unanswered_verdict_is_not_a_gap(
+    check_travel_bookings, monkeypatch, capsys, tmp_path, verdict
+):
+    """`drive` means the engine is planning it; `unknown` means it has asked
+    and is waiting. Neither is a booking gap yet."""
+    module, db_path, _state = check_travel_bookings
+    db_path.write_text(json.dumps(_lodging_only_db()), encoding="utf-8")
+    _write_verdict(tmp_path, verdict)
+
+    _code, out, _err = _run(module, monkeypatch, capsys)
+    payload = json.loads(out)
+    assert payload["gaps"] == []
+    assert payload["complete_trips"] == 1
+
+
+def test_no_verdict_store_means_no_gap(check_travel_bookings, monkeypatch, capsys):
+    """The pre-#231 behaviour, and the safe default: a drive trip has no
+    transport booking by design, so silence beats nagging about every weekend
+    away."""
+    module, db_path, _state = check_travel_bookings
+    db_path.write_text(json.dumps(_lodging_only_db()), encoding="utf-8")
+
+    _code, out, _err = _run(module, monkeypatch, capsys)
+    assert json.loads(out)["gaps"] == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["not json", json.dumps([1, 2]), json.dumps({"trips": {}})],
+    ids=["unparseable", "not-an-object", "no-version"],
+)
+def test_a_corrupt_verdict_store_yields_no_gap_rather_than_a_storm(
+    check_travel_bookings, monkeypatch, capsys, tmp_path, payload
+):
+    """A non-owner reader's no-prior-state path must never escalate work."""
+    module, db_path, _state = check_travel_bookings
+    db_path.write_text(json.dumps(_lodging_only_db()), encoding="utf-8")
+    (tmp_path / "drive-decisions.json").write_text(payload, encoding="utf-8")
+
+    code, out, _err = _run(module, monkeypatch, capsys)
+    assert code == 0
+    assert json.loads(out)["gaps"] == []
+
+
+def test_a_future_schema_version_yields_no_gap(
+    check_travel_bookings, monkeypatch, capsys, tmp_path
+):
+    """This reader lags rather than migrates; it must not guess at a shape it
+    does not know."""
+    module, db_path, _state = check_travel_bookings
+    db_path.write_text(json.dumps(_lodging_only_db()), encoding="utf-8")
+    _write_verdict(tmp_path, "fly", version=99)
+
+    _code, out, _err = _run(module, monkeypatch, capsys)
+    assert json.loads(out)["gaps"] == []
+
+
+def test_a_fly_verdict_for_another_trip_does_not_leak(
+    check_travel_bookings, monkeypatch, capsys, tmp_path
+):
+    """The join is on the trip key; a mismatched slug must not alert."""
+    module, db_path, _state = check_travel_bookings
+    db_path.write_text(json.dumps(_lodging_only_db()), encoding="utf-8")
+    _write_verdict(tmp_path, "fly", slug="some-other-trip-2026-05")
+
+    _code, out, _err = _run(module, monkeypatch, capsys)
+    assert json.loads(out)["gaps"] == []
+
+
+def test_a_flighted_trip_is_unaffected_by_the_verdict_store(
+    check_travel_bookings, monkeypatch, capsys, tmp_path
+):
+    """The new branch only fires when transport is absent — a booked trip keeps
+    its existing classification."""
+    module, db_path, _state = check_travel_bookings
+    db = _lodging_only_db()
+    db["trips"][_TRIP_SLUG]["days"]["2026-05-15"].append(
+        _item(type="Flight", summary="DL 123", start=date(2026, 5, 15), uid="item-3@tripit")
+    )
+    db_path.write_text(json.dumps(db), encoding="utf-8")
+    _write_verdict(tmp_path, "fly")
+
+    _code, out, _err = _run(module, monkeypatch, capsys)
+    payload = json.loads(out)
+    assert all(g["issue"] != "отель есть, рейса нет" for g in payload["gaps"])

@@ -7,6 +7,20 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
+from pathlib import Path
+
+# travel-core owns the `Check-in:` / `Check-out:` discriminator this writer
+# stamps and every downstream reader matches on. Runtime mount first, dev-clone
+# sibling fallback for CI (travel-core's SKILL.md pattern; this script sits one
+# level deeper, under `scripts/`).
+_BUNDLE_DIR = Path(__file__).resolve().parent.parent
+_TRAVEL_CORE = Path("/home/node/.claude/skills/tessl__travel-core")
+if not _TRAVEL_CORE.is_dir():
+    _TRAVEL_CORE = _BUNDLE_DIR.parent / "travel-core"
+if str(_TRAVEL_CORE) not in sys.path:
+    sys.path.insert(0, str(_TRAVEL_CORE))
+
+from lodging import hotel_name, lodging_role  # noqa: E402
 
 TIMEOUT_SECONDS = 30
 URL_PATH = "/workspace/group/tripit-url.txt"
@@ -43,14 +57,16 @@ def lodging_pair_key(summary, description):
     ordinary `end < now` filter, so the worst case is the visible #41
     false-gap alert reappearing rather than a hidden missed gap.
     """
-    for prefix, role in (("Check-in:", "in"), ("Check-out:", "out")):
-        if summary.startswith(prefix):
-            m = re.search(r"trip/show/id/(\d+)", description)
-            if not m:
-                return None, None
-            hotel = summary[len(prefix) :].strip()
-            return role, (m.group(1), hotel)
-    return None, None
+    role = lodging_role(summary)
+    if role is None:
+        return None, None
+    m = re.search(r"trip/show/id/(\d+)", description)
+    if not m:
+        return None, None
+    hotel = hotel_name(summary)
+    if hotel is None:
+        return None, None
+    return role, (m.group(1), hotel)
 
 
 def _get_field(component, field):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive-engine precheck — the LIVE unified reconcile (airport + meeting drives).
+"""Drive-engine precheck — the LIVE unified reconcile (airport + meeting + lodging).
 
 The one engine that manages every `Drive:` block. On each ~30-min sweep it:
 
@@ -11,8 +11,11 @@ The one engine that manages every `Drive:` block. On each ~30-min sweep it:
    masking flight events out by IDENTITY only (R5 — a ground meeting overlapping a
    redeye survives), with travel-away suppression so a home drive is never invented
    while abroad;
-3. diffs both against the calendar's current blocks in ONE reconcile; and
-4. APPLIES the plan — creating, updating, and deleting its own blocks — unless
+3. builds the getting-there legs of a flight-less trip — home→lodging and back —
+   for trips the drive time (or the operator) says are drives, asking once when it
+   is ambiguous (#231; `lodging_source`, `drive_decision`);
+4. diffs all three against the calendar's current blocks in ONE reconcile; and
+5. APPLIES the plan — creating, updating, and deleting its own blocks — unless
    `DRIVE_ENGINE_SHADOW` is set, in which case it renders the plan to stderr and
    writes nothing (#183; the dry run that de-risks a block-shape cutover).
 
@@ -44,8 +47,14 @@ if str(_BUNDLE_DIR) not in sys.path:
 from airport_facts_cache import StaticAirport, load_static_facts, store_static_facts  # noqa: E402
 from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
+from drive_decision import load_verdicts, mark_asked, prune, record_drive_time  # noqa: E402
 from engine import AirportInfo, build_reconcile_plan  # noqa: E402
 from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
+from lodging_source import (  # noqa: E402
+    context_from_blocks,
+    find_drive_trips,
+    lodging_desired_blocks,
+)
 from meeting_source import exclude_drive_block_events, meeting_desired_blocks  # noqa: E402
 from normalize import flight_from_byair  # noqa: E402
 from reconcile import DesiredBlock, ReconcilePlan  # noqa: E402
@@ -178,15 +187,17 @@ def build_plan(
     live_origin: str | None = None,
     tripit_flights: list | None = None,
     boarding_present: Callable | None = None,
+    lodging_blocks: list[DesiredBlock] | None = None,
 ) -> PlanResult:
-    """Assemble the combined (airport + meeting) reconcile plan. Pure over inputs.
+    """Assemble the combined (airport + meeting + lodging) reconcile plan.
 
-    Airport legs are built from the byAir records (airports resolved via
-    `resolve_airport`) UNIONED with `tripit_flights` (already-normalized TripIt
-    segments, R2) so a flight tracked by either source survives; the pre-built
-    `meeting_blocks` are folded in as extra desired blocks so both diff against
-    the calendar in one reconcile. `boarding_present` gates trivial-leg
-    suppression (V3).
+    Pure over inputs. Airport legs are built from the byAir records (airports
+    resolved via `resolve_airport`) UNIONED with `tripit_flights` (already-
+    normalized TripIt segments, R2) so a flight tracked by either source
+    survives; the pre-built `meeting_blocks` and `lodging_blocks` are folded in
+    as extra desired blocks so all three diff against the calendar in ONE
+    reconcile. Anything left out of that single diff would be orphan-deleted by
+    it. `boarding_present` gates trivial-leg suppression (V3).
     """
     flights = list(tripit_flights or [])
     airport_info: dict[str, AirportInfo] = {}
@@ -222,7 +233,7 @@ def build_plan(
         now=now,
         live_origin=live_origin,
         boarding_present=boarding_present,
-        extra_desired=meeting_blocks,
+        extra_desired=meeting_blocks + list(lodging_blocks or []),
         managed_legacy=_MANAGED_LEGACY,
     )
     return PlanResult(plan=result.plan, skipped=tuple(skipped) + result.skipped)
@@ -342,7 +353,9 @@ def _dedup_material(updates: list[dict]) -> list[dict]:
 
 
 def render_notification(
-    material_updates: list[dict], added_meeting_drives: list[dict]
+    material_updates: list[dict],
+    added_meeting_drives: list[dict],
+    drive_or_fly_questions: list[str] | None = None,
 ) -> str | None:
     """Render the operator notice deterministically from the sweep's structured
     material — the fixed one-liners the wake agent used to compose by hand (#187).
@@ -357,7 +370,12 @@ def render_notification(
     `material_updates` are the projected `{meeting, minutes, direction, when}`
     dicts and `added_meeting_drives` the projected `{meeting, when}` dicts — both
     already grouped and ordered by `build_sweep_payload`. `direction` is `sooner`
-    (drive got longer, leave earlier) or `later` (shorter)."""
+    (drive got longer, leave earlier) or `later` (shorter).
+
+    `drive_or_fly_questions` are the already-composed questions
+    `lodging_source.build_question` produced for flight-less trips whose drive
+    time is ambiguous. They are appended verbatim for the same reason the rest
+    of this notice is fixed text: the wake agent relays, it does not compose."""
     lines: list[str] = []
     for u in material_updates:
         lines.append(
@@ -377,17 +395,24 @@ def render_notification(
         )
         for i, d in enumerate(added_meeting_drives, start=1):
             lines.append(f"{i}. {d['meeting']} at {d['when']}")
+    lines.extend(drive_or_fly_questions or [])
     return "\n".join(lines) if lines else None
 
 
-def build_sweep_payload(applied, skipped: list[str]) -> dict:
+def build_sweep_payload(
+    applied, skipped: list[str], drive_or_fly_questions: list[str] | None = None
+) -> dict:
     """Assemble the sweep's stdout payload and wake decision from an ApplyResult.
 
     Wakes the agent ONLY when the operator has something to act on: a new MEETING
-    drive (which they can skip) or a MATERIAL drive-time change (leave earlier /
-    later). Removes, airport-drive adds, converts, and routine sub-threshold
+    drive (which they can skip), a MATERIAL drive-time change (leave earlier /
+    later), or a drive-or-fly question about a flight-less trip. Removes,
+    airport-drive adds, lodging-drive adds, converts, and routine sub-threshold
     re-times all apply SILENTLY — no wake, no message (the noise this gating
     exists to kill). `applied` is a `calendar_apply.ApplyResult`.
+
+    A lodging drive is silent for the same reason an airport drive is: it is not
+    skippable. Getting to the trip is the trip.
 
     `data.message` is the deterministically rendered operator notice (#187): the
     wake agent sends it verbatim rather than composing one, so a resumed session
@@ -395,8 +420,9 @@ def build_sweep_payload(applied, skipped: list[str]) -> dict:
     the sweep wakes, and `None` on a silent sweep."""
     added = _group_meeting_adds(applied.added_meeting_legs)
     material = _dedup_material(applied.material_updates)
+    questions = list(drive_or_fly_questions or [])
     return {
-        "wake_agent": bool(added) or bool(material),
+        "wake_agent": bool(added) or bool(material) or bool(questions),
         "data": {
             "applied": {
                 "created": applied.created,
@@ -406,7 +432,8 @@ def build_sweep_payload(applied, skipped: list[str]) -> dict:
             },
             "added_meeting_drives": added,
             "material_updates": material,
-            "message": render_notification(material, added),
+            "drive_or_fly_questions": questions,
+            "message": render_notification(material, added, questions),
             "deferred": applied.deferred,
             "skipped": len(skipped),
             "errors": len(applied.errors),
@@ -454,6 +481,7 @@ def finish_sweep(
     *,
     calendar,
     apply: Callable = apply_plan,
+    drive_or_fly_questions: list[str] | None = None,
 ) -> dict:
     """Shadow-render or apply the plan, and return the sweep's stdout payload.
 
@@ -488,7 +516,7 @@ def finish_sweep(
     for line in applied.errors:
         print(f"[drive-engine] error: {line}", file=sys.stderr)
 
-    return build_sweep_payload(applied, skipped)
+    return build_sweep_payload(applied, skipped, drive_or_fly_questions)
 
 
 class _AirportCtx(Protocol):
@@ -698,6 +726,59 @@ def _persist_static_facts_best_effort(static_facts: dict[int, StaticAirport]) ->
         )
 
 
+def _plan_lodging_legs(
+    *,
+    schedule: list[dict] | None,
+    home: str | None,
+    route: RouteFn,
+    now: datetime,
+    meeting_blocks: list[DesiredBlock],
+) -> tuple[list[DesiredBlock], list[str], list[str]]:
+    """Plan the getting-there legs of every flight-less trip. The I/O half.
+
+    Returns `(blocks, skipped, questions)`. `lodging_source` decides; this
+    function supplies it the stored verdicts and writes back what it decided,
+    keeping the verdict-store reads and writes out of the pure module.
+
+    The ask is stamped here, as the question is handed to the payload rather
+    than after the operator sees it — a notice the agent drops is a question
+    lost until the verdict expires. Stamping later would instead re-ask every
+    sweep until an answer arrived, and the nag is the worse failure (#49).
+    """
+    # Drop verdicts whose trips are over first, so the store does not grow
+    # without bound on a sweep that finds no drive trip at all. Idempotent: an
+    # already-clean store is not rewritten.
+    prune(now)
+
+    trips = find_drive_trips(schedule, now=now, window=SWEEP_WINDOW)
+    if not trips:
+        return [], [], []
+
+    verdicts = load_verdicts(now)
+    blocks, skipped, plans = lodging_desired_blocks(
+        trips,
+        route=route,
+        home_address=home,
+        verdicts=verdicts,
+        contexts=context_from_blocks(trips, meeting_blocks),
+        now=now,
+    )
+
+    questions: list[str] = []
+    for plan in plans:
+        record_drive_time(
+            plan.trip.key,
+            verdict=plan.verdict,
+            drive_seconds=plan.drive_seconds,
+            expires=plan.trip.expires,
+            now=now,
+        )
+        if plan.ask is not None:
+            mark_asked(plan.trip.key, now=now)
+            questions.append(plan.ask)
+    return blocks, skipped, questions
+
+
 def _run_sweep() -> dict:
     """Run the live unified reconcile and return the stdout payload.
 
@@ -826,6 +907,18 @@ def _run_sweep() -> dict:
             "user_profile current_home both empty) — see #162"
         ]
 
+    # --- lodging side: the getting-there legs of a flight-less trip (#231) ---
+    # Runs after the meeting side because it reads the local drives already
+    # planned: the outbound leg must land before the first of them leaves the
+    # hotel, not merely by TripIt's nominal check-in stamp.
+    lodging_blocks, lodging_skipped, drive_or_fly_questions = _plan_lodging_legs(
+        schedule=schedule,
+        home=home,
+        route=route,
+        now=now,
+        meeting_blocks=meeting_blocks,
+    )
+
     # --- airport facts ---
     # Static facts (IATA / flag / IANA tz) are immutable, so a warm sweep serves
     # them from the persisted cross-sweep cache with no byAir call — this is what
@@ -887,6 +980,7 @@ def _run_sweep() -> dict:
         flight_records=records,
         resolve_airport=resolve_airport,
         meeting_blocks=meeting_blocks,
+        lodging_blocks=lodging_blocks,
         current_blocks=current_blocks,
         route=route,
         tripit_flights=tripit_flights,
@@ -897,7 +991,7 @@ def _run_sweep() -> dict:
         live_origin=live_origin,
     )
 
-    skipped = list(result.skipped) + list(meeting_skipped)
+    skipped = list(result.skipped) + list(meeting_skipped) + list(lodging_skipped)
 
     # Persist any newly-resolved static airport facts for the next warm sweep —
     # best-effort, never a gate on applying a valid plan (see helper).
@@ -908,6 +1002,7 @@ def _run_sweep() -> dict:
         result.plan,
         skipped,
         calendar=calendar,
+        drive_or_fly_questions=drive_or_fly_questions,
     )
 
 

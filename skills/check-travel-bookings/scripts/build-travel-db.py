@@ -32,9 +32,22 @@ Schema (see sibling `state-schema.md` for the full contract):
 
 import json
 import os
-import re
 import sys
 from datetime import date, datetime, timezone
+from pathlib import Path
+
+# travel-core hosts the canonical trip key so the DB's slugs and the drive
+# engine's per-trip verdicts agree. Runtime mount first, dev-clone sibling
+# fallback for CI (the cross-bundle pattern in travel-core's SKILL.md; this
+# script sits one level deeper, under `scripts/`).
+_BUNDLE_DIR = Path(__file__).resolve().parent.parent
+_TRAVEL_CORE = Path("/home/node/.claude/skills/tessl__travel-core")
+if not _TRAVEL_CORE.is_dir():
+    _TRAVEL_CORE = _BUNDLE_DIR.parent / "travel-core"
+if str(_TRAVEL_CORE) not in sys.path:
+    sys.path.insert(0, str(_TRAVEL_CORE))
+
+from trip_key import trip_key  # noqa: E402
 
 SCHEDULE_PATH = "/workspace/group/travel-schedule.json"
 DB_PATH = "/workspace/group/travel-db.json"
@@ -54,13 +67,6 @@ def _parse_day(s: str) -> date:
     # untruncated value lives on in each item's `start`/`end` field
     # for consumers that need the actual departure time.
     return date.fromisoformat(s[:10])
-
-
-def make_slug(summary: str, start_str: str) -> str:
-    start = _parse_day(start_str)
-    clean = re.sub(r"\s+\d{4}$", "", summary.strip())
-    slug_base = re.sub(r"[^a-z0-9]+", "-", clean.lower()).strip("-")
-    return f"{slug_base}-{start.year}-{start.month:02d}"
 
 
 def main():
@@ -108,7 +114,7 @@ def main():
             continue
 
         trip_start = _parse_day(trip["start"])
-        slug = make_slug(trip["summary"], trip["start"])
+        slug = trip_key(trip["summary"], trip["start"])
 
         # Items that overlap with this trip's date range
         days: dict[str, list] = {}

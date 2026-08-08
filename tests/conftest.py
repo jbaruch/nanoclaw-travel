@@ -123,6 +123,9 @@ def check_travel_bookings(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(module, "DB_PATH", str(db_path))
     monkeypatch.setattr(module, "STATE_PATH", str(state_path))
+    # The drive engine's verdict store lives in its own state dir; point the
+    # cross-skill read at tmp_path too, so no test reads the deployed file.
+    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(tmp_path))
     return module, db_path, state_path
 
 

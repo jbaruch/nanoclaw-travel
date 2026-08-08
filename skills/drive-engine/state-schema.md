@@ -8,6 +8,7 @@ Each on-disk file has one owner module that owns its schema (only it migrates `s
 
 - `skip-state.json` — owned by `skip_state.py`. Writer and reader are co-bundled and go through the owner API: the skip action (`skip_drive.py`) writes via `add_skip`, the sweep (`reconcile_sweep.py`) reads via `load_active_skips`. No skill rewrites the file directly.
 - `airport-facts.json` — owned by `airport_facts_cache.py`. The sweep (`reconcile_sweep.py`) both reads (`load_static_facts`) and writes (`store_static_facts`) through the owner API (#211).
+- `drive-decisions.json` — owned by `drive_decision.py`. The sweep writes the drive-time-derived verdict (`record_drive_time`, `mark_asked`) and the answer action (`answer_drive_or_fly.py`) writes the operator's (`record_operator_answer`). `check-travel-bookings` is a read-only, non-migrating consumer in another skill (#231).
 
 `skip_state.py` came from the retired `drive-planner` (#156), whose bundle was folded into drive-engine once drive-engine was its only importer (#181).
 
@@ -16,7 +17,7 @@ Each on-disk file has one owner module that owns its schema (only it migrates `s
 - Production: `/workspace/state/drive-planner/`
 - Tests override via the `DRIVE_PLANNER_STATE_DIR` environment variable
 
-Both files share this directory (`airport_facts_cache.py` reuses `skip_state.state_dir` as the single source of truth). The `drive-planner` name is deployed state, not a live reference — the store predates the #181 fold and renaming it would strand the skips already on disk. Rename only behind a migration.
+All three files share this directory (`airport_facts_cache.py` and `drive_decision.py` reuse `skip_state.state_dir` as the single source of truth). The `drive-planner` name is deployed state, not a live reference — the store predates the #181 fold and renaming it would strand the skips already on disk. Rename only behind a migration.
 
 ## Files
 
@@ -87,9 +88,57 @@ Tolerance — **hint, not authority** (the deliberate opposite of `skip-state.js
 
 Migration: `schema_version` `1` is the initial version. Because a future version reads as no-usable-prior-state (refetch, non-disruptive), a newer writer's file survives untouched until this reader is upgraded — no fail-closed refusal is needed (`coding-policy: stateful-artifacts`, Cross-Pipeline Schema Bumps). The refetch is non-disruptive even when byAir is also down: a cache-miss airport that byAir can't resolve makes `reconcile_sweep._resolve_one_airport` raise `AirportUnresolved`, failing the whole sweep closed rather than building a partial plan that would orphan-delete live blocks (#211). So the empty-map fallback never escalates work — it costs at most one slow (or skipped) sweep, never a wrong or deleted block.
 
+### `drive-decisions.json`
+
+Whether each flight-less trip is a drive or an unbooked flight, with per-trip expiry. Owned by `drive_decision.py`. Introduced in #231, when a trip booked with lodging and no flight got neither a getting-there drive nor a missing-flight warning.
+
+```json
+{
+  "schema_version": 1,
+  "trips": {
+    "tn-tigers-vs-faith-christian-school-2026-08": {
+      "verdict": "drive",
+      "decided_by": "operator",
+      "drive_seconds": 13200,
+      "asked_at": "2026-08-08T18:00:00+00:00",
+      "expires": "2026-08-17T15:00:00+00:00"
+    }
+  }
+}
+```
+
+Fields:
+
+- `schema_version` (int, required) — currently `1`
+- `trips` (object, required) — map of trip key → record. The key is `travel-core`'s `trip_key(summary, start)`, the same slug `travel-db.json` buckets a trip under, so the booking-gap consumer joins on it without a second identifier.
+- `verdict` (string, required) — `drive`, `fly`, or `unknown` (the drive time is ambiguous and the operator has not answered)
+- `decided_by` (string, required) — `drive_time` or `operator`
+- `drive_seconds` (int or null) — the routed home→lodging drive the verdict was read from
+- `asked_at` (ISO-8601 tz-aware string or null) — when the drive-or-fly question went out; null while unasked
+- `expires` (ISO-8601 tz-aware string, required) — the verdict applies while this is strictly after `now`
+
+The band thresholds and the verdict each maps to live in `lodging_source.py` (`DRIVE_CERTAIN_MAX`, `DRIVE_IMPLAUSIBLE_MIN`, `classify_drive`); per `coding-policy: script-as-black-box` they are not restated here.
+
+Writer / reader contract:
+
+- **Writers** — both co-bundled, both through the owner API. The sweep (`reconcile_sweep._plan_lodging_legs`) calls `record_drive_time` each cycle and `mark_asked` when it hands the question to the payload. The answer action (`answer_drive_or_fly.py`) calls `record_operator_answer`.
+- **Precedence** — `record_drive_time` never overwrites an unexpired verdict whose `decided_by` is `operator`, so a sweep landing after the answer cannot revert it and re-ask. `asked_at` likewise survives a re-derivation, so the question is asked once per trip, not once per sweep.
+- **Reader (same skill)** — the sweep calls `load_verdicts(now)` and passes the result to `lodging_source.lodging_desired_blocks`.
+- **Reader (other skill)** — `check-travel-bookings` reads the file directly, read-only and non-migrating, to report a missing flight for a `fly` verdict. It never writes and never upgrades a version.
+
+Tolerance:
+
+- A **missing** file is not an error — indistinguishable from "no verdicts yet", reads as an empty map.
+- A **present but corrupt** file (unparseable, non-object root, missing/invalid `schema_version`, `trips` not an object, or a version below the current floor) raises `DriveDecisionError`. Reading it as "no verdicts" would drop every recorded answer and re-ask about every settled trip — the nag `skip-state.json` fails closed for the same reason.
+- A `schema_version` **newer** than this plugin is **refused** on both read and write, mirroring `skip-state.json`: reading it as empty loses answers, and a write would rewrite a newer writer's file as v1.
+- Malformed **individual** records (bad verdict, bad decider, missing/unparseable expiry) are dropped rather than fatal — unlike a corrupt file, one bad record only means that trip has no verdict, and the sweep re-derives it from the drive time this cycle.
+- The **cross-skill reader** in `check-travel-bookings` is deliberately looser: a missing, unreadable, or unrecognized-version file yields no verdicts and therefore no gap. Its no-prior-state path must stay non-disruptive (`coding-policy: stateful-artifacts`), and inventing a missing-flight alert from an unreadable file is exactly the alert storm that forbids.
+
+Migration: `schema_version` `1` is the initial version. Writer and cross-skill reader ship in one plugin published together, so there is no skew window; a future bump adds the owner-side upgrade-on-read in `drive_decision.py` and widens the `check-travel-bookings` reader's accepted set first, per `coding-policy: stateful-artifacts` Cross-Pipeline Schema Bumps.
+
 ## Calendar-as-State: Drive Blocks
 
-A drive block has no local record — the calendar event itself IS the state (Epic #59 §4). The sweep re-fetches the near-term window by a direct API call and reads each block back off the event. There is no `blocks.json`; the local state files are `skip-state.json` and `airport-facts.json` above.
+A drive block has no local record — the calendar event itself IS the state (Epic #59 §4). The sweep re-fetches the near-term window by a direct API call and reads each block back off the event. There is no `blocks.json`; the local state files are `skip-state.json`, `airport-facts.json`, and `drive-decisions.json` above.
 
 Every block the engine writes is owned by `block_codec.py` — marker template, machine-state keys, the generations it recognizes, and its version/tolerance rules all live there as named constants and its module docstring. Per `coding-policy: script-as-black-box`, this file does not restate them.
 
