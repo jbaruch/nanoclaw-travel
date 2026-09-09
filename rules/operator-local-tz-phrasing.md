@@ -26,6 +26,6 @@ Phrase every relative-date word in a flight-assist surface against the operator'
 
 ## Fallback when timezone is unavailable
 
-- `available: false` → phrase with an explicit local date only
+- `available: false` → phrase with an explicit local date only. The reader's exit code does not change this: exit `1` (the store could not be read) still carries the `available: false` shape on stdout and takes the same explicit-date path
 - Never emit a container-UTC-relative "today" / "tomorrow" in the fallback
 - No warning marker in the surface
