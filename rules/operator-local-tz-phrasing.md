@@ -14,7 +14,7 @@ Phrase every relative-date word in a flight-assist surface against the operator'
 
 ## Resolve the operator's local date
 
-- Run `skills/flight-assist/scripts/read-current-tz.py`. It emits `{"available": true, "tz": "<iana>"}` or `{"available": false, "tz": null}`
+- Run the core `current-tz` skill's script, `/home/node/.claude/skills/tessl__current-tz/scripts/read-current-tz.py` (`jbaruch/nanoclaw-core`, installed in every tier). It emits `{"available": true, "tz": "<iana>"}` or `{"available": false, "tz": null}`
 - On `available: true`: `local_now = datetime.now(timezone.utc).astimezone(ZoneInfo(tz)).date()`. Each event's local date the same way from its `scheduled_dep_time`: `dep_dt.astimezone(ZoneInfo(tz)).date()`
 - Never derive a relative date from container-local (UTC) `datetime.now()`
 

@@ -64,7 +64,7 @@ Then compose the notification. Each event is `{"flight_id": int, "event": {"reas
 
 The full event-shape contract is in `references/event-payloads.md`; consult it when an event's `reason` is unfamiliar.
 
-Phrase relative-date words ("today" / "tomorrow") against the operator's local date per `rules/operator-local-tz-phrasing.md` (run `/home/node/.claude/skills/tessl__flight-assist/scripts/read-current-tz.py`). Displayed airport clock times stay as-is.
+Phrase relative-date words ("today" / "tomorrow") against the operator's local date per `rules/operator-local-tz-phrasing.md` (run the core `current-tz` script, `/home/node/.claude/skills/tessl__current-tz/scripts/read-current-tz.py`). Displayed airport clock times stay as-is.
 
 The reason → notification mapping for the documented events:
 
