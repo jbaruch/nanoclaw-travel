@@ -61,7 +61,7 @@ Same trigger as `cancelled` but for `diverted` status.
 {"reason": "boarding_started"}
 ```
 
-Fires on transition into actual boarding, gated on the real-boarding signal rather than the `computed_status` label alone — byAir labels the phase `boarding` before boarding starts. The real-boarding predicate is also held against the planned boarding window, `effective_dep − boarding_lead`, where the effective departure is the snapshot's live `dep_time` when present, else the scheduled time (#295); each snapshot is judged at its own poll instant. First-cycle "already boarding" does not fire. The `phase_markers.boarding_fired` flag is reserved for a future boarding-prep notification and does not gate this event in v0.1. Firing conditions and the real-boarding predicate live in `wake_rules.py` (`detect_wake_events`, `is_real_boarding`); the window in `phase_markers.py` (`boarding_window_open`).
+Fires on transition into actual boarding, gated on the real-boarding signal rather than the `computed_status` label alone — byAir labels the phase `boarding` before boarding starts. The real-boarding predicate is also held against flight-assist's own planned boarding window, the one its boarding block uses (#295), each snapshot judged at its own poll instant. First-cycle "already boarding" does not fire. The `phase_markers.boarding_fired` flag is reserved for a future boarding-prep notification and does not gate this event in v0.1. Firing conditions and the real-boarding predicate live in `wake_rules.py` (`detect_wake_events`, `is_real_boarding`); the window in `phase_markers.py` (`boarding_window_open`).
 
 #### `carousel_revealed`
 
