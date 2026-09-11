@@ -267,6 +267,19 @@ def test_no_display_tz_keeps_the_meeting_zone():
     )
     blocks, _ = meeting_desired_blocks([m], route=const_route(38), display_tz=None)
     assert [b.timezone for b in blocks] == ["Etc/GMT-2"]
+    assert [b.zone_from_operator for b in blocks] == [False]
+
+
+def test_display_tz_marks_the_block_zone_as_the_operators():
+    """#309: only an operator-supplied zone may re-patch an existing block."""
+    m = FakeMeeting(
+        "m1",
+        "Baruch 1:1",
+        (FakeLeg("outbound", "Home", "1004 Nelson Merry St", arrive_by=_dt(19, 0)),),
+        timezone="Etc/GMT-2",
+    )
+    blocks, _ = meeting_desired_blocks([m], route=const_route(38), display_tz="America/Chicago")
+    assert [b.zone_from_operator for b in blocks] == [True]
 
 
 # --- a leg whose origin is its destination (#301) ---------------------------

@@ -175,7 +175,9 @@ def meeting_desired_blocks(
     after Amsterdam), and the scan's offset-derived `Etc/GMT±N` fallback keeps
     that instant right while showing it on the wrong clock; the operator's zone
     is the clock Google Calendar shows them the same event on. None keeps the
-    meeting's own zone.
+    meeting's own zone. A block written in the operator's zone is marked
+    `zone_from_operator`, so an existing block in another zone converges to it
+    on the next sweep (#309) while a fallback zone never triggers a re-patch.
     """
     presence = driving_to or {}
     blocks: list[DesiredBlock] = []
@@ -242,6 +244,7 @@ def meeting_desired_blocks(
                     baseline_seconds=int(drive.total_seconds()),
                     anchor=anchor,
                     timezone=display_tz or getattr(meeting, "timezone", None),
+                    zone_from_operator=bool(display_tz),
                     legacy_keys=frozenset({(GEN_LEGACY_DP, meeting.meeting_id, leg.direction)}),
                 )
             )
