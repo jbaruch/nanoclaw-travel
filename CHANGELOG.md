@@ -2,7 +2,7 @@
 
 ### check-travel-bookings — pin Rail and local-stamped span assignment (#310)
 
-Copilot's re-review on #304 noted the #293 assignment rule was only exercised through `Flight` for the point-event path and a date-only `Lodging` for the span path. Two tests close the gap. An overnight `Rail` segment whose UTC arrival crosses midnight files only under the trip owning its departure day. A `Lodging` whose local check-out (23:30 CDT) falls the day before the next trip while its UTC end (04:30Z) falls on that trip's first day stays out of it. Tests only; no behaviour change.
+Copilot's re-review on #304 noted the #293 assignment rule was only exercised through `Flight` for the point-event path and a date-only `Lodging` for the span path. Two tests close the gap. An overnight `Rail` segment whose UTC arrival crosses midnight files only under the trip owning its departure day. A `Lodging` whose local check-out (23:30 CDT) falls the day before the next trip while its UTC end (04:30Z) falls on that trip's first day stays out of it. Copilot's re-review on #308 asked for the one production line that hands the operator's zone to the meeting planner to be pinned, deferred here as well. `tests/test_drive_engine_sweep_display_tz.py` runs `_run_sweep` end to end with every live client stubbed at its source module and captures the `display_tz` `meeting_desired_blocks` receives: `America/Chicago` from an available reader result, `None` when the reader has no zone. Tests only; no behaviour change.
 
 ## 0.2.136 — 2026-09-11
 
