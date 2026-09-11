@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.135 — 2026-09-11
+
 ### travel-core — `operator_tz.py`, the Python door to the core zone reader (groundwork for #300, #301)
 
 Two prechecks need the operator's current zone as data rather than as a phrase for an agent to look up: flight-assist's `day_before` day label (#300) and the drive engine's meeting-drive display zone (#301). The one reader of the host's `tz_state` store lives in `jbaruch/nanoclaw-core` since 0.2.130 (`skills/current-tz/scripts/read-current-tz.py`), and no script here may open the store itself — that is the drift the consolidation removed. `operator_tz.read_operator_tz` spawns the reader at its runtime mount, relays the reader's own stderr verbatim, and returns the `{tz, local_now, local_date}` triple as an `OperatorTz`. Every unavailable outcome is `None` with its own stderr line — reader not installed, spawn failure or timeout, store unreadable (exit 1), `available: false`, output the caller cannot parse. Exit 2 (CLI misuse) degrades the same way instead of raising: a day label falls back to an explicit date and a drive block to the event's own zone, rather than a whole precheck cycle going dark under the outer-boundary catch. `now=` passes through as the reader's `--now` so a caller pins the instant the local fields describe; a naive instant is rejected before spawning, matching the reader's rule. No consumer is wired in this change; #300 and #301 wire theirs.
