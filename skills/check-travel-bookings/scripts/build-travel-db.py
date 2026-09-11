@@ -37,6 +37,12 @@ are the same instants on the traveller's own clock, present only when the
 schedule resolved them (see `nightly-travel-sync/scripts/tripit_local_time.py`).
 Date-granular consumers read the local field and fall back to the UTC one.
 
+An item lands in a trip by its local-first days (the same rule as the day key).
+A transport item (`_TRANSPORT_TYPES`) is a point event and files under a trip
+only when its departure day is inside `[start, end]`; every other item type
+files under each trip its `[start day, end day]` span overlaps (#293). A
+transport segment on a day two adjacent trips share still files under both.
+
 `destination` is the trip wrapper's TripIt primary location (`<City>, <Region>`)
 as the schedule carries it — the writer decodes the feed's ICS escapes (#275) —
 omitted when the feed leaves it blank. It is what separates a local placeholder
@@ -69,6 +75,39 @@ DB_PATH = "/workspace/group/travel-db.json"
 # Bump in lock-step with check-travel-bookings.py per
 # `coding-policy: stateful-artifacts` + state-schema.md sibling file.
 SCHEMA_VERSION = 3
+
+# Point-event item types: a segment belongs to the day it departs, so it files
+# under a trip by that day alone, never by an end instant that crosses midnight
+# into the next trip's window (#293). Mirrors the transport set
+# check-travel-bookings.py counts as "has_transport".
+_TRANSPORT_TYPES = frozenset({"Flight", "Rail"})
+
+
+def _local_first(item: dict, field: str) -> str:
+    """The `<field>_local` stamp when the schedule resolved one, else `<field>`.
+
+    The day key already follows the traveller's local clock (#268); the
+    trip-assignment test reads the same value, so a red-eye that lands after
+    midnight UTC does not overlap a trip it never touched on the ground (#293).
+    """
+    local = item.get(f"{field}_local")
+    if isinstance(local, str) and local:
+        return local
+    return item[field]
+
+
+def _belongs_to_trip(item: dict, trip_start: date, trip_end: date) -> bool:
+    """Whether `item` files under the trip spanning `[trip_start, trip_end]`.
+
+    Transport is a point event: in iff its local-first departure day is inside
+    the window. Everything else (lodging, rentals, novel types) is a span: in
+    iff `[start day, end day]` overlaps the window.
+    """
+    item_start = _parse_day(_local_first(item, "start"))
+    if item["type"] in _TRANSPORT_TYPES:
+        return trip_start <= item_start <= trip_end
+    item_end = _parse_day(_local_first(item, "end"))
+    return item_start <= trip_end and item_end >= trip_start
 
 
 def _parse_day(s: str) -> date:
@@ -130,13 +169,10 @@ def main():
         trip_start = _parse_day(trip["start"])
         slug = trip_key(trip["summary"], trip["start"])
 
-        # Items that overlap with this trip's date range
+        # Items that belong to this trip — see `_belongs_to_trip` (#293).
         days: dict[str, list] = {}
         for item in items_raw:
-            item_start = _parse_day(item["start"])
-            item_end = _parse_day(item["end"])
-            # Overlap check: item starts before trip ends AND item ends on/after trip starts
-            if item_start <= trip_end and item_end >= trip_start:
+            if _belongs_to_trip(item, trip_start, trip_end):
                 entry = {
                     "type": item["type"],
                     "summary": item["summary"],
