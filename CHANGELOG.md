@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.134 — 2026-09-11
+
 ### flight-assist — boarding alerts wait for the planned boarding window (#295)
 
 At 08:21 on 2026-09-01 the operator, already at the gate, got "Boarding now: KL1199. Gate D86, Terminal 1." — 59 minutes before the 09:20 departure of an intra-Schengen 737-800, and 29 minutes before flight-assist's own boarding block, which the calendar reconcile had correctly planned at 08:50–09:20 from the 30-minute narrowbody lead. The block was right; the alert predicate fired early.
