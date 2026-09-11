@@ -28,6 +28,7 @@ from scan import (  # noqa: E402
     TransitLeg,
     actionable,
     flight_codes,
+    same_place,
     scan,
 )
 
@@ -942,6 +943,19 @@ def test_meeting_at_home_matches_case_and_whitespace_insensitively():
     [result] = scan([event], now=NOW, home_address=HOME)
     assert result.bucket == "filtered"
     assert result.legs == ()
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("12 Example St, Sampleton", "  12 example st,\n Sampleton ", True),
+        ("12 Example St", "14 Example St", False),
+        ("12 Example St", None, False),
+        (None, None, False),
+    ],
+)
+def test_same_place_normalizes_both_sides(a, b, same):
+    assert same_place(a, b) is same
 
 
 def test_meeting_at_the_lodging_is_filtered_on_a_trip():

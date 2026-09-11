@@ -553,7 +553,7 @@ def _at_anchor(
     if event.start is None or event.location is None:
         return False
     anchor_address, _ = anchor_for(event.start)
-    return _same_venue(event.location, _normalize_location(anchor_address))
+    return same_place(event.location, anchor_address)
 
 
 def _is_routable_candidate(
@@ -926,6 +926,17 @@ def _gap_seconds(earlier: _Event | None, later: _Event | None) -> int | None:
     if earlier is None or later is None or earlier.end is None or later.start is None:
         return None
     return int((later.start - earlier.end).total_seconds())
+
+
+def same_place(a: object, b: object) -> bool:
+    """Whether two raw address strings name the same place, without geocoding.
+
+    Whitespace-normalizes both (lombot #37) and compares them case-insensitively
+    — the equality `_same_venue` applies to already-normalized scan locations,
+    for callers holding a raw string such as a schedule lodging address (#301).
+    A missing or non-string side is never the same place.
+    """
+    return _same_venue(_normalize_location(a), _normalize_location(b))
 
 
 def _same_venue(a: str | None, b: str | None) -> bool:

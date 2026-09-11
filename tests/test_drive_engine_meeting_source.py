@@ -394,6 +394,25 @@ def test_a_venue_at_the_lodging_collapses_after_the_presence_rewrite():
     assert skipped == ["meeting m2 outbound: origin is the destination — no drive"]
 
 
+def test_a_venue_at_the_lodging_collapses_despite_formatting_differences():
+    """Copilot on #308: the schedule's lodging is only stripped while the
+    scan's location is whitespace-collapsed; a line break or a case change
+    between the two must still read as the same place."""
+    lodging = "Grand Hotel,\n  1 Main St, Sampleton"
+    meeting = FakeMeeting(
+        "m3",
+        "Hotel breakfast talk",
+        (FakeLeg("outbound", HOME_ADDR, "grand hotel, 1 main st, sampleton", arrive_by=_dt(8)),),
+    )
+    blocks, skipped = meeting_desired_blocks(
+        [meeting],
+        route=const_route(5),
+        driving_to={"m3": TripPresence(lodging=lodging, is_first=False, is_last=False)},
+    )
+    assert blocks == []
+    assert skipped == ["meeting m3 outbound: origin is the destination — no drive"]
+
+
 def test_the_drive_out_to_the_first_event_keeps_home():
     """They really do set off from the house."""
     meeting = FakeMeeting(

@@ -36,6 +36,7 @@ if str(_BUNDLE_DIR) not in sys.path:
 
 from block_codec import GEN_LEGACY_DP, parse_block  # noqa: E402
 from reconcile import DesiredBlock  # noqa: E402
+from scan import same_place  # noqa: E402
 
 # A drive block's human summary always starts with this.
 _DRIVE_SUMMARY_PREFIX = "Drive:"
@@ -150,7 +151,10 @@ def meeting_desired_blocks(
     A leg whose origin IS its destination is skipped too (#301): the scan
     already filters a meeting held at the anchor, but the lodging rewrite below
     can collapse a leg the same way — a venue that is the trip's hotel — and a
-    zero-length drive would still land as a degenerate one-minute block.
+    zero-length drive would still land as a degenerate one-minute block. The
+    comparison is `scan.same_place`: the schedule's lodging address is only
+    stripped, the scan's location is whitespace-collapsed, and either may
+    differ in case.
 
     `driving_to` are the meeting ids the away-suppression must NOT fire on: the
     events of a flight-less trip the operator has confirmed they DRIVE to. The
@@ -185,7 +189,7 @@ def meeting_desired_blocks(
                 skipped.append(f"{tag}: {note}")
                 continue
             origin, destination = _trip_endpoints(leg, presence.get(meeting.meeting_id))
-            if origin == destination:
+            if same_place(origin, destination):
                 skipped.append(f"{tag}: origin is the destination — no drive")
                 continue
             drive = route(origin, destination)
