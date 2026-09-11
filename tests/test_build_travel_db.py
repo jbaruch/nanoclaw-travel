@@ -275,6 +275,35 @@ def test_lodging_spanning_the_boundary_still_files_under_both_trips(
     assert by_trip["video-shooting-tlv-2026-10"] == ["item-l"]
 
 
+def test_transport_on_the_shared_boundary_day_files_under_both_trips(
+    build_travel_db, monkeypatch, capsys
+):
+    """The documented caveat: trip A ends and trip B starts on the same date,
+    and a flight departing that date belongs to both by construction — the
+    ICS feed carries no trip reference on an item. Pins the inclusive
+    `trip_end` comparison so a refactor cannot silently drop one side."""
+    module, schedule_path, db_path = build_travel_db
+    schedule = [
+        _FALL_BREAK,
+        _VIDEO_TLV,
+        _item(
+            "item-b",
+            "BNA to JFK",
+            "2026-10-18T13:00:00Z",
+            "2026-10-18T16:30:00Z",
+            "Flight",
+            start_local="2026-10-18T08:00:00-05:00",
+            end_local="2026-10-18T12:30:00-04:00",
+        ),
+    ]
+    schedule_path.write_text(json.dumps(schedule))
+    _run(module, monkeypatch, capsys)
+    db = json.loads(db_path.read_text())
+    by_trip = _uids_by_trip(db)
+    assert by_trip["fall-break-baselone-2026-10"] == ["item-b"]
+    assert by_trip["video-shooting-tlv-2026-10"] == ["item-b"]
+
+
 def test_flight_inside_one_trip_never_reaches_the_other(build_travel_db, monkeypatch, capsys):
     """The ordinary case is unchanged: a mid-trip flight files under its own
     trip and nowhere else."""
