@@ -6,6 +6,22 @@
 
 The writer now files each item by its local-first days — the same value the day key uses — and treats a transport item (`Flight`, `Rail`) as the point event it is: it belongs to a trip only when its departure day is inside `[start, end]`. Span items (lodging, rentals, novel types) keep overlap semantics on the same local-first days, so a stay across a boundary still appears under both trips. `state-schema.md` states the rule; the DB shape is unchanged, so `schema_version` stays at 3. A transport segment on the one calendar day two adjacent trips share (trip A ends and trip B starts on the same date) still files under both — that day is ambiguous by construction from the ICS feed, which carries no trip reference on an item, and no writer-side rule can pick the owner.
 
+## 0.2.132 — 2026-09-11
+
+### drive-engine — bracketed room-resource conferencing tags are virtual (#294)
+
+A one-off meeting, "Training Global Employees - Feedback talk", with `location: "TLV-3-Board Room (20p) (20) [ZOOM]"` produced two phantom drive blocks while the operator was in Europe. The engine geocoded the room string and the geocoder confidently resolved it to `Zoom 20 3, 8225 KP Lelystad` — a street literally named Zoom, ~68 km from the Amsterdam base — so a ~42-minute round trip landed on the calendar for a Zoom call held in a Tel Aviv office room. The event was a Reclaim mirror block, so it carried no `conferenceData` / `hangoutLink`; the location string was the only signal the engine saw.
+
+`scan._VIRTUAL_MARKERS` already filters virtual meetings, but it keys on join-URLs (`zoom.us`, `meet.google.com`, …) and words (`online`, `virtual`, `phone call`). It did not know the room-resource convention Google Calendar uses for video-wired rooms — `… [ZOOM]`, `… [TEAMS]`, `… [MEET]`, `… [WEBEX]` — which has no URL and none of those words, so the string passed as a venue. The tuple now carries the four bracketed tags (the location is lowercased before matching). The brackets are the signal, not the word: a real address containing "meet" or "zoom" (`Meeting Room 4, 1 Main St`, `Zoomer's Cafe`) still routes, and tests pin both directions.
+
+Deliberately not changed: a present `conferenceData` / `hangoutLink` is not treated as virtual. A hybrid in-office meeting routinely carries a Meet link alongside a real room, and the operator drives to those; the location string remains the sole virtual signal, as it was.
+
+## 0.2.131 — 2026-09-11
+
+### rules — split the never-derive bullet into two directives (#298)
+
+Deferred advisory from #297, presentation only: the bullet "Never derive a relative date from container-local `datetime.now()`, and never convert an instant by hand" in `rules/operator-local-tz-phrasing.md` carried two prohibitions, and `coding-policy: context-writing-style` Structure wants one directive per bullet. It is now two bullets, both prohibitions preserved verbatim. Copilot's request on the same PR to put the runtime mount path in the rule prose was declined: the rule keeps the repo-relative path per `skill-authoring` Script References, and the flight-assist step carries the runtime path.
+
 ## 0.2.130 — 2026-09-09
 
 ### flight-assist — `read-current-tz.py` moves to `nanoclaw-core` (`jbaruch/nanoclaw#951` follow-up)
