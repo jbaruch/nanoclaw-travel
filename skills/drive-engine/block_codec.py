@@ -33,7 +33,7 @@ cannot abort a sweep.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from chain import LegKind
@@ -199,6 +199,18 @@ class ParsedBlock:
     origin: str | None = None
     destination: str | None = None
     alerted: frozenset = field(default_factory=frozenset)
+    # The event's own `start.timeZone`, read for unified blocks only (#309): the
+    # zone the block is displayed in, which reconcile compares to the operator's.
+    timezone: str | None = None
+
+
+def _event_start_timezone(event: object) -> str | None:
+    """The IANA name on the event's `start.timeZone`, or None when absent."""
+    if not isinstance(event, dict):
+        return None
+    start = event.get("start")
+    tz = start.get("timeZone") if isinstance(start, dict) else None
+    return tz if isinstance(tz, str) and tz else None
 
 
 def _event_description(event: object) -> str | None:
@@ -297,7 +309,7 @@ def parse_block(event: object) -> ParsedBlock | None:
     if private is not None:
         extended = _parse_extended_block(private, eid)
         if extended is not None:
-            return extended
+            return replace(extended, timezone=_event_start_timezone(event))
 
     desc = _event_description(event)
     if desc is None:

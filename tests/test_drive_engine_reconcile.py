@@ -127,6 +127,75 @@ def test_route_duration_change_alone_triggers_update():
     assert plan.updates[0].event_id == "e1"
 
 
+# --- #309: an existing meeting block converges to the operator's zone ---------
+
+
+def _meeting_desired(*, tz: str, from_operator: bool) -> DesiredBlock:
+    return DesiredBlock(
+        identity="mtg1",
+        kind="meeting_outbound",
+        summary="Drive: Baruch 1:1",
+        start=_dt(7, 22),
+        end=_dt(8),
+        origin="Home",
+        destination="Office",
+        baseline_seconds=2280,
+        anchor=_dt(8),
+        timezone=tz,
+        zone_from_operator=from_operator,
+    )
+
+
+def _meeting_block(*, tz: str | None) -> ParsedBlock:
+    return ParsedBlock(
+        generation=GEN_UNIFIED,
+        event_id="e9",
+        identity="mtg1",
+        kind="meeting_outbound",
+        anchor=_dt(8),
+        origin="Home",
+        destination="Office",
+        baseline_seconds=2280,
+        timezone=tz,
+    )
+
+
+def test_block_in_a_stale_zone_converges_to_the_operator_zone():
+    """A block written in `Etc/GMT-2` off a stale source offset re-patches into
+    the operator's zone once the reader supplies it; nothing else changed."""
+    plan = plan_reconcile(
+        [_meeting_desired(tz="America/Chicago", from_operator=True)],
+        [_meeting_block(tz="Etc/GMT-2")],
+    )
+    assert [u.event_id for u in plan.updates] == ["e9"]
+
+
+def test_fallback_zone_never_repatches_a_block():
+    """Reader unavailable: the desired zone is the meeting's own fallback, and a
+    difference from the block's zone must not flap the block."""
+    plan = plan_reconcile(
+        [_meeting_desired(tz="Etc/GMT-2", from_operator=False)],
+        [_meeting_block(tz="America/Chicago")],
+    )
+    assert plan.is_noop
+
+
+def test_block_already_in_the_operator_zone_is_a_noop():
+    plan = plan_reconcile(
+        [_meeting_desired(tz="America/Chicago", from_operator=True)],
+        [_meeting_block(tz="America/Chicago")],
+    )
+    assert plan.is_noop
+
+
+def test_block_whose_zone_was_not_read_back_is_a_noop():
+    plan = plan_reconcile(
+        [_meeting_desired(tz="America/Chicago", from_operator=True)],
+        [_meeting_block(tz=None)],
+    )
+    assert plan.is_noop
+
+
 def _baseline_block(identity, baseline_seconds):
     """A unified block matching desired() on everything but baseline_seconds."""
     return ParsedBlock(
