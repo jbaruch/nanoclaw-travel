@@ -1,5 +1,11 @@
 # Changelog
 
+### check-travel-bookings — a transport segment files under the trip that owns its day (#293)
+
+`check-travel-bookings` reported "рейсы есть, отеля нет" for *Video Shooting TLV* (Oct 18–24), a trip whose live TripIt record carries `reservation_count: 0`. The DB had one item under it: `B61173 JFK to BNA`, dated `2026-10-17` — the day before the trip starts — and the same `uid` sat under *Fall Break* (Oct 10–18) where it belongs as the return leg. Two things compounded. `build-travel-db.py` tested overlap on the UTC `start`/`end` while the day key had followed the local clock since #268, so a flight landing at 19:35 CDT (00:35Z next day) reached into a trip that starts the next date. And the test was overlap-against-every-trip, so a segment could belong to two trips at once. The consumer reads any `Flight` item as "flights present", so a genuinely empty away trip was under-reported as merely missing a hotel.
+
+The writer now files each item by its local-first days — the same value the day key uses — and treats a transport item (`Flight`, `Rail`) as the point event it is: it belongs to a trip only when its departure day is inside `[start, end]`. Span items (lodging, rentals, novel types) keep overlap semantics on the same local-first days, so a stay across a boundary still appears under both trips. `state-schema.md` states the rule; the DB shape is unchanged, so `schema_version` stays at 3. A transport segment on the one calendar day two adjacent trips share (trip A ends and trip B starts on the same date) still files under both — that day is ambiguous by construction from the ICS feed, which carries no trip reference on an item, and no writer-side rule can pick the owner.
+
 ## 0.2.130 — 2026-09-09
 
 ### flight-assist — `read-current-tz.py` moves to `nanoclaw-core` (`jbaruch/nanoclaw#951` follow-up)

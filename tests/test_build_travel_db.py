@@ -6,7 +6,9 @@ Locks down the documented contract per `coding-policy: testing-standards`:
     `travel-db.json` with a `{schema_version, generated_at, trips: {<slug>: {...}}}`
     shape per the sibling `state-schema.md`
   - Trips (events without `item-` in `uid`) are kept iff their `end`
-    is on/after today; items overlap into the trip's days bucket
+    is on/after today; a transport item (Flight / Rail) files under a
+    trip only when its local-first departure day is inside the trip's
+    window, every other item type under each trip it overlaps (#293)
   - Each day's items are sorted by `TYPE_ORDER` (Flight, Rail,
     Lodging, Car Rental, then alphabetic)
   - `schema_version` is stamped on every write, matching the module
@@ -55,14 +57,19 @@ def _trip(uid, summary, start, end):
     }
 
 
-def _item(uid, summary, start, end, item_type):
-    return {
+def _item(uid, summary, start, end, item_type, *, start_local=None, end_local=None):
+    entry = {
         "uid": uid,
         "summary": summary,
         "start": start,
         "end": end,
         "type": item_type,
     }
+    if start_local is not None:
+        entry["start_local"] = start_local
+    if end_local is not None:
+        entry["end_local"] = end_local
+    return entry
 
 
 def test_missing_schedule_exits_1(build_travel_db, monkeypatch, capsys):
@@ -183,6 +190,106 @@ def test_overlapping_items_distributed_to_start_day(build_travel_db, monkeypatch
     days = db["trips"][slug]["days"]
     assert "2026-05-11" in days  # bucketed at start date
     assert "2026-05-12" not in days
+
+
+# --- #293: a transport segment files under the trip that owns its day --------
+
+_FALL_BREAK = _trip("trip-fb", "Fall Break Baselone", "2026-10-10", "2026-10-18")
+_VIDEO_TLV = _trip("trip-tlv", "Video Shooting TLV", "2026-10-18", "2026-10-24")
+
+
+def _uids_by_trip(db):
+    return {
+        slug: [e["uid"] for evts in t["days"].values() for e in evts]
+        for slug, t in db["trips"].items()
+    }
+
+
+def test_return_leg_with_local_stamps_files_only_under_the_trip_it_ends(
+    build_travel_db, monkeypatch, capsys
+):
+    """The #293 incident: B61173 JFK→BNA on the Fall Break return day lands
+    after midnight UTC, so its UTC end day (Oct 18) overlapped the adjacent
+    Video Shooting TLV trip starting Oct 18. Locally it is an Oct 17 flight
+    and belongs to Fall Break alone; the TLV trip has nothing."""
+    module, schedule_path, db_path = build_travel_db
+    schedule = [
+        _FALL_BREAK,
+        _VIDEO_TLV,
+        _item(
+            "item-b61173",
+            "B61173 JFK to BNA",
+            "2026-10-17T21:59:00Z",
+            "2026-10-18T00:35:00Z",
+            "Flight",
+            start_local="2026-10-17T17:59:00-04:00",
+            end_local="2026-10-17T19:35:00-05:00",
+        ),
+    ]
+    schedule_path.write_text(json.dumps(schedule))
+    _run(module, monkeypatch, capsys)
+    db = json.loads(db_path.read_text())
+    fb = db["trips"]["fall-break-baselone-2026-10"]
+    tlv = db["trips"]["video-shooting-tlv-2026-10"]
+    assert [e["uid"] for e in fb["days"]["2026-10-17"]] == ["item-b61173"]
+    assert tlv["days"] == {}
+    all_uids = [uid for uids in _uids_by_trip(db).values() for uid in uids]
+    assert all_uids.count("item-b61173") == 1
+
+
+def test_flight_without_local_stamps_files_by_its_utc_departure_day_only(
+    build_travel_db, monkeypatch, capsys
+):
+    """No local clock resolved: the UTC end still crosses into the next trip,
+    and the flight still files under the trip containing its departure day."""
+    module, schedule_path, db_path = build_travel_db
+    schedule = [
+        _FALL_BREAK,
+        _VIDEO_TLV,
+        _item("item-f", "Return", "2026-10-17T21:59:00Z", "2026-10-18T00:35:00Z", "Flight"),
+    ]
+    schedule_path.write_text(json.dumps(schedule))
+    _run(module, monkeypatch, capsys)
+    db = json.loads(db_path.read_text())
+    by_trip = _uids_by_trip(db)
+    assert by_trip["fall-break-baselone-2026-10"] == ["item-f"]
+    assert by_trip["video-shooting-tlv-2026-10"] == []
+
+
+def test_lodging_spanning_the_boundary_still_files_under_both_trips(
+    build_travel_db, monkeypatch, capsys
+):
+    """A span item keeps overlap semantics: a stay from Oct 17 to Oct 19
+    covers a night of each adjacent trip and appears under both."""
+    module, schedule_path, db_path = build_travel_db
+    schedule = [
+        _FALL_BREAK,
+        _VIDEO_TLV,
+        _item("item-l", "Hotel", "2026-10-17", "2026-10-19", "Lodging"),
+    ]
+    schedule_path.write_text(json.dumps(schedule))
+    _run(module, monkeypatch, capsys)
+    db = json.loads(db_path.read_text())
+    by_trip = _uids_by_trip(db)
+    assert by_trip["fall-break-baselone-2026-10"] == ["item-l"]
+    assert by_trip["video-shooting-tlv-2026-10"] == ["item-l"]
+
+
+def test_flight_inside_one_trip_never_reaches_the_other(build_travel_db, monkeypatch, capsys):
+    """The ordinary case is unchanged: a mid-trip flight files under its own
+    trip and nowhere else."""
+    module, schedule_path, db_path = build_travel_db
+    schedule = [
+        _FALL_BREAK,
+        _VIDEO_TLV,
+        _item("item-out", "BNA to TLV", "2026-10-20T10:00:00Z", "2026-10-21T05:00:00Z", "Flight"),
+    ]
+    schedule_path.write_text(json.dumps(schedule))
+    _run(module, monkeypatch, capsys)
+    db = json.loads(db_path.read_text())
+    by_trip = _uids_by_trip(db)
+    assert by_trip["fall-break-baselone-2026-10"] == []
+    assert by_trip["video-shooting-tlv-2026-10"] == ["item-out"]
 
 
 def test_unknown_type_kept_with_default_order(build_travel_db, monkeypatch, capsys):
