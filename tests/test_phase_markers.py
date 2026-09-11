@@ -25,6 +25,8 @@ from phase_markers import (  # noqa: E402
     check_day_before,
     check_gate_assignment,
     check_time_to_leave,
+    day_before_due,
+    day_label,
     is_boarding_or_gone,
 )
 
@@ -65,6 +67,121 @@ def test_day_before_fires_at_exact_threshold():
     assert event is not None
     assert event["reason"] == "day_before"
     assert event["hours_until_dep"] == DAY_BEFORE_HOURS
+
+
+# --- #300: the day label is precomputed against the operator's date ---------
+#
+# The incident: DL1144 MSP→BNA, rebooked after a misconnect, first tracked
+# ~8h before its 19:50 CDT departure. The old payload shipped the constant
+# `hours_until_dep: 24` and the compose read it as "tomorrow" at 12:03 CDT
+# the same day.
+
+_INCIDENT_DEP = "2026-09-10T19:50:00-05:00"
+_INCIDENT_NOW = datetime(2026, 9, 10, 17, 3, 0, tzinfo=timezone.utc)  # 12:03 CDT
+_CHICAGO = "America/Chicago"
+
+
+def _day_before(sched: str, now: datetime, tz: str | None) -> dict:
+    fired, event = check_day_before(
+        scheduled_dep_time=sched, phase_markers=_markers(), now_utc=now, operator_tz=tz
+    )
+    assert fired is True
+    assert event is not None
+    return event
+
+
+def test_same_day_departure_is_labelled_today_with_real_hours():
+    event = _day_before(_INCIDENT_DEP, _INCIDENT_NOW, _CHICAGO)
+    assert event["day_label"] == "today"
+    assert event["day_label_tz"] == _CHICAGO
+    assert event["hours_until_dep"] == 7  # 7h47m out, whole hours
+
+
+def test_next_day_departure_is_labelled_tomorrow():
+    now = datetime(2026, 9, 10, 1, 0, 0, tzinfo=timezone.utc)  # 20:00 CDT Sep 9, T-23h50m
+    event = _day_before(_INCIDENT_DEP, now, _CHICAGO)
+    assert event["day_label"] == "tomorrow"
+    assert event["day_label_tz"] == _CHICAGO
+    assert event["hours_until_dep"] == 23
+
+
+def test_farther_departure_is_labelled_with_the_operator_local_date():
+    # A flight first seen days out — the once-per-flight marker fires on the
+    # first poll past T-24h, but a flight can be polled earlier (the gate is
+    # `now ≥ dep − 24h`; here the marker was never set and the clock is late).
+    # Pin the "otherwise" branch directly: three days out in the operator's zone.
+    label, tz = day_label(
+        datetime(2026, 9, 13, 19, 50, 0, tzinfo=timezone(timedelta(hours=-5))),
+        now_utc=_INCIDENT_NOW,
+        operator_tz=_CHICAGO,
+    )
+    assert (label, tz) == ("2026-09-13", _CHICAGO)
+
+
+def test_utc_date_trap_still_says_tomorrow():
+    # 22:00 CDT on Sep 10 is already Sep 11 in UTC; a 06:00 CDT Sep 11
+    # departure is Sep 11 in UTC too. A UTC comparison says "today" — the
+    # operator, still on Sep 10, is told "tomorrow".
+    now = datetime(2026, 9, 11, 3, 0, 0, tzinfo=timezone.utc)
+    event = _day_before("2026-09-11T06:00:00-05:00", now, _CHICAGO)
+    assert event["day_label"] == "tomorrow"
+    assert event["hours_until_dep"] == 8
+
+
+def test_no_operator_zone_falls_back_to_the_airport_local_date():
+    event = _day_before(_INCIDENT_DEP, _INCIDENT_NOW, None)
+    assert event["day_label"] == "2026-09-10"  # the date the -05:00 string carries
+    assert event["day_label_tz"] is None
+
+
+def test_fallback_uses_the_departure_offset_not_container_utc():
+    # 23:30 EDT Sep 10 is 03:30Z Sep 11. The explicit fallback date is the
+    # airport-local Sep 10, never the container's UTC Sep 11.
+    now = datetime(2026, 9, 10, 20, 0, 0, tzinfo=timezone.utc)
+    event = _day_before("2026-09-10T23:30:00-04:00", now, None)
+    assert event["day_label"] == "2026-09-10"
+    assert event["day_label_tz"] is None
+
+
+def test_unresolvable_zone_behaves_like_no_zone(capsys):
+    event = _day_before(_INCIDENT_DEP, _INCIDENT_NOW, "Mars/Olympus_Mons")
+    assert event["day_label"] == "2026-09-10"
+    assert event["day_label_tz"] is None
+    assert "Mars/Olympus_Mons" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("sched", "now", "markers", "due"),
+    [
+        (SCHED_DEP, datetime(2026, 5, 17, 16, 59, 0, tzinfo=timezone.utc), {}, False),
+        (SCHED_DEP, datetime(2026, 5, 17, 17, 0, 0, tzinfo=timezone.utc), {}, True),
+        (
+            SCHED_DEP,
+            datetime(2026, 5, 18, 10, 0, 0, tzinfo=timezone.utc),
+            {"day_before_fired": True},
+            False,
+        ),
+        ("not-a-time", datetime(2026, 5, 18, 10, 0, 0, tzinfo=timezone.utc), {}, False),
+    ],
+)
+def test_day_before_due_matches_the_gate(sched, now, markers, due):
+    """The predicate the precheck asks before spawning the zone reader agrees
+    with whether `check_day_before` fires."""
+    assert (
+        day_before_due(scheduled_dep_time=sched, phase_markers=_markers(**markers), now_utc=now)
+        is due
+    )
+    fired, _ = check_day_before(
+        scheduled_dep_time=sched, phase_markers=_markers(**markers), now_utc=now
+    )
+    assert fired is due
+
+
+def test_exact_threshold_keeps_hours_until_dep_at_24():
+    now = datetime(2026, 5, 17, 17, 0, 0, tzinfo=timezone.utc)  # T-24h exactly
+    event = _day_before(SCHED_DEP, now, "UTC")
+    assert event["hours_until_dep"] == 24
+    assert event["day_label"] == "tomorrow"
 
 
 def test_day_before_fires_after_threshold():

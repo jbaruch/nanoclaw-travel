@@ -106,10 +106,14 @@ Suppression rules:
 #### `day_before`
 
 ```json
-{"reason": "day_before", "scheduled_dep_time": "2026-05-18T17:00:00+00:00", "hours_until_dep": 24}
+{"reason": "day_before", "scheduled_dep_time": "2026-09-10T19:50:00-05:00", "hours_until_dep": 7, "day_label": "today", "day_label_tz": "America/Chicago"}
 ```
 
-Fires once per flight at `T - 24h`.
+Fires once per flight. The firing logic lives in `phase_markers.py` (`check_day_before`, `DAY_BEFORE_HOURS`); a flight first tracked late can fire the same local day.
+
+- `hours_until_dep` — the real whole hours from the poll to scheduled departure (24 at the exact threshold, 7 in the example); never the constant 24.
+- `day_label` — `today`, `tomorrow`, or a `YYYY-MM-DD` date, resolved by the precheck against the operator's local date through the core `current-tz` reader. Render it verbatim.
+- `day_label_tz` — the IANA zone the label was resolved in; `null` when no operator zone was available, in which case `day_label` is the explicit date `scheduled_dep_time` carries in its own offset.
 
 #### `time_to_leave`
 

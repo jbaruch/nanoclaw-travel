@@ -18,6 +18,7 @@ Phrase every relative-date word in a flight-assist surface against the operator'
 - On `available: true`: `local_date` is the operator's date now. Each event's local date comes from the same script run with `--now <scheduled_dep_time>`; read its `local_date`
 - Never derive a relative date from container-local `datetime.now()`
 - Never convert an instant by hand
+- A `day_before` event carries `day_label`, resolved by the precheck through the same reader; render it, never re-derive it
 
 ## Relative-date phrasing
 
