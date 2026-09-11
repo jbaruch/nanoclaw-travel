@@ -19,6 +19,13 @@ Public API:
     events = detect_wake_events(prev_snapshot, new_snapshot, scheduled_dep_time)
     # events = [{"reason": "gate_change", "from": "B25", "to": "B7"}, ...]
 
+    # With the planned boarding window (dep − boarding_lead), judged per
+    # snapshot at its own poll instant (#295):
+    events = detect_wake_events(
+        prev_snapshot, new_snapshot, scheduled_dep_time,
+        boarding_window_open=window, now_utc=now, prev_polled_at=prev_polled,
+    )
+
 Event shapes (every event has a `reason`; other fields depend on
 the rule):
 
@@ -46,6 +53,10 @@ Thresholds (constants below):
       previously-fired magnitude. A previously-surfaced prediction that
       walks back below threshold (or to null) fires a symmetric
       `inbound_delay_retracted` all-clear.
+    - Boarding: byAir's "boarding" label is real only when its detail is
+      not a future-tense countdown (#54) AND, when the caller supplies the
+      planned boarding window, the snapshot was polled at or after that
+      window opened (#295).
 """
 
 from __future__ import annotations
@@ -61,13 +72,22 @@ DELAY_THRESHOLD_MINUTES = 15
 # computed_phase_progress was 0). The detail string is byAir's own
 # delay-adjusted countdown; when it announces boarding in the FUTURE, the
 # "boarding" label is premature and must not be relayed as a boarding alert.
+# The detail is not always future-tense while premature: KL1199 read
+# "Boarding now" at T-59 for a 30-min-lead narrowbody (#295). That case is
+# caught by the planned-boarding-window gate in `is_real_boarding`, not here.
 _FUTURE_BOARDING_DETAIL = re.compile(r"^\s*Boarding starts in", re.IGNORECASE)
 INBOUND_DELAY_THRESHOLD_MINUTES = 20
 INBOUND_DELAY_DEDUPE_MINUTES = 5
 
 
 def detect_wake_events(
-    prev: dict | None, new: dict, scheduled_dep_time: str | None = None
+    prev: dict | None,
+    new: dict,
+    scheduled_dep_time: str | None = None,
+    *,
+    boarding_window_open: datetime | None = None,
+    now_utc: datetime | None = None,
+    prev_polled_at: datetime | None = None,
 ) -> list[dict]:
     """Return the list of wake events triggered by the delta `prev → new`.
 
@@ -84,7 +104,24 @@ def detect_wake_events(
     only on the first cycle, to detect a delay already baked into the
     first snapshot (a slip vs the schedule, which the delta rule cannot
     see because there is no prior dep_time). None disables that check.
+
+    `boarding_window_open` is the instant flight-assist's own boarding
+    block starts (`scheduled_dep − boarding_lead`, see
+    `phase_markers.boarding_window_open`). When given, `now_utc` is
+    required (ValueError otherwise) and the boarding transition judges
+    each snapshot at the instant it was polled: `new` at `now_utc`,
+    `prev` at `prev_polled_at`. byAir's "boarding" label before that
+    window is premature by construction (#295), so a prematurely
+    labelled `prev` polled before the window counts as NOT boarding and
+    the first in-window poll fires `boarding_started` even though the
+    raw label never changed. A `prev` with no `prev_polled_at` is judged
+    on its fields alone (no window gate on that side). None (the default)
+    keeps the pre-#295 label-plus-detail predicate on both sides.
     """
+    if boarding_window_open is not None and now_utc is None:
+        raise ValueError(
+            "detect_wake_events: `now_utc` is required when `boarding_window_open` is given"
+        )
     events: list[dict] = []
 
     new_status = new.get("computed_status")
@@ -99,14 +136,20 @@ def detect_wake_events(
     # Boarding started: transition into *actual* boarding. We gate on
     # boarding having really started, not on byAir's `computed_status`
     # label alone, which byAir flips to "boarding" up to ~1h early while
-    # its own detail still says "Boarding starts in N min" (#54). The
-    # transition is computed against the *real-boarding* signal on both
-    # sides so a flight byAir prematurely marked "boarding" still fires
-    # once the detail flips to actual boarding — even though the raw
+    # its own detail still says "Boarding starts in N min" (#54) — or
+    # already says "Boarding now" (#295). The transition is computed
+    # against the *real-boarding* signal on both sides, each snapshot at
+    # its own poll instant, so a flight byAir prematurely marked
+    # "boarding" still fires once the detail flips to actual boarding or
+    # the planned boarding window opens — even though the raw
     # `computed_status` never changed across that flip.
     # First-cycle "already boarding" does not fire (we don't have a prior
     # to confirm the transition).
-    if prev is not None and is_real_boarding(new) and not is_real_boarding(prev):
+    if (
+        prev is not None
+        and is_real_boarding(new, boarding_window_open=boarding_window_open, at=now_utc)
+        and not is_real_boarding(prev, boarding_window_open=boarding_window_open, at=prev_polled_at)
+    ):
         events.append({"reason": "boarding_started"})
 
     # Gate change: dep_gate or arr_gate differs from a prior non-null value.
@@ -214,7 +257,12 @@ def detect_wake_events(
     return events
 
 
-def is_real_boarding(snapshot: dict) -> bool:
+def is_real_boarding(
+    snapshot: dict,
+    *,
+    boarding_window_open: datetime | None = None,
+    at: datetime | None = None,
+) -> bool:
     """True when the snapshot reflects boarding that has ACTUALLY started.
 
     byAir's `computed_status == "boarding"` is not trustworthy on its own:
@@ -226,11 +274,26 @@ def is_real_boarding(snapshot: dict) -> bool:
     is not still in the future: the detail must not be a "Boarding starts
     in ..." countdown. A future-tense detail can never describe boarding
     that has begun, so gating on it cannot suppress a genuine alert.
+
+    The detail is not always future-tense while premature — byAir also
+    flips it to "Boarding now" up to ~1h early (#295, KL1199 at T-59 for
+    a 30-min-lead 737). So when the caller supplies `boarding_window_open`
+    (the start of flight-assist's own boarding block, `scheduled_dep −
+    boarding_lead`) and `at` (the instant the snapshot was polled), a
+    "boarding" snapshot polled before that window is premature by
+    construction and reads as NOT boarding. Either kwarg alone disables
+    the window gate (a caller without the lead, or judging a snapshot of
+    unknown age, keeps the label-plus-detail predicate). `computed_phase_
+    progress` is deliberately not a signal: it tracks byAir's own ~1h
+    "boarding" phase, so genuine boarding at dep−30 would read ≈0.5 and
+    no threshold separates the two.
     """
     if snapshot.get("computed_status") != "boarding":
         return False
     detail = snapshot.get("computed_status_detail")
     if isinstance(detail, str) and _FUTURE_BOARDING_DETAIL.match(detail):
+        return False
+    if boarding_window_open is not None and at is not None and at < boarding_window_open:
         return False
     return True
 

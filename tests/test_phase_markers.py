@@ -18,10 +18,12 @@ from phase_markers import (  # noqa: E402
     ARRIVAL_LOGISTICS_LEAD_MINUTES,
     DAY_BEFORE_HOURS,
     TIME_TO_LEAVE_BUFFER_MINUTES,
+    boarding_window_open,
     check_arrival_logistics,
     check_day_before,
     check_gate_assignment,
     check_time_to_leave,
+    is_boarding_or_gone,
 )
 
 SCHED_DEP = "2026-05-18T17:00:00+00:00"
@@ -223,6 +225,50 @@ def test_time_to_leave_not_suppressed_by_premature_boarding_label():
     assert fired is True
 
 
+def test_time_to_leave_with_lead_ignores_premature_boarding_now_before_window():
+    """#295 — byAir's "Boarding now" 45 min before departure on a 30-min-lead
+    flight is before the planned boarding window (16:30); the leave-by alert
+    still fires."""
+    now = datetime(2026, 5, 18, 16, 15, 0, tzinfo=timezone.utc)  # pre-window (16:30)
+    fired, _ = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=1800,  # leave_by = 17:00 − 30 min − 15 min buffer = 16:15
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot=_boarding_snapshot(computed_phase_progress=0.0546, dep_time=None),
+        boarding_lead_minutes=30,
+    )
+    assert fired is True
+
+
+def test_time_to_leave_with_lead_suppressed_once_window_is_open():
+    """#295 — the same label inside the planned boarding window is real boarding;
+    the leave-by alert is moot."""
+    now = datetime(2026, 5, 18, 16, 31, 0, tzinfo=timezone.utc)  # window opened 16:30
+    fired, _ = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=0,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot=_boarding_snapshot(),
+        boarding_lead_minutes=30,
+    )
+    assert fired is False
+
+
+def test_time_to_leave_without_lead_keeps_label_only_predicate():
+    """No lead → no window; the pre-#295 label-plus-detail predicate decides."""
+    now = datetime(2026, 5, 18, 16, 15, 0, tzinfo=timezone.utc)
+    fired, _ = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=0,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot=_boarding_snapshot(),
+    )
+    assert fired is False
+
+
 def test_time_to_leave_suppressed_when_departed_or_cancelled():
     """Once the flight has left or been cancelled, leave-by never fires."""
     now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=timezone.utc)
@@ -408,14 +454,11 @@ def test_gate_assignment_window_widens_for_widebody_lead():
 
 def test_gate_assignment_suppressed_when_boarding_or_gone():
     """A flight already boarding/departed/cancelled/diverted gets no readout —
-    navigating to a departure gate is moot by then."""
-    now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)  # in window
+    navigating to a departure gate is moot by then. The boarding case sits
+    inside the planned boarding window (opens 16:30 for a 30-min lead): only
+    there does the label count as real boarding (#295)."""
+    now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)  # in readout window
     for snapshot in (
-        {
-            "computed_status": "boarding",
-            "computed_status_detail": "Boarding now",
-            "dep_gate": "E16",
-        },
         {"computed_status": "departed", "dep_gate": "E16"},
         {"computed_status": "cancelled", "dep_gate": "E16"},
         {"computed_status": "diverted", "dep_gate": "E16"},
@@ -428,6 +471,41 @@ def test_gate_assignment_suppressed_when_boarding_or_gone():
             now_utc=now,
         )
         assert fired is False, f"expected suppression for {snapshot['computed_status']!r}"
+    fired, _ = check_gate_assignment(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=NARROWBODY_LEAD,
+        snapshot={
+            "computed_status": "boarding",
+            "computed_status_detail": "Boarding now",
+            "dep_gate": "E16",
+        },
+        phase_markers=_markers(),
+        now_utc=datetime(2026, 5, 18, 16, 35, 0, tzinfo=timezone.utc),  # in boarding window
+    )
+    assert fired is False
+
+
+def test_gate_assignment_not_suppressed_by_boarding_now_before_the_window():
+    """#295 — "Boarding now" at T-60 on a 30-min-lead flight is byAir's early
+    flip, not boarding; the readout must still fire so the operator learns
+    the terminal."""
+    now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)  # window opens 16:30
+    fired, event = check_gate_assignment(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=NARROWBODY_LEAD,
+        snapshot={
+            "computed_status": "boarding",
+            "computed_status_detail": "Boarding now",
+            "computed_phase_progress": 0.0546,
+            "dep_gate": "E16",
+            "dep_terminal": "2",
+        },
+        phase_markers=_markers(),
+        now_utc=now,
+    )
+    assert fired is True
+    assert event is not None
+    assert event["dep_gate"] == "E16"
 
 
 def test_gate_assignment_not_suppressed_by_premature_boarding_label():
@@ -461,6 +539,58 @@ def test_gate_assignment_with_malformed_time_does_not_fire():
         now_utc=now,
     )
     assert fired is False
+
+
+# ---------------------------------------------------------------------------
+# Planned boarding window (#295)
+# ---------------------------------------------------------------------------
+
+
+def test_boarding_window_open_is_dep_minus_lead():
+    assert boarding_window_open(
+        scheduled_dep_time="2026-09-01T09:20:00+02:00", boarding_lead_minutes=30
+    ) == datetime(2026, 9, 1, 8, 50, 0, tzinfo=timezone(timedelta(hours=2)))
+
+
+def test_boarding_window_open_is_none_when_dep_unparseable():
+    assert boarding_window_open(scheduled_dep_time="not-a-time", boarding_lead_minutes=30) is None
+    assert boarding_window_open(scheduled_dep_time=None, boarding_lead_minutes=30) is None
+
+
+def test_is_boarding_or_gone_premature_boarding_now_before_window_is_false():
+    """KL1199: "Boarding now" at 08:21 for a 09:20 departure with a 30-min lead
+    (window 08:50) is not boarding — nothing airport-bound is moot yet."""
+    window = datetime(2026, 9, 1, 8, 50, 0, tzinfo=timezone(timedelta(hours=2)))
+    snapshot = {
+        "computed_status": "boarding",
+        "computed_status_detail": "Boarding now",
+        "computed_phase_progress": 0.0546,
+        "dep_time": None,
+    }
+    at = datetime(2026, 9, 1, 8, 21, 0, tzinfo=timezone(timedelta(hours=2)))
+    assert is_boarding_or_gone(snapshot, boarding_window_open=window, at=at) is False
+
+
+def test_is_boarding_or_gone_boarding_now_inside_window_is_true():
+    window = datetime(2026, 9, 1, 8, 50, 0, tzinfo=timezone(timedelta(hours=2)))
+    snapshot = {"computed_status": "boarding", "computed_status_detail": "Boarding now"}
+    at = datetime(2026, 9, 1, 8, 51, 0, tzinfo=timezone(timedelta(hours=2)))
+    assert is_boarding_or_gone(snapshot, boarding_window_open=window, at=at) is True
+
+
+def test_is_boarding_or_gone_gone_statuses_ignore_the_window():
+    """Departed / cancelled / diverted are moot whatever the window says."""
+    window = datetime(2026, 9, 1, 8, 50, 0, tzinfo=timezone(timedelta(hours=2)))
+    at = datetime(2026, 9, 1, 7, 0, 0, tzinfo=timezone(timedelta(hours=2)))
+    for status in ("departed", "en_route", "landed", "cancelled", "diverted"):
+        assert is_boarding_or_gone(
+            {"computed_status": status}, boarding_window_open=window, at=at
+        ), status
+
+
+def test_is_boarding_or_gone_without_window_keeps_label_predicate():
+    snapshot = {"computed_status": "boarding", "computed_status_detail": "Boarding now"}
+    assert is_boarding_or_gone(snapshot) is True
 
 
 # ---------------------------------------------------------------------------

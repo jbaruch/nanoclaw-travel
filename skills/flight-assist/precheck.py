@@ -63,6 +63,7 @@ from connection_risk import (  # noqa: E402
 )
 from maps_client import MapsClient, MapsError  # noqa: E402
 from phase_markers import (  # noqa: E402
+    boarding_window_open,
     check_arrival_logistics,
     check_day_before,
     check_gate_assignment,
@@ -486,8 +487,26 @@ def _process_flight(
         scheduled_dep_time=scheduled_dep_time,
         boarding_lead_minutes=boarding_lead_minutes,
     )
-    readout_unreachable = window_open is None or is_boarding_or_gone(new_snapshot)
-    delta_events = detect_wake_events(prior_snapshot, new_snapshot, scheduled_dep_time)
+    # The planned boarding window (dep − lead, the same lead the boarding block
+    # uses): byAir's "boarding" label before it is premature by construction
+    # (#295). Each snapshot is judged at the instant it was polled — the fresh
+    # one now, the prior one at its own `last_polled_at` — so the first
+    # in-window poll fires the transition even when the raw label never moved.
+    boarding_open = boarding_window_open(
+        scheduled_dep_time=scheduled_dep_time,
+        boarding_lead_minutes=boarding_lead_minutes,
+    )
+    readout_unreachable = window_open is None or is_boarding_or_gone(
+        new_snapshot, boarding_window_open=boarding_open, at=now_utc
+    )
+    delta_events = detect_wake_events(
+        prior_snapshot,
+        new_snapshot,
+        scheduled_dep_time,
+        boarding_window_open=boarding_open,
+        now_utc=now_utc,
+        prev_polled_at=_parse_iso8601(prior_state.get("last_polled_at")) if prior_state else None,
+    )
     delta_events = _filter_gate_changes(
         delta_events,
         readout_fired_before=readout_fired_before,
@@ -524,6 +543,7 @@ def _process_flight(
         phase_markers=phase_markers,
         now_utc=now_utc,
         snapshot=new_snapshot,
+        boarding_lead_minutes=boarding_lead_minutes,
     )
     if fired and event is not None:
         phase_markers["time_to_leave_fired"] = True
