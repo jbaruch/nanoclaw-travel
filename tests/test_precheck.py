@@ -465,7 +465,9 @@ def test_operator_zone_is_read_once_per_cycle_across_flights(state_root: Path):
         mock_byair_from_env.return_value.get_flight.side_effect = lambda flight_id: _byair_flight(
             flight_id=flight_id
         )
-        events = precheck._run_cycle(now_utc=fake_now, operator_tz_reader=reader)
+        events = precheck._run_cycle(
+            now_utc=fake_now, monotonic=lambda: 0.0, operator_tz_reader=reader
+        )
     assert len(_day_before_events(events)) == 3
     assert reader.calls == 1
 
@@ -1168,7 +1170,11 @@ def test_corrupt_record_still_fails_at_its_own_turn_after_earlier_polls(state_ro
             flight_id=flight_id
         )
         with pytest.raises(StateError, match="not valid JSON"):
-            precheck._run_cycle(now_utc=fake_now, operator_tz_reader=_CountingReader(_CHICAGO))
+            precheck._run_cycle(
+                now_utc=fake_now,
+                monotonic=lambda: 0.0,  # budget clock frozen: flight 7 is always reached
+                operator_tz_reader=_CountingReader(_CHICAGO),
+            )
     assert must(read_flight_state(1))["last_polled_at"] == "2026-05-18T16:00:00Z"
 
 
