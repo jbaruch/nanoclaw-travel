@@ -17,8 +17,7 @@ Stdout (single-line JSON):
      "window_start": "<ISO>", "window_end": "<ISO>",
      "events": [{"summary", "location", "all_day", "start", "end", "display"}],
      "skipped_declined_or_cancelled": N}
-    {"error": "..."}        — the flight has no state on disk (exit 0, like
-                              get-flight-state.py)
+    {"error": "no_state"}   — the flight has no state on disk (exit 1)
     {"error": "gateway"}    — the OneCLI gateway is not authenticating (exit 1)
     {"error": "tier"}       — this agent's tier is gated from Google (exit 1)
     {"error": "calendar"}   — Calendar or the network failed this call (exit 1)
@@ -28,6 +27,11 @@ Stdout (single-line JSON):
 `tz` is the zone the times were rendered in: null when the operator's zone is
 unavailable or does not resolve, and `start` / `end` then keep each event's
 own offset. Exit 2 on usage errors.
+
+Every fixable error names on stderr what to fix and the command to rerun.
+Nothing retries on its own: `day_before` fires once per flight, so a check
+that went out without its calendar part stays that way unless this script is
+rerun. `tier` is gated by design and names no rerun.
 """
 
 from __future__ import annotations
@@ -61,6 +65,9 @@ from google_calendar_client import (  # noqa: E402
 from operator_tz import OperatorTz, read_operator_tz  # noqa: E402
 from state import read_flight_state  # noqa: E402
 
+# How an operator reruns this check by hand once the cause is fixed.
+_RERUN = "python3 /home/node/.claude/skills/tessl__flight-assist/scripts/day-before-calendar.py"
+
 
 def _emit(payload: dict) -> None:
     print(json.dumps(payload, separators=(",", ":")))
@@ -78,16 +85,23 @@ def run(
     `client`, `operator_tz_reader` and `read_state` are injected so tests run
     without the gateway, the core reader, or on-disk state.
     """
+    rerun = f"{_RERUN} {flight_id}"
     state = read_state(flight_id)
     if state is None:
-        _emit({"error": f"flight_id {flight_id} has no state on disk"})
-        return 0
+        print(
+            f"day-before-calendar: flight_id {flight_id} has no state on disk — the "
+            "flight-assist precheck seeds it on its next poll of this flight; "
+            f"then rerun `{rerun}`",
+            file=sys.stderr,
+        )
+        _emit({"error": "no_state"})
+        return 1
     try:
         window = conflict_window(state)
     except ValueError as exc:
         # The seed can write an empty or malformed time; the check still goes
         # out, without the calendar part, rather than dying with no JSON.
-        print(f"day-before-calendar: {exc}", file=sys.stderr)
+        print(f"day-before-calendar: {exc}; then rerun `{rerun}`", file=sys.stderr)
         _emit({"error": "state"})
         return 1
     try:
@@ -99,11 +113,20 @@ def run(
             )
         )
     except GatewayNotInjecting as exc:
-        print(f"day-before-calendar: unauthenticated — {exc}", file=sys.stderr)
+        print(
+            f"day-before-calendar: unauthenticated — {exc}; reconnect the Google app in "
+            f"OneCLI, then rerun `{rerun}`",
+            file=sys.stderr,
+        )
         _emit({"error": "gateway"})
         return 1
     except TierAccessRestricted as exc:
-        print(f"day-before-calendar: unavailable at this tier — {exc}", file=sys.stderr)
+        # Gated by design, not broken: a rerun here would fail the same way.
+        print(
+            f"day-before-calendar: unavailable at this tier — {exc}; the calendar part "
+            "needs a tier with Google access, so this check goes out without it",
+            file=sys.stderr,
+        )
         _emit({"error": "tier"})
         return 1
     except (
@@ -116,7 +139,7 @@ def run(
         # the client's decode raises those, and they are calendar failures too.
         print(
             f"day-before-calendar: calendar read failed ({exc}) — the day-before check "
-            "goes out without the calendar part; the next wake retries",
+            f"goes out without the calendar part; once Calendar answers, rerun `{rerun}`",
             file=sys.stderr,
         )
         _emit({"error": "calendar"})

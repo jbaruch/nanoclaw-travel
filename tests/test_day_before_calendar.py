@@ -397,17 +397,20 @@ def test_script_with_an_unparseable_window_returns_a_state_error(capsys):
     assert client.calls == []
 
 
-def test_script_with_no_state_reports_it_and_exits_0(capsys):
-    code, payload, _ = _run(capsys, client=FakeCalendar(), state=None)
-    assert code == 0
-    assert "no state on disk" in payload["error"]
+def test_script_with_no_state_fails_with_a_rerun_command(capsys):
+    """Policy review on #307: a missing state record is a failure, reported on
+    stderr with what to do, not a quiet exit 0."""
+    code, payload, err = _run(capsys, client=FakeCalendar(), state=None)
+    assert code == 1
+    assert payload == {"error": "no_state"}
+    assert "no state on disk" in err
+    assert "day-before-calendar.py 7356314" in err
 
 
 @pytest.mark.parametrize(
     ("exc", "error"),
     [
         (GatewayNotInjecting("401"), "gateway"),
-        (TierAccessRestricted("403 access_restricted"), "tier"),
         (GoogleCalendarError("500", status_code=500), "calendar"),
         (urllib.error.URLError("timed out"), "calendar"),
         (json.JSONDecodeError("Expecting value", "<html>", 0), "calendar"),
@@ -418,7 +421,21 @@ def test_script_calendar_failures_exit_1_with_a_named_error(capsys, exc, error):
     code, payload, err = _run(capsys, client=FakeCalendar(raises=exc))
     assert code == 1
     assert payload == {"error": error}
-    assert "day-before-calendar" in err
+    # Nothing retries a fired day_before; the message names the rerun command
+    # (policy review on #307).
+    assert "day-before-calendar.py 7356314" in err
+    assert "next wake" not in err
+
+
+def test_script_tier_gate_exits_1_without_a_rerun_command(capsys):
+    """The tier is gated from Google by design; a rerun would fail the same way."""
+    code, payload, err = _run(
+        capsys, client=FakeCalendar(raises=TierAccessRestricted("403 access_restricted"))
+    )
+    assert code == 1
+    assert payload == {"error": "tier"}
+    assert "tier with Google access" in err
+    assert "rerun" not in err
 
 
 def test_script_usage_errors_exit_2(capsys):
