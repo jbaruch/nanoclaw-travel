@@ -1,5 +1,13 @@
 # Changelog
 
+### drive-engine — bracketed room-resource conferencing tags are virtual (#294)
+
+A one-off meeting, "Training Global Employees - Feedback talk", with `location: "TLV-3-Board Room (20p) (20) [ZOOM]"` produced two phantom drive blocks while the operator was in Europe. The engine geocoded the room string and the geocoder confidently resolved it to `Zoom 20 3, 8225 KP Lelystad` — a street literally named Zoom, ~68 km from the Amsterdam base — so a ~42-minute round trip landed on the calendar for a Zoom call held in a Tel Aviv office room. The event was a Reclaim mirror block, so it carried no `conferenceData` / `hangoutLink`; the location string was the only signal the engine saw.
+
+`scan._VIRTUAL_MARKERS` already filters virtual meetings, but it keys on join-URLs (`zoom.us`, `meet.google.com`, …) and words (`online`, `virtual`, `phone call`). It did not know the room-resource convention Google Calendar uses for video-wired rooms — `… [ZOOM]`, `… [TEAMS]`, `… [MEET]`, `… [WEBEX]` — which has no URL and none of those words, so the string passed as a venue. The tuple now carries the four bracketed tags (the location is lowercased before matching). The brackets are the signal, not the word: a real address containing "meet" or "zoom" (`Meeting Room 4, 1 Main St`, `Zoomer's Cafe`) still routes, and tests pin both directions.
+
+Deliberately not changed: a present `conferenceData` / `hangoutLink` is not treated as virtual. A hybrid in-office meeting routinely carries a Meet link alongside a real room, and the operator drives to those; the location string remains the sole virtual signal, as it was.
+
 ## 0.2.130 — 2026-09-09
 
 ### flight-assist — `read-current-tz.py` moves to `nanoclaw-core` (`jbaruch/nanoclaw#951` follow-up)
