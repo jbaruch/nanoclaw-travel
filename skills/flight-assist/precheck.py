@@ -74,6 +74,7 @@ from phase_markers import (  # noqa: E402
     is_boarding_or_gone,
 )
 from state import (  # noqa: E402
+    StateError,
     read_active_flights,
     read_config,
     read_flight_state,
@@ -286,9 +287,7 @@ def _run_cycle(
     deferred_ids: set[int] = set()
     # Which flights could spawn the zone reader this cycle: their deadline
     # carries the reader reserve until the reader has run (#312).
-    may_spawn_reader = {
-        fid for fid in active_flight_ids if _may_spawn_reader(read_flight_state(fid), now_utc)
-    }
+    may_spawn_reader = {fid for fid in active_flight_ids if _may_spawn_reader(fid, now_utc)}
     poll_deadline = monotonic() + _CYCLE_WALL_CLOCK_BUDGET_SECONDS
     for index, flight_id in enumerate(active_flight_ids):
         reserve = (
@@ -418,14 +417,21 @@ def _memoized_operator_tz(reader: Callable[[], OperatorTz | None]) -> _OperatorT
     return _OperatorTzMemo(reader)
 
 
-def _may_spawn_reader(prior_state: dict | None, now_utc: datetime) -> bool:
+def _may_spawn_reader(flight_id: int, now_utc: datetime) -> bool:
     """Whether processing this flight this cycle could spawn the zone reader.
 
     `_process_flight` asks for the zone only when `day_before_due` holds for
     the flight's persisted departure and markers, so the same predicate
     answers here. A flight with no state yet is first seen this cycle: its
-    departure is unknown until byAir answers, so it may.
+    departure is unknown until byAir answers, so it may. So may a flight
+    whose record does not read: this pre-pass only sizes a deadline, and the
+    record still fails loudly when its own turn to poll comes, after the
+    flights ahead of it have polled.
     """
+    try:
+        prior_state = read_flight_state(flight_id)
+    except StateError:
+        return True
     if prior_state is None:
         return True
     return day_before_due(

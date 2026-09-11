@@ -58,9 +58,14 @@ class _EmptyFetcher:
         return []
 
 
-def _stub_live_clients(monkeypatch, reader) -> dict:
+def _stub_live_clients(monkeypatch, reader, state_dir: Path) -> dict:
     """Stub every live dependency of `_run_sweep`; return the capture dict."""
     captured: dict = {}
+
+    # The drive-decision and skip stores resolve through this env var; the
+    # sweep's lodging side prunes the decision store on every run, so point
+    # both at a throwaway directory, never the deployed state (#312).
+    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(state_dir))
 
     # The sweep reads `datetime.now(timezone.utc)` for its windows (policy
     # review on #311: freeze it, whatever the assertions read).
@@ -107,18 +112,18 @@ def _stub_live_clients(monkeypatch, reader) -> dict:
     return captured
 
 
-def test_sweep_passes_the_operator_zone_to_the_meeting_planner(monkeypatch):
+def test_sweep_passes_the_operator_zone_to_the_meeting_planner(monkeypatch, tmp_path):
     zone = OperatorTz(
         tz="America/Chicago", local_now="2026-09-11T08:00:00-05:00", local_date="2026-09-11"
     )
-    captured = _stub_live_clients(monkeypatch, lambda: zone)
+    captured = _stub_live_clients(monkeypatch, lambda: zone, tmp_path)
     assert reconcile_sweep._run_sweep() == {"wake_agent": False}
     assert captured["display_tz"] == "America/Chicago"
     # The frozen clock is the one the sweep used for its calendar window.
     assert captured["window_start"] == datetime(2026, 9, 11, 13, 0, tzinfo=timezone.utc)
 
 
-def test_sweep_passes_none_when_the_reader_has_no_zone(monkeypatch):
-    captured = _stub_live_clients(monkeypatch, lambda: None)
+def test_sweep_passes_none_when_the_reader_has_no_zone(monkeypatch, tmp_path):
+    captured = _stub_live_clients(monkeypatch, lambda: None, tmp_path)
     assert reconcile_sweep._run_sweep() == {"wake_agent": False}
     assert captured["display_tz"] is None

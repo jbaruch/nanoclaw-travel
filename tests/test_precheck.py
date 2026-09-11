@@ -30,6 +30,7 @@ from operator_tz import OperatorTz  # noqa: E402
 from state import (  # noqa: E402
     CURRENT_LOCATION_FILE,
     CURRENT_LOCATION_SCHEMA_VERSION,
+    StateError,
     read_flight_state,
     write_active_flights,
     write_flight_state,
@@ -1152,6 +1153,23 @@ def test_reserve_drops_once_the_reader_has_run(state_root: Path):
     assert mock_byair_from_env.return_value.get_flight.call_count == 3
     assert reader.calls == 1
     assert len(_day_before_events(events)) == 2  # flights 99 and 98
+
+
+def test_corrupt_record_still_fails_at_its_own_turn_after_earlier_polls(state_root: Path):
+    """The reserve pre-pass reads every record, but a corrupt one must not abort
+    the cycle before the flights ahead of it poll: it fails where it always has,
+    when its own turn comes."""
+    _fired_flight(1)
+    (state_root / "flight-7.json").write_text("{not json")
+    write_active_flights([1, 7])
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = lambda flight_id: _byair_flight(
+            flight_id=flight_id
+        )
+        with pytest.raises(StateError, match="not valid JSON"):
+            precheck._run_cycle(now_utc=fake_now, operator_tz_reader=_CountingReader(_CHICAGO))
+    assert must(read_flight_state(1))["last_polled_at"] == "2026-05-18T16:00:00Z"
 
 
 def test_poll_horizon_skips_flight_departing_beyond_24h(state_root: Path):
