@@ -501,6 +501,17 @@ def _process_flight(
     readout_unreachable = window_open is None or is_boarding_or_gone(
         new_snapshot, boarding_window_open=boarding_open, at=now_utc
     )
+    # The prior snapshot is judged against the window as it stood at its own
+    # poll: its own effective departure and its own lead (Copilot on #306).
+    prev_boarding_open = (
+        boarding_window_open(
+            scheduled_dep_time=scheduled_dep_time,
+            boarding_lead_minutes=_resolve_boarding_lead_minutes(prior_snapshot),
+            snapshot=prior_snapshot,
+        )
+        if prior_snapshot
+        else None
+    )
     delta_events = detect_wake_events(
         prior_snapshot,
         new_snapshot,
@@ -508,6 +519,7 @@ def _process_flight(
         boarding_window_open=boarding_open,
         now_utc=now_utc,
         prev_polled_at=_parse_iso8601(prior_state.get("last_polled_at")) if prior_state else None,
+        prev_boarding_window_open=prev_boarding_open,
     )
     delta_events = _filter_gate_changes(
         delta_events,

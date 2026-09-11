@@ -522,6 +522,31 @@ def test_boarding_now_fires_on_first_poll_inside_planned_window(state_root: Path
     assert "boarding_started" in reasons
 
 
+def test_boarding_now_fires_when_the_departure_advanced_between_polls(state_root: Path):
+    """Copilot on #306 — the prior "Boarding now" snapshot (dep 17:00, window
+    16:30) was polled at 16:25, before its own window. byAir then advanced the
+    departure to 16:50 (window 16:20); the 16:27 poll is real boarding. The
+    prior is judged against its own window, so this poll is the transition."""
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T16:25:00Z",
+        last_snapshot=_boarding_now_snapshot(),
+        phase_markers={**_phase_markers(), "day_before_fired": True, "gate_assignment_fired": True},
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+    fake_now = datetime(2026, 5, 18, 16, 27, 0, tzinfo=timezone.utc)
+    advanced = _boarding_now_flight()
+    advanced["depTime"] = "2026-05-18T16:50:00+00:00"
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = advanced
+        events = precheck._run_cycle(now_utc=fake_now)
+
+    reasons = [e["event"]["reason"] for e in events]
+    assert "boarding_started" in reasons
+
+
 def _scheduled_snapshot_with_gate(*, dep_gate: str | None) -> dict:
     snap = _scheduled_snapshot()
     snap["dep_gate"] = dep_gate

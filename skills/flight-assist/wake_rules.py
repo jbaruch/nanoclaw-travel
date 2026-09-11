@@ -24,6 +24,7 @@ Public API:
     events = detect_wake_events(
         prev_snapshot, new_snapshot, scheduled_dep_time,
         boarding_window_open=window, now_utc=now, prev_polled_at=prev_polled,
+        prev_boarding_window_open=prev_window,
     )
 
 Event shapes (every event has a `reason`; other fields depend on
@@ -88,6 +89,7 @@ def detect_wake_events(
     boarding_window_open: datetime | None = None,
     now_utc: datetime | None = None,
     prev_polled_at: datetime | None = None,
+    prev_boarding_window_open: datetime | None = None,
 ) -> list[dict]:
     """Return the list of wake events triggered by the delta `prev → new`.
 
@@ -117,6 +119,13 @@ def detect_wake_events(
     raw label never changed. A `prev` with no `prev_polled_at` is judged
     on its fields alone (no window gate on that side). None (the default)
     keeps the pre-#295 label-plus-detail predicate on both sides.
+
+    `prev_boarding_window_open` is the window as it stood when `prev` was
+    polled — computed from `prev`'s own effective departure and lead. Each
+    snapshot is judged against its own window: a departure advanced between
+    polls moves the window earlier, and judging the pre-advance `prev`
+    against the new window would count it as already boarding and swallow
+    the transition. None falls back to `boarding_window_open` for `prev`.
     """
     if boarding_window_open is not None and now_utc is None:
         raise ValueError(
@@ -148,7 +157,11 @@ def detect_wake_events(
     if (
         prev is not None
         and is_real_boarding(new, boarding_window_open=boarding_window_open, at=now_utc)
-        and not is_real_boarding(prev, boarding_window_open=boarding_window_open, at=prev_polled_at)
+        and not is_real_boarding(
+            prev,
+            boarding_window_open=prev_boarding_window_open or boarding_window_open,
+            at=prev_polled_at,
+        )
     ):
         events.append({"reason": "boarding_started"})
 

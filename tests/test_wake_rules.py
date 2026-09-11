@@ -263,6 +263,40 @@ def test_boarding_fires_at_exact_window_open():
     assert {"reason": "boarding_started"} in events
 
 
+def test_departure_advanced_between_polls_still_fires():
+    """Each snapshot is judged against its own window (Copilot on #306). The
+    prior poll at 08:40 saw dep 09:20, window 08:50: premature. byAir then
+    advanced the departure to 09:05, window 08:35, and the 08:42 poll is real
+    boarding. Judged against the NEW window the prior would already count as
+    boarding and the alert would never fire."""
+    advanced = {**_kl1199_boarding_now(), "dep_time": "2026-09-01T09:05:00+02:00"}
+    events = detect_wake_events(
+        _kl1199_boarding_now(),
+        advanced,
+        "2026-09-01T09:20:00+02:00",
+        boarding_window_open=_kl1199_at(8, 35),
+        now_utc=_kl1199_at(8, 42),
+        prev_polled_at=_kl1199_at(8, 40),
+        prev_boarding_window_open=_KL1199_WINDOW,
+    )
+    assert {"reason": "boarding_started"} in events
+
+
+def test_prev_window_defaults_to_the_shared_window():
+    """Without `prev_boarding_window_open` the prior side uses the new window,
+    so the same advanced-departure pair reads as no transition."""
+    advanced = {**_kl1199_boarding_now(), "dep_time": "2026-09-01T09:05:00+02:00"}
+    events = detect_wake_events(
+        _kl1199_boarding_now(),
+        advanced,
+        "2026-09-01T09:20:00+02:00",
+        boarding_window_open=_kl1199_at(8, 35),
+        now_utc=_kl1199_at(8, 42),
+        prev_polled_at=_kl1199_at(8, 40),
+    )
+    assert not any(e["reason"] == "boarding_started" for e in events)
+
+
 def test_window_without_now_is_rejected():
     with pytest.raises(ValueError, match="now_utc"):
         detect_wake_events(_snapshot(), _kl1199_boarding_now(), boarding_window_open=_KL1199_WINDOW)
