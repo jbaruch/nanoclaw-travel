@@ -1072,6 +1072,88 @@ def test_wall_clock_budget_defers_remaining_slow_flights(state_root: Path):
         assert read_flight_state(fid) is None
 
 
+# --- #312: the zone-reader reserve applies only while a flight can pay it ---
+
+
+def _fired_flight(flight_id: int) -> None:
+    """A tracked flight due for a poll whose day_before already fired."""
+    markers = _phase_markers()
+    markers["day_before_fired"] = True
+    write_flight_state(
+        _make_state(
+            flight_id=flight_id,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=_scheduled_snapshot(),
+            phase_markers=markers,
+        )
+    )
+
+
+def _timed_poll(clock: dict, seconds: float):
+    def poll(*, flight_id: int) -> dict:
+        clock["t"] += seconds
+        return _byair_flight(flight_id=flight_id)
+
+    return poll
+
+
+def test_cycle_with_every_day_before_fired_keeps_the_full_poll_budget(state_root: Path):
+    """Nothing can spawn the reader, so nothing is reserved: three 4-second
+    polls start at 0, 4 and 8, all inside the 10-second budget. A fixed reader
+    reserve would have stopped at 5 and deferred the third."""
+    for fid in (1, 2, 3):
+        _fired_flight(fid)
+    write_active_flights([1, 2, 3])
+    clock = {"t": 0.0}
+    reader = _CountingReader(_CHICAGO)
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = _timed_poll(clock, 4.0)
+        precheck._run_cycle(
+            now_utc=fake_now, monotonic=lambda: clock["t"], operator_tz_reader=reader
+        )
+    assert mock_byair_from_env.return_value.get_flight.call_count == 3
+    assert reader.calls == 0
+
+
+def test_flight_that_may_spawn_the_reader_starts_before_the_reserve(state_root: Path):
+    """A first-seen flight may fire day_before and spawn the reader, so it must
+    start before the budget minus the reserve. At t=6 it is past that line and
+    defers to the next cycle rather than risk outliving the kill."""
+    _fired_flight(1)
+    write_active_flights([1, 99])
+    clock = {"t": 0.0}
+    reader = _CountingReader(_CHICAGO)
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = _timed_poll(clock, 6.0)
+        precheck._run_cycle(
+            now_utc=fake_now, monotonic=lambda: clock["t"], operator_tz_reader=reader
+        )
+    assert mock_byair_from_env.return_value.get_flight.call_count == 1
+    assert reader.calls == 0
+    assert read_flight_state(99) is None  # deferred, untouched
+
+
+def test_reserve_drops_once_the_reader_has_run(state_root: Path):
+    """The first flight spawns the reader; after that no flight can pay for it
+    again, so a later first-seen flight gets the full budget: 3-second polls
+    at 0, 3 and 6 all start, the last one past where the reserve would bite."""
+    _fired_flight(1)
+    write_active_flights([99, 1, 98])
+    clock = {"t": 0.0}
+    reader = _CountingReader(_CHICAGO)
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = _timed_poll(clock, 3.0)
+        events = precheck._run_cycle(
+            now_utc=fake_now, monotonic=lambda: clock["t"], operator_tz_reader=reader
+        )
+    assert mock_byair_from_env.return_value.get_flight.call_count == 3
+    assert reader.calls == 1
+    assert len(_day_before_events(events)) == 2  # flights 99 and 98
+
+
 def test_poll_horizon_skips_flight_departing_beyond_24h(state_root: Path):
     """A seeded flight (no snapshot yet) departing more than 24h out is not
     polled — sync keeps it in the index, but it costs no byAir call until it

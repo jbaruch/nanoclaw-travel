@@ -610,3 +610,31 @@ def test_network_failure_propagates_as_urlerror(client):
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
         with pytest.raises(urllib.error.URLError):
             client.list_calendars()
+
+
+# --- #312: a malformed 2xx body is a GoogleCalendarError --------------------
+
+
+class _RawResponse(_FakeResponse):
+    """A 2xx response whose raw body bytes are given verbatim."""
+
+
+@pytest.mark.parametrize(
+    ("body", "fragment"),
+    [
+        (b"\xff\xfe not utf-8", "not UTF-8 JSON"),
+        (b"<html>gateway page</html>", "not UTF-8 JSON"),
+        (b"[]", "JSON list, not an object"),
+    ],
+)
+def test_malformed_2xx_body_raises_google_calendar_error(monkeypatch, body, fragment):
+    """A gateway answering 2xx with something that is not a JSON object must
+    reach callers as the per-op error type they handle, not a raw decode error
+    or an AttributeError on `page.get`."""
+    monkeypatch.setenv("GOOGLE_CALENDAR_API_BASE", SYNTH_BASE)
+    with patch("urllib.request.urlopen", return_value=_RawResponse(body)):
+        with pytest.raises(GoogleCalendarError, match=fragment) as caught:
+            GoogleCalendarClient().find_events(
+                {"calendar_id": SYNTH_CAL, "timeMin": "a", "timeMax": "b"}
+            )
+    assert caught.value.status_code is None

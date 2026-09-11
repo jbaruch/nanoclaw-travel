@@ -96,19 +96,26 @@ def test_cycle_budget_leaves_room_for_one_in_flight_poll() -> None:
     )
 
 
-def test_headroom_covers_every_call_one_flight_can_make() -> None:
+def test_budget_leaves_room_for_the_zone_reader_on_a_flight_that_may_spawn_it() -> None:
     """A single `_process_flight` can make three bounded calls in sequence: the
     byAir poll, the operator-zone reader spawn for a `day_before` label (#300),
-    and the Maps travel-time query. A flight started at the budget edge may pay
-    for all three, so the headroom must cover their timeouts plus teardown —
-    otherwise the cycle is killed and every event in it is lost."""
-    worst_single_flight = (
+    and the Maps travel-time query. The base headroom covers byAir, Maps and
+    teardown; a flight that may still spawn the reader must start
+    `_READER_RESERVE_SECONDS` earlier (#312). Either way a flight started at its
+    own deadline returns before the kill."""
+    base_worst = (
         precheck._BYAIR_CALL_TIMEOUT_SECONDS
-        + READER_TIMEOUT_SECONDS
         + precheck._MAPS_CALL_TIMEOUT_SECONDS
         + precheck._INTERPRETER_TEARDOWN_HEADROOM_SECONDS
     )
-    assert precheck._CYCLE_POLL_HEADROOM_SECONDS >= worst_single_flight, (
-        f"headroom {precheck._CYCLE_POLL_HEADROOM_SECONDS}s does not cover one flight's "
-        f"worst case {worst_single_flight}s (byAir + zone reader + Maps + teardown)"
+    assert precheck._CYCLE_WALL_CLOCK_BUDGET_SECONDS + base_worst <= (
+        precheck._SCRIPT_KILL_BUDGET_SECONDS
+    )
+    assert precheck._READER_RESERVE_SECONDS >= READER_TIMEOUT_SECONDS
+    spawning_deadline = precheck._CYCLE_WALL_CLOCK_BUDGET_SECONDS - (
+        precheck._READER_RESERVE_SECONDS
+    )
+    assert spawning_deadline > 0, "the reserve would leave a spawning flight no budget"
+    assert spawning_deadline + base_worst + READER_TIMEOUT_SECONDS <= (
+        precheck._SCRIPT_KILL_BUDGET_SECONDS
     )

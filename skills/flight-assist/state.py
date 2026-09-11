@@ -162,9 +162,12 @@ def _read_json_with_version(path: Path, *, migrate: bool = True) -> dict | None:
         return None
     try:
         payload = json.loads(path.read_text())
-    except json.JSONDecodeError as decode_err:
+    except (json.JSONDecodeError, UnicodeDecodeError) as decode_err:
+        # A non-UTF-8 file is the same corruption as broken JSON: the file is
+        # present and unusable, which is what StateError means (#312).
         raise StateError(
-            f"state file {path} is not valid JSON — inspect and remove or restore: {decode_err}"
+            f"state file {path} is not valid JSON (or not UTF-8 text) — inspect and remove "
+            f"or restore: {decode_err}"
         ) from decode_err
     if not isinstance(payload, dict):
         raise StateError(f"state file {path} is not a JSON object — found {type(payload).__name__}")

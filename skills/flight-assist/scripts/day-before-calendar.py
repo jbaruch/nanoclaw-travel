@@ -140,16 +140,10 @@ def run(
         )
         _emit({"error": "tier"})
         return 1
-    except (
-        GoogleCalendarError,
-        OSError,
-        http.client.HTTPException,
-        UnicodeDecodeError,
-        json.JSONDecodeError,
-    ) as exc:
-        # OSError covers the client's URLError and a connection reset mid-read;
-        # HTTPException a truncated body. A gateway can also answer 2xx with a
-        # body that is not JSON or not UTF-8. All are calendar failures here.
+    except (GoogleCalendarError, OSError, http.client.HTTPException) as exc:
+        # GoogleCalendarError includes a malformed 2xx body (the client's own
+        # contract); OSError covers its URLError and a connection reset
+        # mid-read; HTTPException a truncated body. All are calendar failures.
         print(
             f"day-before-calendar: calendar read failed ({exc}) — the day-before check "
             f"goes out without the calendar part; once Calendar answers, rerun `{rerun}`",
