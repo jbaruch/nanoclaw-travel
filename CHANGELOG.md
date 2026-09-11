@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.132 — 2026-09-11
+
 ### drive-engine — bracketed room-resource conferencing tags are virtual (#294)
 
 A one-off meeting, "Training Global Employees - Feedback talk", with `location: "TLV-3-Board Room (20p) (20) [ZOOM]"` produced two phantom drive blocks while the operator was in Europe. The engine geocoded the room string and the geocoder confidently resolved it to `Zoom 20 3, 8225 KP Lelystad` — a street literally named Zoom, ~68 km from the Amsterdam base — so a ~42-minute round trip landed on the calendar for a Zoom call held in a Tel Aviv office room. The event was a Reclaim mirror block, so it carried no `conferenceData` / `hangoutLink`; the location string was the only signal the engine saw.
