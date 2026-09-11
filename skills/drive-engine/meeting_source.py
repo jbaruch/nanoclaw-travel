@@ -13,8 +13,10 @@ Two things make these correct where drive-planner's blocks went wrong:
   whose routed drive is implausibly long — the operator is abroad while the meeting
   is at home — is SUPPRESSED rather than invented. This is what stops "drive to
   Tennessee swim practice" appearing while the operator is in Europe.
-- **Local timezone.** Each block carries the meeting's IANA tz so it renders at the
-  correct local time instead of a foreign offset.
+- **Display timezone.** Each block carries the operator's current IANA zone when
+  the core `current-tz` reader has one (#301), the meeting's own zone otherwise —
+  so the block and the operator notice read on the clock the operator is looking
+  at, never a stale offset a source event dragged home from a trip.
 
 Pure: the caller runs the scan (I/O: calendar fetch) and supplies a `route` fn; a
 route failure or unresolved anchor skips that leg with a diagnostic, never a block.
@@ -34,6 +36,7 @@ if str(_BUNDLE_DIR) not in sys.path:
 
 from block_codec import GEN_LEGACY_DP, parse_block  # noqa: E402
 from reconcile import DesiredBlock  # noqa: E402
+from scan import same_place  # noqa: E402
 
 # A drive block's human summary always starts with this.
 _DRIVE_SUMMARY_PREFIX = "Drive:"
@@ -136,6 +139,7 @@ def meeting_desired_blocks(
     route: RouteFn,
     max_reasonable_drive: timedelta = DEFAULT_MAX_REASONABLE_DRIVE,
     driving_to: dict[str, TripPresence] | None = None,
+    display_tz: str | None = None,
 ) -> tuple[list[DesiredBlock], list[str]]:
     """Turn scan `MeetingClass` results into unified meeting `DesiredBlock`s.
 
@@ -143,6 +147,14 @@ def meeting_desired_blocks(
     `(blocks, skipped_diagnostics)`. A leg is skipped (never blindly blocked) when
     its anchor is unresolved, its route fails, or its routed drive exceeds
     `max_reasonable_drive` (the travel-away suppression).
+
+    A leg whose origin IS its destination is skipped too (#301): the scan
+    already filters a meeting held at the anchor, but the lodging rewrite below
+    can collapse a leg the same way — a venue that is the trip's hotel — and a
+    zero-length drive would still land as a degenerate one-minute block. The
+    comparison is `scan.same_place`: the schedule's lodging address is only
+    stripped, the scan's location is whitespace-collapsed, and either may
+    differ in case.
 
     `driving_to` are the meeting ids the away-suppression must NOT fire on: the
     events of a flight-less trip the operator has confirmed they DRIVE to. The
@@ -154,6 +166,18 @@ def meeting_desired_blocks(
 
     For those same meetings a home endpoint is rewritten to the trip's lodging
     unless home is real there — see `TripPresence`.
+
+    `display_tz` is the operator's current IANA zone from the core `current-tz`
+    reader, or None when it has none. It is the zone every block is written in
+    and the notice renders its "at HH:MM" from (#301). The instant is always the
+    source event's; only the wall-clock it is shown on changes. A source event
+    can carry a stale offset from a trip (`+02:00` on an `America/Chicago` event
+    after Amsterdam), and the scan's offset-derived `Etc/GMT±N` fallback keeps
+    that instant right while showing it on the wrong clock; the operator's zone
+    is the clock Google Calendar shows them the same event on. None keeps the
+    meeting's own zone. A block written in the operator's zone is marked
+    `zone_from_operator`, so an existing block in another zone converges to it
+    on the next sweep (#309) while a fallback zone never triggers a re-patch.
     """
     presence = driving_to or {}
     blocks: list[DesiredBlock] = []
@@ -167,6 +191,9 @@ def meeting_desired_blocks(
                 skipped.append(f"{tag}: {note}")
                 continue
             origin, destination = _trip_endpoints(leg, presence.get(meeting.meeting_id))
+            if same_place(origin, destination):
+                skipped.append(f"{tag}: origin is the destination — no drive")
+                continue
             drive = route(origin, destination)
             if drive is None:
                 skipped.append(f"{tag}: route failed")
@@ -216,7 +243,8 @@ def meeting_desired_blocks(
                     destination=destination,
                     baseline_seconds=int(drive.total_seconds()),
                     anchor=anchor,
-                    timezone=getattr(meeting, "timezone", None),
+                    timezone=display_tz or getattr(meeting, "timezone", None),
+                    zone_from_operator=bool(display_tz),
                     legacy_keys=frozenset({(GEN_LEGACY_DP, meeting.meeting_id, leg.direction)}),
                 )
             )

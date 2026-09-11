@@ -62,6 +62,11 @@ class DesiredBlock:
     window_end: datetime | None = None
     timezone: str | None = None  # IANA tz the block is created in (local display)
     legacy_keys: frozenset[tuple[str, str, str]] = field(default_factory=frozenset)
+    # True when `timezone` is the operator's current zone from the core reader
+    # (#309). Only then does a zone difference on an existing block call for a
+    # patch: a fallback zone (the reader was unavailable) must not flap every
+    # block back and forth whenever the reader flickers.
+    zone_from_operator: bool = False
 
 
 def legacy_keys_for_airport_leg(
@@ -211,8 +216,9 @@ def material_update_delta(
 
 def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:
     """Whether a matched unified block differs from the desired leg on the fields
-    that drive a shift: anchor, endpoints, window, OR a MEANINGFUL change in the
-    routed drive duration (`baseline_seconds`). A real route-duration change
+    that drive a shift: anchor, endpoints, window, the operator display zone
+    (#309), OR a MEANINGFUL change in the routed drive duration
+    (`baseline_seconds`). A real route-duration change
     (traffic grew) moves the block's leave-by and must trigger an update; a
     sub-tolerance change is routing jitter, not signal, and is ignored so the
     live writer doesn't churn a recreate every sweep (#164)."""
@@ -221,6 +227,15 @@ def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:
         or current.origin != desired.origin
         or current.destination != desired.destination
         or current.window_end != desired.window_end
+    ):
+        return True
+    # A block displayed in a zone other than the operator's current one
+    # converges to it (#309). Only a zone the operator reader supplied counts,
+    # and only against a block whose own zone was read back.
+    if (
+        desired.zone_from_operator
+        and current.timezone is not None
+        and current.timezone != desired.timezone
     ):
         return True
     # A block whose baseline didn't parse can't be compared — re-shift it to a

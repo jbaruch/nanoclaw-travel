@@ -885,6 +885,7 @@ def _run_sweep() -> dict:
     from google_calendar_client import GoogleCalendarClient
     from home_address import HomeAddressError, read_current_home
     from maps_client import MapsClient
+    from operator_tz import read_operator_tz
     from scan import scan
     from skip_state import load_active_skips
     from state import (
@@ -1002,10 +1003,17 @@ def _run_sweep() -> dict:
             home_address=home,
             verdicts=sweep_verdicts,
         )
+        # Meeting drives are written and announced in the operator's current
+        # zone (#301): the clock they are reading, not the offset a source
+        # event dragged home from a trip. One reader spawn per sweep; an
+        # unavailable zone keeps each meeting's own (the reader says why on
+        # stderr).
+        operator = read_operator_tz()
         meeting_blocks, meeting_skipped = meeting_desired_blocks(
             meetings,
             route=route,
             driving_to=_trip_presence(driving, meetings, route=route),
+            display_tz=operator.tz if operator is not None else None,
         )
     else:
         meeting_skipped = [

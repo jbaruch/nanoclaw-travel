@@ -8,7 +8,10 @@ shared across tests; each test constructs its own minimal pair per
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
@@ -18,6 +21,7 @@ from wake_rules import (  # noqa: E402
     INBOUND_DELAY_DEDUPE_MINUTES,
     INBOUND_DELAY_THRESHOLD_MINUTES,
     detect_wake_events,
+    is_real_boarding,
 )
 
 
@@ -179,6 +183,171 @@ def test_first_cycle_premature_boarding_does_not_fire():
     )
     events = detect_wake_events(prev=None, new=new)
     assert not any(e["reason"] == "boarding_started" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Premature "Boarding now" before the planned boarding window (#295): byAir
+# also flips the detail to present tense up to ~1h early. KL1199 AMS→OSL,
+# 737-800, dep 09:20+02:00, narrowbody lead 30 → boarding window opens 08:50.
+# The alert fired at 08:21. Each snapshot is judged at its own poll instant.
+# ---------------------------------------------------------------------------
+
+_CEST = timezone(timedelta(hours=2))
+_KL1199_WINDOW = datetime(2026, 9, 1, 8, 50, 0, tzinfo=_CEST)
+
+
+def _kl1199_at(hour: int, minute: int) -> datetime:
+    return datetime(2026, 9, 1, hour, minute, 0, tzinfo=_CEST)
+
+
+def _kl1199_boarding_now() -> dict:
+    """The live snapshot at 08:21 (flight 7408393): status boarding, present-tense
+    detail, near-zero phase progress, no actual departure time."""
+    return _snapshot(
+        computed_status="boarding",
+        computed_status_detail="Boarding now",
+        computed_phase_progress=0.0546,
+        dep_time=None,
+    )
+
+
+def test_boarding_now_before_window_does_not_fire():
+    prev = _snapshot(computed_status="scheduled")
+    events = detect_wake_events(
+        prev,
+        _kl1199_boarding_now(),
+        "2026-09-01T09:20:00+02:00",
+        boarding_window_open=_KL1199_WINDOW,
+        now_utc=_kl1199_at(8, 21),
+        prev_polled_at=_kl1199_at(8, 19),
+    )
+    assert not any(e["reason"] == "boarding_started" for e in events)
+
+
+def test_boarding_now_fires_on_first_poll_inside_window():
+    """The raw label never changed across the window — the prior snapshot was
+    polled before it opened, so it counts as not boarding, and the first
+    in-window poll is the transition."""
+    events = detect_wake_events(
+        _kl1199_boarding_now(),
+        _kl1199_boarding_now(),
+        "2026-09-01T09:20:00+02:00",
+        boarding_window_open=_KL1199_WINDOW,
+        now_utc=_kl1199_at(8, 51),
+        prev_polled_at=_kl1199_at(8, 49),
+    )
+    assert {"reason": "boarding_started"} in events
+
+
+def test_boarding_now_does_not_refire_on_later_in_window_poll():
+    events = detect_wake_events(
+        _kl1199_boarding_now(),
+        _kl1199_boarding_now(),
+        "2026-09-01T09:20:00+02:00",
+        boarding_window_open=_KL1199_WINDOW,
+        now_utc=_kl1199_at(8, 53),
+        prev_polled_at=_kl1199_at(8, 51),
+    )
+    assert not any(e["reason"] == "boarding_started" for e in events)
+
+
+def test_boarding_fires_at_exact_window_open():
+    events = detect_wake_events(
+        _kl1199_boarding_now(),
+        _kl1199_boarding_now(),
+        "2026-09-01T09:20:00+02:00",
+        boarding_window_open=_KL1199_WINDOW,
+        now_utc=_KL1199_WINDOW,
+        prev_polled_at=_kl1199_at(8, 48),
+    )
+    assert {"reason": "boarding_started"} in events
+
+
+def test_departure_advanced_between_polls_still_fires():
+    """Each snapshot is judged against its own window (Copilot on #306). The
+    prior poll at 08:40 saw dep 09:20, window 08:50: premature. byAir then
+    advanced the departure to 09:05, window 08:35, and the 08:42 poll is real
+    boarding. Judged against the NEW window the prior would already count as
+    boarding and the alert would never fire."""
+    advanced = {**_kl1199_boarding_now(), "dep_time": "2026-09-01T09:05:00+02:00"}
+    events = detect_wake_events(
+        _kl1199_boarding_now(),
+        advanced,
+        "2026-09-01T09:20:00+02:00",
+        boarding_window_open=_kl1199_at(8, 35),
+        now_utc=_kl1199_at(8, 42),
+        prev_polled_at=_kl1199_at(8, 40),
+        prev_boarding_window_open=_KL1199_WINDOW,
+    )
+    assert {"reason": "boarding_started"} in events
+
+
+def test_prev_window_defaults_to_the_shared_window():
+    """Without `prev_boarding_window_open` the prior side uses the new window,
+    so the same advanced-departure pair reads as no transition."""
+    advanced = {**_kl1199_boarding_now(), "dep_time": "2026-09-01T09:05:00+02:00"}
+    events = detect_wake_events(
+        _kl1199_boarding_now(),
+        advanced,
+        "2026-09-01T09:20:00+02:00",
+        boarding_window_open=_kl1199_at(8, 35),
+        now_utc=_kl1199_at(8, 42),
+        prev_polled_at=_kl1199_at(8, 40),
+    )
+    assert not any(e["reason"] == "boarding_started" for e in events)
+
+
+def test_window_without_now_is_rejected():
+    with pytest.raises(ValueError, match="now_utc"):
+        detect_wake_events(_snapshot(), _kl1199_boarding_now(), boarding_window_open=_KL1199_WINDOW)
+
+
+def test_prev_without_poll_time_is_judged_on_its_fields_alone():
+    """No `prev_polled_at` → the prior side gets no window gate: a prematurely
+    labelled prior of unknown age already counts as boarding, so no transition."""
+    events = detect_wake_events(
+        _kl1199_boarding_now(),
+        _kl1199_boarding_now(),
+        boarding_window_open=_KL1199_WINDOW,
+        now_utc=_kl1199_at(8, 51),
+    )
+    assert not any(e["reason"] == "boarding_started" for e in events)
+
+
+def test_is_real_boarding_before_window_is_false():
+    assert (
+        is_real_boarding(
+            _kl1199_boarding_now(), boarding_window_open=_KL1199_WINDOW, at=_kl1199_at(8, 21)
+        )
+        is False
+    )
+
+
+def test_is_real_boarding_at_and_after_window_is_true():
+    assert is_real_boarding(
+        _kl1199_boarding_now(), boarding_window_open=_KL1199_WINDOW, at=_KL1199_WINDOW
+    )
+    assert is_real_boarding(
+        _kl1199_boarding_now(), boarding_window_open=_KL1199_WINDOW, at=_kl1199_at(9, 0)
+    )
+
+
+def test_is_real_boarding_future_detail_stays_false_inside_window():
+    """The #54 future-tense rejection still applies once the window is open."""
+    snapshot = _snapshot(
+        computed_status="boarding", computed_status_detail="Boarding starts in 5 min"
+    )
+    assert (
+        is_real_boarding(snapshot, boarding_window_open=_KL1199_WINDOW, at=_kl1199_at(8, 55))
+        is False
+    )
+
+
+def test_is_real_boarding_without_window_is_the_legacy_predicate():
+    """Either kwarg alone disables the window gate."""
+    assert is_real_boarding(_kl1199_boarding_now()) is True
+    assert is_real_boarding(_kl1199_boarding_now(), boarding_window_open=_KL1199_WINDOW) is True
+    assert is_real_boarding(_kl1199_boarding_now(), at=_kl1199_at(8, 21)) is True
 
 
 # ---------------------------------------------------------------------------
