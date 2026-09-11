@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 import pytest
@@ -91,10 +91,30 @@ def test_now_rides_through_as_the_reader_now_flag(reader):
     assert argv[2:] == ["--now", "2026-09-10T19:50:00-05:00"]
 
 
-def test_naive_now_is_rejected_before_spawning(reader):
+class _NoOffset(tzinfo):
+    """A tzinfo that never yields an offset — Python's definition of naive."""
+
+    def utcoffset(self, dt):
+        return None
+
+    def dst(self, dt):
+        return None
+
+    def tzname(self, dt):
+        return "no-offset"
+
+
+@pytest.mark.parametrize(
+    "naive",
+    [
+        datetime(2026, 9, 10, 19, 50),
+        datetime(2026, 9, 10, 19, 50, tzinfo=_NoOffset()),
+    ],
+)
+def test_naive_now_is_rejected_before_spawning(reader, naive):
     run = FakeRun(stdout=AVAILABLE)
     with pytest.raises(ValueError, match="timezone-aware"):
-        read_operator_tz(now=datetime(2026, 9, 10, 19, 50), reader=reader, run=run)
+        read_operator_tz(now=naive, reader=reader, run=run)
     assert run.calls == []
 
 

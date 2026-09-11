@@ -86,7 +86,10 @@ def read_operator_tz(
     rule. `reader` and `run` are injection points for tests; production callers
     take the defaults.
     """
-    if now is not None and now.tzinfo is None:
+    if now is not None and (now.tzinfo is None or now.utcoffset() is None):
+        # `tzinfo` alone is not awareness: a tzinfo whose `utcoffset()` is None
+        # still renders a naive `--now`, which the reader rejects with exit 2.
+        # Same test as `drive-engine/flight_identity._as_utc`.
         raise ValueError("read_operator_tz: `now` must be timezone-aware")
     if not reader.is_file():
         return _unavailable(
