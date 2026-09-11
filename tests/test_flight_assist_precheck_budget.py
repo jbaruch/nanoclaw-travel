@@ -24,8 +24,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
+sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 
 import precheck  # noqa: E402
+from operator_tz import READER_TIMEOUT_SECONDS  # noqa: E402
 
 SKILL_MD = REPO_ROOT / "skills" / "flight-assist" / "SKILL.md"
 
@@ -91,4 +93,22 @@ def test_cycle_budget_leaves_room_for_one_in_flight_poll() -> None:
     assert worst_case_in_flight <= precheck._SCRIPT_KILL_BUDGET_SECONDS, (
         "a poll started at the budget edge can outlive the kill: "
         f"{worst_case_in_flight}s > {precheck._SCRIPT_KILL_BUDGET_SECONDS}s"
+    )
+
+
+def test_headroom_covers_every_call_one_flight_can_make() -> None:
+    """A single `_process_flight` can make three bounded calls in sequence: the
+    byAir poll, the operator-zone reader spawn for a `day_before` label (#300),
+    and the Maps travel-time query. A flight started at the budget edge may pay
+    for all three, so the headroom must cover their timeouts plus teardown —
+    otherwise the cycle is killed and every event in it is lost."""
+    worst_single_flight = (
+        precheck._BYAIR_CALL_TIMEOUT_SECONDS
+        + READER_TIMEOUT_SECONDS
+        + precheck._MAPS_CALL_TIMEOUT_SECONDS
+        + precheck._INTERPRETER_TEARDOWN_HEADROOM_SECONDS
+    )
+    assert precheck._CYCLE_POLL_HEADROOM_SECONDS >= worst_single_flight, (
+        f"headroom {precheck._CYCLE_POLL_HEADROOM_SECONDS}s does not cover one flight's "
+        f"worst case {worst_single_flight}s (byAir + zone reader + Maps + teardown)"
     )

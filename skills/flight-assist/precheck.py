@@ -62,7 +62,7 @@ from connection_risk import (  # noqa: E402
     detect_connection_risks,
 )
 from maps_client import MapsClient, MapsError  # noqa: E402
-from operator_tz import OperatorTz, read_operator_tz  # noqa: E402
+from operator_tz import READER_TIMEOUT_SECONDS, OperatorTz, read_operator_tz  # noqa: E402
 from phase_markers import (  # noqa: E402
     check_arrival_logistics,
     check_day_before,
@@ -152,12 +152,18 @@ _MAPS_CALL_TIMEOUT_SECONDS = 8.0
 # covered the byAir poll, so a flight started just under the budget ran byAir
 # (8s) + Maps (10s default) ≈ 18s and overran the kill, surfacing as
 # `execfile-error` (jbaruch/nanoclaw#562 traced the heartbeat wake-storm partly
-# to these crashes). Deriving the headroom from the two call timeouts keeps it
-# correct if either changes.
+# to these crashes). Deriving the headroom from the call timeouts keeps it
+# correct if any of them changes.
+#
+# The operator-zone reader (#300) runs inside `_process_flight` too, between the
+# byAir poll and the Maps query, on the flight that first needs a `day_before`
+# label. It spawns at most once per cycle, but a flight started just under the
+# budget can be the one that pays for it, so its timeout is headroom as well.
 _SCRIPT_KILL_BUDGET_SECONDS = 30.0
 _INTERPRETER_TEARDOWN_HEADROOM_SECONDS = 4.0
 _CYCLE_POLL_HEADROOM_SECONDS = (
     _BYAIR_CALL_TIMEOUT_SECONDS
+    + READER_TIMEOUT_SECONDS
     + _MAPS_CALL_TIMEOUT_SECONDS
     + _INTERPRETER_TEARDOWN_HEADROOM_SECONDS
 )
