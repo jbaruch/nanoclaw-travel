@@ -8,14 +8,18 @@ Copilot on #308 asked for that wiring to be pinned, deferred here (#311).
 Every live client `_run_sweep` constructs is stubbed at its source module, so
 the sweep runs end to end over an empty itinerary and an empty calendar. The
 test captures the `display_tz` the meeting planner receives for an available
-reader result and for `None`. Nothing asserts on the clock the sweep reads.
+reader result and for `None`. The sweep's clock is frozen at a fixed instant
+(`reconcile_sweep.datetime`), so its scan and calendar windows never depend on
+the day the suite runs.
 """
 
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Self
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
@@ -35,6 +39,15 @@ from operator_tz import OperatorTz  # noqa: E402
 from reconcile import ReconcilePlan  # noqa: E402
 
 
+class _FrozenDatetime(datetime):
+    """`datetime` whose `now()` is a fixed instant: 2026-09-11 13:00 UTC."""
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> Self:
+        frozen = cls(2026, 9, 11, 13, 0, tzinfo=timezone.utc)
+        return frozen if tz is None else frozen.astimezone(tz)
+
+
 class _EmptyCalendar:
     def find_events(self, _arguments):
         return {"items": []}
@@ -48,6 +61,10 @@ class _EmptyFetcher:
 def _stub_live_clients(monkeypatch, reader) -> dict:
     """Stub every live dependency of `_run_sweep`; return the capture dict."""
     captured: dict = {}
+
+    # The sweep reads `datetime.now(timezone.utc)` for its windows (policy
+    # review on #311: freeze it, whatever the assertions read).
+    monkeypatch.setattr(reconcile_sweep, "datetime", _FrozenDatetime)
 
     # Function-local imports inside `_run_sweep` read these module attributes
     # at call time.
@@ -72,6 +89,12 @@ def _stub_live_clients(monkeypatch, reader) -> dict:
         captured["display_tz"] = display_tz
         return [], []
 
+    def capture_fetch_window(self, *, time_min, time_max):
+        captured["window_start"] = time_min
+        return []
+
+    monkeypatch.setattr(_EmptyFetcher, "fetch_window", capture_fetch_window)
+
     monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", capture_meeting_blocks)
     monkeypatch.setattr(
         reconcile_sweep,
@@ -91,9 +114,11 @@ def test_sweep_passes_the_operator_zone_to_the_meeting_planner(monkeypatch):
     captured = _stub_live_clients(monkeypatch, lambda: zone)
     assert reconcile_sweep._run_sweep() == {"wake_agent": False}
     assert captured["display_tz"] == "America/Chicago"
+    # The frozen clock is the one the sweep used for its calendar window.
+    assert captured["window_start"] == datetime(2026, 9, 11, 13, 0, tzinfo=timezone.utc)
 
 
 def test_sweep_passes_none_when_the_reader_has_no_zone(monkeypatch):
     captured = _stub_live_clients(monkeypatch, lambda: None)
     assert reconcile_sweep._run_sweep() == {"wake_agent": False}
-    assert captured == {"display_tz": None}
+    assert captured["display_tz"] is None
