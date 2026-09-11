@@ -35,6 +35,7 @@ stdlib-only: `datetime` per `coding-policy: dependency-management`.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -118,13 +119,19 @@ def day_label(
     `dep_dt` keeps the airport-local offset the RFC 3339 string had — and
     `zone` is None. The container's UTC date is never the fallback: it is
     the wrong date for hours around midnight, which is exactly when a
-    relative word misleads. A zone that does not resolve is a deployment
-    fault reported by the reader's caller, not something to guess around.
+    relative word misleads. A zone name that does not resolve is reported
+    here on stderr, naming the zone, and the fallback label still goes out.
     """
     if operator_tz:
         try:
             zone = ZoneInfo(operator_tz)
-        except (ZoneInfoNotFoundError, ValueError):
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            print(
+                f"phase_markers.day_label: operator zone {operator_tz!r} does not resolve "
+                f"({exc}); labelling with the departure's own date — check the host "
+                "tz_state row the core current-tz reader serves",
+                file=sys.stderr,
+            )
             zone = None
         if zone is not None:
             local_event = dep_dt.astimezone(zone).date()

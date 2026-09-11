@@ -91,6 +91,7 @@ The skill bundle includes executable scripts the agent invokes via the SKILL.md 
 - `scripts/check-env.py` — verifies BYAIR_MCP_URL and GOOGLE_MAPS_API_KEY are set (calendar access has no env var to check — see above)
 - `scripts/set-home-base.py` — persists home address to plugin config for time-to-leave queries
 - `scripts/get-flight-state.py` — fetches a flight's last-known snapshot to enrich notifications
+- `scripts/day-before-calendar.py` — lists the operator's calendar events around a flight for the day-before check, minus declined and cancelled ones, with times on the operator's clock
 - `expertflyer/scripts/expertflyer.py` — thin HTTP client for the ExpertFlyer API service, plus the `assess` sweep that ranks open seats against the one held (stdlib only)
 - `expertflyer/scripts/seat_quality.py` — the operator's seat preferences: the cabin ladder, the exit-row tiers, and whether an open seat beats the held one
 

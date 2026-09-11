@@ -138,10 +138,11 @@ def test_fallback_uses_the_departure_offset_not_container_utc():
     assert event["day_label_tz"] is None
 
 
-def test_unresolvable_zone_behaves_like_no_zone():
+def test_unresolvable_zone_behaves_like_no_zone(capsys):
     event = _day_before(_INCIDENT_DEP, _INCIDENT_NOW, "Mars/Olympus_Mons")
     assert event["day_label"] == "2026-09-10"
     assert event["day_label_tz"] is None
+    assert "Mars/Olympus_Mons" in capsys.readouterr().err
 
 
 def test_exact_threshold_keeps_hours_until_dep_at_24():
