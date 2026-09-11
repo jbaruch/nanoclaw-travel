@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.137 — 2026-09-11
+
 ### flight-assist — the `day_before` label is precomputed against the operator's date (#300)
 
 On 2026-09-10 at 12:03 CDT flight-assist sent "Tomorrow: DL1144 MSP→BNA" for a flight departing 19:50 CDT the same day. DL1144 was the post-misconnect rebook — the only flight newly added to byAir — so its fresh state fired `day_before` on the first poll at ~T-8h. Three things compounded. The payload shipped a hardcoded `hours_until_dep: 24` (the `DAY_BEFORE_HOURS` constant, emitted verbatim), a flat lie for any flight created inside the window. Same-day firing is normal, not an edge case: `check_day_before` fires on the first poll where `now ≥ dep − 24h`, so every rebook or late add inside the window fires at whatever T-minus it happens to be. And the Haiku composer, having run the core reader and read `America/Chicago`, skipped the date comparison the rule prescribes and pattern-matched the event name plus "24 hours away" — the run log says "The flight departs tomorrow at 19:50 CDT" with both dates Sep 10.
