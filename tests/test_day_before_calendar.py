@@ -203,6 +203,14 @@ def test_no_operator_zone_keeps_each_event_offset():
     assert listed[0]["start"] == "2026-09-10T18:00:00-05:00"
 
 
+def test_no_zone_display_names_the_source_offset():
+    """Copilot on #307: without an operator zone the display must say whose
+    clock it is on, so a stale `+02:00` is never read as operator-local."""
+    events = [_event("Pickup", "2026-09-11T02:00:00+02:00", "2026-09-11T02:45:00+02:00")]
+    listed, _ = calendar_conflicts(events, window=_WINDOW, zone=None)
+    assert listed[0]["display"] == "Fri Sep 11, 02:00–02:45 (UTC+02:00)"
+
+
 def test_unresolvable_zone_resolves_to_none_and_says_so(capsys):
     assert resolve_zone("Mars/Olympus_Mons") is None
     assert "Mars/Olympus_Mons" in capsys.readouterr().err
@@ -402,6 +410,8 @@ def test_script_with_no_state_reports_it_and_exits_0(capsys):
         (TierAccessRestricted("403 access_restricted"), "tier"),
         (GoogleCalendarError("500", status_code=500), "calendar"),
         (urllib.error.URLError("timed out"), "calendar"),
+        (json.JSONDecodeError("Expecting value", "<html>", 0), "calendar"),
+        (UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), "calendar"),
     ],
 )
 def test_script_calendar_failures_exit_1_with_a_named_error(capsys, exc, error):

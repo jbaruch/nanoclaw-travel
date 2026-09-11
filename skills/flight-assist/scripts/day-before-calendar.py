@@ -106,7 +106,14 @@ def run(
         print(f"day-before-calendar: unavailable at this tier — {exc}", file=sys.stderr)
         _emit({"error": "tier"})
         return 1
-    except (GoogleCalendarError, urllib.error.URLError) as exc:
+    except (
+        GoogleCalendarError,
+        urllib.error.URLError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        # A gateway can answer 2xx with a body that is not JSON or not UTF-8;
+        # the client's decode raises those, and they are calendar failures too.
         print(
             f"day-before-calendar: calendar read failed ({exc}) — the day-before check "
             "goes out without the calendar part; the next wake retries",

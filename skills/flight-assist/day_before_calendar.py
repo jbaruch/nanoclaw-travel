@@ -84,10 +84,21 @@ def resolve_zone(operator_tz: str | None) -> ZoneInfo | None:
     except (ZoneInfoNotFoundError, ValueError) as exc:
         print(
             f"day_before_calendar: operator zone {operator_tz!r} does not resolve ({exc}); "
-            "event times keep their own offsets",
+            "event times keep their own offsets — check the host tz_state row the core "
+            "current-tz reader serves",
             file=sys.stderr,
         )
         return None
+
+
+def _offset_label(when: datetime) -> str:
+    """`UTC-05:00` for a tz-aware datetime: the clock a no-zone time is on."""
+    offset = when.utcoffset()
+    assert offset is not None  # _parse_instant only returns aware datetimes
+    minutes = int(offset.total_seconds() // 60)
+    sign = "-" if minutes < 0 else "+"
+    hours, mins = divmod(abs(minutes), 60)
+    return f"UTC{sign}{hours:02d}:{mins:02d}"
 
 
 def _self_declined(attendees: object) -> bool:
@@ -142,9 +153,10 @@ def calendar_conflicts(
     "end", "display"}`: `start` / `end` are ISO instants on the operator's
     clock (`zone`, from `resolve_zone`), or on the event's own offset when
     `zone` is None; `display` is the human form (`Thu Sep 10, 18:00–20:10`, or
-    the date for an all-day event). An all-day event's days are read in `zone`,
-    else in the window's own offset. An event whose times do not parse is left
-    out — there is no instant to place it by.
+    the date for an all-day event), with the event's own UTC offset appended
+    when `zone` is None (`Thu Sep 10, 18:00–20:10 (UTC-05:00)`). An all-day
+    event's days are read in `zone`, else in the window's own offset. An event
+    whose times do not parse is left out — there is no instant to place it by.
     """
     window_start, window_end = window
     date_zone = zone or window_start.tzinfo
@@ -170,6 +182,10 @@ def calendar_conflicts(
             local_begin = begins.astimezone(zone) if zone else begins
             local_end = ends.astimezone(zone) if zone else ends
             display = f"{local_begin.strftime(_DISPLAY_FORMAT)}–{local_end.strftime('%H:%M')}"
+            if zone is None:
+                # Not the operator's clock: say whose it is, so a stale source
+                # offset is never read as operator-local.
+                display += f" ({_offset_label(local_begin)})"
             start_out, end_out = local_begin.isoformat(), local_end.isoformat()
         location = event.get("location")
         listed.append(
