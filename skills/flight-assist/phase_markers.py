@@ -124,7 +124,9 @@ def check_time_to_leave(
         None
         if boarding_lead_minutes is None
         else boarding_window_open(
-            scheduled_dep_time=scheduled_dep_time, boarding_lead_minutes=boarding_lead_minutes
+            scheduled_dep_time=scheduled_dep_time,
+            boarding_lead_minutes=boarding_lead_minutes,
+            snapshot=snapshot,
         )
     )
     if is_boarding_or_gone(snapshot, boarding_window_open=window_open, at=now_utc):
@@ -186,15 +188,27 @@ def boarding_window_open(
     *,
     scheduled_dep_time: str | None,
     boarding_lead_minutes: int,
+    snapshot: dict | None = None,
 ) -> datetime | None:
-    """The instant boarding is planned to begin, or None if dep time is unparseable.
+    """The instant boarding is planned to begin, or None if no departure parses.
 
-    `scheduled_dep − boarding_lead` — the start of the boarding calendar block
-    flight-assist itself creates. byAir claiming "boarding" before this instant
-    is premature by construction; `wake_rules.is_real_boarding` holds the label
-    against it (#295).
+    `effective_dep − boarding_lead` — the start of the boarding calendar block
+    flight-assist itself creates. The effective departure is byAir's live
+    `dep_time` when the snapshot carries a parseable one, else the scheduled
+    time: the same preference `calendar_reconcile._effective_times` gives the
+    block, so a delayed or revised departure moves the block and this window
+    together and byAir's early "boarding" flip on a delayed flight is still
+    held to the block's own start. A present-but-unparseable `dep_time` falls
+    back to the scheduled time here (the block planner surfaces it instead) —
+    a wake gate with no window at all would let the premature label through.
+    byAir claiming "boarding" before this instant is premature by
+    construction; `wake_rules.is_real_boarding` holds the label against it
+    (#295).
     """
-    dep_dt = _parse_iso8601(scheduled_dep_time)
+    live = (snapshot or {}).get("dep_time")
+    dep_dt = _parse_iso8601(live) if isinstance(live, str) else None
+    if dep_dt is None:
+        dep_dt = _parse_iso8601(scheduled_dep_time)
     if dep_dt is None:
         return None
     return dep_dt - timedelta(minutes=boarding_lead_minutes)
@@ -251,7 +265,9 @@ def check_gate_assignment(
     if phase_markers.get("gate_assignment_fired"):
         return (False, None)
     boarding_open = boarding_window_open(
-        scheduled_dep_time=scheduled_dep_time, boarding_lead_minutes=boarding_lead_minutes
+        scheduled_dep_time=scheduled_dep_time,
+        boarding_lead_minutes=boarding_lead_minutes,
+        snapshot=snapshot,
     )
     if is_boarding_or_gone(snapshot, boarding_window_open=boarding_open, at=now_utc):
         return (False, None)

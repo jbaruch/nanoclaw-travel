@@ -487,14 +487,16 @@ def _process_flight(
         scheduled_dep_time=scheduled_dep_time,
         boarding_lead_minutes=boarding_lead_minutes,
     )
-    # The planned boarding window (dep − lead, the same lead the boarding block
-    # uses): byAir's "boarding" label before it is premature by construction
+    # The planned boarding window (effective dep − lead: byAir's live dep_time
+    # when the snapshot has one, else scheduled — the same instant and lead the
+    # boarding block uses): byAir's "boarding" label before it is premature by construction
     # (#295). Each snapshot is judged at the instant it was polled — the fresh
     # one now, the prior one at its own `last_polled_at` — so the first
     # in-window poll fires the transition even when the raw label never moved.
     boarding_open = boarding_window_open(
         scheduled_dep_time=scheduled_dep_time,
         boarding_lead_minutes=boarding_lead_minutes,
+        snapshot=new_snapshot,
     )
     readout_unreachable = window_open is None or is_boarding_or_gone(
         new_snapshot, boarding_window_open=boarding_open, at=now_utc

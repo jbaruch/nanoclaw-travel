@@ -11,6 +11,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
@@ -550,6 +552,46 @@ def test_boarding_window_open_is_dep_minus_lead():
     assert boarding_window_open(
         scheduled_dep_time="2026-09-01T09:20:00+02:00", boarding_lead_minutes=30
     ) == datetime(2026, 9, 1, 8, 50, 0, tzinfo=timezone(timedelta(hours=2)))
+
+
+def test_boarding_window_open_follows_a_delayed_live_departure():
+    """A byAir-published delay moves the boarding block; the window moves with
+    it (Copilot on #306): dep 17:00 scheduled, live dep_time 18:00, lead 30
+    → the window opens 17:30, not 16:30."""
+    window = boarding_window_open(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=30,
+        snapshot={"computed_status": "boarding", "dep_time": "2026-05-18T18:00:00+00:00"},
+    )
+    assert window == datetime(2026, 5, 18, 17, 30, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("dep_time", [None, "", "not-a-time"])
+def test_boarding_window_open_falls_back_to_scheduled_without_a_live_departure(dep_time):
+    window = boarding_window_open(
+        scheduled_dep_time=SCHED_DEP,
+        boarding_lead_minutes=30,
+        snapshot={"computed_status": "boarding", "dep_time": dep_time},
+    )
+    assert window == datetime(2026, 5, 18, 16, 30, 0, tzinfo=timezone.utc)
+
+
+def test_is_boarding_or_gone_delayed_flight_holds_the_label_to_the_delayed_block():
+    """Scheduled 17:00, live dep 18:00, lead 30: the block starts 17:30. A
+    present-tense "Boarding now" at 16:50 sits after the scheduled window but
+    before the delayed block — still premature."""
+    snapshot = {
+        "computed_status": "boarding",
+        "computed_status_detail": "Boarding now",
+        "dep_time": "2026-05-18T18:00:00+00:00",
+    }
+    window = boarding_window_open(
+        scheduled_dep_time=SCHED_DEP, boarding_lead_minutes=30, snapshot=snapshot
+    )
+    early = datetime(2026, 5, 18, 16, 50, 0, tzinfo=timezone.utc)
+    inside = datetime(2026, 5, 18, 17, 31, 0, tzinfo=timezone.utc)
+    assert is_boarding_or_gone(snapshot, boarding_window_open=window, at=early) is False
+    assert is_boarding_or_gone(snapshot, boarding_window_open=window, at=inside) is True
 
 
 def test_boarding_window_open_is_none_when_dep_unparseable():
