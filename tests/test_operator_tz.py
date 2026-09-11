@@ -139,7 +139,15 @@ def test_unavailable_shape_is_none_and_relays_reader_stderr(reader, capsys):
     assert read_operator_tz(reader=reader, run=run) is None
     err = capsys.readouterr().err
     assert "tz_state has no singleton row" in err
+    assert "available: false" in err
     assert err.endswith("\n")
+
+
+def test_unavailable_shape_with_a_silent_reader_still_says_so(reader, capsys):
+    """The miss must be visible even when the reader writes nothing to stderr."""
+    run = FakeRun(stdout=UNAVAILABLE, stderr="")
+    assert read_operator_tz(reader=reader, run=run) is None
+    assert "operator zone unavailable" in capsys.readouterr().err
 
 
 def test_store_unreadable_exit_1_is_none(reader, capsys):

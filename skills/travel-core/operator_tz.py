@@ -126,9 +126,11 @@ def read_operator_tz(
     if not isinstance(payload, dict):
         return _unavailable("core reader stdout is not a JSON object")
     if payload.get("available") is not True:
-        # The reader already said why on stderr (no row, empty zone, unsupported
-        # schema, unreadable store); nothing to add.
-        return None
+        # The reader normally says why on stderr (no row, empty zone,
+        # unsupported schema, unreadable store) and that line was relayed
+        # above. This module's own line still fires, so the miss is visible
+        # even when the reader stays quiet.
+        return _unavailable(f"core reader reported available: false (exit {proc.returncode})")
     tz, local_now, local_date = (payload.get(k) for k in ("tz", "local_now", "local_date"))
     if not all(isinstance(v, str) and v for v in (tz, local_now, local_date)):
         return _unavailable(f"core reader payload is missing tz/local fields: {payload!r}")
