@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.133 — 2026-09-11
+
 ### check-travel-bookings — a transport segment files under the trip that owns its day (#293)
 
 `check-travel-bookings` reported "рейсы есть, отеля нет" for *Video Shooting TLV* (Oct 18–24), a trip whose live TripIt record carries `reservation_count: 0`. The DB had one item under it: `B61173 JFK to BNA`, dated `2026-10-17` — the day before the trip starts — and the same `uid` sat under *Fall Break* (Oct 10–18) where it belongs as the return leg. Two things compounded. `build-travel-db.py` tested overlap on the UTC `start`/`end` while the day key had followed the local clock since #268, so a flight landing at 19:35 CDT (00:35Z next day) reached into a trip that starts the next date. And the test was overlap-against-every-trip, so a segment could belong to two trips at once. The consumer reads any `Flight` item as "flights present", so a genuinely empty away trip was under-reported as merely missing a hotel.
