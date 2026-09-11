@@ -23,8 +23,10 @@ from helpers import must
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
+sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 
 import precheck  # noqa: E402
+from operator_tz import OperatorTz  # noqa: E402
 from state import (  # noqa: E402
     CURRENT_LOCATION_FILE,
     CURRENT_LOCATION_SCHEMA_VERSION,
@@ -400,6 +402,91 @@ def test_first_cycle_for_new_flight_writes_state_and_fires_day_before(state_root
     # day_before should fire on first cycle since we're past T-24h
     reasons = [e["event"]["reason"] for e in events]
     assert "day_before" in reasons
+
+
+# --- #300: the day_before label comes from the operator's zone, read once ---
+
+
+class _CountingReader:
+    def __init__(self, zone: OperatorTz | None):
+        self.zone = zone
+        self.calls = 0
+
+    def __call__(self) -> OperatorTz | None:
+        self.calls += 1
+        return self.zone
+
+
+_CHICAGO = OperatorTz(
+    tz="America/Chicago", local_now="2026-05-18T11:00:00-05:00", local_date="2026-05-18"
+)
+
+
+def _day_before_events(events: list[dict]) -> list[dict]:
+    return [e["event"] for e in events if e["event"]["reason"] == "day_before"]
+
+
+def test_day_before_carries_the_label_from_the_operator_zone(state_root: Path):
+    """dep 17:00Z on May 18 = 12:00 CDT; now 16:00Z = 11:00 CDT the same day → today."""
+    write_active_flights([12345])
+    reader = _CountingReader(_CHICAGO)
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = _byair_flight(flight_id=12345)
+        events = precheck._run_cycle(now_utc=fake_now, operator_tz_reader=reader)
+    [event] = _day_before_events(events)
+    assert event["day_label"] == "today"
+    assert event["day_label_tz"] == "America/Chicago"
+    assert event["hours_until_dep"] == 1
+    assert reader.calls == 1
+
+
+def test_day_before_without_a_zone_carries_the_explicit_date(state_root: Path):
+    write_active_flights([12345])
+    reader = _CountingReader(None)
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = _byair_flight(flight_id=12345)
+        events = precheck._run_cycle(now_utc=fake_now, operator_tz_reader=reader)
+    [event] = _day_before_events(events)
+    assert event["day_label"] == "2026-05-18"
+    assert event["day_label_tz"] is None
+    assert reader.calls == 1
+
+
+def test_operator_zone_is_read_once_per_cycle_across_flights(state_root: Path):
+    """Three fresh flights all inside the window fire three day_befores off ONE
+    reader spawn — the memo is per cycle, not per flight."""
+    write_active_flights([111, 222, 333])
+    reader = _CountingReader(_CHICAGO)
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = lambda flight_id: _byair_flight(
+            flight_id=flight_id
+        )
+        events = precheck._run_cycle(now_utc=fake_now, operator_tz_reader=reader)
+    assert len(_day_before_events(events)) == 3
+    assert reader.calls == 1
+
+
+def test_operator_zone_is_not_read_when_every_day_before_already_fired(state_root: Path):
+    markers = _phase_markers()
+    markers["day_before_fired"] = True
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T15:00:00Z",
+        last_snapshot=_scheduled_snapshot(),
+        phase_markers=markers,
+    )
+    write_flight_state(prior)
+    write_active_flights([12345])
+    reader = _CountingReader(_CHICAGO)
+    fake_now = datetime(2026, 5, 18, 16, 30, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = _byair_flight(flight_id=12345)
+        events = precheck._run_cycle(now_utc=fake_now, operator_tz_reader=reader)
+    assert _day_before_events(events) == []
+    assert reader.calls == 0
 
 
 def test_gate_change_fires_after_readout(state_root: Path):
