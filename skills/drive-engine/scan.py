@@ -112,6 +112,14 @@ _MARKER_RE = re.compile(r"\[drive-planner:meeting=(?P<id>[^:\]]+):dir=(?P<dir>[^
 # Substrings that mark a `location` as a virtual meeting, not a place to
 # drive to (lombot #49 — filter at scan, never ask). A URL anywhere in the
 # location is treated as virtual: real venues are addresses, not links.
+#
+# The bracketed tags are the room-resource convention: Google Calendar names a
+# video-wired room `<building>-<floor>-<room> [ZOOM]` / `[TEAMS]` / `[MEET]` /
+# `[WEBEX]`. Such a location carries no URL and no "online" / "virtual" word,
+# so `TLV-3-Board Room (20p) (20) [ZOOM]` passed this filter, was geocoded, and
+# resolved to a street named "Zoom" in Lelystad — a 42-minute phantom round
+# trip from the operator's Amsterdam base (#294). The brackets are the signal;
+# a bare "zoom" / "meet" inside a real address stays routable.
 _VIRTUAL_MARKERS = (
     "zoom.us",
     "meet.google.com",
@@ -124,6 +132,10 @@ _VIRTUAL_MARKERS = (
     "virtual",
     "phone call",
     "google meet",
+    "[zoom]",
+    "[teams]",
+    "[meet]",
+    "[webex]",
 )
 
 

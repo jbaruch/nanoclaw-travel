@@ -47,7 +47,9 @@ GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES = 60
 # (#102) or "head to terminal X" (#103) — is moot: the flight has already left
 # or won't go. Real boarding is detected separately via wake_rules.is_real_boarding;
 # byAir flips computed_status to "boarding" up to ~1h early, so the raw label
-# alone is not trustworthy (#54).
+# alone is not trustworthy (#54), and its detail can already read "Boarding now"
+# while premature, so the label is also held against the planned boarding
+# window (#295) wherever the caller knows the boarding lead.
 _BOARDING_OR_GONE_STATUSES = frozenset({"departed", "en_route", "landed", "cancelled", "diverted"})
 
 
@@ -88,6 +90,7 @@ def check_time_to_leave(
     phase_markers: dict,
     now_utc: datetime,
     snapshot: dict | None = None,
+    boarding_lead_minutes: int | None = None,
 ) -> tuple[bool, dict | None]:
     """Traffic-aware "leave by" gate. Returns (should_fire, event_payload).
 
@@ -108,11 +111,25 @@ def check_time_to_leave(
     the gate stays silent rather than waking the agent to say nothing. Defaults
     to None so callers without a snapshot keep the pre-boarding behavior.
 
+    `boarding_lead_minutes` is the flight's resolved boarding lead. When given,
+    a "boarding" label before the planned boarding window (`scheduled_dep −
+    lead`) is premature and does NOT suppress the alert (#295); None keeps the
+    label-plus-detail predicate alone.
+
     `phase_markers["time_to_leave_fired"]` must be False to fire.
     """
     if phase_markers.get("time_to_leave_fired"):
         return (False, None)
-    if is_boarding_or_gone(snapshot):
+    window_open = (
+        None
+        if boarding_lead_minutes is None
+        else boarding_window_open(
+            scheduled_dep_time=scheduled_dep_time,
+            boarding_lead_minutes=boarding_lead_minutes,
+            snapshot=snapshot,
+        )
+    )
+    if is_boarding_or_gone(snapshot, boarding_window_open=window_open, at=now_utc):
         return (False, None)
     if travel_time_seconds is None:
         return (False, None)
@@ -167,6 +184,36 @@ def check_arrival_logistics(
     )
 
 
+def boarding_window_open(
+    *,
+    scheduled_dep_time: str | None,
+    boarding_lead_minutes: int,
+    snapshot: dict | None = None,
+) -> datetime | None:
+    """The instant boarding is planned to begin, or None if no departure parses.
+
+    `effective_dep − boarding_lead` — the start of the boarding calendar block
+    flight-assist itself creates. The effective departure is byAir's live
+    `dep_time` when the snapshot carries a parseable one, else the scheduled
+    time: the same preference `calendar_reconcile._effective_times` gives the
+    block, so a delayed or revised departure moves the block and this window
+    together and byAir's early "boarding" flip on a delayed flight is still
+    held to the block's own start. A present-but-unparseable `dep_time` falls
+    back to the scheduled time here (the block planner surfaces it instead) —
+    a wake gate with no window at all would let the premature label through.
+    byAir claiming "boarding" before this instant is premature by
+    construction; `wake_rules.is_real_boarding` holds the label against it
+    (#295).
+    """
+    live = (snapshot or {}).get("dep_time")
+    dep_dt = _parse_iso8601(live) if isinstance(live, str) else None
+    if dep_dt is None:
+        dep_dt = _parse_iso8601(scheduled_dep_time)
+    if dep_dt is None:
+        return None
+    return dep_dt - timedelta(minutes=boarding_lead_minutes)
+
+
 def gate_assignment_window_open(
     *,
     scheduled_dep_time: str | None,
@@ -178,14 +225,12 @@ def gate_assignment_window_open(
     readout (`check_gate_assignment`) only fires once now is at/after this
     boundary (#103).
     """
-    dep_dt = _parse_iso8601(scheduled_dep_time)
-    if dep_dt is None:
-        return None
-    return (
-        dep_dt
-        - timedelta(minutes=boarding_lead_minutes)
-        - timedelta(minutes=GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES)
+    boarding_open = boarding_window_open(
+        scheduled_dep_time=scheduled_dep_time, boarding_lead_minutes=boarding_lead_minutes
     )
+    if boarding_open is None:
+        return None
+    return boarding_open - timedelta(minutes=GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES)
 
 
 def check_gate_assignment(
@@ -208,7 +253,10 @@ def check_gate_assignment(
 
     A flight `is_boarding_or_gone` — really boarding, or departed/en_route/
     landed/cancelled/diverted — gets no readout; navigating to a departure gate
-    is moot by then (same gate as the leave-by suppression in #102).
+    is moot by then (same gate as the leave-by suppression in #102). "Really
+    boarding" is held against the planned boarding window derived from the
+    same `boarding_lead_minutes` (#295), so byAir's premature label does not
+    swallow the readout.
 
     `phase_markers["gate_assignment_fired"]` must be False to fire; the
     caller sets it True once fired so subsequent gate moves surface as
@@ -216,7 +264,12 @@ def check_gate_assignment(
     """
     if phase_markers.get("gate_assignment_fired"):
         return (False, None)
-    if is_boarding_or_gone(snapshot):
+    boarding_open = boarding_window_open(
+        scheduled_dep_time=scheduled_dep_time,
+        boarding_lead_minutes=boarding_lead_minutes,
+        snapshot=snapshot,
+    )
+    if is_boarding_or_gone(snapshot, boarding_window_open=boarding_open, at=now_utc):
         return (False, None)
     window_open = gate_assignment_window_open(
         scheduled_dep_time=scheduled_dep_time,
@@ -239,7 +292,12 @@ def check_gate_assignment(
     )
 
 
-def is_boarding_or_gone(snapshot: dict | None) -> bool:
+def is_boarding_or_gone(
+    snapshot: dict | None,
+    *,
+    boarding_window_open: datetime | None = None,
+    at: datetime | None = None,
+) -> bool:
     """True when an airport-bound prompt no longer makes sense for this flight.
 
     The flight is either really boarding (per `wake_rules.is_real_boarding`,
@@ -247,10 +305,15 @@ def is_boarding_or_gone(snapshot: dict | None) -> bool:
     moved past departure (or it won't go). Either way the user is at — or past —
     the gate, so neither the leave-by gate (#102) nor the gate/terminal readout
     (#103) should fire.
+
+    `boarding_window_open` / `at` pass straight through to `is_real_boarding`:
+    with both, a "boarding" label polled before the planned boarding window is
+    premature and does not count (#295); without, the label-plus-detail
+    predicate alone decides.
     """
     if not snapshot:
         return False
-    if is_real_boarding(snapshot):
+    if is_real_boarding(snapshot, boarding_window_open=boarding_window_open, at=at):
         return True
     return snapshot.get("computed_status") in _BOARDING_OR_GONE_STATUSES
 

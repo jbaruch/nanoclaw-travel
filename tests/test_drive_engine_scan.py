@@ -218,6 +218,47 @@ def test_lombot49_virtual_locations_are_filtered(location):
     assert result.reason == "virtual location"
 
 
+@pytest.mark.parametrize(
+    "location",
+    [
+        "TLV-3-Board Room (20p) (20) [ZOOM]",
+        "Room 4.12 [TEAMS]",
+        "Boardroom [Meet]",
+        "HQ-2-Huddle [WEBEX]",
+    ],
+)
+def test_bracketed_room_conferencing_tag_is_virtual(location):
+    """#294: a video-wired room resource carries the platform in brackets and no
+    URL; it is a call, not a place to drive to."""
+    start = NOW + timedelta(hours=3)
+    result = scan(
+        [_meeting("m1", start=start, end=start + timedelta(hours=1), location=location)],
+        now=NOW,
+        home_address=HOME,
+    )[0]
+    assert result.bucket == "filtered"
+    assert result.reason == "virtual location"
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "Meeting Room 4, 1 Main St, Sampleton, TN",
+        "Zoomer's Cafe, 5 High St",
+    ],
+)
+def test_bare_platform_word_in_an_address_stays_routable(location):
+    """#294: only the bracketed tag is the signal — a real address that happens
+    to contain "meet" or "zoom" is still driven to."""
+    start = NOW + timedelta(hours=3)
+    result = scan(
+        [_meeting("m1", start=start, end=start + timedelta(hours=1), location=location)],
+        now=NOW,
+        home_address=HOME,
+    )[0]
+    assert result.bucket == "needs_decision"
+
+
 def test_missing_location_is_filtered():
     start = NOW + timedelta(hours=3)
     result = scan(
