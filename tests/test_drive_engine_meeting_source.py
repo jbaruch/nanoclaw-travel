@@ -238,6 +238,29 @@ def test_exclude_keeps_legacy_dp_blocks_for_scan_has_block():
     assert "m1" in kept
 
 
+# --- a leg whose origin is its destination (#301) ---------------------------
+
+
+def test_leg_from_the_anchor_to_the_anchor_is_skipped():
+    """A home→home leg is a zero-length drive that still lands as a degenerate
+    one-minute block. No block, one diagnostic."""
+    m = FakeMeeting(
+        "m1",
+        "ExamOne Appointment",
+        (FakeLeg("outbound", "Home", "Home", arrive_by=_dt(15, 0)),),
+    )
+    calls: list[tuple[str, str]] = []
+
+    def route(o, d):
+        calls.append((o, d))
+        return timedelta(0)
+
+    blocks, skipped = meeting_desired_blocks([m], route=route)
+    assert blocks == []
+    assert skipped == ["meeting m1 outbound: origin is the destination — no drive"]
+    assert calls == []  # never routed
+
+
 # --- trips the operator drives to (#242) ------------------------------------
 
 
@@ -323,6 +346,21 @@ def test_the_drive_out_to_a_later_event_starts_from_the_lodging():
         driving_to={"m2": TripPresence(lodging=LODGING, is_first=False, is_last=True)},
     )
     assert [(b.origin, b.destination) for b in blocks] == [(LODGING, VENUE)]
+
+
+def test_a_venue_at_the_lodging_collapses_after_the_presence_rewrite():
+    """Mid-trip, the outbound origin is rewritten home→lodging; a meeting held
+    AT the lodging then reads lodging→lodging and is skipped, not routed."""
+    meeting = FakeMeeting(
+        "m2", "Hotel breakfast talk", (FakeLeg("outbound", HOME_ADDR, LODGING, arrive_by=_dt(8)),)
+    )
+    blocks, skipped = meeting_desired_blocks(
+        [meeting],
+        route=const_route(5),
+        driving_to={"m2": TripPresence(lodging=LODGING, is_first=False, is_last=False)},
+    )
+    assert blocks == []
+    assert skipped == ["meeting m2 outbound: origin is the destination — no drive"]
 
 
 def test_the_drive_out_to_the_first_event_keeps_home():

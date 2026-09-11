@@ -144,6 +144,11 @@ def meeting_desired_blocks(
     its anchor is unresolved, its route fails, or its routed drive exceeds
     `max_reasonable_drive` (the travel-away suppression).
 
+    A leg whose origin IS its destination is skipped too (#301): the scan
+    already filters a meeting held at the anchor, but the lodging rewrite below
+    can collapse a leg the same way — a venue that is the trip's hotel — and a
+    zero-length drive would still land as a degenerate one-minute block.
+
     `driving_to` are the meeting ids the away-suppression must NOT fire on: the
     events of a flight-less trip the operator has confirmed they DRIVE to. The
     suppression reads a long drive as "not positioned to make it — they flew, or
@@ -167,6 +172,9 @@ def meeting_desired_blocks(
                 skipped.append(f"{tag}: {note}")
                 continue
             origin, destination = _trip_endpoints(leg, presence.get(meeting.meeting_id))
+            if origin == destination:
+                skipped.append(f"{tag}: origin is the destination — no drive")
+                continue
             drive = route(origin, destination)
             if drive is None:
                 skipped.append(f"{tag}: route failed")

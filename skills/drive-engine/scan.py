@@ -39,7 +39,9 @@ Buckets (Epic #59 §3, §5):
                     past (lombot #28).
     filtered        Not a routable ground meeting: the operator declined it
                     (or it's cancelled), all-day, virtual location, a flight
-                    event (#85 — air travel, owned by flight-assist), the
+                    event (#85 — air travel, owned by flight-assist), a
+                    meeting AT the anchor itself (#301 — held at home, or at
+                    the current lodging: there is nowhere to drive), the
                     planner's own block, or an unparseable / missing time.
                     Returned (not dropped) so the sweep can audit and clean
                     up — the meta-lesson is "no silent miss".
@@ -534,21 +536,46 @@ def _is_flight_event(
     )
 
 
+def _at_anchor(
+    event: _Event, anchor_for: Callable[[datetime], tuple[str | None, str | None]]
+) -> bool:
+    """True when the meeting's venue IS the anchor it would be driven from (#301).
+
+    A meeting held at home (or, on a trip, at the current lodging) has nowhere
+    to drive to: an outbound leg would run anchor→anchor and a return leg
+    anchor→anchor, each a zero-length drive that still lands on the calendar
+    as a degenerate one-minute block. The test is `_same_venue` on the
+    normalized strings — the same deterministic equality the neighbour rule
+    uses, never a geocode. Requires a parsed start (the anchor is resolved at
+    the meeting's start) and a usable location; anything else is not at the
+    anchor.
+    """
+    if event.start is None or event.location is None:
+        return False
+    anchor_address, _ = anchor_for(event.start)
+    return _same_venue(event.location, _normalize_location(anchor_address))
+
+
 def _is_routable_candidate(
     event: _Event,
     now: datetime,
     flight_windows: tuple[tuple[datetime, datetime], ...],
     scheduled_codes: frozenset[str],
+    anchor_for: Callable[[datetime], tuple[str | None, str | None]],
 ) -> bool:
     """True when the event can act as a real-meeting neighbour for §5 #14/#7.
 
     A routable candidate is a future, timed, in-person, non-block, non-flight
-    meeting with a usable location. Excluding past meetings here is the fix for
-    the cross of lombot #28 and #14/#7: a stale same-venue meeting must not turn
-    a future meeting into back_to_back and strip its outbound-from-home leg.
-    `end` is required too, so a half-parsed event never skews a gap. Excluding
-    flight events (#85) keeps a flight from acting as a bridge neighbour that a
-    real meeting drives to/from across an ocean.
+    meeting with a usable location away from the anchor. Excluding past
+    meetings here is the fix for the cross of lombot #28 and #14/#7: a stale
+    same-venue meeting must not turn a future meeting into back_to_back and
+    strip its outbound-from-home leg. `end` is required too, so a half-parsed
+    event never skews a gap. Excluding flight events (#85) keeps a flight from
+    acting as a bridge neighbour that a real meeting drives to/from across an
+    ocean. Excluding a meeting at the anchor (#301) keeps it from acting as a
+    tight-gap neighbour that swallows the preceding real meeting's return leg:
+    the drive home from that meeting stays the real meeting's own, correctly
+    labelled, rather than becoming a "bridge" to a home appointment.
     """
     return (
         event.marker is None
@@ -561,6 +588,7 @@ def _is_routable_candidate(
         and not _is_virtual(event.location)
         and not _is_past(event, now)
         and not _is_flight_event(event, flight_windows, scheduled_codes)
+        and not _at_anchor(event, anchor_for)
     )
 
 
@@ -662,7 +690,9 @@ def scan(
     # strip its outbound-from-home leg. A non-candidate still gets classified,
     # it just can't act as a neighbour.
     candidates = [
-        event for event in parsed if _is_routable_candidate(event, now, windows, scheduled_codes)
+        event
+        for event in parsed
+        if _is_routable_candidate(event, now, windows, scheduled_codes, anchor_for)
     ]
     candidates.sort(key=lambda e: e.start)  # type: ignore[arg-type,return-value]
     order = {id(event): index for index, event in enumerate(candidates)}
@@ -761,11 +791,18 @@ def _classify(
     if _is_virtual(event.location):
         return _make_class(event, "filtered", "virtual location")
 
-    # 7. Past guard (lombot #28) — never plan into the past.
+    # 7. Meeting at the anchor (#301) — held at home, or at the current lodging
+    #    on a trip. Nowhere to drive: no leg, no block. Placed before the past
+    #    guard with the other location-class filters, so a home appointment is
+    #    reported for what it is whether it is upcoming or already started.
+    if _at_anchor(event, anchor_for):
+        return _make_class(event, "filtered", "meeting at the anchor — no drive")
+
+    # 8. Past guard (lombot #28) — never plan into the past.
     if _is_past(event, now):
         return _make_class(event, "past", "meeting already started")
 
-    # 8. Already handled — ANY marker counts (lombot #50). Wins over
+    # 9. Already handled — ANY marker counts (lombot #50). Wins over
     #    needs_decision so the planner never re-asks or double-books.
     if event.raw_id in handled_directions:
         present = tuple(dict.fromkeys(handled_directions[event.raw_id]))
@@ -776,11 +813,11 @@ def _classify(
             present_directions=present,
         )
 
-    # 9. Live skip (lombot #49) — the user said no; don't ask again.
+    # 10. Live skip (lombot #49) — the user said no; don't ask again.
     if _skip_active(skip_state, event.raw_id, now):
         return _make_class(event, "skipped", "user-skipped, not expired")
 
-    # 10. A routable meeting — read neighbours and emit legs.
+    # 11. A routable meeting — read neighbours and emit legs.
     return _classify_transit(
         event,
         anchor_for=anchor_for,
