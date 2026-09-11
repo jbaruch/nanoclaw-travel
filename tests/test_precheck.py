@@ -469,6 +469,20 @@ def test_operator_zone_is_read_once_per_cycle_across_flights(state_root: Path):
     assert reader.calls == 1
 
 
+def test_operator_zone_is_not_read_for_a_flight_more_than_a_day_out(state_root: Path):
+    """Copilot on #307: a first-seen flight is polled with no horizon check, so
+    the zone must wait for the day_before gate itself, not just an unfired
+    marker. dep 17:00Z May 18, now 12:00Z May 16: 53h out, no label, no spawn."""
+    write_active_flights([12345])
+    reader = _CountingReader(_CHICAGO)
+    fake_now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.return_value = _byair_flight(flight_id=12345)
+        events = precheck._run_cycle(now_utc=fake_now, operator_tz_reader=reader)
+    assert _day_before_events(events) == []
+    assert reader.calls == 0
+
+
 def test_operator_zone_is_not_read_when_every_day_before_already_fired(state_root: Path):
     markers = _phase_markers()
     markers["day_before_fired"] = True

@@ -58,6 +58,27 @@ GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES = 60
 _BOARDING_OR_GONE_STATUSES = frozenset({"departed", "en_route", "landed", "cancelled", "diverted"})
 
 
+def day_before_due(
+    *,
+    scheduled_dep_time: str | None,
+    phase_markers: dict,
+    now_utc: datetime,
+) -> bool:
+    """Whether `check_day_before` would fire now — the gate alone, no payload.
+
+    The precheck asks this first and resolves the operator's zone only when it
+    is True, so the zone reader never spawns for a flight whose `day_before`
+    is not firing this cycle: already fired, unparseable departure, or more
+    than `DAY_BEFORE_HOURS` out (#300).
+    """
+    if phase_markers.get("day_before_fired"):
+        return False
+    dep_dt = _parse_iso8601(scheduled_dep_time)
+    if dep_dt is None:
+        return False
+    return now_utc >= dep_dt - timedelta(hours=DAY_BEFORE_HOURS)
+
+
 def check_day_before(
     *,
     scheduled_dep_time: str | None,
@@ -80,14 +101,12 @@ def check_day_before(
     IANA zone as the core `current-tz` reader resolved it, or None when no
     zone is available; the caller resolves it, this function stays pure.
     """
-    if phase_markers.get("day_before_fired"):
+    if not day_before_due(
+        scheduled_dep_time=scheduled_dep_time, phase_markers=phase_markers, now_utc=now_utc
+    ):
         return (False, None)
     dep_dt = _parse_iso8601(scheduled_dep_time)
-    if dep_dt is None:
-        return (False, None)
-    threshold = dep_dt - timedelta(hours=DAY_BEFORE_HOURS)
-    if now_utc < threshold:
-        return (False, None)
+    assert dep_dt is not None  # day_before_due returned True, so it parsed
     label, label_tz = day_label(dep_dt, now_utc=now_utc, operator_tz=operator_tz)
     return (
         True,

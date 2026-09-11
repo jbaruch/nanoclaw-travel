@@ -68,6 +68,7 @@ from phase_markers import (  # noqa: E402
     check_day_before,
     check_gate_assignment,
     check_time_to_leave,
+    day_before_due,
     gate_assignment_window_open,
     is_boarding_or_gone,
 )
@@ -481,10 +482,10 @@ def _process_flight(
     `current-location.json` is rewritten mid-cycle.
 
     `resolve_operator_tz` is `_run_cycle`'s once-per-cycle memo of the
-    operator's zone; it is consulted only for a flight whose `day_before`
-    has not fired yet, so the reader subprocess never runs for a flight
-    past that marker. The default (no zone) is the standalone-call shape
-    and yields the explicit-date label.
+    operator's zone; it is consulted only when `phase_markers.day_before_due`
+    says the `day_before` fires this cycle, so the reader subprocess never
+    runs for a flight that is not about to be labelled. The default (no
+    zone) is the standalone-call shape and yields the explicit-date label.
     """
     prior_state = read_flight_state(flight_id)
     prior_snapshot = prior_state.get("last_snapshot") if prior_state else None
@@ -546,10 +547,17 @@ def _process_flight(
 
     # Time-based events from phase_markers.
 
-    # The zone is asked for only while the marker is still unfired: the memo
-    # makes a second ask free, and a flight past its day_before never triggers
-    # the reader spawn at all (#300).
-    operator_tz = None if phase_markers.get("day_before_fired") else resolve_operator_tz()
+    # The zone is asked for only when the day_before gate is open this cycle:
+    # a flight already past its marker, more than a day out, or with an
+    # unparseable departure never triggers the reader spawn, and the memo
+    # makes a second ask in the same cycle free (#300).
+    operator_tz = (
+        resolve_operator_tz()
+        if day_before_due(
+            scheduled_dep_time=scheduled_dep_time, phase_markers=phase_markers, now_utc=now_utc
+        )
+        else None
+    )
     fired, event = check_day_before(
         scheduled_dep_time=scheduled_dep_time,
         phase_markers=phase_markers,

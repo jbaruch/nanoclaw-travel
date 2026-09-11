@@ -22,9 +22,12 @@ Stdout (single-line JSON):
     {"error": "gateway"}    — the OneCLI gateway is not authenticating (exit 1)
     {"error": "tier"}       — this agent's tier is gated from Google (exit 1)
     {"error": "calendar"}   — Calendar or the network failed this call (exit 1)
+    {"error": "state"}      — the flight's departure/arrival does not parse,
+                              so there is no window to read (exit 1)
 
-`tz` is null when the operator's zone is unavailable; `start` / `end` then
-keep each event's own offset. Exit 2 on usage errors.
+`tz` is the zone the times were rendered in: null when the operator's zone is
+unavailable or does not resolve, and `start` / `end` then keep each event's
+own offset. Exit 2 on usage errors.
 """
 
 from __future__ import annotations
@@ -48,7 +51,7 @@ if str(_TRAVEL_CORE) not in sys.path:
     sys.path.insert(0, str(_TRAVEL_CORE))
 
 from calendar_reconcile import _find_events_args, _items  # noqa: E402
-from day_before_calendar import calendar_conflicts, conflict_window  # noqa: E402
+from day_before_calendar import calendar_conflicts, conflict_window, resolve_zone  # noqa: E402
 from google_calendar_client import (  # noqa: E402
     GatewayNotInjecting,
     GoogleCalendarClient,
@@ -79,7 +82,14 @@ def run(
     if state is None:
         _emit({"error": f"flight_id {flight_id} has no state on disk"})
         return 0
-    window = conflict_window(state)
+    try:
+        window = conflict_window(state)
+    except ValueError as exc:
+        # The seed can write an empty or malformed time; the check still goes
+        # out, without the calendar part, rather than dying with no JSON.
+        print(f"day-before-calendar: {exc}", file=sys.stderr)
+        _emit({"error": "state"})
+        return 1
     try:
         raw = client.find_events(
             _find_events_args(
@@ -104,13 +114,13 @@ def run(
         )
         _emit({"error": "calendar"})
         return 1
-    zone = operator_tz_reader()
-    tz = zone.tz if zone is not None else None
-    events, skipped = calendar_conflicts(_items(raw), window=window, operator_tz=tz)
+    reader = operator_tz_reader()
+    zone = resolve_zone(reader.tz if reader is not None else None)
+    events, skipped = calendar_conflicts(_items(raw), window=window, zone=zone)
     _emit(
         {
             "flight_id": flight_id,
-            "tz": tz,
+            "tz": zone.key if zone is not None else None,
             "window_start": window[0].isoformat(),
             "window_end": window[1].isoformat(),
             "events": events,

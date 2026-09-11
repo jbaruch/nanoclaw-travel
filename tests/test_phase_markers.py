@@ -11,6 +11,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
@@ -22,6 +24,7 @@ from phase_markers import (  # noqa: E402
     check_day_before,
     check_gate_assignment,
     check_time_to_leave,
+    day_before_due,
     day_label,
 )
 
@@ -143,6 +146,33 @@ def test_unresolvable_zone_behaves_like_no_zone(capsys):
     assert event["day_label"] == "2026-09-10"
     assert event["day_label_tz"] is None
     assert "Mars/Olympus_Mons" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("sched", "now", "markers", "due"),
+    [
+        (SCHED_DEP, datetime(2026, 5, 17, 16, 59, 0, tzinfo=timezone.utc), {}, False),
+        (SCHED_DEP, datetime(2026, 5, 17, 17, 0, 0, tzinfo=timezone.utc), {}, True),
+        (
+            SCHED_DEP,
+            datetime(2026, 5, 18, 10, 0, 0, tzinfo=timezone.utc),
+            {"day_before_fired": True},
+            False,
+        ),
+        ("not-a-time", datetime(2026, 5, 18, 10, 0, 0, tzinfo=timezone.utc), {}, False),
+    ],
+)
+def test_day_before_due_matches_the_gate(sched, now, markers, due):
+    """The predicate the precheck asks before spawning the zone reader agrees
+    with whether `check_day_before` fires."""
+    assert (
+        day_before_due(scheduled_dep_time=sched, phase_markers=_markers(**markers), now_utc=now)
+        is due
+    )
+    fired, _ = check_day_before(
+        scheduled_dep_time=sched, phase_markers=_markers(**markers), now_utc=now
+    )
+    assert fired is due
 
 
 def test_exact_threshold_keeps_hours_until_dep_at_24():

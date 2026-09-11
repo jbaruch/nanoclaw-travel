@@ -21,6 +21,7 @@ import sys
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -32,6 +33,7 @@ from day_before_calendar import (  # noqa: E402
     CONFLICT_MARGIN,
     calendar_conflicts,
     conflict_window,
+    resolve_zone,
 )
 from google_calendar_client import (  # noqa: E402
     GatewayNotInjecting,
@@ -130,7 +132,7 @@ def test_declined_event_is_not_listed_and_is_counted():
         ),
         _event("Dinner", "2026-09-10T18:00:00-05:00", "2026-09-10T19:00:00-05:00"),
     ]
-    listed, skipped = calendar_conflicts(events, window=_WINDOW, operator_tz=CHICAGO)
+    listed, skipped = calendar_conflicts(events, window=_WINDOW, zone=ZoneInfo(CHICAGO))
     assert [e["summary"] for e in listed] == ["Dinner"]
     assert skipped == 1
 
@@ -144,7 +146,7 @@ def test_cancelled_event_is_not_listed():
             status="cancelled",
         )
     ]
-    listed, skipped = calendar_conflicts(events, window=_WINDOW, operator_tz=CHICAGO)
+    listed, skipped = calendar_conflicts(events, window=_WINDOW, zone=ZoneInfo(CHICAGO))
     assert listed == []
     assert skipped == 1
 
@@ -154,13 +156,13 @@ def test_tentative_and_needs_action_events_still_count():
     event["attendees"][1]["responseStatus"] = "tentative"
     no_rsvp = _event("Call", "2026-09-10T20:00:00-05:00", "2026-09-10T20:30:00-05:00")
     no_rsvp["attendees"][1]["responseStatus"] = "needsAction"
-    listed, _ = calendar_conflicts([event, no_rsvp], window=_WINDOW, operator_tz=CHICAGO)
+    listed, _ = calendar_conflicts([event, no_rsvp], window=_WINDOW, zone=ZoneInfo(CHICAGO))
     assert [e["summary"] for e in listed] == ["Sync", "Call"]
 
 
 def test_event_outside_the_window_is_not_listed():
     events = [_event("Lunch", "2026-09-10T12:00:00-05:00", "2026-09-10T13:00:00-05:00")]
-    listed, skipped = calendar_conflicts(events, window=_WINDOW, operator_tz=CHICAGO)
+    listed, skipped = calendar_conflicts(events, window=_WINDOW, zone=ZoneInfo(CHICAGO))
     assert listed == []
     assert skipped == 0
 
@@ -168,7 +170,7 @@ def test_event_outside_the_window_is_not_listed():
 def test_unparseable_event_is_left_out():
     broken = {"summary": "Ghost", "start": {"dateTime": "soon"}, "end": {"dateTime": "later"}}
     rows: list = [broken, "junk"]  # a non-dict row must be skipped, not raise
-    listed, skipped = calendar_conflicts(rows, window=_WINDOW, operator_tz=CHICAGO)
+    listed, skipped = calendar_conflicts(rows, window=_WINDOW, zone=ZoneInfo(CHICAGO))
     assert listed == []
     assert skipped == 0
 
@@ -181,7 +183,7 @@ def test_stale_offset_is_rendered_on_the_operator_clock():
     The instant is authoritative: 02:00+02:00 on Sep 11 is 19:00 CDT on Sep 10,
     a different calendar day on each clock."""
     events = [_event("Pickup", "2026-09-11T02:00:00+02:00", "2026-09-11T02:45:00+02:00")]
-    listed, _ = calendar_conflicts(events, window=_WINDOW, operator_tz=CHICAGO)
+    listed, _ = calendar_conflicts(events, window=_WINDOW, zone=ZoneInfo(CHICAGO))
     [entry] = listed
     assert entry["start"] == "2026-09-10T19:00:00-05:00"
     assert entry["end"] == "2026-09-10T19:45:00-05:00"
@@ -191,21 +193,21 @@ def test_stale_offset_is_rendered_on_the_operator_clock():
 def test_event_just_before_the_window_is_not_listed():
     """23:00+02:00 is 16:00 CDT, ten minutes before the 16:50 window opens."""
     events = [_event("Pickup", "2026-09-10T23:00:00+02:00", "2026-09-10T23:45:00+02:00")]
-    listed, _ = calendar_conflicts(events, window=_WINDOW, operator_tz=CHICAGO)
+    listed, _ = calendar_conflicts(events, window=_WINDOW, zone=ZoneInfo(CHICAGO))
     assert listed == []
 
 
 def test_no_operator_zone_keeps_each_event_offset():
     events = [_event("Dinner", "2026-09-10T18:00:00-05:00", "2026-09-10T19:00:00-05:00")]
-    listed, _ = calendar_conflicts(events, window=_WINDOW, operator_tz=None)
+    listed, _ = calendar_conflicts(events, window=_WINDOW, zone=None)
     assert listed[0]["start"] == "2026-09-10T18:00:00-05:00"
 
 
-def test_unresolvable_zone_keeps_offsets_and_says_so(capsys):
-    events = [_event("Dinner", "2026-09-10T18:00:00-05:00", "2026-09-10T19:00:00-05:00")]
-    listed, _ = calendar_conflicts(events, window=_WINDOW, operator_tz="Mars/Olympus_Mons")
-    assert listed[0]["start"] == "2026-09-10T18:00:00-05:00"
+def test_unresolvable_zone_resolves_to_none_and_says_so(capsys):
+    assert resolve_zone("Mars/Olympus_Mons") is None
     assert "Mars/Olympus_Mons" in capsys.readouterr().err
+    assert resolve_zone(None) is None
+    assert resolve_zone(CHICAGO) == ZoneInfo(CHICAGO)
 
 
 def test_all_day_event_is_listed_by_date():
@@ -214,11 +216,58 @@ def test_all_day_event_is_listed_by_date():
         "start": {"date": "2026-09-10"},
         "end": {"date": "2026-09-11"},
     }
-    listed, _ = calendar_conflicts([event], window=_WINDOW, operator_tz=CHICAGO)
+    listed, _ = calendar_conflicts([event], window=_WINDOW, zone=ZoneInfo(CHICAGO))
     [entry] = listed
     assert entry["all_day"] is True
     assert entry["start"] == "2026-09-10"
     assert entry["display"] == "Thu Sep 10 (all day)"
+
+
+def test_all_day_event_counts_on_its_local_day_in_a_late_evening_window():
+    """Policy review on #307: a Sep 10 all-day event built at UTC midnight
+    ends 19:00 CDT Sep 10 and misses a 20:00–23:00 CDT window that evening.
+    Read in the operator's zone it spans all of Sep 10 and is listed."""
+    evening = (
+        datetime(2026, 9, 10, 20, 0, tzinfo=ZoneInfo(CHICAGO)),
+        datetime(2026, 9, 10, 23, 0, tzinfo=ZoneInfo(CHICAGO)),
+    )
+    event = {
+        "summary": "School holiday",
+        "start": {"date": "2026-09-10"},
+        "end": {"date": "2026-09-11"},
+    }
+    listed, _ = calendar_conflicts([event], window=evening, zone=ZoneInfo(CHICAGO))
+    assert [e["summary"] for e in listed] == ["School holiday"]
+
+
+def test_all_day_event_on_the_next_day_misses_an_evening_window():
+    evening = (
+        datetime(2026, 9, 10, 20, 0, tzinfo=ZoneInfo(CHICAGO)),
+        datetime(2026, 9, 10, 23, 0, tzinfo=ZoneInfo(CHICAGO)),
+    )
+    event = {
+        "summary": "Field trip",
+        "start": {"date": "2026-09-11"},
+        "end": {"date": "2026-09-12"},
+    }
+    listed, _ = calendar_conflicts([event], window=evening, zone=ZoneInfo(CHICAGO))
+    assert listed == []
+
+
+def test_all_day_days_follow_the_window_offset_without_a_zone():
+    """No operator zone: an all-day day is read in the window's own offset
+    (the flight's), still never at UTC midnight."""
+    evening = (
+        datetime(2026, 9, 10, 20, 0, tzinfo=timezone(timedelta(hours=-5))),
+        datetime(2026, 9, 10, 23, 0, tzinfo=timezone(timedelta(hours=-5))),
+    )
+    event = {
+        "summary": "School holiday",
+        "start": {"date": "2026-09-10"},
+        "end": {"date": "2026-09-11"},
+    }
+    listed, _ = calendar_conflicts([event], window=evening, zone=None)
+    assert [e["summary"] for e in listed] == ["School holiday"]
 
 
 def test_listed_events_are_ordered_by_start_and_carry_location():
@@ -231,7 +280,7 @@ def test_listed_events_are_ordered_by_start_and_carry_location():
             location="1 Main St",
         ),
     ]
-    listed, _ = calendar_conflicts(events, window=_WINDOW, operator_tz=CHICAGO)
+    listed, _ = calendar_conflicts(events, window=_WINDOW, zone=ZoneInfo(CHICAGO))
     assert [(e["summary"], e["location"]) for e in listed] == [
         ("Early", "1 Main St"),
         ("Late", None),
@@ -313,6 +362,31 @@ def test_script_without_a_zone_reports_null_tz(capsys):
     assert code == 0
     assert payload["tz"] is None
     assert payload["events"][0]["start"] == "2026-09-10T18:00:00-05:00"
+
+
+def test_script_reports_an_unresolvable_zone_as_null(capsys):
+    """Copilot on #307: the payload's `tz` names the zone the times were
+    rendered in. A reader name that does not resolve rendered nothing, so the
+    compose must not read the raw offsets as operator-local."""
+    client = FakeCalendar(
+        items=[_event("Dinner", "2026-09-10T18:00:00-05:00", "2026-09-10T19:00:00-05:00")]
+    )
+    code, payload, err = _run(capsys, client=client, tz="Mars/Olympus_Mons")
+    assert code == 0
+    assert payload["tz"] is None
+    assert payload["events"][0]["start"] == "2026-09-10T18:00:00-05:00"
+    assert "Mars/Olympus_Mons" in err
+
+
+def test_script_with_an_unparseable_window_returns_a_state_error(capsys):
+    """Policy review on #307: a malformed persisted time must yield the
+    documented error result, never a traceback with no JSON."""
+    client = FakeCalendar()
+    code, payload, err = _run(capsys, client=client, state={**_STATE, "scheduled_arr_time": ""})
+    assert code == 1
+    assert payload == {"error": "state"}
+    assert "no parseable departure/arrival" in err
+    assert client.calls == []
 
 
 def test_script_with_no_state_reports_it_and_exits_0(capsys):
