@@ -304,6 +304,57 @@ def test_transport_on_the_shared_boundary_day_files_under_both_trips(
     assert by_trip["video-shooting-tlv-2026-10"] == ["item-b"]
 
 
+def test_rail_is_a_point_event_like_a_flight(build_travel_db, monkeypatch, capsys):
+    """#310: Rail shares the transport rule. An overnight train leaving at
+    21:00 on Oct 17 and arriving 07:00 on Oct 18, both local, would overlap the
+    trip starting Oct 18 as a span; as a point event it files only under the
+    trip that owns its departure day."""
+    module, schedule_path, db_path = build_travel_db
+    schedule = [
+        _FALL_BREAK,
+        _VIDEO_TLV,
+        _item(
+            "item-rail",
+            "Night train",
+            "2026-10-18T02:00:00Z",
+            "2026-10-18T12:00:00Z",
+            "Rail",
+            start_local="2026-10-17T21:00:00-05:00",
+            end_local="2026-10-18T07:00:00-05:00",
+        ),
+    ]
+    schedule_path.write_text(json.dumps(schedule))
+    _run(module, monkeypatch, capsys)
+    by_trip = _uids_by_trip(json.loads(db_path.read_text()))
+    assert by_trip["fall-break-baselone-2026-10"] == ["item-rail"]
+    assert by_trip["video-shooting-tlv-2026-10"] == []
+
+
+def test_local_stamped_span_ends_on_its_local_day(build_travel_db, monkeypatch, capsys):
+    """#310: a span item overlaps on local-first days too. A stay checking out
+    at 23:30 CDT on Oct 17 is 04:30Z on Oct 18; locally it never touches the
+    trip that starts Oct 18."""
+    module, schedule_path, db_path = build_travel_db
+    schedule = [
+        _FALL_BREAK,
+        _VIDEO_TLV,
+        _item(
+            "item-stay",
+            "Airport hotel",
+            "2026-10-16T23:00:00Z",
+            "2026-10-18T04:30:00Z",
+            "Lodging",
+            start_local="2026-10-16T18:00:00-05:00",
+            end_local="2026-10-17T23:30:00-05:00",
+        ),
+    ]
+    schedule_path.write_text(json.dumps(schedule))
+    _run(module, monkeypatch, capsys)
+    by_trip = _uids_by_trip(json.loads(db_path.read_text()))
+    assert by_trip["fall-break-baselone-2026-10"] == ["item-stay"]
+    assert by_trip["video-shooting-tlv-2026-10"] == []
+
+
 def test_flight_inside_one_trip_never_reaches_the_other(build_travel_db, monkeypatch, capsys):
     """The ordinary case is unchanged: a mid-trip flight files under its own
     trip and nowhere else."""
