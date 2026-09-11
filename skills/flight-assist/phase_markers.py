@@ -8,9 +8,14 @@ record's `phase_markers` dict so the agent isn't notified twice
 
 Three time-based events:
 
-- `day_before` — fires at T-24h before scheduled departure (capability
-  2: day-before sanity check — agent composes a calendar-conflict
-  + booking-diff message)
+- `day_before` — fires once `now ≥ scheduled_dep − 24h` (capability 2:
+  day-before sanity check — agent composes a calendar-conflict + booking-
+  diff message). A flight first seen inside that window (a post-misconnect
+  rebook, a late add) fires at whatever T-minus it happens to be, often the
+  same local day, so the payload carries the REAL `hours_until_dep` and a
+  `day_label` (today / tomorrow / `YYYY-MM-DD`) resolved against the
+  operator's local date by `day_label()` — the compose renders the label
+  verbatim instead of doing date math off a constant (#300).
 - `time_to_leave` — fires when `now + travel_time + buffer ≥
   scheduled_dep_time` (capability 1: traffic-aware leave-by alert)
 - `arrival_logistics` — fires at scheduled_arr_time − 15 min
@@ -30,7 +35,9 @@ stdlib-only: `datetime` per `coding-policy: dependency-management`.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from wake_rules import is_real_boarding
 
@@ -53,34 +60,109 @@ GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES = 60
 _BOARDING_OR_GONE_STATUSES = frozenset({"departed", "en_route", "landed", "cancelled", "diverted"})
 
 
+def day_before_due(
+    *,
+    scheduled_dep_time: str | None,
+    phase_markers: dict,
+    now_utc: datetime,
+) -> bool:
+    """Whether `check_day_before` would fire now — the gate alone, no payload.
+
+    The precheck asks this first and resolves the operator's zone only when it
+    is True, so the zone reader never spawns for a flight whose `day_before`
+    is not firing this cycle: already fired, unparseable departure, or more
+    than `DAY_BEFORE_HOURS` out (#300).
+    """
+    if phase_markers.get("day_before_fired"):
+        return False
+    dep_dt = _parse_iso8601(scheduled_dep_time)
+    if dep_dt is None:
+        return False
+    return now_utc >= dep_dt - timedelta(hours=DAY_BEFORE_HOURS)
+
+
 def check_day_before(
     *,
     scheduled_dep_time: str | None,
     phase_markers: dict,
     now_utc: datetime,
+    operator_tz: str | None = None,
 ) -> tuple[bool, dict | None]:
     """T-24h gate. Returns (should_fire, event_payload).
 
     `phase_markers["day_before_fired"]` must be False to fire; once
     fired the caller sets it to True. `now_utc` must be timezone-aware
     UTC (callers use `datetime.now(timezone.utc)`).
+
+    The gate is unchanged from v0.1; the payload is not. `hours_until_dep`
+    is the real whole hours from `now_utc` to departure (24 at the exact
+    threshold, 7 for a flight first tracked ~7h50m out, negative for one
+    first seen after it left) — the old constant 24 read as "tomorrow" to
+    the compose whatever the clock said (#300). `day_label` / `day_label_tz`
+    come from `day_label()` below: `operator_tz` is the operator's current
+    IANA zone as the core `current-tz` reader resolved it, or None when no
+    zone is available; the caller resolves it, this function stays pure.
     """
-    if phase_markers.get("day_before_fired"):
+    if not day_before_due(
+        scheduled_dep_time=scheduled_dep_time, phase_markers=phase_markers, now_utc=now_utc
+    ):
         return (False, None)
     dep_dt = _parse_iso8601(scheduled_dep_time)
-    if dep_dt is None:
-        return (False, None)
-    threshold = dep_dt - timedelta(hours=DAY_BEFORE_HOURS)
-    if now_utc < threshold:
-        return (False, None)
+    assert dep_dt is not None  # day_before_due returned True, so it parsed
+    label, label_tz = day_label(dep_dt, now_utc=now_utc, operator_tz=operator_tz)
     return (
         True,
         {
             "reason": "day_before",
             "scheduled_dep_time": scheduled_dep_time,
-            "hours_until_dep": DAY_BEFORE_HOURS,
+            "hours_until_dep": int((dep_dt - now_utc).total_seconds() // 3600),
+            "day_label": label,
+            "day_label_tz": label_tz,
         },
     )
+
+
+def day_label(
+    dep_dt: datetime, *, now_utc: datetime, operator_tz: str | None
+) -> tuple[str, str | None]:
+    """The day word for a departure, resolved against the operator's local date.
+
+    Returns `(label, zone)`. With a resolvable `operator_tz`, both instants
+    are expressed in that zone and their calendar dates compared: the same
+    date is `"today"`, the next is `"tomorrow"`, anything else is the
+    operator-local ISO date (`YYYY-MM-DD`), and `zone` names the zone the
+    comparison ran in. That is the comparison `rules/operator-local-tz-
+    phrasing.md` prescribes, done here deterministically so the compose
+    renders it instead of re-deriving it (#300).
+
+    With no usable zone (`None`, or a name `ZoneInfo` cannot resolve) the
+    label is the explicit date the departure carries in its OWN offset —
+    `dep_dt` keeps the airport-local offset the RFC 3339 string had — and
+    `zone` is None. The container's UTC date is never the fallback: it is
+    the wrong date for hours around midnight, which is exactly when a
+    relative word misleads. A zone name that does not resolve is reported
+    here on stderr, naming the zone, and the fallback label still goes out.
+    """
+    if operator_tz:
+        try:
+            zone = ZoneInfo(operator_tz)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            print(
+                f"phase_markers.day_label: operator zone {operator_tz!r} does not resolve "
+                f"({exc}); labelling with the departure's own date — check the host "
+                "tz_state row the core current-tz reader serves",
+                file=sys.stderr,
+            )
+            zone = None
+        if zone is not None:
+            local_event = dep_dt.astimezone(zone).date()
+            local_now = now_utc.astimezone(zone).date()
+            if local_event == local_now:
+                return "today", operator_tz
+            if local_event == local_now + timedelta(days=1):
+                return "tomorrow", operator_tz
+            return local_event.isoformat(), operator_tz
+    return dep_dt.date().isoformat(), None
 
 
 def check_time_to_leave(

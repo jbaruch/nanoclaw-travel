@@ -170,7 +170,41 @@ def test_cli_misuse_exit_2_is_none_with_a_diagnostic(reader, capsys):
 def test_timeout_is_none_with_a_diagnostic(reader, capsys):
     run = FakeRun(raises=subprocess.TimeoutExpired(cmd="reader", timeout=5))
     assert read_operator_tz(reader=reader, run=run) is None
-    assert "did not answer" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "did not answer" in err
+    assert "/workspace/store" in err  # says what to check, not only what failed
+
+
+def test_timeout_relays_what_the_reader_said_before_the_kill(reader, capsys):
+    """Copilot on #305: `TimeoutExpired.stderr` is bytes whatever `text=` was."""
+    run = FakeRun(
+        raises=subprocess.TimeoutExpired(
+            cmd="reader", timeout=5, stderr=b"read-current-tz: database is locked"
+        )
+    )
+    assert read_operator_tz(reader=reader, run=run) is None
+    assert "database is locked" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        '{"available":true,"tz":"Mars/Olympus_Mons",'
+        '"local_now":"2026-09-10T12:03:00-05:00","local_date":"2026-09-10"}\n',
+        '{"available":true,"tz":"America/Chicago",'
+        '"local_now":"2026-09-10T12:03:00","local_date":"2026-09-10"}\n',
+        '{"available":true,"tz":"America/Chicago",'
+        '"local_now":"2026-09-10T12:03:00-05:00","local_date":"Sep 10"}\n',
+    ],
+)
+def test_payload_fields_that_do_not_parse_are_unavailable(reader, capsys, stdout):
+    """Copilot on #305: a zone ZoneInfo cannot resolve, a naive instant, or a
+    non-ISO date is not a usable answer, however well-formed the JSON."""
+    run = FakeRun(stdout=stdout)
+    assert read_operator_tz(reader=reader, run=run) is None
+    err = capsys.readouterr().err
+    assert "does not parse" in err
+    assert "nanoclaw-core" in err
 
 
 def test_spawn_failure_is_none_with_a_diagnostic(reader, capsys):

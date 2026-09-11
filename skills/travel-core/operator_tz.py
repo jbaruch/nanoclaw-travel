@@ -40,8 +40,9 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # The NanoClaw runtime mounts every `tessl__*` skill under this prefix; core's
 # `current-tz` skill is installed in every tier (nanoclaw-travel 0.2.130).
@@ -68,9 +69,38 @@ class OperatorTz:
     local_date: str
 
 
+# What to do when the reader's output does not match the contract this module
+# reads: the two plugins ship through separate pipelines, so the fix is to bring
+# them back in step rather than to retry.
+_CONTRACT_HINT = (
+    "check that the installed jbaruch/nanoclaw-core current-tz reader matches the "
+    "contract in travel-core/operator_tz.py, and update whichever side drifted"
+)
+
+
 def _unavailable(reason: str) -> None:
     print(f"operator_tz: {reason}; operator zone unavailable", file=sys.stderr)
     return None
+
+
+def _relay(stream: str | bytes | None) -> None:
+    """Pass the reader's own stderr through, newline-terminated."""
+    if not stream:
+        return
+    text = stream.decode("utf-8", errors="replace") if isinstance(stream, bytes) else stream
+    sys.stderr.write(text if text.endswith("\n") else text + "\n")
+
+
+def _valid_fields(tz: str, local_now: str, local_date: str) -> bool:
+    """Whether the payload's three strings are what they claim to be: a zone
+    `ZoneInfo` resolves, a timezone-aware ISO instant, and an ISO date."""
+    try:
+        ZoneInfo(tz)
+        parsed_now = datetime.fromisoformat(local_now)
+        date.fromisoformat(local_date)
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    return parsed_now.tzinfo is not None and parsed_now.utcoffset() is not None
 
 
 def read_operator_tz(
@@ -107,24 +137,34 @@ def read_operator_tz(
             timeout=READER_TIMEOUT_SECONDS,
             check=False,
         )
-    except subprocess.TimeoutExpired:
-        return _unavailable(f"core reader did not answer within {READER_TIMEOUT_SECONDS:.0f}s")
+    except subprocess.TimeoutExpired as exc:
+        # Whatever the reader managed to say before the kill is the best clue.
+        _relay(exc.stderr)
+        return _unavailable(
+            f"core reader did not answer within {READER_TIMEOUT_SECONDS:.0f}s — check that "
+            "the host store mount (/workspace/store) is present and not locked, then let "
+            "the next cycle retry"
+        )
     except OSError as exc:
-        return _unavailable(f"core reader could not be started ({exc})")
-    if proc.stderr:
-        sys.stderr.write(proc.stderr)
-        if not proc.stderr.endswith("\n"):
-            sys.stderr.write("\n")
+        return _unavailable(
+            f"core reader could not be started ({exc}) — check that {reader} is readable "
+            f"and that {sys.executable} can run it"
+        )
+    _relay(proc.stderr)
     if proc.returncode not in (0, 1):
         # Exit 2 is CLI misuse — a contract break between two plugins we both
         # own, not an operational miss. Still a degrade, never a dark cycle.
-        return _unavailable(f"core reader exited {proc.returncode} for {argv[2:]}")
+        return _unavailable(
+            f"core reader exited {proc.returncode} for {argv[2:]} — {_CONTRACT_HINT}"
+        )
     try:
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        return _unavailable(f"core reader printed non-JSON stdout: {proc.stdout.strip()[:120]!r}")
+        return _unavailable(
+            f"core reader printed non-JSON stdout: {proc.stdout.strip()[:120]!r} — {_CONTRACT_HINT}"
+        )
     if not isinstance(payload, dict):
-        return _unavailable("core reader stdout is not a JSON object")
+        return _unavailable(f"core reader stdout is not a JSON object — {_CONTRACT_HINT}")
     if payload.get("available") is not True:
         # The reader normally says why on stderr (no row, empty zone,
         # unsupported schema, unreadable store) and that line was relayed
@@ -133,6 +173,13 @@ def read_operator_tz(
         return _unavailable(f"core reader reported available: false (exit {proc.returncode})")
     tz, local_now, local_date = (payload.get(k) for k in ("tz", "local_now", "local_date"))
     if not all(isinstance(v, str) and v for v in (tz, local_now, local_date)):
-        return _unavailable(f"core reader payload is missing tz/local fields: {payload!r}")
+        return _unavailable(
+            f"core reader payload is missing tz/local fields: {payload!r} — {_CONTRACT_HINT}"
+        )
     assert isinstance(tz, str) and isinstance(local_now, str) and isinstance(local_date, str)
+    if not _valid_fields(tz, local_now, local_date):
+        return _unavailable(
+            f"core reader payload does not parse (tz={tz!r}, local_now={local_now!r}, "
+            f"local_date={local_date!r}) — {_CONTRACT_HINT}"
+        )
     return OperatorTz(tz=tz, local_now=local_now, local_date=local_date)
