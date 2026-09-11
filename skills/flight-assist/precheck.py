@@ -74,6 +74,7 @@ from phase_markers import (  # noqa: E402
     is_boarding_or_gone,
 )
 from state import (  # noqa: E402
+    StateError,
     read_active_flights,
     read_config,
     read_flight_state,
@@ -159,17 +160,20 @@ _MAPS_CALL_TIMEOUT_SECONDS = 8.0
 #
 # The operator-zone reader (#300) runs inside `_process_flight` too, between the
 # byAir poll and the Maps query, on the flight that first needs a `day_before`
-# label. It spawns at most once per cycle, but a flight started just under the
-# budget can be the one that pays for it, so its timeout is headroom as well.
+# label. It spawns at most once per cycle, so its timeout is not in the base
+# headroom: `_run_cycle` holds `_READER_RESERVE_SECONDS` back from a flight's
+# start deadline only while the reader has not run yet AND that flight could
+# fire its `day_before` this cycle (#312). A cycle whose flights have all fired
+# theirs keeps the full budget.
 _SCRIPT_KILL_BUDGET_SECONDS = 30.0
 _INTERPRETER_TEARDOWN_HEADROOM_SECONDS = 4.0
 _CYCLE_POLL_HEADROOM_SECONDS = (
     _BYAIR_CALL_TIMEOUT_SECONDS
-    + READER_TIMEOUT_SECONDS
     + _MAPS_CALL_TIMEOUT_SECONDS
     + _INTERPRETER_TEARDOWN_HEADROOM_SECONDS
 )
 _CYCLE_WALL_CLOCK_BUDGET_SECONDS = _SCRIPT_KILL_BUDGET_SECONDS - _CYCLE_POLL_HEADROOM_SECONDS
+_READER_RESERVE_SECONDS = READER_TIMEOUT_SECONDS
 
 
 def main() -> int:
@@ -230,7 +234,9 @@ def _run_cycle(
     reader (`travel-core/operator_tz.py`), so it is wrapped below in a
     once-per-cycle memo and only ever called when a `day_before` is about
     to fire — a cycle whose flights have all fired theirs never pays for
-    the subprocess, and every flight in one cycle sees the same zone.
+    the subprocess, and every flight in one cycle sees the same zone. Its
+    timeout is held back from a flight's start deadline only while that
+    flight could still be the one to spawn it (#312).
     """
     active_flight_ids = read_active_flights()
     config = read_config() or {}
@@ -279,9 +285,17 @@ def _run_cycle(
     removed_upstream_ids: set[int] = set()
     poll_failed_ids: set[int] = set()
     deferred_ids: set[int] = set()
+    # Which flights could spawn the zone reader this cycle: their deadline
+    # carries the reader reserve until the reader has run (#312).
+    may_spawn_reader = {fid for fid in active_flight_ids if _may_spawn_reader(fid, now_utc)}
     poll_deadline = monotonic() + _CYCLE_WALL_CLOCK_BUDGET_SECONDS
     for index, flight_id in enumerate(active_flight_ids):
-        if monotonic() >= poll_deadline:
+        reserve = (
+            _READER_RESERVE_SECONDS
+            if flight_id in may_spawn_reader and not resolve_operator_tz.resolved
+            else 0.0
+        )
+        if monotonic() >= poll_deadline - reserve:
             # Budget elapsed. Defer this flight and every flight after it
             # to the next cycle rather than risk the agent-runner's 30s
             # hard-kill mid-poll. Their `last_polled_at` is left untouched
@@ -372,25 +386,63 @@ def _run_cycle(
     return aggregated_events
 
 
-def _memoized_operator_tz(
-    reader: Callable[[], OperatorTz | None],
-) -> Callable[[], str | None]:
-    """Wrap the zone reader so one cycle spawns it at most once, and lazily.
+class _OperatorTzMemo:
+    """The zone reader, spawned at most once per cycle and only on demand.
 
-    The first call runs `reader` and caches its answer (the IANA name, or
-    None when no zone is available); later calls return the cache. Nothing
-    runs until something asks, so the subprocess is paid for only by a
-    cycle that is about to fire a `day_before` (#300).
+    Calling it runs `reader` the first time and caches the answer (the IANA
+    name, or None when no zone is available); later calls return the cache.
+    Nothing runs until something asks, so the subprocess is paid for only by
+    a cycle that is about to fire a `day_before` (#300). `resolved` tells the
+    poll loop whether the spawn is still ahead, so the loop reserves its
+    timeout only until then (#312).
     """
-    cache: list[str | None] = []
 
-    def resolve() -> str | None:
-        if not cache:
-            zone = reader()
-            cache.append(zone.tz if zone is not None else None)
-        return cache[0]
+    def __init__(self, reader: Callable[[], OperatorTz | None]) -> None:
+        self._reader = reader
+        self._cache: list[str | None] = []
 
-    return resolve
+    @property
+    def resolved(self) -> bool:
+        return bool(self._cache)
+
+    def __call__(self) -> str | None:
+        if not self._cache:
+            zone = self._reader()
+            self._cache.append(zone.tz if zone is not None else None)
+        return self._cache[0]
+
+
+def _memoized_operator_tz(reader: Callable[[], OperatorTz | None]) -> _OperatorTzMemo:
+    """Wrap the zone reader in a once-per-cycle, on-demand memo."""
+    return _OperatorTzMemo(reader)
+
+
+def _may_spawn_reader(flight_id: int, now_utc: datetime) -> bool:
+    """Whether processing this flight this cycle could spawn the zone reader.
+
+    `_process_flight` asks for the zone only when `day_before_due` holds for
+    the flight's persisted departure and markers, so the same predicate
+    answers here, behind the same `_due_for_poll` gate: a flight inside its
+    cadence interval returns before any label is asked for. A flight with no
+    state yet is first seen this cycle: its departure is unknown until byAir
+    answers, so it may. So may a flight whose record does not read (corrupt,
+    or an I/O error): this pre-pass only sizes a deadline, and the record
+    still fails loudly when its own turn to poll comes, after the flights
+    ahead of it have polled.
+    """
+    try:
+        prior_state = read_flight_state(flight_id)
+    except (StateError, OSError):
+        return True
+    if prior_state is None:
+        return True
+    if not _due_for_poll(prior_state, now_utc):
+        return False
+    return day_before_due(
+        scheduled_dep_time=prior_state.get("scheduled_dep_time"),
+        phase_markers=prior_state.get("phase_markers") or {},
+        now_utc=now_utc,
+    )
 
 
 def _check_connection_risks(

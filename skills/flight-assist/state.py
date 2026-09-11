@@ -132,7 +132,7 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+    tmp.write_text(json.dumps(payload, separators=(",", ":"), sort_keys=True), encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -161,10 +161,15 @@ def _read_json_with_version(path: Path, *, migrate: bool = True) -> dict | None:
     if not path.exists():
         return None
     try:
-        payload = json.loads(path.read_text())
-    except json.JSONDecodeError as decode_err:
+        # Explicit UTF-8, never the process locale: the writer emits ASCII JSON,
+        # and a locale codec could accept bytes UTF-8 rejects (#312).
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as decode_err:
+        # A non-UTF-8 file is the same corruption as broken JSON: the file is
+        # present and unusable, which is what StateError means (#312).
         raise StateError(
-            f"state file {path} is not valid JSON — inspect and remove or restore: {decode_err}"
+            f"state file {path} is not valid JSON (or not UTF-8 text) — inspect and remove "
+            f"or restore: {decode_err}"
         ) from decode_err
     if not isinstance(payload, dict):
         raise StateError(f"state file {path} is not a JSON object — found {type(payload).__name__}")

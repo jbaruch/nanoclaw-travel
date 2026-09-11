@@ -504,6 +504,16 @@ def test_corrupt_json_raises_state_error(state_root: Path):
         read_config()
 
 
+def test_non_utf8_state_file_raises_state_error(state_root: Path):
+    """#312: a non-UTF-8 file is present-but-unusable state, so it is a
+    StateError like broken JSON — never a raw UnicodeDecodeError that slips
+    past every caller's StateError handler."""
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_bytes(b"\xff\xfe{\x00")
+    with pytest.raises(StateError, match="not UTF-8"):
+        read_config()
+
+
 def test_missing_schema_version_raises_state_error(state_root: Path):
     state_root.mkdir(parents=True)
     (state_root / CONFIG_FILE).write_text(json.dumps({"home_address": "X"}))

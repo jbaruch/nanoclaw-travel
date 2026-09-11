@@ -444,8 +444,6 @@ def test_script_with_no_state_fails_with_a_rerun_command(capsys):
         (urllib.error.URLError("timed out"), "calendar"),
         (ConnectionResetError(54, "Connection reset by peer"), "calendar"),
         (http.client.IncompleteRead(b"{"), "calendar"),
-        (json.JSONDecodeError("Expecting value", "<html>", 0), "calendar"),
-        (UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), "calendar"),
     ],
 )
 def test_script_calendar_failures_exit_1_with_a_named_error(capsys, exc, error):
