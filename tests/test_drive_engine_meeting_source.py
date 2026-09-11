@@ -238,6 +238,37 @@ def test_exclude_keeps_legacy_dp_blocks_for_scan_has_block():
     assert "m1" in kept
 
 
+# --- display zone (#301) ----------------------------------------------------
+
+
+def test_display_tz_overrides_the_meeting_zone():
+    """A source event with a stale `+02:00` offset on an `America/Chicago`
+    event scans to `Etc/GMT-2`; the block must render on the operator's clock."""
+    m = FakeMeeting(
+        "m1",
+        "Baruch 1:1",
+        (FakeLeg("outbound", "Home", "1004 Nelson Merry St", arrive_by=_dt(19, 0)),),
+        timezone="Etc/GMT-2",
+    )
+    blocks, skipped = meeting_desired_blocks(
+        [m], route=const_route(38), display_tz="America/Chicago"
+    )
+    assert skipped == []
+    assert [b.timezone for b in blocks] == ["America/Chicago"]
+    assert blocks[0].end == _dt(19, 0)  # the instant is untouched
+
+
+def test_no_display_tz_keeps_the_meeting_zone():
+    m = FakeMeeting(
+        "m1",
+        "Baruch 1:1",
+        (FakeLeg("outbound", "Home", "1004 Nelson Merry St", arrive_by=_dt(19, 0)),),
+        timezone="Etc/GMT-2",
+    )
+    blocks, _ = meeting_desired_blocks([m], route=const_route(38), display_tz=None)
+    assert [b.timezone for b in blocks] == ["Etc/GMT-2"]
+
+
 # --- a leg whose origin is its destination (#301) ---------------------------
 
 

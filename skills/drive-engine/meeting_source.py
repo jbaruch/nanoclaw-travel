@@ -13,8 +13,10 @@ Two things make these correct where drive-planner's blocks went wrong:
   whose routed drive is implausibly long — the operator is abroad while the meeting
   is at home — is SUPPRESSED rather than invented. This is what stops "drive to
   Tennessee swim practice" appearing while the operator is in Europe.
-- **Local timezone.** Each block carries the meeting's IANA tz so it renders at the
-  correct local time instead of a foreign offset.
+- **Display timezone.** Each block carries the operator's current IANA zone when
+  the core `current-tz` reader has one (#301), the meeting's own zone otherwise —
+  so the block and the operator notice read on the clock the operator is looking
+  at, never a stale offset a source event dragged home from a trip.
 
 Pure: the caller runs the scan (I/O: calendar fetch) and supplies a `route` fn; a
 route failure or unresolved anchor skips that leg with a diagnostic, never a block.
@@ -136,6 +138,7 @@ def meeting_desired_blocks(
     route: RouteFn,
     max_reasonable_drive: timedelta = DEFAULT_MAX_REASONABLE_DRIVE,
     driving_to: dict[str, TripPresence] | None = None,
+    display_tz: str | None = None,
 ) -> tuple[list[DesiredBlock], list[str]]:
     """Turn scan `MeetingClass` results into unified meeting `DesiredBlock`s.
 
@@ -159,6 +162,16 @@ def meeting_desired_blocks(
 
     For those same meetings a home endpoint is rewritten to the trip's lodging
     unless home is real there — see `TripPresence`.
+
+    `display_tz` is the operator's current IANA zone from the core `current-tz`
+    reader, or None when it has none. It is the zone every block is written in
+    and the notice renders its "at HH:MM" from (#301). The instant is always the
+    source event's; only the wall-clock it is shown on changes. A source event
+    can carry a stale offset from a trip (`+02:00` on an `America/Chicago` event
+    after Amsterdam), and the scan's offset-derived `Etc/GMT±N` fallback keeps
+    that instant right while showing it on the wrong clock; the operator's zone
+    is the clock Google Calendar shows them the same event on. None keeps the
+    meeting's own zone.
     """
     presence = driving_to or {}
     blocks: list[DesiredBlock] = []
@@ -224,7 +237,7 @@ def meeting_desired_blocks(
                     destination=destination,
                     baseline_seconds=int(drive.total_seconds()),
                     anchor=anchor,
-                    timezone=getattr(meeting, "timezone", None),
+                    timezone=display_tz or getattr(meeting, "timezone", None),
                     legacy_keys=frozenset({(GEN_LEGACY_DP, meeting.meeting_id, leg.direction)}),
                 )
             )
