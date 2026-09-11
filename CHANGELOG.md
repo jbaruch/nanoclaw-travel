@@ -1,5 +1,9 @@
 # Changelog
 
+### rules — split the never-derive bullet into two directives (#298)
+
+Deferred advisory from #297, presentation only: the bullet "Never derive a relative date from container-local `datetime.now()`, and never convert an instant by hand" in `rules/operator-local-tz-phrasing.md` carried two prohibitions, and `coding-policy: context-writing-style` Structure wants one directive per bullet. It is now two bullets, both prohibitions preserved verbatim. Copilot's request on the same PR to put the runtime mount path in the rule prose was declined: the rule keeps the repo-relative path per `skill-authoring` Script References, and the flight-assist step carries the runtime path.
+
 ## 0.2.130 — 2026-09-09
 
 ### flight-assist — `read-current-tz.py` moves to `nanoclaw-core` (`jbaruch/nanoclaw#951` follow-up)
