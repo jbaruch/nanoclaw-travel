@@ -37,10 +37,11 @@ SYNTH_CAL = "synthetic@group.calendar.example"
 
 
 class _FakeResponse:
-    """Stand-in for the urlopen context manager: yields .read()."""
+    """Stand-in for the urlopen context manager: yields .read() and .status."""
 
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, status: int = 200):
         self._body = body
+        self.status = status
 
     def read(self) -> bytes:
         return self._body
@@ -440,8 +441,18 @@ def test_find_events_raises_when_token_never_clears(client):
 def test_delete_204_empty_body_returns_empty_dict(client):
     """Calendar answers DELETE with 204 and no body. That is success, not a
     JSONDecodeError for every caller to guard."""
-    with patch("urllib.request.urlopen", side_effect=lambda *a, **k: _FakeResponse(b"")):
+    empty_204 = _FakeResponse(b"", status=204)
+    with patch("urllib.request.urlopen", side_effect=lambda *a, **k: empty_204):
         assert client.delete_event({"calendar_id": "c", "event_id": "e"}) == {}
+
+
+def test_empty_body_on_a_non_204_2xx_is_an_error(client):
+    """#312: an empty 200 must not read as an empty event list."""
+    empty_200 = _FakeResponse(b"", status=200)
+    with patch("urllib.request.urlopen", side_effect=lambda *a, **k: empty_200):
+        with pytest.raises(GoogleCalendarError, match="empty 200 body") as caught:
+            client.find_events({"calendar_id": "c", "timeMin": "a", "timeMax": "b"})
+    assert caught.value.status_code is None
 
 
 def test_create_returns_the_event_resource(client):

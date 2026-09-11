@@ -37,8 +37,11 @@ LATER = NOW + timedelta(days=14)
 
 
 class _FakeResponse:
-    def __init__(self, body: bytes):
+    """urlopen stand-in: a real HTTPResponse always carries `.status`."""
+
+    def __init__(self, body: bytes, status: int = 200):
         self._body = body
+        self.status = status
 
     def read(self) -> bytes:
         return self._body

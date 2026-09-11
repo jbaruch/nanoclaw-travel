@@ -253,7 +253,8 @@ class GoogleCalendarClient:
             TierAccessRestricted: on 403 + `access_restricted`.
             GoogleCalendarError: on any other non-2xx; `.status_code` is the
                 HTTP status. Also on a 2xx whose body is not a UTF-8 JSON
-                object; `.status_code` is None then.
+                object, or is empty on anything but a 204; `.status_code` is
+                None then.
             urllib.error.URLError: on network/transport failure (incl. a
                 body-read timeout, normalized for a single transport-error
                 type per this module's contract).
@@ -281,6 +282,7 @@ class GoogleCalendarClient:
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:
                 raw = response.read()
+                status = response.status
         except urllib.error.HTTPError as http_err:
             raise _classify(http_err) from http_err
         except TimeoutError as timeout_err:
@@ -292,8 +294,15 @@ class GoogleCalendarClient:
 
         if not raw:
             # 204 No Content — Calendar's DELETE. An empty body is success, not
-            # a JSONDecodeError for every caller to guard.
-            return {}
+            # a JSONDecodeError for every caller to guard. On any other 2xx an
+            # empty body is a failed call: a silent `{}` would read as "no
+            # events" to `find_events` (#312).
+            if status == 204:
+                return {}
+            raise GoogleCalendarError(
+                f"{method} {path}: empty {status} body — check the OneCLI gateway is "
+                "proxying Google, not answering itself"
+            )
         # Every Calendar resource is a JSON object. A 2xx whose body is not
         # UTF-8, not JSON, or not an object (a proxy page, `[]`) is a failed
         # call, raised as the type callers already handle per op (#312).

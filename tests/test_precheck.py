@@ -1178,6 +1178,57 @@ def test_corrupt_record_still_fails_at_its_own_turn_after_earlier_polls(state_ro
     assert must(read_flight_state(1))["last_polled_at"] == "2026-05-18T16:00:00Z"
 
 
+def test_flight_not_due_for_a_poll_holds_no_reserve(state_root: Path):
+    """Copilot on #313: a flight inside its day-before window but inside its
+    cadence interval returns before any label is asked for, so it must not
+    hold the reserve — which, under the loop's defer-the-rest rule, would also
+    defer every flight after it. At t=6 it passes and flight 3 still polls."""
+    _fired_flight(1)
+    write_flight_state(
+        _make_state(
+            flight_id=2,
+            last_polled_at="2026-05-18T15:59:00Z",  # 1 min ago, 10-min cadence
+            last_snapshot=_scheduled_snapshot(),
+            phase_markers=_phase_markers(),  # day_before not fired
+        )
+    )
+    _fired_flight(3)
+    write_active_flights([1, 2, 3])
+    clock = {"t": 0.0}
+    reader = _CountingReader(_CHICAGO)
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = _timed_poll(clock, 6.0)
+        precheck._run_cycle(
+            now_utc=fake_now, monotonic=lambda: clock["t"], operator_tz_reader=reader
+        )
+    polled = [
+        c.kwargs["flight_id"] for c in mock_byair_from_env.return_value.get_flight.call_args_list
+    ]
+    assert polled == [1, 3]
+    assert reader.calls == 0
+
+
+def test_io_error_on_a_record_still_fails_at_its_own_turn(state_root: Path):
+    """Copilot on #313: an OSError from the pre-pass read is treated like a
+    corrupt record, so it cannot abort the cycle before earlier flights poll."""
+    _fired_flight(1)
+    (state_root / "flight-7.json").mkdir()  # read_text() raises IsADirectoryError
+    write_active_flights([1, 7])
+    fake_now = datetime(2026, 5, 18, 16, 0, 0, tzinfo=timezone.utc)
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = lambda flight_id: _byair_flight(
+            flight_id=flight_id
+        )
+        with pytest.raises(OSError):
+            precheck._run_cycle(
+                now_utc=fake_now,
+                monotonic=lambda: 0.0,
+                operator_tz_reader=_CountingReader(_CHICAGO),
+            )
+    assert must(read_flight_state(1))["last_polled_at"] == "2026-05-18T16:00:00Z"
+
+
 def test_poll_horizon_skips_flight_departing_beyond_24h(state_root: Path):
     """A seeded flight (no snapshot yet) departing more than 24h out is not
     polled — sync keeps it in the index, but it costs no byAir call until it

@@ -422,18 +422,22 @@ def _may_spawn_reader(flight_id: int, now_utc: datetime) -> bool:
 
     `_process_flight` asks for the zone only when `day_before_due` holds for
     the flight's persisted departure and markers, so the same predicate
-    answers here. A flight with no state yet is first seen this cycle: its
-    departure is unknown until byAir answers, so it may. So may a flight
-    whose record does not read: this pre-pass only sizes a deadline, and the
-    record still fails loudly when its own turn to poll comes, after the
-    flights ahead of it have polled.
+    answers here, behind the same `_due_for_poll` gate: a flight inside its
+    cadence interval returns before any label is asked for. A flight with no
+    state yet is first seen this cycle: its departure is unknown until byAir
+    answers, so it may. So may a flight whose record does not read (corrupt,
+    or an I/O error): this pre-pass only sizes a deadline, and the record
+    still fails loudly when its own turn to poll comes, after the flights
+    ahead of it have polled.
     """
     try:
         prior_state = read_flight_state(flight_id)
-    except StateError:
+    except (StateError, OSError):
         return True
     if prior_state is None:
         return True
+    if not _due_for_poll(prior_state, now_utc):
+        return False
     return day_before_due(
         scheduled_dep_time=prior_state.get("scheduled_dep_time"),
         phase_markers=prior_state.get("phase_markers") or {},
