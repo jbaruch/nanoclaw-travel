@@ -21,8 +21,9 @@ Stdout (single-line JSON):
     {"error": "gateway"}    — the OneCLI gateway is not authenticating (exit 1)
     {"error": "tier"}       — this agent's tier is gated from Google (exit 1)
     {"error": "calendar"}   — Calendar or the network failed this call (exit 1)
-    {"error": "state"}      — the flight's departure/arrival does not parse,
-                              so there is no window to read (exit 1)
+    {"error": "state"}      — the flight's state record is unreadable, or its
+                              departure/arrival does not parse, so there is no
+                              window to read (exit 1)
 
 `tz` is the zone the times were rendered in: null when the operator's zone is
 unavailable or does not resolve, and `start` / `end` then keep each event's
@@ -36,9 +37,9 @@ rerun. `tier` is gated by design and names no rerun.
 
 from __future__ import annotations
 
+import http.client
 import json
 import sys
-import urllib.error
 from collections.abc import Callable
 from pathlib import Path
 
@@ -63,7 +64,7 @@ from google_calendar_client import (  # noqa: E402
     TierAccessRestricted,
 )
 from operator_tz import OperatorTz, read_operator_tz  # noqa: E402
-from state import read_flight_state  # noqa: E402
+from state import StateError, read_flight_state  # noqa: E402
 
 # How an operator reruns this check by hand once the cause is fixed.
 _RERUN = "python3 /home/node/.claude/skills/tessl__flight-assist/scripts/day-before-calendar.py"
@@ -86,7 +87,17 @@ def run(
     without the gateway, the core reader, or on-disk state.
     """
     rerun = f"{_RERUN} {flight_id}"
-    state = read_state(flight_id)
+    try:
+        state = read_state(flight_id)
+    except (StateError, OSError) as exc:
+        print(
+            f"day-before-calendar: state for flight_id {flight_id} is unreadable ({exc}) — "
+            "fix or remove that state file (the daily sync re-seeds a removed one), "
+            f"then rerun `{rerun}`",
+            file=sys.stderr,
+        )
+        _emit({"error": "state"})
+        return 1
     if state is None:
         print(
             f"day-before-calendar: flight_id {flight_id} has no state on disk — the "
@@ -131,12 +142,14 @@ def run(
         return 1
     except (
         GoogleCalendarError,
-        urllib.error.URLError,
+        OSError,
+        http.client.HTTPException,
         UnicodeDecodeError,
         json.JSONDecodeError,
     ) as exc:
-        # A gateway can answer 2xx with a body that is not JSON or not UTF-8;
-        # the client's decode raises those, and they are calendar failures too.
+        # OSError covers the client's URLError and a connection reset mid-read;
+        # HTTPException a truncated body. A gateway can also answer 2xx with a
+        # body that is not JSON or not UTF-8. All are calendar failures here.
         print(
             f"day-before-calendar: calendar read failed ({exc}) — the day-before check "
             f"goes out without the calendar part; once Calendar answers, rerun `{rerun}`",

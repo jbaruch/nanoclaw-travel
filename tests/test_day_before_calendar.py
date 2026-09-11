@@ -15,6 +15,7 @@ compose used to decide on its own:
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import json
 import sys
@@ -41,6 +42,7 @@ from google_calendar_client import (  # noqa: E402
     TierAccessRestricted,
 )
 from operator_tz import OperatorTz  # noqa: E402
+from state import StateError  # noqa: E402
 
 CHICAGO = "America/Chicago"
 UTC = timezone.utc
@@ -397,6 +399,33 @@ def test_script_with_an_unparseable_window_returns_a_state_error(capsys):
     assert client.calls == []
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        StateError("flight-7356314.json: missing required field 'scheduled_dep_time'"),
+        PermissionError(13, "Permission denied", "flight-7356314.json"),
+    ],
+)
+def test_script_with_unreadable_state_returns_a_state_error(capsys, exc):
+    """Policy review on #307: a corrupt or unreadable state record is an
+    expected failure — structured JSON and a rerun command, never a traceback."""
+
+    def failing_reader(_flight_id: int) -> dict | None:
+        raise exc
+
+    script = _load_script()
+    client = FakeCalendar()
+    code = script.run(
+        7356314, client=client, operator_tz_reader=_reader(CHICAGO), read_state=failing_reader
+    )
+    out = capsys.readouterr()
+    assert code == 1
+    assert json.loads(out.out) == {"error": "state"}
+    assert "is unreadable" in out.err
+    assert "day-before-calendar.py 7356314" in out.err
+    assert client.calls == []
+
+
 def test_script_with_no_state_fails_with_a_rerun_command(capsys):
     """Policy review on #307: a missing state record is a failure, reported on
     stderr with what to do, not a quiet exit 0."""
@@ -413,6 +442,8 @@ def test_script_with_no_state_fails_with_a_rerun_command(capsys):
         (GatewayNotInjecting("401"), "gateway"),
         (GoogleCalendarError("500", status_code=500), "calendar"),
         (urllib.error.URLError("timed out"), "calendar"),
+        (ConnectionResetError(54, "Connection reset by peer"), "calendar"),
+        (http.client.IncompleteRead(b"{"), "calendar"),
         (json.JSONDecodeError("Expecting value", "<html>", 0), "calendar"),
         (UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), "calendar"),
     ],
