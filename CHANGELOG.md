@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.139 — 2026-09-11
+
 ### flight-assist — reader reserve per flight; malformed calendar bodies and non-UTF-8 state are owned errors (#312)
 
 Copilot's final review on #307 suppressed three findings, deferred here so #307 could merge on its approved head.
