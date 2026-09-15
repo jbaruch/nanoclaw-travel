@@ -972,3 +972,28 @@ def test_home_metro_ignores_lodging_from_prior_trip():
     )
     assert anchor.address == HOME
     assert anchor.source == "home"
+
+
+def test_effective_home_reads_profile_metro_for_local_placeholder(tmp_path, monkeypatch):
+    import addresses
+
+    profile = tmp_path / "user_profile.md"
+    profile.write_text("## Addresses\n- schema_version: 2\n- home_metro: Nashville, TN\n")
+    schedule = tmp_path / "travel-schedule.json"
+    schedule.write_text(
+        json.dumps(
+            [
+                _record(
+                    type="Trip",
+                    summary="Local placeholder",
+                    start="2025-07-07",
+                    end="2025-07-07",
+                    location="Nashville, TN",
+                )
+            ]
+        )
+    )
+    monkeypatch.setattr(addresses, "profile_path", lambda: profile)
+    monkeypatch.setattr(trip_origin, "SCHEDULE_PATH", str(schedule))
+
+    assert resolve_effective_home(HOME, now=_at("2025-07-07T18:00:00Z")) == HOME
