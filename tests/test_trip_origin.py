@@ -8,7 +8,7 @@ Locks the anchor-resolution contract:
   - `resolve_anchor` rules: off-trip → home; on-trip → latest Lodging
     event (check-in OR check-out) within the trip span at or before the
     anchor time; pre-first-lodging → the Trip's own location; nothing →
-    unresolved (address None). Home is NEVER the anchor mid-trip
+    unresolved (address None). Home-metro trips without lodging use home
   - the live #122 case: mid-gap between check-out and next check-in the
     prior stay's lodging wins
   - `resolve_effective_home` is the I/O convenience over both
@@ -833,3 +833,142 @@ def test_the_staging_separator_is_the_check_ins_lead_time():
     schedule[1]["start"] = "2025-07-12T22:00:00Z"
     schedule[1]["end"] = "2025-07-12T23:00:00Z"
     assert opened_from_home(schedule, at=_at("2025-07-13T08:00:00Z"), home_address=HOME)
+
+
+@pytest.mark.parametrize("location", ["Nashville, TN", "  NASHVILLE,   TN  "])
+def test_home_metro_without_lodging_anchors_at_home(location):
+    schedule = [
+        _record(
+            type="Trip",
+            summary="Local placeholder",
+            start="2025-07-07",
+            end="2025-07-07",
+            location=location,
+        )
+    ]
+    anchor = resolve_anchor(
+        schedule,
+        at=_at("2025-07-07T18:00:00Z"),
+        home_address=HOME,
+        home_metros=frozenset({"nashville, tn"}),
+    )
+    assert anchor.address == HOME
+    assert anchor.source == "home"
+
+
+@pytest.mark.parametrize("metros", [frozenset(), frozenset({"franklin, tn"})])
+def test_trip_without_matching_home_metro_keeps_trip_location(metros):
+    schedule = [
+        _record(
+            type="Trip",
+            summary="Trip",
+            start="2025-07-07",
+            end="2025-07-07",
+            location="Nashville, TN",
+        )
+    ]
+    anchor = resolve_anchor(
+        schedule, at=_at("2025-07-07T18:00:00Z"), home_address=HOME, home_metros=metros
+    )
+    assert anchor.address == "Nashville, TN"
+    assert anchor.source == "trip_location"
+
+
+def test_home_metro_with_lodging_keeps_hotel_anchor():
+    schedule = [
+        _record(
+            type="Trip",
+            summary="Downtown stay",
+            start="2025-07-07",
+            end="2025-07-08",
+            location="Nashville, TN",
+        ),
+        _record(
+            type="Lodging",
+            summary="Check-in: Downtown Hotel",
+            start="2025-07-07T15:00:00Z",
+            end="2025-07-07T15:00:00Z",
+            location="42 Example Ave",
+        ),
+    ]
+    anchor = resolve_anchor(
+        schedule,
+        at=_at("2025-07-07T18:00:00Z"),
+        home_address=HOME,
+        home_metros=frozenset({"nashville, tn"}),
+    )
+    assert anchor.address == "42 Example Ave"
+    assert anchor.source == "lodging"
+
+
+def test_home_metro_without_home_address_does_not_guess_centroid():
+    schedule = [
+        _record(
+            type="Trip",
+            summary="Local placeholder",
+            start="2025-07-07",
+            end="2025-07-07",
+            location="Nashville, TN",
+        )
+    ]
+    anchor = resolve_anchor(
+        schedule,
+        at=_at("2025-07-07T18:00:00Z"),
+        home_address=None,
+        home_metros=frozenset({"nashville, tn"}),
+    )
+    assert anchor.address is None
+    assert anchor.source == "home"
+
+
+def test_home_metro_with_future_addressless_lodging_is_not_a_placeholder():
+    schedule = [
+        _record(
+            type="Trip",
+            summary="Local stay",
+            start="2025-07-07",
+            end="2025-07-08",
+            location="Nashville, TN",
+        ),
+        _record(
+            type="Lodging",
+            summary="Check-in: Hotel",
+            start="2025-07-08T15:00:00Z",
+            end="2025-07-08T15:00:00Z",
+        ),
+    ]
+    anchor = resolve_anchor(
+        schedule,
+        at=_at("2025-07-07T18:00:00Z"),
+        home_address=HOME,
+        home_metros=frozenset({"nashville, tn"}),
+    )
+    assert anchor.address == "Nashville, TN"
+    assert anchor.source == "trip_location"
+
+
+def test_home_metro_ignores_lodging_from_prior_trip():
+    schedule = [
+        _record(
+            type="Trip",
+            summary="Local placeholder",
+            start="2025-07-07",
+            end="2025-07-07",
+            location="Nashville, TN",
+        ),
+        _record(
+            type="Lodging",
+            summary="Check-out: Prior Hotel",
+            start="2025-07-06T10:00:00Z",
+            end="2025-07-06T10:00:00Z",
+            location="42 Example Ave",
+        ),
+    ]
+    anchor = resolve_anchor(
+        schedule,
+        at=_at("2025-07-07T18:00:00Z"),
+        home_address=HOME,
+        home_metros=frozenset({"nashville, tn"}),
+    )
+    assert anchor.address == HOME
+    assert anchor.source == "home"

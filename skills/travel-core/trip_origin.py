@@ -20,7 +20,7 @@ TripIt-derived `travel-schedule.json` (written nightly by
 3. On a trip but before its first lodging event → the `Trip` segment's own
    `location` when present, else unresolved (`address=None`) — the caller
    surfaces "no drivable origin" instead of planning from home. The static
-   home is NEVER the anchor mid-trip.
+   home also anchors home-metro trips without lodging (#314).
 
 Rule 2/3 apply only from the moment the operator has actually left, though: the
 date-only `Trip` wrapper is "active" on the departure day itself, but before the
@@ -70,6 +70,7 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
+from addresses import home_metro_names, is_home_metro  # noqa: E402
 from lodging import CHECK_IN, lodging_role  # noqa: E402
 
 SCHEDULE_PATH = "/workspace/group/travel-schedule.json"
@@ -318,6 +319,7 @@ def resolve_anchor(
     *,
     at: datetime,
     home_address: str | None,
+    home_metros: frozenset[str] = frozenset(),
 ) -> TripAnchor:
     """Resolve the drive anchor for time `at` per the #122 rules. Pure.
 
@@ -332,6 +334,8 @@ def resolve_anchor(
             (flight-assist's config leaves it unset), in which case the
             off-trip anchor is None with source "home" — same "no origin
             configured" contract callers already handle.
+        home_metros: normalized labels from `addresses.home_metro_names`.
+            A matching trip without lodging resolves to home (#314).
 
     Returns:
         TripAnchor — see the class docstring for the source ladder.
@@ -348,6 +352,22 @@ def resolve_anchor(
 
     trip_start = _parse_day(trip.get("start"))
     trip_end = _parse_day(trip.get("end"))
+
+    # A local placeholder is still home unless its span contains a lodging
+    # reservation. Count future and address-less lodging too: neither proves
+    # that this is a placeholder (#314).
+    has_lodging = any(
+        record.get("type") == "Lodging"
+        and (day := _parse_day(record.get("start"))) is not None
+        and trip_start is not None
+        and trip_end is not None
+        and trip_start <= day <= trip_end
+        for record in schedule
+    )
+    if is_home_metro(trip.get("location"), home_metros) and not has_lodging:
+        return TripAnchor(
+            address=home_address, source="home", detail="home-metro trip without lodging"
+        )
 
     # Before the trip begins the operator is still home — the date-only Trip
     # wrapper is "active" on the first day, but anchoring an outbound drive at
@@ -477,7 +497,11 @@ def flight_summaries(schedule: list[dict] | None) -> list[str]:
 
 
 def opened_from_home(
-    schedule: list[dict] | None, *, at: datetime, home_address: str | None
+    schedule: list[dict] | None,
+    *,
+    at: datetime,
+    home_address: str | None,
+    home_metros: frozenset[str] = frozenset(),
 ) -> bool:
     """Whether the journey whose ground-reached departure sits at `at` left home.
 
@@ -510,7 +534,7 @@ def opened_from_home(
     """
     if home_address is None:
         return False
-    planned = resolve_anchor(schedule, at=at, home_address=home_address)
+    planned = resolve_anchor(schedule, at=at, home_address=home_address, home_metros=home_metros)
     if planned.source == "home":
         return planned.address is not None
     if not schedule:
@@ -540,5 +564,7 @@ def resolve_effective_home(home_address: str | None, *, now: datetime) -> str | 
     "no home_address configured" handling then skips routing, which beats
     routing to a residence an ocean away.
     """
-    anchor = resolve_anchor(load_travel_schedule(), at=now, home_address=home_address)
+    anchor = resolve_anchor(
+        load_travel_schedule(), at=now, home_address=home_address, home_metros=home_metro_names()
+    )
     return anchor.address

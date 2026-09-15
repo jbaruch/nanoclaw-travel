@@ -130,6 +130,7 @@ def _build_departure(
     *,
     schedule: list[dict] | None,
     home_address: str | None,
+    home_metros: frozenset[str],
     now: datetime,
     live_origin: str | None,
     route: RouteFn,
@@ -138,7 +139,7 @@ def _build_departure(
     anchor = leg.anchor
     assert anchor is not None and leg.dest_airport is not None
     dest = _airport_place(leg.dest_airport)
-    planned = position_at(schedule, anchor, home_address=home_address)
+    planned = position_at(schedule, anchor, home_address=home_address, home_metros=home_metros)
     if planned.address is None:
         return None, f"departure {leg_identity(leg)}: no origin (position_at unresolved)"
     approx = route(planned.address, dest)
@@ -181,6 +182,7 @@ def _build_arrival(
     *,
     schedule: list[dict] | None,
     home_address: str | None,
+    home_metros: frozenset[str],
     return_home: bool,
     route: RouteFn,
     boarding_present: BoardingPresentFn,
@@ -192,7 +194,7 @@ def _build_arrival(
         destination = home_address
         destination_label = "home"
     else:
-        planned = position_at(schedule, anchor, home_address=home_address)
+        planned = position_at(schedule, anchor, home_address=home_address, home_metros=home_metros)
         destination = planned.address
         destination_label = _dest_label(planned)
     if destination is None:
@@ -255,6 +257,7 @@ def build_reconcile_plan(
     route: RouteFn,
     schedule: list[dict] | None = None,
     home_address: str | None = None,
+    home_metros: frozenset[str] = frozenset(),
     now: datetime,
     live_origin: str | None = None,
     boarding_present: BoardingPresentFn | None = None,
@@ -306,7 +309,9 @@ def build_reconcile_plan(
         # Ask whether the JOURNEY left home, not whether the operator happened to
         # be standing in the house at that instant — those come apart when he
         # stages at an airport hotel the night before (#235, `opened_from_home`).
-        if opened_from_home(schedule, at=opening_anchor, home_address=home_address):
+        if opened_from_home(
+            schedule, at=opening_anchor, home_address=home_address, home_metros=home_metros
+        ):
             homecoming_flights.add(last)
 
     desired: list[DesiredBlock] = []
@@ -348,6 +353,7 @@ def build_reconcile_plan(
                     concrete,
                     schedule=schedule,
                     home_address=home_address,
+                    home_metros=home_metros,
                     now=now,
                     live_origin=live_origin,
                     route=route,
@@ -368,6 +374,7 @@ def build_reconcile_plan(
                     concrete,
                     schedule=schedule,
                     home_address=home_address,
+                    home_metros=home_metros,
                     return_home=flight in homecoming_flights,
                     route=route,
                     boarding_present=boarding_present,

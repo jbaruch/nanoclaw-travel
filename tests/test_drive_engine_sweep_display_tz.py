@@ -127,3 +127,69 @@ def test_sweep_passes_none_when_the_reader_has_no_zone(monkeypatch, tmp_path):
     captured = _stub_live_clients(monkeypatch, lambda: None, tmp_path)
     assert reconcile_sweep._run_sweep() == {"wake_agent": False}
     assert captured["display_tz"] is None
+
+
+def test_home_metro_placeholder_routes_meeting_from_current_home(monkeypatch, tmp_path):
+    from datetime import timedelta
+
+    import addresses
+    import home_address
+
+    real_meeting_blocks = reconcile_sweep.meeting_desired_blocks
+    real_build_plan = reconcile_sweep.build_plan
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    profile = tmp_path / "user_profile.md"
+    profile.write_text(
+        "## Addresses\n- schema_version: 2\n"
+        "- current_home: 12 Example St\n- home_metro: Nashville, TN\n"
+    )
+    monkeypatch.setattr(addresses, "profile_path", lambda: profile)
+    monkeypatch.setattr(home_address, "read_current_home", lambda: "12 Example St")
+    monkeypatch.setattr(state, "read_config", lambda: {})
+    monkeypatch.setattr(
+        trip_origin,
+        "load_travel_schedule",
+        lambda: [
+            {
+                "type": "Trip",
+                "summary": "Local placeholder",
+                "start": "2026-09-11",
+                "end": "2026-09-11",
+                "location": "NASHVILLE,  TN",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        _EmptyFetcher,
+        "fetch_window",
+        lambda self, **_: [
+            {
+                "id": "downtown",
+                "summary": "Downtown meeting",
+                "location": "42 Example Ave",
+                "start": {"dateTime": "2026-09-11T18:00:00Z"},
+                "end": {"dateTime": "2026-09-11T19:00:00Z"},
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        reconcile_sweep, "make_route", lambda _: lambda origin, dest: timedelta(minutes=40)
+    )
+    monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", real_meeting_blocks)
+    monkeypatch.setattr(reconcile_sweep, "build_plan", real_build_plan)
+    plans = []
+    monkeypatch.setattr(
+        reconcile_sweep, "finish_sweep", lambda plan, *_args, **_kwargs: plans.append(plan) or {}
+    )
+
+    reconcile_sweep._run_sweep()
+    desired = {create.desired.kind: create.desired for create in plans[0].creates}
+    outbound = desired["meeting_outbound"]
+    returning = desired["meeting_return"]
+    assert outbound.origin == "12 Example St"
+    assert outbound.destination == "42 Example Ave"
+    assert outbound.baseline_seconds == 2400
+    assert outbound.start == datetime(2026, 9, 11, 17, 20, tzinfo=timezone.utc)
+    assert returning.origin == "42 Example Ave"
+    assert returning.destination == "12 Example St"
+    assert returning.end == datetime(2026, 9, 11, 19, 40, tzinfo=timezone.utc)
