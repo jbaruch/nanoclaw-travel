@@ -190,6 +190,7 @@ def build_plan(
     now: datetime,
     schedule: list[dict] | None = None,
     home_address: str | None = None,
+    home_metros: frozenset[str] = frozenset(),
     live_origin: str | None = None,
     tripit_flights: list | None = None,
     boarding_present: Callable | None = None,
@@ -236,6 +237,7 @@ def build_plan(
         route=route,
         schedule=schedule,
         home_address=home_address,
+        home_metros=home_metros,
         now=now,
         live_origin=live_origin,
         boarding_present=boarding_present,
@@ -878,6 +880,7 @@ def _run_sweep() -> dict:
     _on_path("flight-assist")
     _on_path("travel-core")
 
+    from addresses import home_metro_names
     from airport_drive_inputs import airport_context
     from byair_client import ByAirClient, ByAirError
     from calendar_reconcile import _find_events_args, _items
@@ -915,6 +918,7 @@ def _run_sweep() -> dict:
         except HomeAddressError:
             home = None  # neither source configured — degrade, see below
     schedule = load_travel_schedule()
+    home_metros = home_metro_names()
 
     maps = MapsClient.from_env(timeout=_SWEEP_MAPS_TIMEOUT_SECONDS)
     # One memoizing route closure for the whole sweep — meeting legs and airport
@@ -975,7 +979,7 @@ def _run_sweep() -> dict:
         skips = load_active_skips(now)
 
         def anchor_for(at: datetime) -> tuple[str | None, str | None]:
-            anchor = resolve_anchor(schedule, at=at, home_address=home)
+            anchor = resolve_anchor(schedule, at=at, home_address=home, home_metros=home_metros)
             return anchor.address, anchor.detail
 
         meetings = scan(
@@ -1103,6 +1107,7 @@ def _run_sweep() -> dict:
         now=now,
         schedule=schedule,
         home_address=home,
+        home_metros=home_metros,
         live_origin=live_origin,
     )
 

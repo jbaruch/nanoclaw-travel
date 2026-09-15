@@ -596,3 +596,28 @@ def test_a_trip_driven_to_then_flown_out_of_does_not_drive_home_to_tennessee():
     arrivals = [c.desired for c in result.plan.creates if c.desired.kind == "airport_arrival"]
     assert arrivals[-1].destination != HOME
     assert "Gatlinburg" in arrivals[-1].destination
+
+
+def test_airport_arrival_on_home_metro_placeholder_returns_home():
+    f = flight("JFK", "BNA", _dt(9), _dt(11), fid=1)
+    result = build_reconcile_plan(
+        flights=[f],
+        airport_info=_us_info("JFK", "BNA"),
+        current_blocks=[],
+        route=const_route(40),
+        home_address=HOME,
+        home_metros=frozenset({"nashville, tn"}),
+        now=NOW,
+        schedule=[
+            {
+                "type": "Trip",
+                "summary": "Local placeholder",
+                "start": "2020-07-12",
+                "end": "2020-07-12",
+                "location": "Nashville, TN",
+            }
+        ],
+    )
+    arrival = next(c.desired for c in result.plan.creates if c.desired.kind == "airport_arrival")
+    assert arrival.destination == HOME
+    assert arrival.baseline_seconds == 2400

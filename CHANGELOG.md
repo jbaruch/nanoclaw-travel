@@ -1,5 +1,9 @@
 # Changelog
 
+### drive-engine — use current home for local trips without lodging (#314)
+
+Home-metro placeholder trips now anchor meeting and airport drives at the configured home address. The resolver reuses the profile metro matcher and retains lodging and away-trip origins. Regression coverage includes the full meeting sweep and airport arrival plan.
+
 ## 0.2.139 — 2026-09-11
 
 ### flight-assist — reader reserve per flight; malformed calendar bodies and non-UTF-8 state are owned errors (#312)

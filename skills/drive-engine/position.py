@@ -63,7 +63,11 @@ LIVE_GPS = "live_gps"
 
 
 def position_at(
-    schedule: list[dict] | None, at: datetime, *, home_address: str | None
+    schedule: list[dict] | None,
+    at: datetime,
+    *,
+    home_address: str | None,
+    home_metros: frozenset[str] = frozenset(),
 ) -> TripAnchor:
     """The planned position at instant `at` — pure, itinerary-only (#156 R1).
 
@@ -72,7 +76,7 @@ def position_at(
     instant (`leave_by` for a departure, `depart_after` for an arrival), never
     cycle `now`.
     """
-    return resolve_anchor(schedule, at=at, home_address=home_address)
+    return resolve_anchor(schedule, at=at, home_address=home_address, home_metros=home_metros)
 
 
 @dataclass(frozen=True)
