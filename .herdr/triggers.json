@@ -13,11 +13,13 @@
     "skills/nightly-travel-sync/scripts/filter-tripit-bookings.py",
     "skills/nightly-travel-sync/scripts/refresh-travel-schedule.py",
     "skills/flight-assist/byair_client.py",
+    "skills/flight-assist/maps_client.py",
     "skills/flight-assist/sync_tripit.py",
     "skills/flight-assist/google_calendar_client.py",
     "skills/drive-engine/calendar_apply.py",
     "skills/drive-engine/tripit_flights.py",
-    "skills/drive-engine/fetch_events.py"
+    "skills/drive-engine/fetch_events.py",
+    "skills/nightly-travel-sync/scripts/sync-tripit.sh"
   ],
   "cli_spec_paths": [
     "skills/*/scripts/*.py",
