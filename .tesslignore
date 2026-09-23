@@ -37,9 +37,6 @@ dist/
 # manifest, not install state) but has no place in a consumer's checkout.
 .tessl/
 /tessl.json
-
-# Internal Herdr orchestration metadata is repo-only.
-.herdr/
 .claude/
 .agents/
 .codex/
@@ -48,6 +45,9 @@ dist/
 AGENTS.md
 CLAUDE.md
 .github/skills/
+
+# Internal Herdr orchestration metadata is repo-only.
+.herdr/
 
 # OS / editor
 .DS_Store
