@@ -19,7 +19,8 @@
     "skills/drive-engine/calendar_apply.py",
     "skills/drive-engine/tripit_flights.py",
     "skills/drive-engine/fetch_events.py",
-    "skills/nightly-travel-sync/scripts/sync-tripit.sh"
+    "skills/nightly-travel-sync/scripts/sync-tripit.sh",
+    "skills/expertflyer/scripts/expertflyer.py"
   ],
   "cli_spec_paths": [
     "skills/*/scripts/*.py",
