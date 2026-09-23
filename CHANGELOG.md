@@ -2,7 +2,7 @@
 
 ### Trim skill descriptions that carry implementation detail (#965 sibling)
 
-`drive-engine`, `flight-assist`, and `expertflyer` descriptions dropped 1000 B combined (1017→640, 1015→539, 919→772) — the three largest in the fleet. The skill listing rides the prompt on every interactive turn while SKILL.md bodies load only on invocation, so managed-event inventories, per-action glosses, and near-duplicate trigger phrasings cost bytes every turn and buy nothing at discovery time. Distinguishing trigger phrases and the `expertflyer` router action list are preserved per `coding-policy: skill-authoring`.
+`drive-engine`, `flight-assist`, and `expertflyer` descriptions dropped 952 B combined (1017→640, 1015→539, 919→820) — the three largest in the fleet. The skill listing rides the prompt on every interactive turn while SKILL.md bodies load only on invocation, so managed-event inventories, per-action glosses, and near-duplicate trigger phrasings cost bytes every turn and buy nothing at discovery time. Distinguishing trigger phrases and the `expertflyer` router action list are preserved per `coding-policy: skill-authoring`.
 
 ## 0.2.142 — 2026-09-15
 
