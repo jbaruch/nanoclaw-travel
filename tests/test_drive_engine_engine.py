@@ -147,7 +147,7 @@ def test_round_trip_closing_arrival_returns_home_on_trip_end_day():
     """
     # Exact live grouping shape: byAir split the outbound and return into two
     # trip ids, while TripIt linked both physical-flight twins under one shared
-    # itinerary id. The merged aliases must reconnect the round trip.
+    # itinerary id. The landing at BNA, a home airport, is what brings him home.
     chain = [
         flight("BNA", "SFO", _dt(9, day=12), _dt(14, day=12), fid=1, trip_id=2832675),
         tripit_flight(
@@ -203,6 +203,7 @@ def test_round_trip_closing_arrival_returns_home_on_trip_end_day():
         route=const_route(30),
         schedule=schedule,
         home_address=HOME,
+        home_airports=frozenset({"BNA"}),
         now=NOW,
     )
 
@@ -232,6 +233,7 @@ def test_round_trip_closing_arrival_returns_home_on_trip_end_day():
         route=const_route(30),
         schedule=schedule,
         home_address=HOME,
+        home_airports=frozenset({"BNA"}),
         now=NOW,
     )
     assert len(repair.plan.updates) == 1
@@ -240,8 +242,8 @@ def test_round_trip_closing_arrival_returns_home_on_trip_end_day():
 
 
 def test_shared_alias_preserves_long_stay_ground_legs_without_lodging():
-    """Live Oslo follow-up: a shared TripIt itinerary identifies homecoming,
-    but must not turn the multi-day stay into an airside connection."""
+    """Live Oslo follow-up: the landing at BNA brings him home, and the
+    multi-day stay never reads as an airside connection."""
     flights = [
         flight("BNA", "OSL", _dt(9, day=12), _dt(14, day=12), fid=1, trip_id=101),
         tripit_flight(
@@ -291,6 +293,7 @@ def test_shared_alias_preserves_long_stay_ground_legs_without_lodging():
         route=const_route(30),
         schedule=schedule,
         home_address=HOME,
+        home_airports=frozenset({"BNA"}),
         now=NOW,
     )
 
@@ -526,6 +529,7 @@ def test_a_staged_round_trip_still_drives_home_at_the_end():
         route=const_route(30),
         schedule=_staged_round_trip_schedule(),
         home_address=HOME,
+        home_airports=frozenset({"BNA"}),
         now=NOW,
     )
     arrivals = [c.desired for c in result.plan.creates if c.desired.kind == "airport_arrival"]
@@ -606,7 +610,7 @@ def test_airport_arrival_on_home_metro_placeholder_returns_home():
         current_blocks=[],
         route=const_route(40),
         home_address=HOME,
-        home_metros=frozenset({"nashville, tn"}),
+        home_airports=frozenset({"BNA"}),
         now=NOW,
         schedule=[
             {
@@ -661,3 +665,143 @@ def test_an_implausibly_long_airport_transfer_writes_no_block():
     )
     assert all(c.desired.kind != "airport_transfer" for c in result.plan.creates)
     assert any(r.startswith("transfer ") and "implausible 7.0 h" in r for r in result.skipped)
+
+
+def test_byair_only_trip_drives_from_and_to_home():
+    """#335: a trip whose flights only byAir tracks, with no lodging in the
+    schedule. The old position ladder never learned the operator had left and
+    put him in New York on the morning he flew out, skipping both home drives as
+    13-hour "drives". On the itinerary they plan from and to the house."""
+    flights = [
+        flight("BNA", "LGA", _dt(18, 40, day=2), _dt(21, 5, day=2), fid=1, trip_id=7),
+        flight("LGA", "BNA", _dt(22, 0, day=4), _dt(23, 59, day=4), fid=2, trip_id=8),
+    ]
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "DevCon",
+            "start": "2020-07-02",
+            "end": "2020-07-05",
+            "location": "New York, NY",
+        }
+    ]
+    result = build_reconcile_plan(
+        flights=flights,
+        airport_info=_us_info("BNA", "LGA"),
+        current_blocks=[],
+        route=const_route(45),
+        schedule=schedule,
+        home_address=HOME,
+        home_airports=frozenset({"BNA"}),
+        now=datetime(2020, 7, 1, tzinfo=UTC),
+    )
+    created = [c.desired for c in result.plan.creates]
+    to_bna = next(
+        d for d in created if d.kind == "airport_departure" and d.destination == "BNA airport"
+    )
+    from_bna = next(d for d in created if d.kind == "airport_arrival" and d.origin == "BNA airport")
+    from_lga = next(d for d in created if d.kind == "airport_arrival" and d.origin == "LGA airport")
+    assert to_bna.origin == HOME
+    assert (from_bna.destination, from_bna.summary) == (HOME, "Drive: BNA → home")
+    assert from_lga.destination == "New York, NY"
+    assert result.held == ()
+
+
+def test_byair_status_reaches_the_itinerary():
+    """#337 review: a cancelled byAir flight must not move the operator, and a
+    diverted one must not land him at its booked destination."""
+    from engine import itinerary_for
+    from flight_identity import merge_flights
+    from normalize import flight_from_byair
+
+    def record(fid, status):
+        return {
+            "flight_id": fid,
+            "scheduled_dep_time": "2020-07-12T14:00:00Z",
+            "scheduled_arr_time": "2020-07-12T16:00:00Z",
+            "last_snapshot": {"computed_status": status},
+        }
+
+    trip = [
+        {
+            "type": "Trip",
+            "summary": "New York",
+            "start": "2020-07-12",
+            "end": "2020-07-14",
+            "location": "New York, NY",
+        }
+    ]
+    after = datetime(2020, 7, 12, 17, 0, tzinfo=UTC)
+    cancelled = flight_from_byair(record(1, "cancelled"), dep_iata="BNA", arr_iata="JFK")
+    stayed = itinerary_for(
+        merge_flights([cancelled]), trip, home_address=HOME, home_airports=frozenset({"BNA"})
+    )
+    assert stayed.position_at(after).source == "home"
+    diverted = flight_from_byair(record(2, "diverted"), dep_iata="LGA", arr_iata="BNA")
+    elsewhere = itinerary_for(
+        merge_flights([diverted]), trip, home_address=HOME, home_airports=frozenset({"BNA"})
+    )
+    assert elsewhere.position_at(after).source != "home"
+
+
+def test_a_cancellation_without_an_arrival_takes_tripits_copy_with_it():
+    """#337 review: the cancelled byAir record lost its arrival; its route and
+    booked departure still cancel the schedule's copy of the flight."""
+    from engine import itinerary_for
+    from flight_identity import merge_flights
+    from normalize import flight_from_byair
+
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "New York",
+            "start": "2020-07-12",
+            "end": "2020-07-14",
+            "location": "New York, NY",
+        },
+        {
+            "type": "Flight",
+            "summary": "DL1 BNA to JFK",
+            "start": "2020-07-12T14:00:00Z",
+            "end": "2020-07-12T16:00:00Z",
+        },
+    ]
+    cancelled = flight_from_byair(
+        {
+            "flight_id": 1,
+            "scheduled_dep_time": "2020-07-12T14:00:00Z",
+            "last_snapshot": {"computed_status": "cancelled"},
+        },
+        dep_iata="BNA",
+        arr_iata="JFK",
+    )
+    itinerary = itinerary_for(
+        merge_flights([cancelled]), schedule, home_address=HOME, home_airports=frozenset({"BNA"})
+    )
+    assert itinerary.position_at(datetime(2020, 7, 12, 17, 0, tzinfo=UTC)).source == "home"
+
+
+def test_an_unreadable_byair_flight_still_moves_him():
+    """#337 review: a byAir flight whose airports did not read is placed on the
+    timeline at an unknown airport, so its trip begins and he is not home."""
+    from engine import itinerary_for
+    from itinerary import Transport
+
+    trip = [
+        {
+            "type": "Trip",
+            "summary": "Somewhere",
+            "start": "2020-07-12",
+            "end": "2020-07-14",
+            "location": "Denver, CO",
+        }
+    ]
+    unplaced = (
+        Transport(
+            datetime(2020, 7, 12, 14, 0, tzinfo=UTC), datetime(2020, 7, 12, 16, 0, tzinfo=UTC)
+        ),
+    )
+    itinerary = itinerary_for(
+        [], trip, home_address=HOME, home_airports=frozenset({"BNA"}), unplaced=unplaced
+    )
+    assert itinerary.position_at(datetime(2020, 7, 12, 18, 0, tzinfo=UTC)).address == "Denver, CO"

@@ -1827,3 +1827,108 @@ def test_connection_risk_fires_when_leg2_is_beyond_poll_horizon(state_root: Path
     leg2_after = must(read_flight_state(2))
     assert leg2_after["phase_markers"]["connection_at_risk_fired"] is True
     assert leg2_after["last_snapshot"] is None
+
+
+def test_the_origin_trusts_a_flight_polled_earlier_in_the_cycle(state_root: Path, monkeypatch):
+    """#337 review: when the time-to-leave origin resolves, a flight the loop
+    already polled this cycle counts on its fresh, live times."""
+    markers = _phase_markers()
+    markers["day_before_fired"] = True
+    markers["time_to_leave_fired"] = True  # flight 2 is the one that asks
+    write_flight_state(
+        _make_state(
+            flight_id=1,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=_scheduled_snapshot(),
+            phase_markers=markers,
+        )
+    )
+    _fired_flight(2)
+    write_active_flights([1, 2])
+    seen: list = []
+
+    def home(address, *, now, transports):
+        seen.extend(transports)
+        return "12 Example St"
+
+    monkeypatch.setattr(precheck, "resolve_effective_home", home)
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: _NoRouteMaps())
+
+    def flight(flight_id):
+        raw = _byair_flight(
+            flight_id=flight_id,
+            dep_time="2026-05-18T12:30:00+00:00" if flight_id == 1 else "2026-05-18T17:00:00+00:00",
+        )
+        raw["depAirport"] = {"id": 20, "code": "BNA", "name": "Nashville"}
+        raw["arrAirport"] = {"id": 28, "code": "LGA", "name": "LaGuardia"}
+        return raw
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = lambda flight_id: flight(
+            flight_id
+        )
+        precheck._run_cycle(
+            now_utc=datetime(2026, 5, 18, 16, 0, 0, tzinfo=UTC),
+            operator_tz_reader=_CountingReader(_CHICAGO),
+        )
+    departs = sorted(t.departs for t in seen)
+    assert datetime(2026, 5, 18, 12, 30, tzinfo=UTC) in departs
+
+
+def test_a_later_flight_byair_drops_never_reaches_the_origin(state_root: Path, monkeypatch):
+    """#337 review: flight 1 resolves the origin before flight 2, due this cycle
+    and higher in the loop, answers 404. Flight 2's stored snapshot is not live
+    state when the origin freezes, so it never places him."""
+    _fired_flight(1)  # due, and the one that asks for the origin
+    markers = _phase_markers()
+    markers["day_before_fired"] = True
+    markers["time_to_leave_fired"] = True
+    write_flight_state(
+        _make_state(
+            flight_id=2,
+            last_polled_at="2026-05-18T15:00:00Z",
+            scheduled_dep_time="2026-05-18T19:00:00+00:00",
+            scheduled_arr_time="2026-05-18T21:00:00+00:00",
+            last_snapshot={
+                **_scheduled_snapshot(),
+                "dep_airport_code": "LGA",
+                "arr_airport_code": "BNA",
+            },
+            phase_markers=markers,
+        )
+    )
+    write_active_flights([1, 2])
+    seen: list = []
+
+    def home(address, *, now, transports):
+        seen.extend(transports)
+        return "12 Example St"
+
+    monkeypatch.setattr(precheck, "resolve_effective_home", home)
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: _NoRouteMaps())
+
+    def flight(flight_id):
+        if flight_id == 2:
+            raise precheck.ByAirError("not_found", "flight 2 is no longer tracked")
+        raw = _byair_flight(flight_id=1)
+        raw["depAirport"] = {"id": 20, "code": "BNA", "name": "Nashville"}
+        raw["arrAirport"] = {"id": 28, "code": "LGA", "name": "LaGuardia"}
+        return raw
+
+    with patch("precheck.ByAirClient.from_env") as mock_byair_from_env:
+        mock_byair_from_env.return_value.get_flight.side_effect = lambda flight_id: flight(
+            flight_id
+        )
+        events = precheck._run_cycle(
+            now_utc=datetime(2026, 5, 18, 16, 0, 0, tzinfo=UTC),
+            operator_tz_reader=_CountingReader(_CHICAGO),
+        )
+    assert {"flight_id": 2, "event": {"reason": "removed_upstream"}} in events
+    assert seen and all(t.origin != "LGA" for t in seen)
+
+
+class _NoRouteMaps:
+    """A maps client whose every route fails, after the origin is asked for."""
+
+    def travel_time(self, *, origin, destination):
+        raise precheck.MapsError("ZERO_RESULTS", "no route")

@@ -36,7 +36,7 @@ import re
 import sys
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -51,9 +51,10 @@ from airport_facts_cache import StaticAirport, load_static_facts, store_static_f
 from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
 from drive_decision import load_verdicts, mark_asked, prune, record_drive_time  # noqa: E402
-from engine import AirportInfo, build_reconcile_plan  # noqa: E402
-from flight_identity import DEFAULT_IDENTITY_TOLERANCE  # noqa: E402
+from engine import AirportInfo, build_reconcile_plan, itinerary_for  # noqa: E402
+from flight_identity import DEFAULT_IDENTITY_TOLERANCE, Flight, merge_flights  # noqa: E402
 from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
+from itinerary import CANCELLED, AmbiguousTransport, Itinerary, Transport  # noqa: E402
 from lodging_source import (  # noqa: E402
     context_from_blocks,
     driving_trips,
@@ -204,6 +205,172 @@ class PlanResult:
     held: tuple[HeldLeg, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class SweepFlights:
+    """The sweep's flights: byAir records with resolved airports UNIONED with
+    TripIt segments (R2), the airport facts they carry, and the records that
+    could not be normalized: `skipped` their diagnostics, `unreadable` each one's
+    diagnostic and scheduled departure (None when it has none). An airport id
+    that does not resolve falls back to the code byAir's poll recorded.
+    `unplaced` is each still unreadable flight whose times read, as a
+    transport to an unknown place; `blind` names each one no position can
+    account for: its times do not read, or it is cancelled with no route."""
+
+    flights: list[Flight]
+    airport_info: dict[str, AirportInfo]
+    skipped: tuple[str, ...] = ()
+    unreadable: tuple[tuple[str, datetime | None], ...] = ()
+    unplaced: tuple[Transport, ...] = ()
+    blind: tuple[str, ...] = ()
+
+
+def normalize_flights(
+    flight_records: list[dict],
+    resolve_airport: Callable[[int], ResolvedAirport | None],
+    tripit_flights: list | None = None,
+) -> SweepFlights:
+    """Normalize the byAir records (airports via `resolve_airport`) and union
+    them with the already-normalized `tripit_flights`. Pure over its inputs."""
+    flights = list(tripit_flights or [])
+    airport_info: dict[str, AirportInfo] = {}
+    skipped: list[str] = []
+    unreadable: list[tuple[str, datetime | None]] = []
+    unplaced: list[Transport] = []
+    blind: list[str] = []
+
+    def unread(why: str, record: dict) -> None:
+        skipped.append(why)
+        unreadable.append((why, _scheduled_departure(record)))
+        transport = _unplaced_transport(record)
+        if transport is None:
+            blind.append(why)
+        elif transport.status == CANCELLED:
+            # With no route, a cancellation cannot take its scheduled copy
+            # with it, and that copy would move him on a flight byAir says
+            # never left.
+            blind.append(f"{why} (cancelled)")
+        else:
+            unplaced.append(transport)
+
+    for record in flight_records:
+        dep, dep_iata = _airport(resolve_airport, record, "dep")
+        arr, arr_iata = _airport(resolve_airport, record, "arr")
+        if dep_iata is None or arr_iata is None:
+            unread(f"flight {record.get('flight_id')}: unresolved airport(s)", record)
+            continue
+        try:
+            flight = flight_from_byair(record, dep_iata=dep_iata, arr_iata=arr_iata)
+        except ValueError as exc:
+            unread(str(exc), record)
+            continue
+        if flight.status != CANCELLED and not _has_span(flight):
+            # Left out of the itinerary, its movement would fall to TripIt's
+            # booked copy.
+            unread(f"flight {record.get('flight_id')}: no arrival after its departure", record)
+            continue
+        flights.append(flight)
+        for airport in (dep, arr):
+            if airport is None or airport.iata is None:
+                continue  # placed by its polled code; no facts to carry
+            airport_info[airport.iata] = AirportInfo(
+                flag=airport.flag,
+                delay_index=airport.delay_index,
+                timezone=airport.timezone,
+                lat=airport.lat,
+                lon=airport.lon,
+            )
+    return SweepFlights(
+        flights=flights,
+        airport_info=airport_info,
+        skipped=tuple(skipped),
+        unreadable=tuple(unreadable),
+        unplaced=tuple(unplaced),
+        blind=tuple(blind),
+    )
+
+
+def _airport(
+    resolve_airport: Callable[[int], ResolvedAirport | None], record: dict, end: str
+) -> tuple[ResolvedAirport | None, str | None]:
+    """One end's resolved airport and IATA code. The code is byAir's own polled
+    one (`_snapshot_code`) when the id does not resolve; an `AirportUnresolved`
+    with no polled code to fall back on still fails the sweep closed."""
+    airport_id = record.get(f"{end}_airport_id")
+    resolved = None
+    if isinstance(airport_id, int):
+        try:
+            resolved = resolve_airport(airport_id)
+        except AirportUnresolved:
+            if _snapshot_code(record, end) is None:
+                raise
+    if resolved is not None and resolved.iata:
+        return resolved, resolved.iata
+    return resolved, _snapshot_code(record, end)
+
+
+def _has_span(flight: Flight) -> bool:
+    """Whether the flight's live times over its booked ones read as a span."""
+    departs = flight.live_dep or flight.scheduled_dep
+    arrives = flight.live_arr or flight.scheduled_arr
+    return arrives is not None and arrives > departs
+
+
+def _unplaced_transport(record: dict) -> Transport | None:
+    """An unreadable byAir record as a transport to an unknown place: its live
+    times over its booked ones and its status, None when neither reads as a
+    span. Without a route it takes the route of the schedule copy sharing its
+    booked departure; overlapping one with no departure in common, the
+    itinerary refuses it (`AmbiguousTransport`) and the sweep plans nothing."""
+    snapshot = record.get("last_snapshot")
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    status = snap.get("computed_status")
+    booked = _scheduled_departure(record)
+    departs = _instant(snap.get("dep_time")) or booked
+    arrives = _instant(snap.get("arr_time")) or _instant(record.get("scheduled_arr_time"))
+    if status == CANCELLED and departs is not None:
+        return Transport(departs, departs, None, None, scheduled=booked, status=CANCELLED)
+    if departs is None or arrives is None or arrives <= departs:
+        return None
+    return Transport(departs, arrives, None, None, scheduled=booked)
+
+
+def _snapshot_code(record: dict, end: str) -> str | None:
+    """The IATA code byAir's own poll recorded for one end of the flight
+    (`last_snapshot.<end>_airport_code`), the fallback when the airport id
+    does not resolve."""
+    snapshot = record.get("last_snapshot")
+    code = snapshot.get(f"{end}_airport_code") if isinstance(snapshot, dict) else None
+    if isinstance(code, str) and re.fullmatch(r"[A-Za-z]{3}", code.strip()):
+        return code.strip().upper()
+    return None
+
+
+def _instant(raw: object) -> datetime | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+
+
+class FlightsUnplaceable(Exception):
+    """A byAir record whose times do not read: no position can account for it,
+    so the sweep plans nothing rather than move drives off a false position."""
+
+
+def require_placeable(flights: SweepFlights) -> None:
+    """Raise `FlightsUnplaceable` when any byAir record is `blind`; the outer
+    boundary then skips the sweep, applying nothing, with the cause on stderr."""
+    if flights.blind:
+        raise FlightsUnplaceable(
+            "byAir flight record(s) with no readable departure and arrival: "
+            + "; ".join(flights.blind)
+            + " — fix or remove the flight state file; the next sweep plans again"
+        )
+
+
 def build_plan(
     *,
     flight_records: list[dict],
@@ -214,12 +381,13 @@ def build_plan(
     now: datetime,
     schedule: list[dict] | None = None,
     home_address: str | None = None,
-    home_metros: frozenset[str] = frozenset(),
+    home_airports: frozenset[str] = frozenset(),
     live_origin: str | None = None,
     tripit_flights: list | None = None,
     boarding_present: Callable | None = None,
     lodging_blocks: list[DesiredBlock] | None = None,
     held: list[HeldLeg] | None = None,
+    itinerary: Itinerary | None = None,
 ) -> PlanResult:
     """Assemble the combined (airport + meeting + lodging) reconcile plan.
 
@@ -231,54 +399,28 @@ def build_plan(
     reconcile. Anything left out of that single diff would be orphan-deleted by
     it, which is why `held` carries the meeting and lodging legs those sources
     could not compute: their blocks are kept (#334). `boarding_present` gates
-    trivial-leg suppression (V3).
+    trivial-leg suppression (V3). `itinerary` is the sweep's one position model
+    (#335); without it the engine builds one from these flights.
     """
-    flights: list = []
-    airport_info: dict[str, AirportInfo] = {}
-    skipped: list[str] = []
-    unreadable: list[tuple[str, datetime | None]] = []
-
-    for record in flight_records:
-        dep_id = record.get("dep_airport_id")
-        arr_id = record.get("arr_airport_id")
-        dep = resolve_airport(dep_id) if isinstance(dep_id, int) else None
-        arr = resolve_airport(arr_id) if isinstance(arr_id, int) else None
-        if dep is None or dep.iata is None or arr is None or arr.iata is None:
-            why = f"flight {record.get('flight_id')}: unresolved airport(s)"
-            skipped.append(why)
-            unreadable.append((why, _scheduled_departure(record)))
-            continue
-        try:
-            flights.append(flight_from_byair(record, dep_iata=dep.iata, arr_iata=arr.iata))
-        except ValueError as exc:
-            skipped.append(str(exc))
-            unreadable.append((str(exc), _scheduled_departure(record)))
-            continue
-        airport_info[dep.iata] = AirportInfo(
-            flag=dep.flag,
-            delay_index=dep.delay_index,
-            timezone=dep.timezone,
-            lat=dep.lat,
-            lon=dep.lon,
+    normalized = normalize_flights(flight_records, resolve_airport, tripit_flights)
+    retained = _unreadable_flight_holds(list(normalized.unreadable), current_blocks)
+    if itinerary is None:
+        itinerary = itinerary_for(
+            merge_flights(normalized.flights),
+            schedule,
+            home_address=home_address,
+            home_airports=home_airports,
+            unplaced=normalized.unplaced,
         )
-        airport_info[arr.iata] = AirportInfo(
-            flag=arr.flag,
-            delay_index=arr.delay_index,
-            timezone=arr.timezone,
-            lat=arr.lat,
-            lon=arr.lon,
-        )
-
-    retained = _unreadable_flight_holds(unreadable, current_blocks)
-    flights = [f for f in tripit_flights or [] if not _retained_flight(f, retained)] + flights
     result = build_reconcile_plan(
-        flights=flights,
-        airport_info=airport_info,
+        flights=normalized.flights,
+        airport_info=normalized.airport_info,
         current_blocks=current_blocks,
         route=route,
         schedule=schedule,
         home_address=home_address,
-        home_metros=home_metros,
+        home_airports=home_airports,
+        itinerary=itinerary,
         now=now,
         live_origin=live_origin,
         boarding_present=boarding_present,
@@ -286,7 +428,15 @@ def build_plan(
         extra_held=list(held or []) + retained,
         managed_legacy=_MANAGED_LEGACY,
     )
-    return PlanResult(plan=result.plan, skipped=tuple(skipped) + result.skipped, held=result.held)
+    plan = replace(
+        result.plan,
+        creates=tuple(
+            c
+            for c in result.plan.creates
+            if not _covered_by_retained(c.desired.identity, c.desired.kind, retained)
+        ),
+    )
+    return PlanResult(plan=plan, skipped=normalized.skipped + result.skipped, held=result.held)
 
 
 _AIRPORT_KINDS = frozenset({"airport_departure", "airport_arrival", "airport_transfer"})
@@ -294,14 +444,7 @@ _AIRPORT_KINDS = frozenset({"airport_departure", "airport_arrival", "airport_tra
 
 def _scheduled_departure(record: dict) -> datetime | None:
     """A byAir record's scheduled departure in UTC, None when it has none."""
-    raw = record.get("scheduled_dep_time")
-    if not isinstance(raw, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+    return _instant(record.get("scheduled_dep_time"))
 
 
 def _flight_departures(identity: str) -> list[datetime] | None:
@@ -362,19 +505,29 @@ def _unreadable_flight_holds(
     return held
 
 
-def _retained_flight(flight, held: list[HeldLeg]) -> bool:
-    """Whether a held airport block stands for this flight: same route,
-    departing within the merge tolerance. Its TripIt copy then plans nothing
-    beside the block, whose identity carries byAir's departure."""
+def _covered_by_retained(identity: str, kind: str, held: list[HeldLeg]) -> bool:
+    """Whether a held airport block already stands for a leg about to be
+    created: same kind, and each flight in its identity the same route
+    departing within the merge tolerance. TripIt's copy of a flight whose byAir
+    record is unreadable keeps its place in the chain, so connections still
+    read right, but writes nothing beside the block keyed on byAir's time."""
+    parts = identity.split("|")
     for leg in held:
-        for part in leg.identity.split("|"):
-            route = part.rpartition("-")[0]
-            departures = _flight_departures(part)
-            if not departures or route != f"{flight.dep_airport}-{flight.arr_airport}":
-                continue
-            if abs(departures[0] - flight.scheduled_dep) <= DEFAULT_IDENTITY_TOLERANCE:
+        theirs = leg.identity.split("|")
+        if leg.kind == kind and len(theirs) == len(parts):
+            if all(_same_flight_key(a, b) for a, b in zip(parts, theirs, strict=True)):
                 return True
     return False
+
+
+def _same_flight_key(a: str, b: str) -> bool:
+    ours, theirs = _flight_departures(a), _flight_departures(b)
+    return (
+        a.rpartition("-")[0] == b.rpartition("-")[0]
+        and bool(ours)
+        and bool(theirs)
+        and abs(ours[0] - theirs[0]) <= DEFAULT_IDENTITY_TOLERANCE
+    )
 
 
 # --- real-client wiring (I/O) -----------------------------------------------
@@ -1053,7 +1206,6 @@ def _run_sweep() -> dict:
     _on_path("flight-assist")
     _on_path("travel-core")
 
-    from addresses import home_metro_names
     from airport_drive_inputs import airport_context
     from byair_client import ByAirClient, ByAirError
     from calendar_reconcile import _find_events_args, _items
@@ -1073,7 +1225,9 @@ def _run_sweep() -> dict:
     from trip_origin import (
         flight_summaries,
         load_travel_schedule,
-        resolve_anchor,
+    )
+    from trip_origin import (
+        home_airports as read_home_airports,
     )
 
     now = datetime.now(UTC)
@@ -1091,7 +1245,7 @@ def _run_sweep() -> dict:
         except HomeAddressError:
             home = None  # neither source configured — degrade, see below
     schedule = load_travel_schedule()
-    home_metros = home_metro_names()
+    home_airports = read_home_airports()
 
     maps = MapsClient.from_env(timeout=_SWEEP_MAPS_TIMEOUT_SECONDS)
     # One memoizing route closure for the whole sweep — meeting legs and airport
@@ -1113,6 +1267,62 @@ def _run_sweep() -> dict:
     )
     for summary in flight_summaries(schedule):
         known_codes |= flight_codes(summary)
+
+    # --- airport facts ---
+    # Static facts (IATA / flag / IANA tz) are immutable, so a warm sweep serves
+    # them from the persisted cross-sweep cache with no byAir call — this is what
+    # cut the ~7.6s ByAir cost that froze the calendar (#211). A byAir round trip
+    # happens only on a cache MISS (first-seen airport) or to refresh the live
+    # `delay.index` of a near-term DEPARTURE airport, where the nudge still moves
+    # the block. `delay.index` is never persisted (it is live).
+    byair = ByAirClient.from_env(timeout=_SWEEP_BYAIR_TIMEOUT_SECONDS)
+    static_facts = load_static_facts()
+    near_term_dep_ids = _near_term_departure_airport_ids(records, now)
+
+    def fetch_ctx(airport_id: int) -> _AirportCtx | None:
+        # Network + exception handling lives here so the resolver policy stays
+        # pure and testable. A byAir failure (timeout / not_found) resolves to
+        # None → the policy degrades to cached static facts when it has them, or
+        # raises `AirportUnresolved` to fail the whole sweep closed (never a
+        # partial plan — a dropped flight's block would be orphan-deleted).
+        try:
+            return airport_context(byair.get_airport(airport_id))
+        except (ByAirError, urllib.error.URLError) as exc:
+            # Fail visibly: a one-line diagnostic so an operator can tell a
+            # transient byAir outage / timeout from a genuinely unknown airport
+            # id, without changing the degrade-or-fail-closed behaviour above.
+            print(
+                f"[drive-engine] byAir get_airport({airport_id}) failed ({exc})",
+                file=sys.stderr,
+            )
+            return None
+
+    resolve_airport, static_facts_dirty = _make_airport_resolver(
+        static_facts=static_facts,
+        near_term_dep_ids=near_term_dep_ids,
+        fetch_ctx=fetch_ctx,
+    )
+
+    # --- the sweep's one itinerary (#335) ---
+    # Every position question this sweep asks — the meeting anchors, the
+    # airport legs — reads the same timeline, built from the schedule AND the
+    # merged byAir ∪ TripIt flights, so a flight byAir alone tracks still
+    # moves the operator. Airports resolve first: the itinerary needs their
+    # IATA codes to tell a landing at home from one away.
+    sweep_flights = normalize_flights(records, resolve_airport, tripit_flights)
+    require_placeable(sweep_flights)
+    try:
+        itinerary = itinerary_for(
+            merge_flights(sweep_flights.flights),
+            schedule,
+            home_address=home,
+            home_airports=home_airports,
+            unplaced=sweep_flights.unplaced,
+        )
+    except AmbiguousTransport as exc:
+        raise FlightsUnplaceable(
+            f"{exc}; the next sweep plans again once byAir resolves its airports"
+        ) from exc
 
     calendar = GoogleCalendarClient()
 
@@ -1154,7 +1364,7 @@ def _run_sweep() -> dict:
         skips = load_active_skips(now)
 
         def anchor_for(at: datetime) -> tuple[str | None, str | None]:
-            anchor = resolve_anchor(schedule, at=at, home_address=home, home_metros=home_metros)
+            anchor = itinerary.position_at(at)
             return anchor.address, anchor.detail
 
         meetings = scan(
@@ -1220,41 +1430,6 @@ def _run_sweep() -> dict:
         verdicts=sweep_verdicts,
     )
 
-    # --- airport facts ---
-    # Static facts (IATA / flag / IANA tz) are immutable, so a warm sweep serves
-    # them from the persisted cross-sweep cache with no byAir call — this is what
-    # cut the ~7.6s ByAir cost that froze the calendar (#211). A byAir round trip
-    # happens only on a cache MISS (first-seen airport) or to refresh the live
-    # `delay.index` of a near-term DEPARTURE airport, where the nudge still moves
-    # the block. `delay.index` is never persisted (it is live).
-    byair = ByAirClient.from_env(timeout=_SWEEP_BYAIR_TIMEOUT_SECONDS)
-    static_facts = load_static_facts()
-    near_term_dep_ids = _near_term_departure_airport_ids(records, now)
-
-    def fetch_ctx(airport_id: int) -> _AirportCtx | None:
-        # Network + exception handling lives here so the resolver policy stays
-        # pure and testable. A byAir failure (timeout / not_found) resolves to
-        # None → the policy degrades to cached static facts when it has them, or
-        # raises `AirportUnresolved` to fail the whole sweep closed (never a
-        # partial plan — a dropped flight's block would be orphan-deleted).
-        try:
-            return airport_context(byair.get_airport(airport_id))
-        except (ByAirError, urllib.error.URLError) as exc:
-            # Fail visibly: a one-line diagnostic so an operator can tell a
-            # transient byAir outage / timeout from a genuinely unknown airport
-            # id, without changing the degrade-or-fail-closed behaviour above.
-            print(
-                f"[drive-engine] byAir get_airport({airport_id}) failed ({exc})",
-                file=sys.stderr,
-            )
-            return None
-
-    resolve_airport, static_facts_dirty = _make_airport_resolver(
-        static_facts=static_facts,
-        near_term_dep_ids=near_term_dep_ids,
-        fetch_ctx=fetch_ctx,
-    )
-
     # --- current blocks ---
     # The fetch MUST cover every desired airport leg. Those legs are anchored to
     # flight times across the whole itinerary (months out), with no future bound,
@@ -1289,9 +1464,10 @@ def _run_sweep() -> dict:
         now=now,
         schedule=schedule,
         home_address=home,
-        home_metros=home_metros,
+        home_airports=home_airports,
         live_origin=live_origin,
         held=meeting_held + lodging_held,
+        itinerary=itinerary,
     )
 
     skipped = list(result.skipped) + list(meeting_skipped) + list(lodging_skipped)

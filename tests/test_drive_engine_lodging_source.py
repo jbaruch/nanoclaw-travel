@@ -1031,3 +1031,20 @@ def test_an_unplannable_trip_returns_after_its_last_local_drive():
     )
     returning = next(leg for leg in held if leg.key == (TRIP_KEY, KIND_RETURN))
     assert returning.when == game.end
+
+
+def test_an_unplannable_trip_leaves_a_return_before_check_out_plannable():
+    """#336 review: the home→hotel route failed, but a venue→hotel drive while
+    the room is still held is no outer leg's to absorb; it stays desired."""
+    back = _local(
+        "mtg-back",
+        "meeting_return",
+        CHECK_OUT - timedelta(hours=6),
+        CHECK_OUT - timedelta(hours=5),
+        "Stadium",
+        HOTEL_ADDRESS,
+    )
+    _blocks, _skipped, _plans, held = _held_with_venue(
+        [back], home_hotel=None, home_venue=None, hotel_home=None, venue_home=None
+    )
+    assert ("mtg-back", "meeting_return") not in {leg.key for leg in held}

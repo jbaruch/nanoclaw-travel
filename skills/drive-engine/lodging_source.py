@@ -713,7 +713,9 @@ def lodging_desired_blocks(
             skipped.append(f"{reason} — flying, nothing held")
             return
         ctx = contexts.get(trip.key, TripContext())
-        for local in (ctx.first_out, ctx.last_back):
+        # Only a local drive an outer leg can absorb: the first one out, and
+        # the last one back only once the room is released.
+        for local in (ctx.first_out, _released_return(trip, ctx)):
             if local is not None:
                 hold_absorbed(trip, local, reason)
         skipped.append(reason)

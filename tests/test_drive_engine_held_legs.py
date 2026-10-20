@@ -674,7 +674,10 @@ def test_tripits_copy_of_a_held_byair_flight_plans_nothing_beside_it():
         home_address=HOME,
         tripit_flights=[tripit],
     )
-    assert result.plan.creates == () and result.plan.deletes == ()
+    # The departure block is held under byAir's 15:00 key; TripIt's 14:55 copy
+    # writes no second departure. Its arrival has no block yet and plans.
+    assert [c.desired.kind for c in result.plan.creates] == ["airport_arrival"]
+    assert result.plan.deletes == ()
 
 
 def test_tripits_copy_plans_when_no_block_is_held_for_it():
@@ -697,3 +700,136 @@ def test_tripits_copy_plans_when_no_block_is_held_for_it():
         tripit_flights=[tripit],
     )
     assert result.plan.creates != ()
+
+
+# --- review round 4 (#337) ----------------------------------------------------
+
+
+def _status_flight(status, dep="BNA", arr="SFO", day=22):
+    return Flight(
+        dep_airport=dep,
+        arr_airport=arr,
+        scheduled_dep=datetime(2025, 10, day, 15, 0, tzinfo=UTC),
+        scheduled_arr=datetime(2025, 10, day, 19, 0, tzinfo=UTC),
+        source=BYAIR,
+        byair_flight_id=day,
+        status=status,
+    )
+
+
+def test_a_cancelled_flight_plans_no_drive():
+    result = _plan(
+        lambda o, d: timedelta(minutes=40), current=[], flights=[_status_flight("cancelled")]
+    )
+    assert result.plan.creates == ()
+
+
+def test_a_diverted_flight_plans_no_drive_from_its_booked_destination():
+    result = _plan(
+        lambda o, d: timedelta(minutes=40), current=[], flights=[_status_flight("diverted")]
+    )
+    assert [c.desired.kind for c in result.plan.creates] == ["airport_departure"]
+
+
+def test_an_unreadable_record_with_times_is_placed_at_an_unknown_airport():
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "scheduled_arr_time": "2025-10-22T19:00:00Z",
+    }
+    flights = reconcile_sweep.normalize_flights([record], lambda _id: None)
+    (transport,) = flights.unplaced
+    assert (transport.origin, transport.destination) == (None, None)
+    assert flights.blind == ()
+
+
+def test_an_unreadable_record_is_kept_beside_a_nearby_tripit_flight():
+    """#337 review: a TripIt flight leaving within hours may be the next leg of
+    a connection; no time window alone proves it is the same flight."""
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "scheduled_arr_time": "2025-10-22T17:00:00Z",
+    }
+    connection = Flight(
+        dep_airport="DEN",
+        arr_airport="SFO",
+        scheduled_dep=datetime(2025, 10, 22, 18, 0, tzinfo=UTC),
+        source=TRIPIT,
+        tripit_segment_id="seg-2",
+    )
+    (placed,) = reconcile_sweep.normalize_flights([record], lambda _id: None, [connection]).unplaced
+    assert placed.departs == datetime(2025, 10, 22, 15, 0, tzinfo=UTC)
+
+
+def test_an_unresolved_airport_id_falls_back_to_the_polled_code():
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "scheduled_arr_time": "2025-10-22T19:00:00Z",
+        "last_snapshot": {"dep_airport_code": "bna", "arr_airport_code": "SFO"},
+    }
+    flights = reconcile_sweep.normalize_flights([record], lambda _id: None)
+    assert [(f.dep_airport, f.arr_airport) for f in flights.flights] == [("BNA", "SFO")]
+    assert (flights.unplaced, flights.blind) == ((), ())
+
+
+def test_a_cancellation_with_no_route_fails_the_sweep_closed():
+    """It could not take TripIt's copy with it, and that copy would move him on
+    a flight byAir says never left."""
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "last_snapshot": {"computed_status": "cancelled"},
+    }
+    flights = reconcile_sweep.normalize_flights([record], lambda _id: None)
+    with pytest.raises(reconcile_sweep.FlightsUnplaceable, match="cancelled"):
+        reconcile_sweep.require_placeable(flights)
+
+
+def test_a_record_with_no_readable_times_fails_the_sweep_closed():
+    flights = reconcile_sweep.normalize_flights([_byair_record(None)], lambda _id: None)
+    with pytest.raises(reconcile_sweep.FlightsUnplaceable, match="fix or remove"):
+        reconcile_sweep.require_placeable(flights)
+
+
+def test_a_polled_code_stands_in_for_an_airport_the_resolver_cannot_resolve():
+    """#337 review: the production resolver raises rather than returning None;
+    byAir's polled code still places the flight."""
+
+    def resolve(_airport_id):
+        raise reconcile_sweep.AirportUnresolved("no usable IATA")
+
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "dep_airport_id": 1,
+        "arr_airport_id": 2,
+        "scheduled_arr_time": "2025-10-22T19:00:00Z",
+        "last_snapshot": {"dep_airport_code": "BNA", "arr_airport_code": "SFO"},
+    }
+    flights = reconcile_sweep.normalize_flights([record], resolve)
+    assert [(f.dep_airport, f.arr_airport) for f in flights.flights] == [("BNA", "SFO")]
+
+
+def test_an_unresolvable_airport_with_no_polled_code_still_fails_the_sweep():
+    def resolve(_airport_id):
+        raise reconcile_sweep.AirportUnresolved("no usable IATA")
+
+    record = {**_byair_record("2025-10-22T15:00:00Z"), "dep_airport_id": 1, "arr_airport_id": 2}
+    with pytest.raises(reconcile_sweep.AirportUnresolved):
+        reconcile_sweep.normalize_flights([record], resolve)
+
+
+def test_a_delay_past_the_booked_arrival_with_no_live_arrival_fails_the_sweep():
+    """#337 review: booked 15:00-19:00, departing 20:00 live with no live
+    arrival. Accepted, it would vanish from the itinerary and TripIt's booked
+    copy would land him at 19:00."""
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "scheduled_arr_time": "2025-10-22T19:00:00Z",
+        "last_snapshot": {
+            "dep_airport_code": "BNA",
+            "arr_airport_code": "SFO",
+            "dep_time": "2025-10-22T20:00:00Z",
+        },
+    }
+    flights = reconcile_sweep.normalize_flights([record], lambda _id: None)
+    assert flights.flights == []
+    with pytest.raises(reconcile_sweep.FlightsUnplaceable):
+        reconcile_sweep.require_placeable(flights)
