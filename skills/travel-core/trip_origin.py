@@ -131,7 +131,9 @@ def home_airports(*, path: Path | None = None) -> frozenset[str]:
 
     Empty when the profile has none: the itinerary then judges home by the trip
     covering an instant rather than by airport (see `itinerary`)."""
-    return frozenset(code.strip().upper() for code in read_values("home_airport", path=path) if code)
+    return frozenset(
+        code.strip().upper() for code in read_values("home_airport", path=path) if code
+    )
 
 
 def resolve_anchor(

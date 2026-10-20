@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
+from itinerary import Itinerary  # noqa: E402
 from position import (  # noqa: E402
     GPS_IMMINENCE_MARGIN,
     LIVE_GPS,
@@ -42,7 +43,7 @@ def _dt(y, mo, d, h=0, mi=0):
 
 
 def test_position_at_off_trip_is_home():
-    anchor = position_at(None, _dt(2020, 7, 12, 9), home_address=HOME)
+    anchor = position_at(Itinerary(None, home_address=HOME), _dt(2020, 7, 12, 9))
     assert anchor.address == HOME
     assert anchor.source == "home"
 
@@ -58,7 +59,7 @@ def test_position_at_on_trip_resolves_lodging():
         },
     ]
     # A leave_by the morning after check-in resolves to the hotel — the #154 case.
-    anchor = position_at(schedule, _dt(2020, 7, 12, 6), home_address=HOME)
+    anchor = position_at(Itinerary(schedule, home_address=HOME), _dt(2020, 7, 12, 6))
     assert anchor.address == HOTEL
     assert anchor.source == "lodging"
 
@@ -75,13 +76,13 @@ def test_position_at_before_checkin_is_not_the_hotel():
     ]
     # An instant BEFORE the check-in must not anchor at that hotel (falls to trip
     # location / unresolved, never the future lodging).
-    anchor = position_at(schedule, _dt(2020, 7, 12, 6), home_address=HOME)
+    anchor = position_at(Itinerary(schedule, home_address=HOME), _dt(2020, 7, 12, 6))
     assert anchor.source != "lodging"
 
 
 def test_position_at_rejects_naive_instant():
     with pytest.raises(ValueError, match="timezone-aware"):
-        position_at(None, datetime(2020, 7, 12, 9), home_address=HOME)
+        position_at(Itinerary(None, home_address=HOME), datetime(2020, 7, 12, 9))
 
 
 # --- is_drive_imminent: the window boundary ---------------------------------

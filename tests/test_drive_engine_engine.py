@@ -147,7 +147,7 @@ def test_round_trip_closing_arrival_returns_home_on_trip_end_day():
     """
     # Exact live grouping shape: byAir split the outbound and return into two
     # trip ids, while TripIt linked both physical-flight twins under one shared
-    # itinerary id. The merged aliases must reconnect the round trip.
+    # itinerary id. The landing at BNA, a home airport, is what brings him home.
     chain = [
         flight("BNA", "SFO", _dt(9, day=12), _dt(14, day=12), fid=1, trip_id=2832675),
         tripit_flight(
@@ -203,6 +203,7 @@ def test_round_trip_closing_arrival_returns_home_on_trip_end_day():
         route=const_route(30),
         schedule=schedule,
         home_address=HOME,
+        home_airports=frozenset({"BNA"}),
         now=NOW,
     )
 
@@ -232,6 +233,7 @@ def test_round_trip_closing_arrival_returns_home_on_trip_end_day():
         route=const_route(30),
         schedule=schedule,
         home_address=HOME,
+        home_airports=frozenset({"BNA"}),
         now=NOW,
     )
     assert len(repair.plan.updates) == 1
@@ -240,8 +242,8 @@ def test_round_trip_closing_arrival_returns_home_on_trip_end_day():
 
 
 def test_shared_alias_preserves_long_stay_ground_legs_without_lodging():
-    """Live Oslo follow-up: a shared TripIt itinerary identifies homecoming,
-    but must not turn the multi-day stay into an airside connection."""
+    """Live Oslo follow-up: the landing at BNA brings him home, and the
+    multi-day stay never reads as an airside connection."""
     flights = [
         flight("BNA", "OSL", _dt(9, day=12), _dt(14, day=12), fid=1, trip_id=101),
         tripit_flight(
@@ -291,6 +293,7 @@ def test_shared_alias_preserves_long_stay_ground_legs_without_lodging():
         route=const_route(30),
         schedule=schedule,
         home_address=HOME,
+        home_airports=frozenset({"BNA"}),
         now=NOW,
     )
 
@@ -526,6 +529,7 @@ def test_a_staged_round_trip_still_drives_home_at_the_end():
         route=const_route(30),
         schedule=_staged_round_trip_schedule(),
         home_address=HOME,
+        home_airports=frozenset({"BNA"}),
         now=NOW,
     )
     arrivals = [c.desired for c in result.plan.creates if c.desired.kind == "airport_arrival"]
@@ -606,7 +610,7 @@ def test_airport_arrival_on_home_metro_placeholder_returns_home():
         current_blocks=[],
         route=const_route(40),
         home_address=HOME,
-        home_metros=frozenset({"nashville, tn"}),
+        home_airports=frozenset({"BNA"}),
         now=NOW,
         schedule=[
             {

@@ -130,12 +130,6 @@ class MergedFlight:
     byair_flight_ids: frozenset[int] = field(default_factory=frozenset)
     tripit_segment_ids: frozenset[str] = field(default_factory=frozenset)
     trip_id: int | None = None
-    # Every source-side trip identifier carried by the merged members. byAir
-    # can split one real round trip into separate outbound / return trip ids,
-    # while TripIt keeps both under one itinerary id. Retaining the aliases lets
-    # chain assembly join those halves transitively instead of treating the
-    # return flight as an unrelated singleton (#219 live follow-up).
-    trip_ids: frozenset[int] = field(default_factory=frozenset)
 
     @property
     def has_byair(self) -> bool:
@@ -154,13 +148,6 @@ class MergedFlight:
     def effective_arr(self) -> datetime | None:
         return self.live_arr or self.scheduled_arr
 
-    @property
-    def all_trip_ids(self) -> frozenset[int]:
-        """Every grouping alias, including legacy/manual `trip_id` values."""
-        if self.trip_id is None or self.trip_id in self.trip_ids:
-            return self.trip_ids
-        return self.trip_ids | {self.trip_id}
-
 
 def _merge_cluster(cluster: list[Flight]) -> MergedFlight:
     """Collapse a cluster of same-identity Flights into one MergedFlight.
@@ -178,16 +165,12 @@ def _merge_cluster(cluster: list[Flight]) -> MergedFlight:
     time_source = byair_members[0] if byair_members else tripit_members[0]
     display = next((f for f in cluster if f.code), None)
 
-    # `trip_id` remains the preferred compatibility id: byAir and TripIt use
-    # DIFFERENT id namespaces (byAir positive; TripIt negated to avoid collision),
-    # so a fused twin prefers byAir and can still group with byAir-only legs.
-    # `trip_ids` retains EVERY alias too. That is load-bearing when byAir splits
-    # one round trip across separate ids while TripIt supplies the shared alias
-    # that joins the outbound and return halves.
+    # `trip_id` is the chain grouping id. byAir and TripIt use DIFFERENT id
+    # namespaces (byAir positive; TripIt negated to avoid collision), so a fused
+    # twin prefers byAir and can still group with byAir-only legs.
     trip_id = next((f.trip_id for f in byair_members if f.trip_id is not None), None)
     if trip_id is None:
         trip_id = next((f.trip_id for f in tripit_members if f.trip_id is not None), None)
-    trip_ids = frozenset(f.trip_id for f in cluster if f.trip_id is not None)
 
     return MergedFlight(
         dep_airport=time_source.dep_airport,
@@ -204,7 +187,6 @@ def _merge_cluster(cluster: list[Flight]) -> MergedFlight:
             f.tripit_segment_id for f in tripit_members if f.tripit_segment_id is not None
         ),
         trip_id=trip_id,
-        trip_ids=trip_ids,
     )
 
 

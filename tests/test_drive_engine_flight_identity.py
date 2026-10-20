@@ -142,7 +142,7 @@ def test_byair_wins_on_times_when_both_sources_present():
     assert m.effective_dep == live.astimezone(UTC)  # live overrides scheduled
 
 
-def test_fused_twin_prefers_byair_trip_id_and_retains_all_grouping_aliases():
+def test_fused_twin_prefers_byair_trip_id():
     # A byAir flight (positive trip_id) and its TripIt twin (negated trip_id) are
     # the same physical flight and fuse. The merged flight must carry the byAir
     # trip_id — TripIt is listed FIRST in the input, so a naive first-non-None pick
@@ -155,7 +155,6 @@ def test_fused_twin_prefers_byair_trip_id_and_retains_all_grouping_aliases():
     merged = merge_flights(flights)
     assert len(merged) == 1
     assert merged[0].trip_id == 678  # byAir preferred, not the negated TripIt id
-    assert merged[0].all_trip_ids == frozenset({678, -98765})
 
 
 def test_tripit_only_flight_keeps_its_trip_id():
@@ -163,7 +162,6 @@ def test_tripit_only_flight_keeps_its_trip_id():
         [tripit("seg-1", "AA1", "STN", "CPH", _dt(2020, 7, 12, 9, 0), trip_id=-98765)]
     )
     assert merged[0].trip_id == -98765  # no byAir member → TripIt id stands
-    assert merged[0].all_trip_ids == frozenset({-98765})
 
 
 # --- Union: single-source flights survive (R2) -----------------------------

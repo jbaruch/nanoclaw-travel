@@ -51,47 +51,6 @@ def group_into_chains(flights: list[MergedFlight]) -> list[list[MergedFlight]]:
     return chains
 
 
-def group_into_itineraries(flights: list[MergedFlight]) -> list[list[MergedFlight]]:
-    """Group by connected source aliases for itinerary-level facts only.
-
-    A shared TripIt alias can reconnect outbound and return chains that byAir gave
-    different preferred ids. Consumers use these components to recognize the
-    overall opening and closing airports; connection-leg planning continues to
-    use `group_into_chains` so a multi-day stay keeps its ground endpoints.
-    """
-    parent = list(range(len(flights)))
-
-    def find(index: int) -> int:
-        while parent[index] != index:
-            parent[index] = parent[parent[index]]
-            index = parent[index]
-        return index
-
-    def union(left: int, right: int) -> None:
-        left_root = find(left)
-        right_root = find(right)
-        if left_root != right_root:
-            # Index order is deterministic and keeps the component root stable.
-            low, high = sorted((left_root, right_root))
-            parent[high] = low
-
-    owner_by_alias: dict[int, int] = {}
-    for index, flight in enumerate(flights):
-        for alias in sorted(flight.all_trip_ids):
-            owner = owner_by_alias.setdefault(alias, index)
-            union(index, owner)
-
-    by_component: dict[int, list[MergedFlight]] = {}
-    for index, flight in enumerate(flights):
-        by_component.setdefault(find(index), []).append(flight)
-
-    itineraries = [
-        sorted(group, key=lambda flight: flight.scheduled_dep) for group in by_component.values()
-    ]
-    itineraries.sort(key=lambda itinerary: itinerary[0].scheduled_dep)
-    return itineraries
-
-
 def _spans_overnight(start: datetime, end: datetime) -> bool:
     """Whether a connection gap crosses a calendar night (different UTC days).
 

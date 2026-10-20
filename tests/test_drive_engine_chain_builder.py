@@ -19,7 +19,6 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 from chain_builder import (  # noqa: E402
     build_pair_contexts,
     group_into_chains,
-    group_into_itineraries,
     has_lodging_between,
 )
 from flight_identity import MergedFlight  # noqa: E402
@@ -31,7 +30,7 @@ def _dt(h, mi=0, *, day=12):
     return datetime(2020, 7, day, h, mi, tzinfo=UTC)
 
 
-def flight(dep, arr, sched_dep, sched_arr, *, fid=1, trip_id=None, trip_ids=frozenset()):
+def flight(dep, arr, sched_dep, sched_arr, *, fid=1, trip_id=None):
     return MergedFlight(
         dep_airport=dep,
         arr_airport=arr,
@@ -42,7 +41,6 @@ def flight(dep, arr, sched_dep, sched_arr, *, fid=1, trip_id=None, trip_ids=froz
         code=None,
         byair_flight_ids=frozenset({fid}),
         trip_id=trip_id,
-        trip_ids=trip_ids,
     )
 
 
@@ -73,9 +71,9 @@ def test_distinct_trips_are_separate_chains():
     assert chains[0][0].trip_id == 1  # earlier-departing trip first
 
 
-def test_shared_secondary_alias_rejoins_itinerary_but_preserves_split_chains():
-    """Live SFO regression: byAir split outbound/return into different trips,
-    but each fused TripIt twin retained the same itinerary alias."""
+def test_a_round_trip_byair_split_stays_two_chains():
+    """Live SFO regression: byAir split outbound and return into different trips,
+    so the stay between them keeps its ground legs."""
     outbound = flight(
         "BNA",
         "SFO",
@@ -83,7 +81,6 @@ def test_shared_secondary_alias_rejoins_itinerary_but_preserves_split_chains():
         _dt(14),
         fid=1,
         trip_id=2832675,
-        trip_ids=frozenset({2832675, -384031073}),
     )
     returning = flight(
         "SFO",
@@ -92,16 +89,12 @@ def test_shared_secondary_alias_rejoins_itinerary_but_preserves_split_chains():
         _dt(22, day=14),
         fid=2,
         trip_id=2832677,
-        trip_ids=frozenset({2832677, -384031073}),
     )
 
     flights = [returning, outbound]
     chains = group_into_chains(flights)
-    itineraries = group_into_itineraries(flights)
 
     assert [len(chain) for chain in chains] == [1, 1]
-    assert len(itineraries) == 1
-    assert [f.dep_airport for f in itineraries[0]] == ["BNA", "SFO"]
 
 
 # --- lodging-between --------------------------------------------------------

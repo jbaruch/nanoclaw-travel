@@ -228,25 +228,36 @@ def _trip_on(trips: list[_Trip], day: date) -> _Trip | None:
 
 def _stays(schedule: list[dict], trips: list[_Trip]) -> list[_Stay]:
     """Lodging stays: each check-in paired with the next check-out of the same
-    hotel. A check-in without a check-out ends with its trip, a check-out
-    without a check-in starts with its trip (a stay in progress, whose check-in
-    the feed has dropped); outside any trip, `_OPEN_STAY` from the known end.
-    A stay with no address still marks where the operator sleeps, with no
-    address to drive to."""
+    hotel, or one record spanning the stay when it carries neither prefix. A
+    check-in without a check-out ends with its trip, a check-out without a
+    check-in starts with its trip (a stay in progress, whose check-in the feed
+    has dropped); outside any trip, `_OPEN_STAY` from the known end. A stay with
+    no address still marks where the operator sleeps, with no address to drive
+    to."""
     events: list[tuple[datetime, str, str, str | None]] = []
+    stays: list[_Stay] = []
     for record in schedule:
         if not isinstance(record, dict) or record.get("type") != "Lodging":
             continue
-        when, role = parse_time(record.get("start")), lodging_role(record.get("summary"))
-        name = hotel_name(record.get("summary"))
-        if when is None or role is None or name is None:
-            continue
         location = record.get("location")
         address = location.strip() if isinstance(location, str) and location.strip() else None
+        when, role = parse_time(record.get("start")), lodging_role(record.get("summary"))
+        if role is None:
+            # No check-in / check-out prefix: one record spanning the whole stay,
+            # or, with no end after its start, a check-in.
+            start, end = _timed(record.get("start")), _timed(record.get("end"))
+            name = str(record.get("summary") or "lodging")
+            if start is not None and end is not None and end > start:
+                stays.append(_Stay(start=start, end=end, address=address, name=name))
+            elif when is not None:
+                events.append((when, CHECK_IN, name, address))
+            continue
+        name = hotel_name(record.get("summary"))
+        if when is None or name is None:
+            continue
         events.append((when, role, name, address))
     events.sort(key=lambda event: event[0])
 
-    stays: list[_Stay] = []
     used: set[int] = set()
     for index, (when, role, name, address) in enumerate(events):
         if role != CHECK_IN or index in used:

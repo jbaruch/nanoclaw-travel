@@ -3,11 +3,10 @@ resolver (#156 R1).
 
 R1 splits two concerns the old engines tangled, and the split is the whole point:
 
-- `position_at(schedule, T)` — the PLANNED position at instant T: most-recent
-  lodging check-in ≤ T, else trip location, else the static home off-trip. Pure —
-  no clock, no GPS, deterministic. It is `trip_origin.resolve_anchor` bound to the
-  engine's contract; every caller passes the CORRECT instant (a leg's `leave_by`
-  or `depart_after`), so the "which `now` did the caller pass" scatter that caused
+- `position_at(itinerary, T)` — the PLANNED position at instant T, read off the
+  sweep's one `itinerary.Itinerary` (#335). Pure — no clock, no GPS,
+  deterministic. Every caller passes the CORRECT instant (a leg's `leave_by` or
+  `depart_after`), so the "which `now` did the caller pass" scatter that caused
   #154 — resolving the origin at cycle `now` instead of at the drive's own time —
   cannot recur.
 - `resolve_leg_origin(planned, now, …)` — overlays a fresh live-GPS fix onto the
@@ -39,18 +38,14 @@ if not _TRAVEL_CORE.is_dir():
 if str(_TRAVEL_CORE) not in sys.path:
     sys.path.insert(0, str(_TRAVEL_CORE))
 
-from trip_origin import TripAnchor, opened_from_home, resolve_anchor  # noqa: E402
+from itinerary import Itinerary  # noqa: E402
+from trip_origin import TripAnchor  # noqa: E402
 
-# Re-exported so the engine reaches every planned-position question through this
-# module rather than importing travel-core twice. `opened_from_home` answers
-# "did this journey leave home", which `position_at(...).source == "home"` only
-# approximates — see its docstring in `trip_origin` (#235).
 __all__ = [
     "GPS_IMMINENCE_MARGIN",
     "LIVE_GPS",
     "ResolvedOrigin",
     "is_drive_imminent",
-    "opened_from_home",
     "position_at",
     "resolve_leg_origin",
 ]
@@ -62,21 +57,14 @@ GPS_IMMINENCE_MARGIN = timedelta(minutes=40)
 LIVE_GPS = "live_gps"
 
 
-def position_at(
-    schedule: list[dict] | None,
-    at: datetime,
-    *,
-    home_address: str | None,
-    home_metros: frozenset[str] = frozenset(),
-) -> TripAnchor:
-    """The planned position at instant `at` — pure, itinerary-only (#156 R1).
+def position_at(itinerary: Itinerary, at: datetime) -> TripAnchor:
+    """The planned position at instant `at` — pure, itinerary-only (#156 R1, #335).
 
-    Delegates to `trip_origin.resolve_anchor`: lodging ladder → trip location →
-    home. No clock, no GPS. `at` must be tz-aware. The engine passes the leg's own
+    No clock, no GPS. `at` must be tz-aware. The engine passes the leg's own
     instant (`leave_by` for a departure, `depart_after` for an arrival), never
     cycle `now`.
     """
-    return resolve_anchor(schedule, at=at, home_address=home_address, home_metros=home_metros)
+    return itinerary.position_at(at)
 
 
 @dataclass(frozen=True)

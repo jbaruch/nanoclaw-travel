@@ -15,9 +15,13 @@ Per-leg endpoint resolution (the routing ↔ leave-by ↔ origin interplay of §
 - departure: dest = departure airport (fixed); origin = `position_at(anchor)`, then
   routed, then GPS-overlaid when imminent, then re-routed from the resolved origin.
   leave_by = arrive_by − routed drive.
-- arrival: origin = arrival airport (fixed); a home-originating round trip that
-  closes at its opening airport returns home, otherwise dest =
-  `position_at(depart_after)`. The drive starts at depart_after; no GPS overlay.
+- arrival: origin = arrival airport (fixed); dest = `position_at(depart_after)`,
+  which is home once a flight has landed at a home airport (#335). The drive
+  starts at depart_after; no GPS overlay.
+
+Positions come from one `itinerary.Itinerary` per sweep, built from the TripIt
+schedule and the merged byAir ∪ TripIt flights (`itinerary_for`), so a flight
+only byAir tracks still moves the operator.
 - transfer: both endpoints fixed airports; leave_by = window_end − routed drive.
 
 A leg whose non-fixed endpoint cannot be resolved to an address (`position_at`
@@ -27,17 +31,28 @@ routed blind. A trivial routed drive with a boarding block present is suppressed
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
-from block_codec import leg_identity
-from chain import LegKind, PlannedLeg, plan_chain_legs
-from chain_builder import build_pair_contexts, group_into_chains, group_into_itineraries
-from flight_identity import Flight, MergedFlight, merge_flights
-from leg_anchor import AirportFacts, BufferOverrides, ConcreteLeg, resolve_leg_anchor
-from position import opened_from_home, position_at, resolve_leg_origin
-from reconcile import (
+# The itinerary ships in the co-located travel-core bundle; runtime mount,
+# dev-clone sibling fallback for CI (the same pattern as `leg_anchor`).
+_TRAVEL_CORE = Path("/home/node/.claude/skills/tessl__travel-core")
+if not _TRAVEL_CORE.is_dir():
+    _TRAVEL_CORE = Path(__file__).resolve().parent.parent / "travel-core"
+if str(_TRAVEL_CORE) not in sys.path:
+    sys.path.insert(0, str(_TRAVEL_CORE))
+
+from block_codec import leg_identity  # noqa: E402
+from chain import LegKind, plan_chain_legs  # noqa: E402
+from chain_builder import build_pair_contexts, group_into_chains  # noqa: E402
+from flight_identity import Flight, MergedFlight, merge_flights  # noqa: E402
+from itinerary import Itinerary, Transport  # noqa: E402
+from leg_anchor import AirportFacts, BufferOverrides, ConcreteLeg, resolve_leg_anchor  # noqa: E402
+from position import position_at, resolve_leg_origin  # noqa: E402
+from reconcile import (  # noqa: E402
     DesiredBlock,
     HeldLeg,
     ParsedBlock,
@@ -45,7 +60,7 @@ from reconcile import (
     legacy_keys_for_airport_leg,
     plan_reconcile,
 )
-from suppression import is_trivial_leg
+from suppression import is_trivial_leg  # noqa: E402
 
 # No real drive to or from an airport runs this long; a longer one means the
 # origin or destination resolved to the wrong city (a 16.8 h Schiphol→FCO
@@ -161,9 +176,7 @@ def _implausible(side: str, leg: ConcreteLeg, drive: timedelta, origin: str, des
 def _build_departure(
     leg: ConcreteLeg,
     *,
-    schedule: list[dict] | None,
-    home_address: str | None,
-    home_metros: frozenset[str],
+    itinerary: Itinerary,
     now: datetime,
     live_origin: str | None,
     route: RouteFn,
@@ -174,7 +187,7 @@ def _build_departure(
     assert anchor is not None and leg.dest_airport is not None
     dest = _airport_place(leg.dest_airport)
     dest_point = _airport_point(leg.dest_airport, airport_info)
-    planned = position_at(schedule, anchor, home_address=home_address, home_metros=home_metros)
+    planned = position_at(itinerary, anchor)
     if planned.address is None:
         return None, f"departure {leg_identity(leg)}: no origin (position_at unresolved)", True
     approx = route(planned.address, dest_point)
@@ -219,10 +232,7 @@ def _build_departure(
 def _build_arrival(
     leg: ConcreteLeg,
     *,
-    schedule: list[dict] | None,
-    home_address: str | None,
-    home_metros: frozenset[str],
-    return_home: bool,
+    itinerary: Itinerary,
     route: RouteFn,
     boarding_present: BoardingPresentFn,
     airport_info: dict[str, AirportInfo],
@@ -231,13 +241,9 @@ def _build_arrival(
     assert anchor is not None and leg.origin_airport is not None
     origin = _airport_place(leg.origin_airport)
     origin_point = _airport_point(leg.origin_airport, airport_info)
-    if return_home:
-        destination = home_address
-        destination_label = "home"
-    else:
-        planned = position_at(schedule, anchor, home_address=home_address, home_metros=home_metros)
-        destination = planned.address
-        destination_label = _dest_label(planned)
+    planned = position_at(itinerary, anchor)
+    destination = planned.address
+    destination_label = _dest_label(planned)
     if destination is None:
         return None, f"arrival {leg_identity(leg)}: no destination (position_at unresolved)", True
     drive = route(origin_point, destination)
@@ -319,6 +325,25 @@ def _held_leg(concrete: ConcreteLeg, reason: str) -> HeldLeg:
     )
 
 
+def itinerary_for(
+    flights: list[MergedFlight],
+    schedule: list[dict] | None,
+    *,
+    home_address: str | None,
+    home_airports: frozenset[str] = frozenset(),
+) -> Itinerary:
+    """The sweep's one itinerary: the schedule plus every merged flight, so a
+    flight byAir alone tracks still moves the operator (#335)."""
+    transports = [
+        Transport(f.effective_dep, f.effective_arr, f.dep_airport, f.arr_airport)
+        for f in flights
+        if f.effective_arr is not None and f.effective_arr > f.effective_dep
+    ]
+    return Itinerary(
+        schedule, home_address=home_address, home_airports=home_airports, transports=transports
+    )
+
+
 def build_reconcile_plan(
     *,
     flights: list[Flight],
@@ -327,7 +352,8 @@ def build_reconcile_plan(
     route: RouteFn,
     schedule: list[dict] | None = None,
     home_address: str | None = None,
-    home_metros: frozenset[str] = frozenset(),
+    home_airports: frozenset[str] = frozenset(),
+    itinerary: Itinerary | None = None,
     now: datetime,
     live_origin: str | None = None,
     boarding_present: BoardingPresentFn | None = None,
@@ -365,32 +391,10 @@ def build_reconcile_plan(
     merged = merge_flights(flights)
     chains = group_into_chains(merged)
 
-    # Trip aliases answer one itinerary-level question only: which final arrival
-    # closes a round trip that opened from home? They must NOT redefine the
-    # operational chains passed to `plan_chain_legs`: TripIt commonly keeps an
-    # outbound and return under one alias across a multi-day stay, while byAir's
-    # preferred ids split them at the ground stay. Joining those chains would
-    # suppress the valid arrival/departure drives around the stay.
-    homecoming_flights: set[MergedFlight] = set()
-    for itinerary in group_into_itineraries(merged):
-        first = itinerary[0]
-        last = itinerary[-1]
-        if first.dep_airport != last.arr_airport:
-            continue
-        opening_leg = resolve_leg_anchor(
-            PlannedLeg(LegKind.AIRPORT_DEPARTURE, to_flight=first),
-            facts=_facts_for(first, airport_info),
-            overrides=overrides,
+    if itinerary is None:
+        itinerary = itinerary_for(
+            merged, schedule, home_address=home_address, home_airports=home_airports
         )
-        opening_anchor = opening_leg.anchor
-        assert opening_anchor is not None
-        # Ask whether the JOURNEY left home, not whether the operator happened to
-        # be standing in the house at that instant — those come apart when he
-        # stages at an airport hotel the night before (#235, `opened_from_home`).
-        if opened_from_home(
-            schedule, at=opening_anchor, home_address=home_address, home_metros=home_metros
-        ):
-            homecoming_flights.add(last)
 
     desired: list[DesiredBlock] = []
     skipped: list[str] = []
@@ -436,9 +440,7 @@ def build_reconcile_plan(
                     continue
                 block, diag, hold = _build_departure(
                     concrete,
-                    schedule=schedule,
-                    home_address=home_address,
-                    home_metros=home_metros,
+                    itinerary=itinerary,
                     now=now,
                     live_origin=live_origin,
                     route=route,
@@ -460,10 +462,7 @@ def build_reconcile_plan(
                     continue
                 block, diag, hold = _build_arrival(
                     concrete,
-                    schedule=schedule,
-                    home_address=home_address,
-                    home_metros=home_metros,
-                    return_home=flight in homecoming_flights,
+                    itinerary=itinerary,
                     route=route,
                     boarding_present=boarding_present,
                     airport_info=airport_info,

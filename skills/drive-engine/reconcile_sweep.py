@@ -51,9 +51,10 @@ from airport_facts_cache import StaticAirport, load_static_facts, store_static_f
 from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
 from drive_decision import load_verdicts, mark_asked, prune, record_drive_time  # noqa: E402
-from engine import AirportInfo, build_reconcile_plan  # noqa: E402
-from flight_identity import DEFAULT_IDENTITY_TOLERANCE  # noqa: E402
+from engine import AirportInfo, build_reconcile_plan, itinerary_for  # noqa: E402
+from flight_identity import DEFAULT_IDENTITY_TOLERANCE, TRIPIT, Flight, merge_flights  # noqa: E402
 from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
+from itinerary import Itinerary  # noqa: E402
 from lodging_source import (  # noqa: E402
     context_from_blocks,
     driving_trips,
@@ -204,40 +205,30 @@ class PlanResult:
     held: tuple[HeldLeg, ...] = field(default_factory=tuple)
 
 
-def build_plan(
-    *,
+@dataclass(frozen=True)
+class SweepFlights:
+    """The sweep's flights: byAir records with resolved airports UNIONED with
+    TripIt segments (R2), the airport facts they carry, and the records that
+    could not be normalized: `skipped` their diagnostics, `unreadable` each one's
+    diagnostic and scheduled departure (None when it has none)."""
+
+    flights: list[Flight]
+    airport_info: dict[str, AirportInfo]
+    skipped: tuple[str, ...] = ()
+    unreadable: tuple[tuple[str, datetime | None], ...] = ()
+
+
+def normalize_flights(
     flight_records: list[dict],
     resolve_airport: Callable[[int], ResolvedAirport | None],
-    meeting_blocks: list[DesiredBlock],
-    current_blocks: list[ParsedBlock],
-    route: RouteFn,
-    now: datetime,
-    schedule: list[dict] | None = None,
-    home_address: str | None = None,
-    home_metros: frozenset[str] = frozenset(),
-    live_origin: str | None = None,
     tripit_flights: list | None = None,
-    boarding_present: Callable | None = None,
-    lodging_blocks: list[DesiredBlock] | None = None,
-    held: list[HeldLeg] | None = None,
-) -> PlanResult:
-    """Assemble the combined (airport + meeting + lodging) reconcile plan.
-
-    Pure over inputs. Airport legs are built from the byAir records (airports
-    resolved via `resolve_airport`) UNIONED with `tripit_flights` (already-
-    normalized TripIt segments, R2) so a flight tracked by either source
-    survives; the pre-built `meeting_blocks` and `lodging_blocks` are folded in
-    as extra desired blocks so all three diff against the calendar in ONE
-    reconcile. Anything left out of that single diff would be orphan-deleted by
-    it, which is why `held` carries the meeting and lodging legs those sources
-    could not compute: their blocks are kept (#334). `boarding_present` gates
-    trivial-leg suppression (V3).
-    """
-    flights: list = []
+) -> SweepFlights:
+    """Normalize the byAir records (airports via `resolve_airport`) and union
+    them with the already-normalized `tripit_flights`. Pure over its inputs."""
+    flights = list(tripit_flights or [])
     airport_info: dict[str, AirportInfo] = {}
     skipped: list[str] = []
     unreadable: list[tuple[str, datetime | None]] = []
-
     for record in flight_records:
         dep_id = record.get("dep_airport_id")
         arr_id = record.get("arr_airport_id")
@@ -254,31 +245,68 @@ def build_plan(
             skipped.append(str(exc))
             unreadable.append((str(exc), _scheduled_departure(record)))
             continue
-        airport_info[dep.iata] = AirportInfo(
-            flag=dep.flag,
-            delay_index=dep.delay_index,
-            timezone=dep.timezone,
-            lat=dep.lat,
-            lon=dep.lon,
-        )
-        airport_info[arr.iata] = AirportInfo(
-            flag=arr.flag,
-            delay_index=arr.delay_index,
-            timezone=arr.timezone,
-            lat=arr.lat,
-            lon=arr.lon,
-        )
-
-    retained = _unreadable_flight_holds(unreadable, current_blocks)
-    flights = [f for f in tripit_flights or [] if not _retained_flight(f, retained)] + flights
-    result = build_reconcile_plan(
+        for airport in (dep, arr):
+            assert airport.iata is not None
+            airport_info[airport.iata] = AirportInfo(
+                flag=airport.flag,
+                delay_index=airport.delay_index,
+                timezone=airport.timezone,
+                lat=airport.lat,
+                lon=airport.lon,
+            )
+    return SweepFlights(
         flights=flights,
         airport_info=airport_info,
+        skipped=tuple(skipped),
+        unreadable=tuple(unreadable),
+    )
+
+
+def build_plan(
+    *,
+    flight_records: list[dict],
+    resolve_airport: Callable[[int], ResolvedAirport | None],
+    meeting_blocks: list[DesiredBlock],
+    current_blocks: list[ParsedBlock],
+    route: RouteFn,
+    now: datetime,
+    schedule: list[dict] | None = None,
+    home_address: str | None = None,
+    home_airports: frozenset[str] = frozenset(),
+    live_origin: str | None = None,
+    tripit_flights: list | None = None,
+    boarding_present: Callable | None = None,
+    lodging_blocks: list[DesiredBlock] | None = None,
+    held: list[HeldLeg] | None = None,
+    itinerary: Itinerary | None = None,
+) -> PlanResult:
+    """Assemble the combined (airport + meeting + lodging) reconcile plan.
+
+    Pure over inputs. Airport legs are built from the byAir records (airports
+    resolved via `resolve_airport`) UNIONED with `tripit_flights` (already-
+    normalized TripIt segments, R2) so a flight tracked by either source
+    survives; the pre-built `meeting_blocks` and `lodging_blocks` are folded in
+    as extra desired blocks so all three diff against the calendar in ONE
+    reconcile. Anything left out of that single diff would be orphan-deleted by
+    it, which is why `held` carries the meeting and lodging legs those sources
+    could not compute: their blocks are kept (#334). `boarding_present` gates
+    trivial-leg suppression (V3). `itinerary` is the sweep's one position model
+    (#335); without it the engine builds one from these flights.
+    """
+    normalized = normalize_flights(flight_records, resolve_airport, tripit_flights)
+    retained = _unreadable_flight_holds(list(normalized.unreadable), current_blocks)
+    flights = [
+        f for f in normalized.flights if f.source != TRIPIT or not _retained_flight(f, retained)
+    ]
+    result = build_reconcile_plan(
+        flights=flights,
+        airport_info=normalized.airport_info,
         current_blocks=current_blocks,
         route=route,
         schedule=schedule,
         home_address=home_address,
-        home_metros=home_metros,
+        home_airports=home_airports,
+        itinerary=itinerary,
         now=now,
         live_origin=live_origin,
         boarding_present=boarding_present,
@@ -286,7 +314,9 @@ def build_plan(
         extra_held=list(held or []) + retained,
         managed_legacy=_MANAGED_LEGACY,
     )
-    return PlanResult(plan=result.plan, skipped=tuple(skipped) + result.skipped, held=result.held)
+    return PlanResult(
+        plan=result.plan, skipped=normalized.skipped + result.skipped, held=result.held
+    )
 
 
 _AIRPORT_KINDS = frozenset({"airport_departure", "airport_arrival", "airport_transfer"})
@@ -1053,7 +1083,6 @@ def _run_sweep() -> dict:
     _on_path("flight-assist")
     _on_path("travel-core")
 
-    from addresses import home_metro_names
     from airport_drive_inputs import airport_context
     from byair_client import ByAirClient, ByAirError
     from calendar_reconcile import _find_events_args, _items
@@ -1073,7 +1102,9 @@ def _run_sweep() -> dict:
     from trip_origin import (
         flight_summaries,
         load_travel_schedule,
-        resolve_anchor,
+    )
+    from trip_origin import (
+        home_airports as read_home_airports,
     )
 
     now = datetime.now(UTC)
@@ -1091,7 +1122,7 @@ def _run_sweep() -> dict:
         except HomeAddressError:
             home = None  # neither source configured — degrade, see below
     schedule = load_travel_schedule()
-    home_metros = home_metro_names()
+    home_airports = read_home_airports()
 
     maps = MapsClient.from_env(timeout=_SWEEP_MAPS_TIMEOUT_SECONDS)
     # One memoizing route closure for the whole sweep — meeting legs and airport
@@ -1113,6 +1144,55 @@ def _run_sweep() -> dict:
     )
     for summary in flight_summaries(schedule):
         known_codes |= flight_codes(summary)
+
+    # --- airport facts ---
+    # Static facts (IATA / flag / IANA tz) are immutable, so a warm sweep serves
+    # them from the persisted cross-sweep cache with no byAir call — this is what
+    # cut the ~7.6s ByAir cost that froze the calendar (#211). A byAir round trip
+    # happens only on a cache MISS (first-seen airport) or to refresh the live
+    # `delay.index` of a near-term DEPARTURE airport, where the nudge still moves
+    # the block. `delay.index` is never persisted (it is live).
+    byair = ByAirClient.from_env(timeout=_SWEEP_BYAIR_TIMEOUT_SECONDS)
+    static_facts = load_static_facts()
+    near_term_dep_ids = _near_term_departure_airport_ids(records, now)
+
+    def fetch_ctx(airport_id: int) -> _AirportCtx | None:
+        # Network + exception handling lives here so the resolver policy stays
+        # pure and testable. A byAir failure (timeout / not_found) resolves to
+        # None → the policy degrades to cached static facts when it has them, or
+        # raises `AirportUnresolved` to fail the whole sweep closed (never a
+        # partial plan — a dropped flight's block would be orphan-deleted).
+        try:
+            return airport_context(byair.get_airport(airport_id))
+        except (ByAirError, urllib.error.URLError) as exc:
+            # Fail visibly: a one-line diagnostic so an operator can tell a
+            # transient byAir outage / timeout from a genuinely unknown airport
+            # id, without changing the degrade-or-fail-closed behaviour above.
+            print(
+                f"[drive-engine] byAir get_airport({airport_id}) failed ({exc})",
+                file=sys.stderr,
+            )
+            return None
+
+    resolve_airport, static_facts_dirty = _make_airport_resolver(
+        static_facts=static_facts,
+        near_term_dep_ids=near_term_dep_ids,
+        fetch_ctx=fetch_ctx,
+    )
+
+    # --- the sweep's one itinerary (#335) ---
+    # Every position question this sweep asks — the meeting anchors, the
+    # airport legs — reads the same timeline, built from the schedule AND the
+    # merged byAir ∪ TripIt flights, so a flight byAir alone tracks still
+    # moves the operator. Airports resolve first: the itinerary needs their
+    # IATA codes to tell a landing at home from one away.
+    sweep_flights = normalize_flights(records, resolve_airport, tripit_flights)
+    itinerary = itinerary_for(
+        merge_flights(sweep_flights.flights),
+        schedule,
+        home_address=home,
+        home_airports=home_airports,
+    )
 
     calendar = GoogleCalendarClient()
 
@@ -1154,7 +1234,7 @@ def _run_sweep() -> dict:
         skips = load_active_skips(now)
 
         def anchor_for(at: datetime) -> tuple[str | None, str | None]:
-            anchor = resolve_anchor(schedule, at=at, home_address=home, home_metros=home_metros)
+            anchor = itinerary.position_at(at)
             return anchor.address, anchor.detail
 
         meetings = scan(
@@ -1220,41 +1300,6 @@ def _run_sweep() -> dict:
         verdicts=sweep_verdicts,
     )
 
-    # --- airport facts ---
-    # Static facts (IATA / flag / IANA tz) are immutable, so a warm sweep serves
-    # them from the persisted cross-sweep cache with no byAir call — this is what
-    # cut the ~7.6s ByAir cost that froze the calendar (#211). A byAir round trip
-    # happens only on a cache MISS (first-seen airport) or to refresh the live
-    # `delay.index` of a near-term DEPARTURE airport, where the nudge still moves
-    # the block. `delay.index` is never persisted (it is live).
-    byair = ByAirClient.from_env(timeout=_SWEEP_BYAIR_TIMEOUT_SECONDS)
-    static_facts = load_static_facts()
-    near_term_dep_ids = _near_term_departure_airport_ids(records, now)
-
-    def fetch_ctx(airport_id: int) -> _AirportCtx | None:
-        # Network + exception handling lives here so the resolver policy stays
-        # pure and testable. A byAir failure (timeout / not_found) resolves to
-        # None → the policy degrades to cached static facts when it has them, or
-        # raises `AirportUnresolved` to fail the whole sweep closed (never a
-        # partial plan — a dropped flight's block would be orphan-deleted).
-        try:
-            return airport_context(byair.get_airport(airport_id))
-        except (ByAirError, urllib.error.URLError) as exc:
-            # Fail visibly: a one-line diagnostic so an operator can tell a
-            # transient byAir outage / timeout from a genuinely unknown airport
-            # id, without changing the degrade-or-fail-closed behaviour above.
-            print(
-                f"[drive-engine] byAir get_airport({airport_id}) failed ({exc})",
-                file=sys.stderr,
-            )
-            return None
-
-    resolve_airport, static_facts_dirty = _make_airport_resolver(
-        static_facts=static_facts,
-        near_term_dep_ids=near_term_dep_ids,
-        fetch_ctx=fetch_ctx,
-    )
-
     # --- current blocks ---
     # The fetch MUST cover every desired airport leg. Those legs are anchored to
     # flight times across the whole itinerary (months out), with no future bound,
@@ -1289,9 +1334,10 @@ def _run_sweep() -> dict:
         now=now,
         schedule=schedule,
         home_address=home,
-        home_metros=home_metros,
+        home_airports=home_airports,
         live_origin=live_origin,
         held=meeting_held + lodging_held,
+        itinerary=itinerary,
     )
 
     skipped = list(result.skipped) + list(meeting_skipped) + list(lodging_skipped)
