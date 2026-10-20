@@ -674,7 +674,10 @@ def test_tripits_copy_of_a_held_byair_flight_plans_nothing_beside_it():
         home_address=HOME,
         tripit_flights=[tripit],
     )
-    assert result.plan.creates == () and result.plan.deletes == ()
+    # The departure block is held under byAir's 15:00 key; TripIt's 14:55 copy
+    # writes no second departure. Its arrival has no block yet and plans.
+    assert [c.desired.kind for c in result.plan.creates] == ["airport_arrival"]
+    assert result.plan.deletes == ()
 
 
 def test_tripits_copy_plans_when_no_block_is_held_for_it():

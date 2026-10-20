@@ -66,9 +66,11 @@ def test_a_delayed_flight_moves_him_on_its_live_times():
     )
 
 
-def test_a_cancelled_flight_moves_nobody():
+def test_a_cancelled_flight_is_marked_so_it_takes_tripits_copy_with_it():
     record = _record(computed_status="cancelled")
-    assert precheck.byair_transports([1], read_state=lambda _id: record) == []
+    (transport,) = precheck.byair_transports([1], read_state=lambda _id: record)
+    assert transport.status == "cancelled"
+    assert transport.scheduled == _at("2025-11-02T18:40:00Z")
 
 
 def test_a_diverted_flight_lands_at_no_known_airport():

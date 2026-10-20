@@ -36,7 +36,7 @@ import re
 import sys
 import traceback
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -52,7 +52,7 @@ from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
 from drive_decision import load_verdicts, mark_asked, prune, record_drive_time  # noqa: E402
 from engine import AirportInfo, build_reconcile_plan, itinerary_for  # noqa: E402
-from flight_identity import DEFAULT_IDENTITY_TOLERANCE, TRIPIT, Flight, merge_flights  # noqa: E402
+from flight_identity import DEFAULT_IDENTITY_TOLERANCE, Flight, merge_flights  # noqa: E402
 from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
 from itinerary import Itinerary  # noqa: E402
 from lodging_source import (  # noqa: E402
@@ -295,11 +295,8 @@ def build_plan(
     """
     normalized = normalize_flights(flight_records, resolve_airport, tripit_flights)
     retained = _unreadable_flight_holds(list(normalized.unreadable), current_blocks)
-    flights = [
-        f for f in normalized.flights if f.source != TRIPIT or not _retained_flight(f, retained)
-    ]
     result = build_reconcile_plan(
-        flights=flights,
+        flights=normalized.flights,
         airport_info=normalized.airport_info,
         current_blocks=current_blocks,
         route=route,
@@ -314,9 +311,15 @@ def build_plan(
         extra_held=list(held or []) + retained,
         managed_legacy=_MANAGED_LEGACY,
     )
-    return PlanResult(
-        plan=result.plan, skipped=normalized.skipped + result.skipped, held=result.held
+    plan = replace(
+        result.plan,
+        creates=tuple(
+            c
+            for c in result.plan.creates
+            if not _covered_by_retained(c.desired.identity, c.desired.kind, retained)
+        ),
     )
+    return PlanResult(plan=plan, skipped=normalized.skipped + result.skipped, held=result.held)
 
 
 _AIRPORT_KINDS = frozenset({"airport_departure", "airport_arrival", "airport_transfer"})
@@ -392,19 +395,29 @@ def _unreadable_flight_holds(
     return held
 
 
-def _retained_flight(flight, held: list[HeldLeg]) -> bool:
-    """Whether a held airport block stands for this flight: same route,
-    departing within the merge tolerance. Its TripIt copy then plans nothing
-    beside the block, whose identity carries byAir's departure."""
+def _covered_by_retained(identity: str, kind: str, held: list[HeldLeg]) -> bool:
+    """Whether a held airport block already stands for a leg about to be
+    created: same kind, and each flight in its identity the same route
+    departing within the merge tolerance. TripIt's copy of a flight whose byAir
+    record is unreadable keeps its place in the chain, so connections still
+    read right, but writes nothing beside the block keyed on byAir's time."""
+    parts = identity.split("|")
     for leg in held:
-        for part in leg.identity.split("|"):
-            route = part.rpartition("-")[0]
-            departures = _flight_departures(part)
-            if not departures or route != f"{flight.dep_airport}-{flight.arr_airport}":
-                continue
-            if abs(departures[0] - flight.scheduled_dep) <= DEFAULT_IDENTITY_TOLERANCE:
+        theirs = leg.identity.split("|")
+        if leg.kind == kind and len(theirs) == len(parts):
+            if all(_same_flight_key(a, b) for a, b in zip(parts, theirs, strict=True)):
                 return True
     return False
+
+
+def _same_flight_key(a: str, b: str) -> bool:
+    ours, theirs = _flight_departures(a), _flight_departures(b)
+    return (
+        a.rpartition("-")[0] == b.rpartition("-")[0]
+        and bool(ours)
+        and bool(theirs)
+        and abs(ours[0] - theirs[0]) <= DEFAULT_IDENTITY_TOLERANCE
+    )
 
 
 # --- real-client wiring (I/O) -----------------------------------------------

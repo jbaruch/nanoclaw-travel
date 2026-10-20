@@ -333,3 +333,253 @@ def test_a_delayed_byair_copy_wins_over_the_schedules_booked_times():
     itinerary = Itinerary(THANKSGIVING, home_address=HOME, home_airports=BNA, transports=delayed)
     assert itinerary.position_at(_at("2025-11-26T00:00:00Z")).source == "home"
     assert itinerary.position_at(_at("2025-11-26T05:00:00Z")).address == AIRBNB
+
+
+# --- review round 2 (#337) ----------------------------------------------------
+
+
+WN716 = THANKSGIVING[2]  # BNA→SAT, booked 23:00Z
+
+
+def _thanksgiving(*transports: Transport) -> Itinerary:
+    return Itinerary(
+        THANKSGIVING, home_address=HOME, home_airports=BNA, transports=list(transports)
+    )
+
+
+def test_two_connecting_trains_are_two_journeys():
+    """Trains carry no endpoints; only an exact copy of one is a duplicate."""
+    trains = [
+        {
+            "type": "Rail",
+            "summary": "A to B",
+            "start": "2025-10-16T10:00:00Z",
+            "end": "2025-10-16T11:00:00Z",
+        },
+        {
+            "type": "Rail",
+            "summary": "B to C",
+            "start": "2025-10-16T12:00:00Z",
+            "end": "2025-10-16T14:00:00Z",
+        },
+        {
+            "type": "Rail",
+            "summary": "B to C",
+            "start": "2025-10-16T12:00:00Z",
+            "end": "2025-10-16T14:00:00Z",
+        },
+    ]
+    itinerary = Itinerary(trains, home_address=HOME)
+    assert len(itinerary._transports) == 2
+
+
+def test_a_long_delay_still_replaces_the_booked_copy():
+    """Seven hours late: byAir's copy carries the booked departure, so TripIt's
+    23:00 copy does not move him away before the real one does."""
+    late = Transport(
+        _at("2025-11-26T06:00:00Z"),
+        _at("2025-11-26T08:25:00Z"),
+        "BNA",
+        "SAT",
+        scheduled=_at("2025-11-25T23:00:00Z"),
+    )
+    itinerary = _thanksgiving(late)
+    assert itinerary.position_at(_at("2025-11-26T03:00:00Z")).source == "home"
+    assert itinerary.position_at(_at("2025-11-26T09:00:00Z")).address == AIRBNB
+
+
+def test_a_cancelled_flight_takes_the_booked_copy_with_it():
+    cancelled = Transport(
+        _at("2025-11-25T23:00:00Z"),
+        _at("2025-11-26T01:25:00Z"),
+        "BNA",
+        "SAT",
+        scheduled=_at("2025-11-25T23:00:00Z"),
+        status="cancelled",
+    )
+    itinerary = _thanksgiving(cancelled)
+    assert all(t.status != "cancelled" for t in itinerary._transports)
+    assert not any(t.origin == "BNA" and t.destination == "SAT" for t in itinerary._transports)
+
+
+def test_a_diverted_return_does_not_land_him_home():
+    """WN3764 SAT→BNA diverted: the booked copy would say he landed at BNA."""
+    diverted = Transport(
+        _at("2025-11-29T23:45:00Z"),
+        _at("2025-11-30T02:30:00Z"),
+        "SAT",
+        None,
+        scheduled=_at("2025-11-29T23:45:00Z"),
+        status="diverted",
+    )
+    position = _thanksgiving(diverted).position_at(_at("2025-11-30T03:00:00Z"))
+    assert position.source != "home"
+
+
+def test_a_check_out_during_the_flight_out_keeps_the_hotel_before_it():
+    """Checked out at 11:00 while the 09:00–13:00 flight was in the air (the
+    feed dropped the past check-in): the morning drive leaves the hotel."""
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "Rome",
+            "start": "2025-10-14",
+            "end": "2025-10-16",
+            "location": "Rome",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-out: Hotel Roma",
+            "start": "2025-10-16T11:00:00Z",
+            "location": "1 Via Roma",
+        },
+    ]
+    flights = [_transport("2025-10-16T09:00:00Z", "2025-10-16T13:00:00Z", "FCO", "BNA")]
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=flights)
+    assert itinerary.position_at(_at("2025-10-16T06:30:00Z")).address == "1 Via Roma"
+
+
+def test_a_check_in_during_the_flight_in_lands_with_him():
+    """A 15:00 check-in while the 14:00–18:00 flight is in the air, with a
+    connection on the way: after the final landing he is at the hotel."""
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "SF",
+            "start": "2025-08-17",
+            "end": "2025-08-20",
+            "location": "San Francisco, CA",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-in: Hotel SF",
+            "start": "2025-08-17T15:00:00Z",
+            "location": "1 Market St",
+        },
+    ]
+    flights = [
+        _transport("2025-08-17T14:00:00Z", "2025-08-17T16:00:00Z", "BNA", "DEN"),
+        _transport("2025-08-17T17:00:00Z", "2025-08-17T19:30:00Z", "DEN", "SFO"),
+    ]
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=flights)
+    assert itinerary.position_at(_at("2025-08-17T21:00:00Z")).address == "1 Market St"
+    assert itinerary.position_at(_at("2025-08-17T16:30:00Z")).address != "1 Market St"
+
+
+TEL_AVIV = [
+    {
+        "type": "Trip",
+        "summary": "Israel",
+        "start": "2025-08-01",
+        "end": "2025-08-20",
+        "location": "Tel Aviv",
+    },
+    {
+        "type": "Lodging",
+        "summary": "Check-in: TLV Hotel",
+        "start": "2025-08-02T13:00:00Z",
+        "location": "Rothschild Blvd",
+    },
+    {
+        "type": "Lodging",
+        "summary": "Check-out: TLV Hotel",
+        "start": "2025-08-20T08:00:00Z",
+        "location": "Rothschild Blvd",
+    },
+]
+TEL_AVIV_FLIGHTS = [
+    _transport("2025-08-01T12:00:00Z", "2025-08-02T08:00:00Z", "BNA", "TLV"),
+    _transport("2025-08-05T09:00:00Z", "2025-08-05T11:00:00Z", "TLV", "ATH"),
+    _transport("2025-08-07T09:00:00Z", "2025-08-07T11:00:00Z", "ATH", "TLV"),
+    _transport("2025-08-20T12:00:00Z", "2025-08-21T02:00:00Z", "TLV", "BNA"),
+]
+
+
+@pytest.mark.parametrize(
+    ("at", "address"),
+    [
+        ("2025-08-03T09:00:00Z", "Rothschild Blvd"),  # before the side trip
+        ("2025-08-05T06:00:00Z", "Rothschild Blvd"),  # the drive to TLV for ATH
+        ("2025-08-06T09:00:00Z", "Tel Aviv"),  # in Athens: not the Tel Aviv hotel
+        ("2025-08-10T09:00:00Z", "Rothschild Blvd"),  # back from Athens
+    ],
+)
+def test_a_hotel_kept_through_a_side_trip_is_home_base_on_both_sides(at, address):
+    itinerary = Itinerary(
+        TEL_AVIV, home_address=HOME, home_airports=BNA, transports=TEL_AVIV_FLIGHTS
+    )
+    assert itinerary.position_at(_at(at)).address == address
+
+
+def test_a_drive_trip_after_landing_home_anchors_at_its_hotel():
+    """Landed at BNA, then drove to Gatlinburg: after checking out, while the
+    trip is still on, the landing no longer says he is home."""
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "Gatlinburg",
+            "start": "2025-07-11",
+            "end": "2025-07-14",
+            "location": "Gatlinburg, TN",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-in: Fairfield Inn",
+            "start": "2025-07-11T20:00:00Z",
+            "location": "611 Historic Nature Trail",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-out: Fairfield Inn",
+            "start": "2025-07-13T15:00:00Z",
+            "location": "611 Historic Nature Trail",
+        },
+    ]
+    flights = [_transport("2025-07-10T14:00:00Z", "2025-07-10T16:00:00Z", "LGA", "BNA")]
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=flights)
+    assert itinerary.position_at(_at("2025-07-11T12:00:00Z")).source == "home"
+    assert itinerary.position_at(_at("2025-07-13T17:00:00Z")).address == "611 Historic Nature Trail"
+
+
+def test_a_repeat_visit_to_one_hotel_does_not_pair_across_trips():
+    """A July check-in whose check-out the feed lost must not pair with the
+    August visit's check-out and fill the weeks between with the hotel."""
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "July",
+            "start": "2025-07-01",
+            "end": "2025-07-03",
+            "location": "Austin",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-in: Hotel A",
+            "start": "2025-07-01T20:00:00Z",
+            "location": "1 Main",
+            "description": "https://www.tripit.com/trip/show/id/111",
+        },
+        {
+            "type": "Trip",
+            "summary": "August",
+            "start": "2025-08-01",
+            "end": "2025-08-03",
+            "location": "Austin",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-in: Hotel A",
+            "start": "2025-08-01T20:00:00Z",
+            "location": "1 Main",
+            "description": "https://www.tripit.com/trip/show/id/222",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-out: Hotel A",
+            "start": "2025-08-03T15:00:00Z",
+            "location": "1 Main",
+            "description": "https://www.tripit.com/trip/show/id/222",
+        },
+    ]
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA)
+    assert itinerary.position_at(_at("2025-07-15T12:00:00Z")).source == "home"

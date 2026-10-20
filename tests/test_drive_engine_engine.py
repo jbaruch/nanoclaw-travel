@@ -705,3 +705,24 @@ def test_byair_only_trip_drives_from_and_to_home():
     assert (from_bna.destination, from_bna.summary) == (HOME, "Drive: BNA → home")
     assert from_lga.destination == "New York, NY"
     assert result.held == ()
+
+
+def test_byair_status_reaches_the_itinerary():
+    """#337 review: a cancelled byAir flight must not move the operator, and a
+    diverted one must not land him at its booked destination."""
+    from engine import itinerary_for
+    from flight_identity import merge_flights
+    from normalize import flight_from_byair
+
+    def record(fid, status):
+        return {
+            "flight_id": fid,
+            "scheduled_dep_time": "2020-07-12T14:00:00Z",
+            "scheduled_arr_time": "2020-07-12T16:00:00Z",
+            "last_snapshot": {"computed_status": status},
+        }
+
+    cancelled = flight_from_byair(record(1, "cancelled"), dep_iata="BNA", arr_iata="JFK")
+    diverted = flight_from_byair(record(2, "diverted"), dep_iata="LGA", arr_iata="BNA")
+    itinerary = itinerary_for(merge_flights([cancelled, diverted]), None, home_address=HOME)
+    assert [(t.origin, t.destination) for t in itinerary._transports] == [("LGA", None)]

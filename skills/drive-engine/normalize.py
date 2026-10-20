@@ -47,6 +47,7 @@ def flight_from_byair(record: dict, *, dep_iata: str, arr_iata: str) -> Flight:
     snap = snapshot if isinstance(snapshot, dict) else {}
     code = record.get("code")
     trip_id = record.get("trip_id")
+    status = snap.get("computed_status")
     return Flight(
         dep_airport=dep_iata,
         arr_airport=arr_iata,
@@ -58,6 +59,7 @@ def flight_from_byair(record: dict, *, dep_iata: str, arr_iata: str) -> Flight:
         live_arr=_parse_iso(snap.get("arr_time")),
         byair_flight_id=flight_id,
         trip_id=trip_id if isinstance(trip_id, int) and not isinstance(trip_id, bool) else None,
+        status=status if isinstance(status, str) else None,
     )
 
 

@@ -49,7 +49,7 @@ from block_codec import leg_identity  # noqa: E402
 from chain import LegKind, plan_chain_legs  # noqa: E402
 from chain_builder import build_pair_contexts, group_into_chains  # noqa: E402
 from flight_identity import Flight, MergedFlight, merge_flights  # noqa: E402
-from itinerary import Itinerary, Transport  # noqa: E402
+from itinerary import CANCELLED, DIVERTED, Itinerary, Transport  # noqa: E402
 from leg_anchor import AirportFacts, BufferOverrides, ConcreteLeg, resolve_leg_anchor  # noqa: E402
 from position import position_at, resolve_leg_origin  # noqa: E402
 from reconcile import (  # noqa: E402
@@ -333,9 +333,19 @@ def itinerary_for(
     home_airports: frozenset[str] = frozenset(),
 ) -> Itinerary:
     """The sweep's one itinerary: the schedule plus every merged flight, so a
-    flight byAir alone tracks still moves the operator (#335)."""
+    flight byAir alone tracks still moves the operator (#335). Each carries
+    byAir's live times, its booked departure and its status: a cancelled
+    flight takes the schedule's copy with it, a diverted one lands at no known
+    airport."""
     transports = [
-        Transport(f.effective_dep, f.effective_arr, f.dep_airport, f.arr_airport)
+        Transport(
+            f.effective_dep,
+            f.effective_arr,
+            f.dep_airport,
+            None if f.status == DIVERTED else f.arr_airport,
+            scheduled=f.scheduled_dep,
+            status=f.status if f.status in (CANCELLED, DIVERTED) else None,
+        )
         for f in flights
         if f.effective_arr is not None and f.effective_arr > f.effective_dep
     ]

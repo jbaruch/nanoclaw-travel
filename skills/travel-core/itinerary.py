@@ -51,7 +51,7 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from lodging import CHECK_IN, CHECK_OUT, hotel_name, lodging_role  # noqa: E402
+from lodging import CHECK_IN, CHECK_OUT, hotel_name, lodging_role, trip_ref  # noqa: E402
 
 # A flight segment's route in its summary or description, e.g. "WN716 BNA to SAT".
 ROUTE_RE = re.compile(r"\b([A-Z]{3})\s+to\s+([A-Z]{3})\b")
@@ -73,6 +73,9 @@ _OPEN_STAY = timedelta(days=1)
 # the flight to it: its nominal check-in came before he could arrive.
 _SLEPT_BEFORE_DEPARTURE = timedelta(hours=6)
 
+CANCELLED = "cancelled"
+DIVERTED = "diverted"
+
 HOME = "home"
 LODGING = "lodging"
 TRIP_LOCATION = "trip_location"
@@ -81,13 +84,19 @@ UNRESOLVED = "unresolved"
 
 @dataclass(frozen=True)
 class Transport:
-    """One flight or train: UTC `departs` / `arrives`, IATA `origin` /
-    `destination` when known (a train carries none)."""
+    """One flight or train: UTC `departs` / `arrives` (live when the source
+    knows them), IATA `origin` / `destination` when known (a train carries
+    none). `scheduled` is the booked departure when it differs from `departs`,
+    so a delayed flight still matches the schedule's copy of it. `status` is
+    `cancelled` (moves nobody, and takes the schedule's copy with it) or
+    `diverted` (landed somewhere other than `destination`), else None."""
 
     departs: datetime
     arrives: datetime
     origin: str | None = None
     destination: str | None = None
+    scheduled: datetime | None = None
+    status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +118,9 @@ class _Stay:
     name: str
     open_end: bool = False  # no check-out record
     open_start: bool = False  # no check-in record (a stay in progress)
+    # False for a piece of a stay that resumes in a later period (a side trip
+    # away from a kept hotel): its end is a departure, not a check-out.
+    checked_out: bool = True
 
 
 @dataclass(frozen=True)
@@ -190,15 +202,30 @@ def _dedupe(preferred: list[Transport], rest: list[Transport]) -> list[Transport
     carry live times, the schedule's copy only the booked ones."""
     kept: list[Transport] = []
     for transport in sorted(preferred, key=_by_departure) + sorted(rest, key=_by_departure):
-        if any(
-            other.origin == transport.origin
-            and other.destination == transport.destination
-            and abs(other.departs - transport.departs) <= _SAME_TRANSPORT
-            for other in kept
-        ):
+        if any(_same_journey(other, transport) for other in kept):
             continue
         kept.append(transport)
-    return sorted(kept, key=_by_departure)
+    return sorted((t for t in kept if t.status != CANCELLED), key=_by_departure)
+
+
+def _same_journey(kept: Transport, other: Transport) -> bool:
+    """Whether `other` is a copy of the journey `kept` already stands for. A
+    route both know matches within `_SAME_TRANSPORT` of the booked departures,
+    and a diverted copy matches on its origin alone; a train or any copy with
+    an unknown endpoint matches only an exact copy of its times."""
+    if kept.origin is not None and other.origin is not None and kept.origin != other.origin:
+        return False
+    if None in (kept.origin, kept.destination, other.origin, other.destination):
+        if kept.status == DIVERTED and kept.origin is not None:
+            return kept.origin == other.origin and _booked_close(kept, other)
+        return kept.departs == other.departs and kept.arrives == other.arrives
+    if kept.destination != other.destination and kept.status != DIVERTED:
+        return False
+    return _booked_close(kept, other)
+
+
+def _booked_close(a: Transport, b: Transport) -> bool:
+    return abs((a.scheduled or a.departs) - (b.scheduled or b.departs)) <= _SAME_TRANSPORT
 
 
 def _by_departure(transport: Transport) -> tuple[datetime, datetime]:
@@ -236,13 +263,15 @@ def _trip_on(trips: list[_Trip], day: date) -> _Trip | None:
 
 def _stays(schedule: list[dict], trips: list[_Trip]) -> list[_Stay]:
     """Lodging stays: each check-in paired with the next check-out of the same
-    hotel, or one record spanning the stay when it carries neither prefix. A
+    hotel on the same trip (its TripIt trip URL, else the trip wrapper the
+    record falls in), or one record spanning the stay when it carries neither
+    prefix. A
     check-in without a check-out ends with its trip, a check-out without a
     check-in starts with its trip (a stay in progress, whose check-in the feed
     has dropped); outside any trip, `_OPEN_STAY` from the known end. A stay with
     no address still marks where the operator sleeps, with no address to drive
     to."""
-    events: list[tuple[datetime, str, str, str | None]] = []
+    events: list[tuple[datetime, str, str, str | None, tuple]] = []
     stays: list[_Stay] = []
     for record in schedule:
         if not isinstance(record, dict) or record.get("type") != "Lodging":
@@ -258,23 +287,23 @@ def _stays(schedule: list[dict], trips: list[_Trip]) -> list[_Stay]:
             if start is not None and end is not None and end > start:
                 stays.append(_Stay(start=start, end=end, address=address, name=name))
             elif when is not None:
-                events.append((when, CHECK_IN, name, address))
+                events.append((when, CHECK_IN, name, address, _pair_key(record, when, trips, name)))
             continue
         name = hotel_name(record.get("summary"))
         if when is None or name is None:
             continue
-        events.append((when, role, name, address))
+        events.append((when, role, name, address, _pair_key(record, when, trips, name)))
     events.sort(key=lambda event: event[0])
 
     used: set[int] = set()
-    for index, (when, role, name, address) in enumerate(events):
+    for index, (when, role, name, address, key) in enumerate(events):
         if role != CHECK_IN or index in used:
             continue
         out_index = next(
             (
                 j
                 for j in range(index + 1, len(events))
-                if j not in used and events[j][1] == CHECK_OUT and events[j][2] == name
+                if j not in used and events[j][1] == CHECK_OUT and events[j][4] == key
             ),
             None,
         )
@@ -293,7 +322,7 @@ def _stays(schedule: list[dict], trips: list[_Trip]) -> list[_Stay]:
         used.add(index)
         if end > when:
             stays.append(_Stay(start=when, end=end, address=address, name=name, open_end=open_end))
-    for index, (when, role, name, address) in enumerate(events):
+    for index, (when, role, name, address, _key) in enumerate(events):
         if role != CHECK_OUT or index in used:
             continue
         trip = _trip_on(trips, when.date())
@@ -307,41 +336,86 @@ def _stays(schedule: list[dict], trips: list[_Trip]) -> list[_Stay]:
     return stays
 
 
+def _pair_key(record: dict, when: datetime, trips: list[_Trip], name: str) -> tuple:
+    """What ties a check-in to its check-out: the hotel on one trip."""
+    ref = trip_ref(record.get("description"))
+    if ref is None:
+        trip = _trip_on(trips, when.date())
+        ref = (trip.start, trip.summary) if trip is not None else None
+    return (ref, name)
+
+
 def _overlap(stay: _Stay, period: _Period) -> timedelta:
     start = stay.start if period.start is None else max(stay.start, period.start)
     end = stay.end if period.end is None else min(stay.end, period.end)
     return max(end - start, timedelta(0))
 
 
-def _home_period(stay: _Stay, periods: list[_Period]) -> int | None:
-    """The index of the ground period a stay belongs to, else None.
+def _home_periods(stay: _Stay, periods: list[_Period], home_airports: frozenset[str]) -> list[int]:
+    """The indexes of the ground periods a stay belongs to.
 
-    A stay with both ends belongs where it overlaps most. One with only a
-    check-out belongs to the period it is checked out of. One with only a
-    check-in belongs to the period it starts in, or to the next period when that
-    one's departure comes within `_SLEPT_BEFORE_DEPARTURE` of the check-in."""
+    One with only a check-out belongs to the period it is checked out of: the
+    one it ends in, or, checked out while in the air, the one before. One with
+    only a check-in belongs to the period it starts in, or to the next one when
+    it falls in the air; from there it moves on past each period that ends
+    within `_SLEPT_BEFORE_DEPARTURE` of the check-in or of its landing (a
+    flight to it, a connection). A stay with both ends belongs where it
+    overlaps most. It also belongs to every other period it overlaps at that
+    same airport: a hotel kept through a side trip is home base before it and
+    after it. Never at a home airport: a landing there is the journey's end
+    (the airport hotel the night before a flight is not where he returns)."""
+    primary = _primary_period(stay, periods)
+    if primary is None:
+        return []
+    base = periods[primary].airport
+    if base in home_airports:
+        base = None
+    return [
+        i
+        for i, period in enumerate(periods)
+        if i == primary
+        or (base is not None and period.airport == base and _overlap(stay, period) > timedelta(0))
+    ]
+
+
+def _primary_period(stay: _Stay, periods: list[_Period]) -> int | None:
+    """The one period `_home_periods` starts from (see there)."""
+    last = len(periods) - 1
     if stay.open_start:
-        return next(
-            (i for i, p in enumerate(periods) if p.contains(stay.end - timedelta(seconds=1))), None
-        )
+        moment = stay.end - timedelta(seconds=1)
+        index = next((i for i, p in enumerate(periods) if p.contains(moment)), None)
+        if index is None:
+            index = max(
+                (i for i, p in enumerate(periods) if p.end is not None and p.end <= stay.end),
+                default=None,
+            )
+        return index
     if stay.open_end:
-        index = next((i for i, p in enumerate(periods) if p.contains(stay.start)), None)
+        index = next(
+            (
+                i
+                for i, p in enumerate(periods)
+                if p.contains(stay.start) or (p.start is not None and p.start > stay.start)
+            ),
+            None,
+        )
         if index is None:
             return None
-        period = periods[index]
-        if (
-            period.end is not None
-            and period.end - stay.start < _SLEPT_BEFORE_DEPARTURE
-            and index + 1 < len(periods)
-        ):
-            return index + 1
+        while index < last:
+            period = periods[index]
+            begins = stay.start if period.start is None else max(stay.start, period.start)
+            if period.end is None or period.end - begins >= _SLEPT_BEFORE_DEPARTURE:
+                break
+            index += 1
         return index
     overlaps = [_overlap(stay, period) for period in periods]
     best = max(range(len(periods)), key=lambda i: overlaps[i])
     return best if overlaps[best] > timedelta(0) else None
 
 
-def _periods(transports: list[Transport], stays: list[_Stay]) -> list[_Period]:
+def _periods(
+    transports: list[Transport], stays: list[_Stay], home_airports: frozenset[str]
+) -> list[_Period]:
     """The ground periods between transports, each holding the stays that
     overlap it more than any other period, cut to the period."""
     bounds: list[tuple[datetime | None, datetime | None, str | None]] = []
@@ -363,19 +437,18 @@ def _periods(transports: list[Transport], stays: list[_Stay]) -> list[_Period]:
 
     assigned: dict[int, list[_Stay]] = {}
     for stay in stays:
-        best = _home_period(stay, periods)
-        if best is None:
-            continue
-        period = periods[best]
-        cut = _Stay(
-            start=stay.start if period.start is None else max(stay.start, period.start),
-            end=stay.end if period.end is None else min(stay.end, period.end),
-            address=stay.address,
-            name=stay.name,
-        )
-        if cut.end <= cut.start:
-            continue
-        assigned.setdefault(best, []).append(cut)
+        indexes = _home_periods(stay, periods, home_airports)
+        for index in indexes:
+            period = periods[index]
+            cut = _Stay(
+                start=stay.start if period.start is None else max(stay.start, period.start),
+                end=stay.end if period.end is None else min(stay.end, period.end),
+                address=stay.address,
+                name=stay.name,
+                checked_out=index == indexes[-1],
+            )
+            if cut.end > cut.start:
+                assigned.setdefault(index, []).append(cut)
     return [
         _Period(
             start=p.start,
@@ -410,7 +483,9 @@ class Itinerary:
         self._home_airports = frozenset(code.strip().upper() for code in home_airports if code)
         self._trips = _trips(records)
         self._transports = _dedupe(list(transports), schedule_transports(records))
-        self._periods = _periods(self._transports, _stays(records, self._trips))
+        self._periods = _periods(
+            self._transports, _stays(records, self._trips), self._home_airports
+        )
 
     def _period_index(self, at: datetime) -> int:
         for index, period in enumerate(self._periods):
@@ -453,7 +528,12 @@ class Itinerary:
         nothing by its airport, and neither does a period when home airports are
         unknown: there, home with no trip covering the day or while that trip
         has not begun, away once it has."""
-        if self._home_airports and period.airport is not None and period.start is not None:
+        if (
+            self._home_airports
+            and period.airport is not None
+            and period.start is not None
+            and not any(stay.start <= at for stay in period.stays)
+        ):
             return period.airport in self._home_airports
         trip = _trip_on(self._trips, at.date())
         return trip is None or not self._trip_begun(trip, at)
@@ -494,6 +574,7 @@ class Itinerary:
                 s
                 for s in period.stays
                 if s.end <= at
+                and s.checked_out
                 and s.address is not None
                 and (trip is None or s.end.date() >= trip.start)
             ]

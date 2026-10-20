@@ -84,6 +84,8 @@ class Flight:
     byair_flight_id: int | None = None
     tripit_segment_id: str | None = None
     trip_id: int | None = None
+    # byAir's `computed_status` (`cancelled`, `diverted`, ...); TripIt has none.
+    status: str | None = None
 
     def __post_init__(self) -> None:
         if self.source not in _VALID_SOURCES:
@@ -130,6 +132,7 @@ class MergedFlight:
     byair_flight_ids: frozenset[int] = field(default_factory=frozenset)
     tripit_segment_ids: frozenset[str] = field(default_factory=frozenset)
     trip_id: int | None = None
+    status: str | None = None
 
     @property
     def has_byair(self) -> bool:
@@ -187,6 +190,7 @@ def _merge_cluster(cluster: list[Flight]) -> MergedFlight:
             f.tripit_segment_id for f in tripit_members if f.tripit_segment_id is not None
         ),
         trip_id=trip_id,
+        status=time_source.status,
     )
 
 

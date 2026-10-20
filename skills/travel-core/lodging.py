@@ -14,13 +14,16 @@ This module is the one place that prefix is spelled.
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
 Public API:
-    from lodging import CHECK_IN, CHECK_OUT, lodging_role, hotel_name
+    from lodging import CHECK_IN, CHECK_OUT, lodging_role, hotel_name, trip_ref
 
     lodging_role("Check-out: Fairfield Inn")   # → "out"
     hotel_name("Check-out: Fairfield Inn")     # → "Fairfield Inn"
+    trip_ref("… /trip/show/id/123456 …")       # → "123456"
 """
 
 from __future__ import annotations
+
+import re
 
 CHECK_IN = "in"
 CHECK_OUT = "out"
@@ -29,6 +32,10 @@ CHECK_IN_PREFIX = "Check-in:"
 CHECK_OUT_PREFIX = "Check-out:"
 
 _PREFIX_ROLES = ((CHECK_IN_PREFIX, CHECK_IN), (CHECK_OUT_PREFIX, CHECK_OUT))
+
+# TripIt's per-item DESCRIPTION carries the trip URL; both records of one stay
+# carry the same one.
+_TRIP_URL = re.compile(r"trip/show/id/(\d+)")
 
 
 def lodging_role(summary: object) -> str | None:
@@ -60,3 +67,13 @@ def hotel_name(summary: object) -> str | None:
             name = summary[len(prefix) :].strip()
             return name or None
     return None
+
+
+def trip_ref(description: object) -> str | None:
+    """The TripIt trip id in a record's description, else None. A check-in and
+    its check-out carry the same one, so pairing on it keeps a repeat visit to
+    the same hotel on another trip from pairing across the gap."""
+    if not isinstance(description, str):
+        return None
+    match = _TRIP_URL.search(description)
+    return match.group(1) if match else None

@@ -61,7 +61,7 @@ from connection_risk import (  # noqa: E402
     DEFAULT_MIN_TRANSFER_MINUTES,
     detect_connection_risks,
 )
-from itinerary import Transport, parse_time  # noqa: E402
+from itinerary import CANCELLED, DIVERTED, Transport, parse_time  # noqa: E402
 from maps_client import MapsClient, MapsError  # noqa: E402
 from operator_tz import READER_TIMEOUT_SECONDS, OperatorTz, read_operator_tz  # noqa: E402
 from phase_markers import (  # noqa: E402
@@ -441,11 +441,13 @@ def byair_transports(
     own byAir poll (`last_snapshot`): its airport codes, and its live times
     over the scheduled ones.
 
-    A cancelled flight moves nobody and is left out. A diverted one keeps its
-    times with no destination airport: he landed somewhere, not where it was
-    going, so the itinerary judges that landing by the trip rather than by an
-    airport. A flight never polled yet has no snapshot and is left out: the
-    poll reaches every tracked flight before it departs, so that flight is
+    A cancelled flight moves nobody and takes TripIt's copy of it with it. A
+    diverted one keeps its times with no destination airport: he landed
+    somewhere, not where it was going, so the itinerary judges that landing by
+    the trip rather than by an airport. Each carries its booked departure, so a
+    long delay still matches TripIt's copy. A flight never polled yet has no
+    snapshot and is left out: the poll reaches every tracked flight before it
+    departs, so that flight is
     still ahead, and the position now depends only on flights already flown.
     A record that cannot be read, or whose times do not parse, is left out
     too; the poll loop reports it at its own turn."""
@@ -464,8 +466,6 @@ def byair_transports(
         if not isinstance(snapshot, dict):
             continue
         status = snapshot.get("computed_status")
-        if status == "cancelled":
-            continue
         origin, destination = snapshot.get("dep_airport_code"), snapshot.get("arr_airport_code")
         if not isinstance(origin, str) or not isinstance(destination, str):
             continue
@@ -474,7 +474,14 @@ def byair_transports(
         if departs is None or arrives is None or arrives <= departs:
             continue
         transports.append(
-            Transport(departs, arrives, origin, None if status == "diverted" else destination)
+            Transport(
+                departs,
+                arrives,
+                origin,
+                None if status == DIVERTED else destination,
+                scheduled=parse_time(record.get("scheduled_dep_time")),
+                status=status if status in (CANCELLED, DIVERTED) else None,
+            )
         )
     return transports
 
