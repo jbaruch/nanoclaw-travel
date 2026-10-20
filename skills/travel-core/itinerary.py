@@ -13,7 +13,11 @@ The timeline is built from what moves him and where he sleeps:
   schedule and from any caller that knows more (the drive engine passes byAir's
   flights): the November trips' flights lived in byAir alone, so a schedule-only
   model never learned the operator had left home (#335). A journey both carry
-  keeps the caller's copy, which carries byAir's live times.
+  keeps the caller's copy, which carries byAir's live times. A caller's copy
+  that cannot name its route takes the route of the schedule copy it shares a
+  booked departure with; overlapping a schedule copy with no departure in
+  common, it is one flight or two, and the itinerary refuses to guess
+  (`AmbiguousTransport`).
 - **Lodging stays** (check-in to check-out, paired by hotel) are nominal: TripIt
   stamps a standard check-in hour whether or not he can be there yet. Each stay
   belongs to the ground period it overlaps most, and counts only inside it. A
@@ -43,7 +47,7 @@ from __future__ import annotations
 
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -200,16 +204,57 @@ def schedule_transports(schedule: list[dict] | None) -> list[Transport]:
     return out
 
 
+class AmbiguousTransport(ValueError):
+    """A caller's transport that cannot name its route, overlapping a routed
+    schedule copy it shares no booked departure with: one journey or two, and
+    keeping both would let the schedule's booked times override the caller's."""
+
+
 def _dedupe(preferred: list[Transport], rest: list[Transport]) -> list[Transport]:
     """One transport per physical journey, ordered by departure. A journey
     both lists carry keeps its `preferred` copy: the caller's byAir flights
     carry live times, the schedule's copy only the booked ones."""
     kept: list[Transport] = []
+    preferred = [_routed(transport, rest) for transport in preferred]
     for transport in sorted(preferred, key=_by_departure) + sorted(rest, key=_by_departure):
         if any(_same_journey(other, transport) for other in kept):
             continue
         kept.append(transport)
     return sorted((t for t in kept if t.status != CANCELLED), key=_by_departure)
+
+
+def _routed(transport: Transport, schedule: list[Transport]) -> Transport:
+    """`transport` with the route of the schedule copy it is, when it names
+    less of the route: its own times and status, the schedule's airports. The
+    identity is the booked departure, to the minute. A routed schedule copy
+    with no departure in common that overlaps it in time, which no traveller
+    can do on two flights, raises `AmbiguousTransport`; one that does not
+    overlap may be the next leg. A diverted or cancelled copy keeps what it
+    knows."""
+    if transport.status is not None or None not in (transport.origin, transport.destination):
+        return transport
+    candidates = [
+        other
+        for other in schedule
+        if None not in (other.origin, other.destination)
+        and transport.origin in (None, other.origin)
+        and transport.destination in (None, other.destination)
+    ]
+    booked = _booked(transport)
+    routes = {(o.origin, o.destination) for o in candidates if _booked(o) == booked}
+    if len(routes) == 1:
+        origin, destination = routes.pop()
+        return replace(transport, origin=origin, destination=destination)
+    overlapping = [
+        o for o in candidates if o.departs < transport.arrives and transport.departs < o.arrives
+    ]
+    if routes or overlapping:
+        raise AmbiguousTransport(
+            f"a transport booked {booked.isoformat()} names no route and overlaps "
+            f"{len(routes) or len(overlapping)} routed schedule copy(ies) it shares "
+            "no booked departure with"
+        )
+    return transport
 
 
 def _same_journey(kept: Transport, other: Transport) -> bool:
@@ -224,8 +269,9 @@ def _same_journey(kept: Transport, other: Transport) -> bool:
         if kept.status == DIVERTED and kept.origin is not None:
             return kept.origin == other.origin and _booked_close(kept, other)
         if (kept.origin, kept.destination) != (other.origin, other.destination):
-            # One copy knows a route the other does not: keep both, so the
-            # known route is never lost to a copy that cannot name it.
+            # One copy knows a route the other does not, and `_routed` already
+            # gave a caller's copy the route of the schedule copy it is: these
+            # are two journeys, and the known route is never lost.
             return False
         return kept.departs == other.departs and kept.arrives == other.arrives
     if kept.destination != other.destination:
@@ -233,8 +279,12 @@ def _same_journey(kept: Transport, other: Transport) -> bool:
     return _booked_close(kept, other)
 
 
+def _booked(transport: Transport) -> datetime:
+    return transport.scheduled or transport.departs
+
+
 def _booked_close(a: Transport, b: Transport) -> bool:
-    return abs((a.scheduled or a.departs) - (b.scheduled or b.departs)) <= _SAME_TRANSPORT
+    return abs(_booked(a) - _booked(b)) <= _SAME_TRANSPORT
 
 
 def _by_departure(transport: Transport) -> tuple[datetime, datetime]:

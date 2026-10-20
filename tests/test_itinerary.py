@@ -28,7 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 
 # E402: the module resolves only after the sys.path insert above.
-from itinerary import Itinerary, Transport, schedule_transports  # noqa: E402
+from itinerary import AmbiguousTransport, Itinerary, Transport, schedule_transports  # noqa: E402
 
 HOME = "12 Example St, Sampleton, TN 37000"
 BNA = frozenset({"BNA"})
@@ -714,5 +714,61 @@ def test_a_routeless_copy_never_replaces_tripits_known_route():
     routeless = Transport(_at("2025-11-04T22:00:00Z"), _at("2025-11-05T00:29:00Z"))
     itinerary = Itinerary(
         trip + [tripit], home_address=HOME, home_airports=BNA, transports=[outbound, routeless]
+    )
+    assert itinerary.position_at(_at("2025-11-05T01:00:00Z")).source == "home"
+
+
+_NY_TRIP = [
+    {
+        "type": "Trip",
+        "summary": "NY",
+        "start": "2025-11-02",
+        "end": "2025-11-05",
+        "location": "New York, NY",
+    },
+    {
+        "type": "Flight",
+        "summary": "DL1 LGA to BNA",
+        "start": "2025-11-04T22:00:00Z",
+        "end": "2025-11-05T00:29:00Z",
+    },
+]
+_OUTBOUND = _transport("2025-11-02T18:40:00Z", "2025-11-02T21:05:00Z", "BNA", "LGA")
+
+
+def test_a_routeless_delay_keeps_byairs_times_and_tripits_route():
+    """#337 review: byAir's copy of DL1 cannot name its airports and runs four
+    hours late. Sharing TripIt's booked departure, it is DL1: he is still in New
+    York after TripIt's booked landing, and home once byAir's lands."""
+    delayed = Transport(
+        _at("2025-11-05T02:00:00Z"),
+        _at("2025-11-05T04:29:00Z"),
+        scheduled=_at("2025-11-04T22:00:00Z"),
+    )
+    itinerary = Itinerary(
+        _NY_TRIP, home_address=HOME, home_airports=BNA, transports=[_OUTBOUND, delayed]
+    )
+    assert itinerary.position_at(_at("2025-11-05T01:00:00Z")).source != "home"
+    assert itinerary.position_at(_at("2025-11-05T05:00:00Z")).source == "home"
+
+
+def test_a_routeless_copy_overlapping_tripit_with_no_shared_departure_is_refused():
+    """#337 review: one flight or two cannot be told, and keeping both would let
+    TripIt's booked times place him."""
+    retimed = Transport(
+        _at("2025-11-04T23:00:00Z"),
+        _at("2025-11-05T01:29:00Z"),
+        scheduled=_at("2025-11-04T22:30:00Z"),
+    )
+    with pytest.raises(AmbiguousTransport):
+        Itinerary(_NY_TRIP, home_address=HOME, home_airports=BNA, transports=[_OUTBOUND, retimed])
+
+
+def test_a_routeless_leg_before_a_tripit_connection_is_kept_beside_it():
+    """A routeless copy that lands before TripIt's flight leaves may be the leg
+    before it: both stay."""
+    earlier = Transport(_at("2025-11-04T18:00:00Z"), _at("2025-11-04T20:00:00Z"))
+    itinerary = Itinerary(
+        _NY_TRIP, home_address=HOME, home_airports=BNA, transports=[_OUTBOUND, earlier]
     )
     assert itinerary.position_at(_at("2025-11-05T01:00:00Z")).source == "home"

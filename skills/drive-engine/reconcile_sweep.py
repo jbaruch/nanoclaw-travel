@@ -54,7 +54,7 @@ from drive_decision import load_verdicts, mark_asked, prune, record_drive_time  
 from engine import AirportInfo, build_reconcile_plan, itinerary_for  # noqa: E402
 from flight_identity import DEFAULT_IDENTITY_TOLERANCE, Flight, merge_flights  # noqa: E402
 from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
-from itinerary import CANCELLED, Itinerary, Transport  # noqa: E402
+from itinerary import CANCELLED, AmbiguousTransport, Itinerary, Transport  # noqa: E402
 from lodging_source import (  # noqa: E402
     context_from_blocks,
     driving_trips,
@@ -253,20 +253,22 @@ def normalize_flights(
             unplaced.append(transport)
 
     for record in flight_records:
-        dep_id = record.get("dep_airport_id")
-        arr_id = record.get("arr_airport_id")
-        dep = resolve_airport(dep_id) if isinstance(dep_id, int) else None
-        arr = resolve_airport(arr_id) if isinstance(arr_id, int) else None
-        dep_iata = dep.iata if dep is not None and dep.iata else _snapshot_code(record, "dep")
-        arr_iata = arr.iata if arr is not None and arr.iata else _snapshot_code(record, "arr")
+        dep, dep_iata = _airport(resolve_airport, record, "dep")
+        arr, arr_iata = _airport(resolve_airport, record, "arr")
         if dep_iata is None or arr_iata is None:
             unread(f"flight {record.get('flight_id')}: unresolved airport(s)", record)
             continue
         try:
-            flights.append(flight_from_byair(record, dep_iata=dep_iata, arr_iata=arr_iata))
+            flight = flight_from_byair(record, dep_iata=dep_iata, arr_iata=arr_iata)
         except ValueError as exc:
             unread(str(exc), record)
             continue
+        if flight.status != CANCELLED and not _has_span(flight):
+            # Left out of the itinerary, its movement would fall to TripIt's
+            # booked copy.
+            unread(f"flight {record.get('flight_id')}: no arrival after its departure", record)
+            continue
+        flights.append(flight)
         for airport in (dep, arr):
             if airport is None or airport.iata is None:
                 continue  # placed by its polled code; no facts to carry
@@ -287,11 +289,38 @@ def normalize_flights(
     )
 
 
+def _airport(
+    resolve_airport: Callable[[int], ResolvedAirport | None], record: dict, end: str
+) -> tuple[ResolvedAirport | None, str | None]:
+    """One end's resolved airport and IATA code. The code is byAir's own polled
+    one (`_snapshot_code`) when the id does not resolve; an `AirportUnresolved`
+    with no polled code to fall back on still fails the sweep closed."""
+    airport_id = record.get(f"{end}_airport_id")
+    resolved = None
+    if isinstance(airport_id, int):
+        try:
+            resolved = resolve_airport(airport_id)
+        except AirportUnresolved:
+            if _snapshot_code(record, end) is None:
+                raise
+    if resolved is not None and resolved.iata:
+        return resolved, resolved.iata
+    return resolved, _snapshot_code(record, end)
+
+
+def _has_span(flight: Flight) -> bool:
+    """Whether the flight's live times over its booked ones read as a span."""
+    departs = flight.live_dep or flight.scheduled_dep
+    arrives = flight.live_arr or flight.scheduled_arr
+    return arrives is not None and arrives > departs
+
+
 def _unplaced_transport(record: dict) -> Transport | None:
     """An unreadable byAir record as a transport to an unknown place: its live
     times over its booked ones and its status, None when neither reads as a
-    span. Without a route it matches no other copy of the flight, so it is
-    kept beside them: no time window alone proves two records one flight."""
+    span. Without a route it takes the route of the schedule copy sharing its
+    booked departure; overlapping one with no departure in common, the
+    itinerary refuses it (`AmbiguousTransport`) and the sweep plans nothing."""
     snapshot = record.get("last_snapshot")
     snap = snapshot if isinstance(snapshot, dict) else {}
     status = snap.get("computed_status")
@@ -1282,13 +1311,18 @@ def _run_sweep() -> dict:
     # IATA codes to tell a landing at home from one away.
     sweep_flights = normalize_flights(records, resolve_airport, tripit_flights)
     require_placeable(sweep_flights)
-    itinerary = itinerary_for(
-        merge_flights(sweep_flights.flights),
-        schedule,
-        home_address=home,
-        home_airports=home_airports,
-        unplaced=sweep_flights.unplaced,
-    )
+    try:
+        itinerary = itinerary_for(
+            merge_flights(sweep_flights.flights),
+            schedule,
+            home_address=home,
+            home_airports=home_airports,
+            unplaced=sweep_flights.unplaced,
+        )
+    except AmbiguousTransport as exc:
+        raise FlightsUnplaceable(
+            f"{exc}; the next sweep plans again once byAir resolves its airports"
+        ) from exc
 
     calendar = GoogleCalendarClient()
 

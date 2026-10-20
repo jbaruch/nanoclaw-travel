@@ -13,6 +13,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
@@ -89,18 +91,43 @@ def test_a_snapshot_without_airport_codes_is_left_out():
     assert precheck.byair_transports([1], read_state=lambda _id: record) == []
 
 
-def test_an_unreadable_or_untimed_record_is_left_out(capsys):
+def test_an_unreadable_record_is_left_out(capsys):
     def read(flight_id):
         if flight_id == 1:
             raise StateError("bad record")
         if flight_id == 2:
             raise IsADirectoryError("flight-2.json")
-        if flight_id == 3:
-            return None
-        return _record(arrives="not a time")
+        return None
 
-    assert precheck.byair_transports([1, 2, 3, 4], read_state=read) == []
+    assert precheck.byair_transports([1, 2, 3], read_state=read) == []
     assert capsys.readouterr().err.count("state unreadable") == 2
+
+
+def test_a_delay_with_no_live_arrival_cannot_be_placed():
+    """#337 review: booked 18:40-21:05, departing 23:00 live with no live
+    arrival. Leaving it out would let TripIt's booked copy land him at 21:05."""
+    record = _record(dep_time="2025-11-02T23:00:00Z")
+    with pytest.raises(precheck.UnplaceableFlight):
+        precheck.byair_transports([1], read_state=lambda _id: record)
+
+
+def test_an_unplaceable_flight_leaves_no_origin(monkeypatch, capsys):
+    monkeypatch.setattr(
+        precheck, "resolve_effective_home", lambda a, *, now, transports: "12 Example St"
+    )
+    monkeypatch.setattr(
+        precheck, "_resolve_time_to_leave_origin", lambda *, home_address, now_utc: home_address
+    )
+    origin = precheck._CycleOrigin(
+        home_address="12 Example St",
+        flight_ids=[1],
+        now_utc=_at("2025-11-02T12:00:00Z"),
+        due=set(),
+        polled=set(),
+        read_state=lambda _id: _record(dep_time="2025-11-02T23:00:00Z"),
+    )
+    assert origin() is None
+    assert "give no span" in capsys.readouterr().err
 
 
 def test_a_cancellation_without_an_arrival_still_cancels():
@@ -120,14 +147,6 @@ def test_this_cycles_poll_overrides_the_stored_snapshot():
     }
     (transport,) = precheck.byair_transports([1], read_state=lambda _id: stale, fresh={1: fresh})
     assert transport.departs == _at("2025-11-02T22:40:00Z")
-
-
-def test_a_flight_whose_poll_failed_counts_on_its_booked_times():
-    """#337 review: a recalled snapshot is a hint; a failed poll this cycle
-    means its live times and status are not trusted."""
-    record = _record(dep_time="2025-11-02T22:40:00Z", computed_status="cancelled")
-    (transport,) = precheck.byair_transports([1], read_state=lambda _id: record, unverified={1})
-    assert (transport.departs, transport.status) == (_at("2025-11-02T18:40:00Z"), None)
 
 
 def test_the_cycle_origin_resolves_once_on_first_use(monkeypatch):
@@ -155,10 +174,10 @@ def test_the_cycle_origin_resolves_once_on_first_use(monkeypatch):
     assert len(calls) == 1 and calls[0][0].departs == _at("2025-11-02T20:00:00Z")
 
 
-def test_a_flight_due_but_not_yet_polled_counts_on_its_booked_times(monkeypatch):
+def test_a_flight_due_but_not_yet_polled_is_left_out(monkeypatch):
     """#337 review: when the origin resolves, a flight due this cycle that the
-    loop has not polled (failed, deferred, still ahead) is not live state; only
-    the flight handing in its fresh snapshot is."""
+    loop has not polled (failed, deferred, still ahead, a 404 yet to come) is
+    not live state; only the flight handing in its fresh snapshot is."""
     seen = []
     monkeypatch.setattr(
         precheck, "resolve_effective_home", lambda a, *, now, transports: seen.extend(transports)
@@ -185,8 +204,7 @@ def test_a_flight_due_but_not_yet_polled_counts_on_its_booked_times(monkeypatch)
         read_state=stored.get,
     )
     origin({1: stored[1]["last_snapshot"]})
-    by_origin = {t.origin: t.departs for t in seen}
-    assert by_origin == {"BNA": _at("2025-11-02T20:00:00Z"), "LGA": _at("2025-11-04T22:00:00Z")}
+    assert [(t.origin, t.departs) for t in seen] == [("BNA", _at("2025-11-02T20:00:00Z"))]
 
 
 def test_a_flight_byair_no_longer_tracks_never_moves_the_origin(monkeypatch):

@@ -787,3 +787,49 @@ def test_a_record_with_no_readable_times_fails_the_sweep_closed():
     flights = reconcile_sweep.normalize_flights([_byair_record(None)], lambda _id: None)
     with pytest.raises(reconcile_sweep.FlightsUnplaceable, match="fix or remove"):
         reconcile_sweep.require_placeable(flights)
+
+
+def test_a_polled_code_stands_in_for_an_airport_the_resolver_cannot_resolve():
+    """#337 review: the production resolver raises rather than returning None;
+    byAir's polled code still places the flight."""
+
+    def resolve(_airport_id):
+        raise reconcile_sweep.AirportUnresolved("no usable IATA")
+
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "dep_airport_id": 1,
+        "arr_airport_id": 2,
+        "scheduled_arr_time": "2025-10-22T19:00:00Z",
+        "last_snapshot": {"dep_airport_code": "BNA", "arr_airport_code": "SFO"},
+    }
+    flights = reconcile_sweep.normalize_flights([record], resolve)
+    assert [(f.dep_airport, f.arr_airport) for f in flights.flights] == [("BNA", "SFO")]
+
+
+def test_an_unresolvable_airport_with_no_polled_code_still_fails_the_sweep():
+    def resolve(_airport_id):
+        raise reconcile_sweep.AirportUnresolved("no usable IATA")
+
+    record = {**_byair_record("2025-10-22T15:00:00Z"), "dep_airport_id": 1, "arr_airport_id": 2}
+    with pytest.raises(reconcile_sweep.AirportUnresolved):
+        reconcile_sweep.normalize_flights([record], resolve)
+
+
+def test_a_delay_past_the_booked_arrival_with_no_live_arrival_fails_the_sweep():
+    """#337 review: booked 15:00-19:00, departing 20:00 live with no live
+    arrival. Accepted, it would vanish from the itinerary and TripIt's booked
+    copy would land him at 19:00."""
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "scheduled_arr_time": "2025-10-22T19:00:00Z",
+        "last_snapshot": {
+            "dep_airport_code": "BNA",
+            "arr_airport_code": "SFO",
+            "dep_time": "2025-10-22T20:00:00Z",
+        },
+    }
+    flights = reconcile_sweep.normalize_flights([record], lambda _id: None)
+    assert flights.flights == []
+    with pytest.raises(reconcile_sweep.FlightsUnplaceable):
+        reconcile_sweep.require_placeable(flights)

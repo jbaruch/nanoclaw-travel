@@ -442,6 +442,11 @@ def _due_ids(flight_ids: list[int], now_utc: datetime) -> set[int]:
     return due
 
 
+class UnplaceableFlight(ValueError):
+    """A tracked flight with a route whose departure and arrival do not read
+    as a span: he is moving, or has moved, at times nobody can place."""
+
+
 class _CycleOrigin:
     """One cycle's time-to-leave origin, resolved on first use and then fixed.
 
@@ -453,9 +458,11 @@ class _CycleOrigin:
     query is due, after that flight's own poll, whose fresh snapshot the
     caller hands in. A recalled snapshot is a hint, never live state: every
     flight `due` this cycle and not yet `polled` by then (failed, deferred, or
-    still ahead in the loop) counts on its booked times only. A flight not due
-    keeps the snapshot its cadence vouches for. A flight byAir no longer tracks
-    (`removed`, a 404 this cycle) is left out altogether."""
+    still ahead in the loop, where a 404 may yet come for it) is left out, and
+    TripIt's copy of it, if any, books it. A flight not due keeps the snapshot
+    its cadence vouches for. A flight byAir no longer tracks (`removed`, a 404
+    this cycle) is left out too. A flight whose movement does not read
+    (`UnplaceableFlight`) leaves no origin: routing waits for the next cycle."""
 
     def __init__(
         self,
@@ -478,12 +485,16 @@ class _CycleOrigin:
         if not self._resolved:
             fresh = fresh or {}
             unverified = self._due - self._polled - set(fresh)
-            transports = byair_transports(
-                [i for i in self._ids if i not in self._removed],
-                read_state=self._read,
-                fresh=fresh,
-                unverified=unverified,
-            )
+            try:
+                transports = byair_transports(
+                    [i for i in self._ids if i not in self._removed | unverified],
+                    read_state=self._read,
+                    fresh=fresh,
+                )
+            except UnplaceableFlight as exc:
+                print(f"[flight-assist] {exc}", file=sys.stderr)
+                self._resolved = True
+                return None
             home = resolve_effective_home(self._home, now=self._now, transports=transports)
             self._origin = _resolve_time_to_leave_origin(home_address=home, now_utc=self._now)
             self._resolved = True
@@ -495,13 +506,11 @@ def byair_transports(
     *,
     read_state: Callable[[int], dict | None] = read_flight_state,
     fresh: dict[int, dict] | None = None,
-    unverified: set[int] | frozenset[int] = frozenset(),
 ) -> list[Transport]:
     """byAir's tracked flights as itinerary transports (#335), from this skill's
     own byAir poll: the snapshot in `fresh` (polled this cycle) or the stored
     `last_snapshot`, its airport codes, and its live times over the scheduled
-    ones. A flight in `unverified` (its poll failed this cycle) keeps only its
-    booked times and no status.
+    ones. The caller passes only flights whose snapshot it vouches for.
 
     A cancelled flight moves nobody and takes TripIt's copy of it with it. A
     diverted one keeps its times with no destination airport: he landed
@@ -511,8 +520,10 @@ def byair_transports(
     snapshot and is left out: the poll reaches every tracked flight before it
     departs, so that flight is
     still ahead, and the position now depends only on flights already flown.
-    A record that cannot be read, or whose times do not parse, is left out
-    too; the poll loop reports it at its own turn."""
+    A record that cannot be read is left out too; the poll loop reports it at
+    its own turn. A routed flight whose live and booked times give no span
+    raises `UnplaceableFlight`: leaving it out would hand its movement to
+    TripIt's booked copy."""
     transports: list[Transport] = []
     for flight_id in flight_ids:
         try:
@@ -530,11 +541,10 @@ def byair_transports(
         origin, destination = snapshot.get("dep_airport_code"), snapshot.get("arr_airport_code")
         if not isinstance(origin, str) or not isinstance(destination, str):
             continue
-        live = flight_id not in unverified
-        status = snapshot.get("computed_status") if live else None
+        status = snapshot.get("computed_status")
         booked = parse_time(record.get("scheduled_dep_time"))
-        departs = parse_time(snapshot.get("dep_time") if live else None) or booked
-        arrives = parse_time(snapshot.get("arr_time") if live else None) or parse_time(
+        departs = parse_time(snapshot.get("dep_time")) or booked
+        arrives = parse_time(snapshot.get("arr_time")) or parse_time(
             record.get("scheduled_arr_time")
         )
         if status == CANCELLED and departs is not None:
@@ -542,7 +552,11 @@ def byair_transports(
             # TripIt's copy with it; it moves nobody.
             arrives = arrives if arrives is not None and arrives > departs else departs
         elif departs is None or arrives is None or arrives <= departs:
-            continue
+            raise UnplaceableFlight(
+                f"flight {flight_id} {origin}-{destination}: departure {departs} and "
+                f"arrival {arrives} give no span; time-to-leave routing waits for a "
+                f"poll with a live arrival, or fix flight-{flight_id}.json"
+            )
         transports.append(
             Transport(
                 departs,
