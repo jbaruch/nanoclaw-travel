@@ -287,11 +287,13 @@ def _run_cycle(
     # The time-to-leave origin, resolved once per cycle so every flight queries
     # Distance Matrix against the same position, and on first use, after that
     # flight's own poll (see `_CycleOrigin`).
+    polled_ids: set[int] = set()
     cycle_origin = _CycleOrigin(
         home_address=config.get("home_address"),
         flight_ids=active_flight_ids,
         now_utc=now_utc,
-        unverified=poll_failed_ids,
+        due=_due_ids(active_flight_ids, now_utc),
+        polled=polled_ids,
     )
     # Which flights could spawn the zone reader this cycle: their deadline
     # carries the reader reserve until the reader has run (#312).
@@ -365,6 +367,7 @@ def _run_cycle(
             )
             poll_failed_ids.add(flight_id)
             continue
+        polled_ids.add(flight_id)
         for event in flight_events:
             aggregated_events.append({"flight_id": flight_id, "event": event})
 
@@ -422,6 +425,22 @@ class _OperatorTzMemo:
         return self._cache[0]
 
 
+def _due_ids(flight_ids: list[int], now_utc: datetime) -> set[int]:
+    """The flights due a poll this cycle. A record that cannot be read counts as
+    due, so its snapshot is never trusted; it fails at its own turn in the poll
+    loop, never here before the flights ahead of it poll."""
+    due = set()
+    for flight_id in flight_ids:
+        try:
+            state = read_flight_state(flight_id)
+        except (StateError, OSError):
+            due.add(flight_id)
+            continue
+        if _due_for_poll(state, now_utc):
+            due.add(flight_id)
+    return due
+
+
 class _CycleOrigin:
     """One cycle's time-to-leave origin, resolved on first use and then fixed.
 
@@ -431,8 +450,10 @@ class _CycleOrigin:
     the operator. None away with nothing resolvable disables routing via the
     existing no-home handling. It is resolved when the first time-to-leave
     query is due, after that flight's own poll, whose fresh snapshot the
-    caller hands in. A flight whose poll failed this cycle counts on its booked
-    times only: a recalled snapshot is a hint, never live state."""
+    caller hands in. A recalled snapshot is a hint, never live state: every
+    flight `due` this cycle and not yet `polled` by then (failed, deferred, or
+    still ahead in the loop) counts on its booked times only. A flight not due
+    keeps the snapshot its cadence vouches for."""
 
     def __init__(
         self,
@@ -440,18 +461,21 @@ class _CycleOrigin:
         home_address: str | None,
         flight_ids: list[int],
         now_utc: datetime,
-        unverified: set[int],
+        due: set[int],
+        polled: set[int],
         read_state: Callable[[int], dict | None] = read_flight_state,
     ):
         self._home, self._ids, self._now = home_address, flight_ids, now_utc
-        self._unverified, self._read = unverified, read_state
+        self._due, self._polled, self._read = due, polled, read_state
         self._resolved = False
         self._origin: str | None = None
 
     def __call__(self, fresh: dict[int, dict] | None = None) -> str | None:
         if not self._resolved:
+            fresh = fresh or {}
+            unverified = self._due - self._polled - set(fresh)
             transports = byair_transports(
-                self._ids, read_state=self._read, fresh=fresh, unverified=self._unverified
+                self._ids, read_state=self._read, fresh=fresh, unverified=unverified
             )
             home = resolve_effective_home(self._home, now=self._now, transports=transports)
             self._origin = _resolve_time_to_leave_origin(home_address=home, now_utc=self._now)

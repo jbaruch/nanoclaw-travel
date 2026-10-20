@@ -52,9 +52,9 @@ from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
 from drive_decision import load_verdicts, mark_asked, prune, record_drive_time  # noqa: E402
 from engine import AirportInfo, build_reconcile_plan, itinerary_for  # noqa: E402
-from flight_identity import DEFAULT_IDENTITY_TOLERANCE, Flight, merge_flights  # noqa: E402
+from flight_identity import DEFAULT_IDENTITY_TOLERANCE, TRIPIT, Flight, merge_flights  # noqa: E402
 from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
-from itinerary import Itinerary  # noqa: E402
+from itinerary import Itinerary, Transport  # noqa: E402
 from lodging_source import (  # noqa: E402
     context_from_blocks,
     driving_trips,
@@ -210,12 +210,17 @@ class SweepFlights:
     """The sweep's flights: byAir records with resolved airports UNIONED with
     TripIt segments (R2), the airport facts they carry, and the records that
     could not be normalized: `skipped` their diagnostics, `unreadable` each one's
-    diagnostic and scheduled departure (None when it has none)."""
+    diagnostic and scheduled departure (None when it has none). `unplaced` is
+    each unreadable flight whose times still read, as a transport to an unknown
+    place; `blind` names each one whose times do not, which no position can
+    account for."""
 
     flights: list[Flight]
     airport_info: dict[str, AirportInfo]
     skipped: tuple[str, ...] = ()
     unreadable: tuple[tuple[str, datetime | None], ...] = ()
+    unplaced: tuple[Transport, ...] = ()
+    blind: tuple[str, ...] = ()
 
 
 def normalize_flights(
@@ -229,21 +234,30 @@ def normalize_flights(
     airport_info: dict[str, AirportInfo] = {}
     skipped: list[str] = []
     unreadable: list[tuple[str, datetime | None]] = []
+    unplaced: list[Transport] = []
+    blind: list[str] = []
+
+    def unread(why: str, record: dict) -> None:
+        skipped.append(why)
+        unreadable.append((why, _scheduled_departure(record)))
+        transport = _unplaced_transport(record)
+        if transport is None:
+            blind.append(why)
+        else:
+            unplaced.append(transport)
+
     for record in flight_records:
         dep_id = record.get("dep_airport_id")
         arr_id = record.get("arr_airport_id")
         dep = resolve_airport(dep_id) if isinstance(dep_id, int) else None
         arr = resolve_airport(arr_id) if isinstance(arr_id, int) else None
         if dep is None or dep.iata is None or arr is None or arr.iata is None:
-            why = f"flight {record.get('flight_id')}: unresolved airport(s)"
-            skipped.append(why)
-            unreadable.append((why, _scheduled_departure(record)))
+            unread(f"flight {record.get('flight_id')}: unresolved airport(s)", record)
             continue
         try:
             flights.append(flight_from_byair(record, dep_iata=dep.iata, arr_iata=arr.iata))
         except ValueError as exc:
-            skipped.append(str(exc))
-            unreadable.append((str(exc), _scheduled_departure(record)))
+            unread(str(exc), record)
             continue
         for airport in (dep, arr):
             assert airport.iata is not None
@@ -259,7 +273,57 @@ def normalize_flights(
         airport_info=airport_info,
         skipped=tuple(skipped),
         unreadable=tuple(unreadable),
+        unplaced=tuple(
+            t
+            for t in unplaced
+            if not any(
+                f.source == TRIPIT
+                and t.scheduled is not None
+                and abs(f.scheduled_dep - t.scheduled) <= DEFAULT_IDENTITY_TOLERANCE
+                for f in flights
+            )
+        ),
+        blind=tuple(blind),
     )
+
+
+def _unplaced_transport(record: dict) -> Transport | None:
+    """An unreadable byAir record as a transport to an unknown place: its live
+    times over its booked ones, None when neither reads as a span."""
+    snapshot = record.get("last_snapshot")
+    snap = snapshot if isinstance(snapshot, dict) else {}
+    booked = _scheduled_departure(record)
+    departs = _instant(snap.get("dep_time")) or booked
+    arrives = _instant(snap.get("arr_time")) or _instant(record.get("scheduled_arr_time"))
+    if departs is None or arrives is None or arrives <= departs:
+        return None
+    return Transport(departs, arrives, None, None, scheduled=booked)
+
+
+def _instant(raw: object) -> datetime | None:
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+
+
+class FlightsUnplaceable(Exception):
+    """A byAir record whose times do not read: no position can account for it,
+    so the sweep plans nothing rather than move drives off a false position."""
+
+
+def require_placeable(flights: SweepFlights) -> None:
+    """Raise `FlightsUnplaceable` when any byAir record is `blind`; the outer
+    boundary then skips the sweep, applying nothing, with the cause on stderr."""
+    if flights.blind:
+        raise FlightsUnplaceable(
+            "byAir flight record(s) with no readable departure and arrival: "
+            + "; ".join(flights.blind)
+            + " — fix or remove the flight state file; the next sweep plans again"
+        )
 
 
 def build_plan(
@@ -295,6 +359,14 @@ def build_plan(
     """
     normalized = normalize_flights(flight_records, resolve_airport, tripit_flights)
     retained = _unreadable_flight_holds(list(normalized.unreadable), current_blocks)
+    if itinerary is None:
+        itinerary = itinerary_for(
+            merge_flights(normalized.flights),
+            schedule,
+            home_address=home_address,
+            home_airports=home_airports,
+            unplaced=normalized.unplaced,
+        )
     result = build_reconcile_plan(
         flights=normalized.flights,
         airport_info=normalized.airport_info,
@@ -327,14 +399,7 @@ _AIRPORT_KINDS = frozenset({"airport_departure", "airport_arrival", "airport_tra
 
 def _scheduled_departure(record: dict) -> datetime | None:
     """A byAir record's scheduled departure in UTC, None when it has none."""
-    raw = record.get("scheduled_dep_time")
-    if not isinstance(raw, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+    return _instant(record.get("scheduled_dep_time"))
 
 
 def _flight_departures(identity: str) -> list[datetime] | None:
@@ -1200,11 +1265,13 @@ def _run_sweep() -> dict:
     # moves the operator. Airports resolve first: the itinerary needs their
     # IATA codes to tell a landing at home from one away.
     sweep_flights = normalize_flights(records, resolve_airport, tripit_flights)
+    require_placeable(sweep_flights)
     itinerary = itinerary_for(
         merge_flights(sweep_flights.flights),
         schedule,
         home_address=home,
         home_airports=home_airports,
+        unplaced=sweep_flights.unplaced,
     )
 
     calendar = GoogleCalendarClient()

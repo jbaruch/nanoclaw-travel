@@ -145,10 +145,45 @@ def test_the_cycle_origin_resolves_once_on_first_use(monkeypatch):
         home_address="12 Example St",
         flight_ids=[1],
         now_utc=_at("2025-11-02T12:00:00Z"),
-        unverified=set(),
+        due={1},
+        polled=set(),
         read_state=lambda _id: _record(),
     )
     assert calls == []  # nothing is read until a query needs the origin
     assert origin({1: _record(dep_time="2025-11-02T20:00:00Z")["last_snapshot"]}) == "12 Example St"
     assert origin() == "12 Example St"
     assert len(calls) == 1 and calls[0][0].departs == _at("2025-11-02T20:00:00Z")
+
+
+def test_a_flight_due_but_not_yet_polled_counts_on_its_booked_times(monkeypatch):
+    """#337 review: when the origin resolves, a flight due this cycle that the
+    loop has not polled (failed, deferred, still ahead) is not live state; only
+    the flight handing in its fresh snapshot is."""
+    seen = []
+    monkeypatch.setattr(
+        precheck, "resolve_effective_home", lambda a, *, now, transports: seen.extend(transports)
+    )
+    monkeypatch.setattr(
+        precheck, "_resolve_time_to_leave_origin", lambda *, home_address, now_utc: "x"
+    )
+    stored = {
+        1: _record(dep_time="2025-11-02T20:00:00Z"),
+        2: _record(
+            dep="LGA",
+            arr="BNA",
+            departs="2025-11-04T22:00:00Z",
+            arrives="2025-11-05T00:29:00Z",
+            dep_time="2025-11-05T03:00:00Z",
+        ),
+    }
+    origin = precheck._CycleOrigin(
+        home_address="12 Example St",
+        flight_ids=[1, 2],
+        now_utc=_at("2025-11-02T12:00:00Z"),
+        due={1, 2},
+        polled=set(),
+        read_state=stored.get,
+    )
+    origin({1: stored[1]["last_snapshot"]})
+    by_origin = {t.origin: t.departs for t in seen}
+    assert by_origin == {"BNA": _at("2025-11-02T20:00:00Z"), "LGA": _at("2025-11-04T22:00:00Z")}

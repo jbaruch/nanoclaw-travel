@@ -700,3 +700,64 @@ def test_tripits_copy_plans_when_no_block_is_held_for_it():
         tripit_flights=[tripit],
     )
     assert result.plan.creates != ()
+
+
+# --- review round 4 (#337) ----------------------------------------------------
+
+
+def _status_flight(status, dep="BNA", arr="SFO", day=22):
+    return Flight(
+        dep_airport=dep,
+        arr_airport=arr,
+        scheduled_dep=datetime(2025, 10, day, 15, 0, tzinfo=UTC),
+        scheduled_arr=datetime(2025, 10, day, 19, 0, tzinfo=UTC),
+        source=BYAIR,
+        byair_flight_id=day,
+        status=status,
+    )
+
+
+def test_a_cancelled_flight_plans_no_drive():
+    result = _plan(
+        lambda o, d: timedelta(minutes=40), current=[], flights=[_status_flight("cancelled")]
+    )
+    assert result.plan.creates == ()
+
+
+def test_a_diverted_flight_plans_no_drive_from_its_booked_destination():
+    result = _plan(
+        lambda o, d: timedelta(minutes=40), current=[], flights=[_status_flight("diverted")]
+    )
+    assert [c.desired.kind for c in result.plan.creates] == ["airport_departure"]
+
+
+def test_an_unreadable_record_with_times_is_placed_at_an_unknown_airport():
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "scheduled_arr_time": "2025-10-22T19:00:00Z",
+    }
+    flights = reconcile_sweep.normalize_flights([record], lambda _id: None)
+    (transport,) = flights.unplaced
+    assert (transport.origin, transport.destination) == (None, None)
+    assert flights.blind == ()
+
+
+def test_an_unreadable_record_tripit_covers_is_not_placed_twice():
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "scheduled_arr_time": "2025-10-22T19:00:00Z",
+    }
+    tripit = Flight(
+        dep_airport="BNA",
+        arr_airport="SFO",
+        scheduled_dep=datetime(2025, 10, 22, 14, 55, tzinfo=UTC),
+        source=TRIPIT,
+        tripit_segment_id="seg-1",
+    )
+    assert reconcile_sweep.normalize_flights([record], lambda _id: None, [tripit]).unplaced == ()
+
+
+def test_a_record_with_no_readable_times_fails_the_sweep_closed():
+    flights = reconcile_sweep.normalize_flights([_byair_record(None)], lambda _id: None)
+    with pytest.raises(reconcile_sweep.FlightsUnplaceable, match="fix or remove"):
+        reconcile_sweep.require_placeable(flights)

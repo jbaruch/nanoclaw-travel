@@ -331,13 +331,15 @@ def itinerary_for(
     *,
     home_address: str | None,
     home_airports: frozenset[str] = frozenset(),
+    unplaced: tuple[Transport, ...] = (),
 ) -> Itinerary:
     """The sweep's one itinerary: the schedule plus every merged flight, so a
     flight byAir alone tracks still moves the operator (#335). Each carries
     byAir's live times, its booked departure and its status: a cancelled
     flight takes the schedule's copy with it, a diverted one lands at no known
-    airport."""
-    transports = [
+    airport. `unplaced` are byAir flights whose airports could not be read: he
+    still flew then, to somewhere the itinerary judges by the trip."""
+    transports = list(unplaced) + [
         Transport(
             f.effective_dep,
             f.effective_arr if f.effective_arr is not None else f.effective_dep,
@@ -402,7 +404,8 @@ def build_reconcile_plan(
     if overrides is None:
         overrides = BufferOverrides()
     merged = merge_flights(flights)
-    chains = group_into_chains(merged)
+    # byAir governs status: a cancelled flight has no drive to or from it.
+    chains = group_into_chains([f for f in merged if f.status != CANCELLED])
 
     if itinerary is None:
         itinerary = itinerary_for(
@@ -417,6 +420,19 @@ def build_reconcile_plan(
         contexts = build_pair_contexts(chain, schedule=schedule, left_terminal=left_terminal)
         planned_legs = plan_chain_legs(chain, contexts)
         for planned in planned_legs:
+            if (
+                planned.kind is not LegKind.AIRPORT_DEPARTURE
+                and planned.from_flight is not None
+                and planned.from_flight.status == DIVERTED
+            ):
+                # A diverted flight lands somewhere else: no drive leaves its
+                # booked destination until byAir names where it landed.
+                diverted = planned.from_flight
+                skipped.append(
+                    f"{planned.kind.value} after diverted flight "
+                    f"{diverted.dep_airport}-{diverted.arr_airport}: suppressed"
+                )
+                continue
             # plan_chain_legs guarantees the right endpoint per kind, but narrow it
             # explicitly here so _facts_for receives a non-None flight (no ignore).
             if planned.kind is LegKind.AIRPORT_TRANSFER:
