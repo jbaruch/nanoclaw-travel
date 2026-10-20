@@ -23,9 +23,10 @@ The timeline is built from what moves him and where he sleeps:
 Position at an instant, in its ground period:
 
 1. a stay covering it: that lodging;
-2. home, when no trip covers the day, when the trip covering it has not begun
-   (its first transport or stay is still ahead, or it has none booked), or when
-   it has begun and this period is at a home airport (he has flown back);
+2. home, when the period began with a landing at a home airport; or, for the
+   first period (before any transport) and whenever home airports are unknown,
+   when no trip covers the day or the trip covering it has not begun (its first
+   transport or stay is still ahead, or it has none booked);
 3. otherwise away: the lodging he last checked out of on this trip (between the
    legs of a journey, or between a check-out and the next check-in), else the
    trip's location, else unresolved (no address).
@@ -437,15 +438,17 @@ class Itinerary:
     def _is_home(self, period: _Period, at: datetime) -> bool:
         """Whether the operator is home at `at`, absent a lodging stay.
 
-        Home with no trip covering the day, and home while that trip has not
-        begun. Once it has, a period at a home airport is home (he has flown
-        back); at any other airport, or one not known, he is away."""
-        trip = _trip_on(self._trips, at.date())
-        if trip is None or not self._trip_begun(trip, at):
-            return True
-        if self._home_airports and period.airport is not None:
+        A period that begins with a landing is judged by where he landed: a home
+        airport is home, any other is away, whatever the trip wrappers say (a
+        flight the evening before a trip's first day still took him away). The
+        first period, before any transport, reaches back into the past and says
+        nothing by its airport, and neither does a period when home airports are
+        unknown: there, home with no trip covering the day or while that trip
+        has not begun, away once it has."""
+        if self._home_airports and period.airport is not None and period.start is not None:
             return period.airport in self._home_airports
-        return False
+        trip = _trip_on(self._trips, at.date())
+        return trip is None or not self._trip_begun(trip, at)
 
     def position_at(self, at: datetime) -> Position:
         """Where the operator is at `at` (tz-aware); see the module docstring."""

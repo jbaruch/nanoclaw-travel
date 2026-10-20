@@ -201,3 +201,26 @@ def test_a_naive_instant_is_refused():
 def test_a_utc_instant_from_another_zone_reads_the_same():
     eastern = datetime(2025, 11, 2, 11, 40, tzinfo=UTC).astimezone()
     assert _devcon().position_at(eastern).source == "home"
+
+
+def test_a_flight_the_evening_before_the_trip_still_takes_him_away():
+    """Live KubeCon shape: the BNA→SLC flight leaves at 20:00Z the day before
+    the trip wrapper's first date. The landing at a non-home airport, not the
+    wrapper's dates, says he is away."""
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "KubeCon 2025",
+            "start": "2025-11-09",
+            "end": "2025-11-13",
+            "location": "Salt Lake City, UT",
+        }
+    ]
+    flights = [
+        _transport("2025-11-08T20:00:00Z", "2025-11-08T23:30:00Z", "BNA", "SLC"),
+        _transport("2025-11-13T00:30:00Z", "2025-11-13T04:08:00Z", "SLC", "BNA"),
+    ]
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=flights)
+    assert itinerary.position_at(_at("2025-11-08T19:00:00Z")).source == "home"
+    assert itinerary.position_at(_at("2025-11-10T18:00:00Z")).address == "Salt Lake City, UT"
+    assert itinerary.position_at(_at("2025-11-13T04:40:00Z")).source == "home"
