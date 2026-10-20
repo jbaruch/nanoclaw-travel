@@ -742,19 +742,45 @@ def test_an_unreadable_record_with_times_is_placed_at_an_unknown_airport():
     assert flights.blind == ()
 
 
-def test_an_unreadable_record_tripit_covers_is_not_placed_twice():
+def test_an_unreadable_record_is_kept_beside_a_nearby_tripit_flight():
+    """#337 review: a TripIt flight leaving within hours may be the next leg of
+    a connection; no time window alone proves it is the same flight."""
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "scheduled_arr_time": "2025-10-22T17:00:00Z",
+    }
+    connection = Flight(
+        dep_airport="DEN",
+        arr_airport="SFO",
+        scheduled_dep=datetime(2025, 10, 22, 18, 0, tzinfo=UTC),
+        source=TRIPIT,
+        tripit_segment_id="seg-2",
+    )
+    (placed,) = reconcile_sweep.normalize_flights([record], lambda _id: None, [connection]).unplaced
+    assert placed.departs == datetime(2025, 10, 22, 15, 0, tzinfo=UTC)
+
+
+def test_an_unresolved_airport_id_falls_back_to_the_polled_code():
     record = {
         **_byair_record("2025-10-22T15:00:00Z"),
         "scheduled_arr_time": "2025-10-22T19:00:00Z",
+        "last_snapshot": {"dep_airport_code": "bna", "arr_airport_code": "SFO"},
     }
-    tripit = Flight(
-        dep_airport="BNA",
-        arr_airport="SFO",
-        scheduled_dep=datetime(2025, 10, 22, 14, 55, tzinfo=UTC),
-        source=TRIPIT,
-        tripit_segment_id="seg-1",
-    )
-    assert reconcile_sweep.normalize_flights([record], lambda _id: None, [tripit]).unplaced == ()
+    flights = reconcile_sweep.normalize_flights([record], lambda _id: None)
+    assert [(f.dep_airport, f.arr_airport) for f in flights.flights] == [("BNA", "SFO")]
+    assert (flights.unplaced, flights.blind) == ((), ())
+
+
+def test_a_cancellation_with_no_route_fails_the_sweep_closed():
+    """It could not take TripIt's copy with it, and that copy would move him on
+    a flight byAir says never left."""
+    record = {
+        **_byair_record("2025-10-22T15:00:00Z"),
+        "last_snapshot": {"computed_status": "cancelled"},
+    }
+    flights = reconcile_sweep.normalize_flights([record], lambda _id: None)
+    with pytest.raises(reconcile_sweep.FlightsUnplaceable, match="cancelled"):
+        reconcile_sweep.require_placeable(flights)
 
 
 def test_a_record_with_no_readable_times_fails_the_sweep_closed():

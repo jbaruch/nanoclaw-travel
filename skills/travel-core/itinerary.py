@@ -540,20 +540,20 @@ class Itinerary:
     def _is_home(self, period: _Period, at: datetime) -> bool:
         """Whether the operator is home at `at`, absent a lodging stay.
 
-        A period that begins with a landing is judged by where he landed: a home
-        airport is home, any other is away, whatever the trip wrappers say (a
-        flight the evening before a trip's first day still took him away). The
-        first period, before any transport, reaches back into the past and says
-        nothing by its airport, and neither does a period when home airports are
-        unknown: there, home with no trip covering the day or while that trip
-        has not begun, away once it has."""
-        if (
-            self._home_airports
-            and period.airport is not None
-            and period.start is not None
-            and not any(stay.start <= at for stay in period.stays)
-        ):
-            return period.airport in self._home_airports
+        A period that begins with a landing is judged by where he landed: any
+        airport but a home one is away, whatever the trip wrappers say (a flight
+        the evening before a trip's first day still took him away). A home
+        landing is home until a stay begins in that period (a local trip after
+        the flight home); then the trip decides. The first period, before any
+        transport, reaches back into the past and says nothing by its airport,
+        and neither does a period when home airports are unknown: there, home
+        with no trip covering the day or while that trip has not begun, away
+        once it has."""
+        if self._home_airports and period.airport is not None and period.start is not None:
+            if period.airport not in self._home_airports:
+                return False
+            if not any(stay.start <= at for stay in period.stays):
+                return True
         trip = _trip_on(self._trips, at.date())
         return trip is None or not self._trip_begun(trip, at)
 

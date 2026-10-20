@@ -52,9 +52,9 @@ from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
 from drive_decision import load_verdicts, mark_asked, prune, record_drive_time  # noqa: E402
 from engine import AirportInfo, build_reconcile_plan, itinerary_for  # noqa: E402
-from flight_identity import DEFAULT_IDENTITY_TOLERANCE, TRIPIT, Flight, merge_flights  # noqa: E402
+from flight_identity import DEFAULT_IDENTITY_TOLERANCE, Flight, merge_flights  # noqa: E402
 from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
-from itinerary import Itinerary, Transport  # noqa: E402
+from itinerary import CANCELLED, Itinerary, Transport  # noqa: E402
 from lodging_source import (  # noqa: E402
     context_from_blocks,
     driving_trips,
@@ -210,10 +210,11 @@ class SweepFlights:
     """The sweep's flights: byAir records with resolved airports UNIONED with
     TripIt segments (R2), the airport facts they carry, and the records that
     could not be normalized: `skipped` their diagnostics, `unreadable` each one's
-    diagnostic and scheduled departure (None when it has none). `unplaced` is
-    each unreadable flight whose times still read, as a transport to an unknown
-    place; `blind` names each one whose times do not, which no position can
-    account for."""
+    diagnostic and scheduled departure (None when it has none). An airport id
+    that does not resolve falls back to the code byAir's poll recorded.
+    `unplaced` is each still unreadable flight whose times read, as a
+    transport to an unknown place; `blind` names each one no position can
+    account for: its times do not read, or it is cancelled with no route."""
 
     flights: list[Flight]
     airport_info: dict[str, AirportInfo]
@@ -243,6 +244,11 @@ def normalize_flights(
         transport = _unplaced_transport(record)
         if transport is None:
             blind.append(why)
+        elif transport.status == CANCELLED:
+            # With no route, a cancellation cannot take its scheduled copy
+            # with it, and that copy would move him on a flight byAir says
+            # never left.
+            blind.append(f"{why} (cancelled)")
         else:
             unplaced.append(transport)
 
@@ -251,16 +257,19 @@ def normalize_flights(
         arr_id = record.get("arr_airport_id")
         dep = resolve_airport(dep_id) if isinstance(dep_id, int) else None
         arr = resolve_airport(arr_id) if isinstance(arr_id, int) else None
-        if dep is None or dep.iata is None or arr is None or arr.iata is None:
+        dep_iata = dep.iata if dep is not None and dep.iata else _snapshot_code(record, "dep")
+        arr_iata = arr.iata if arr is not None and arr.iata else _snapshot_code(record, "arr")
+        if dep_iata is None or arr_iata is None:
             unread(f"flight {record.get('flight_id')}: unresolved airport(s)", record)
             continue
         try:
-            flights.append(flight_from_byair(record, dep_iata=dep.iata, arr_iata=arr.iata))
+            flights.append(flight_from_byair(record, dep_iata=dep_iata, arr_iata=arr_iata))
         except ValueError as exc:
             unread(str(exc), record)
             continue
         for airport in (dep, arr):
-            assert airport.iata is not None
+            if airport is None or airport.iata is None:
+                continue  # placed by its polled code; no facts to carry
             airport_info[airport.iata] = AirportInfo(
                 flag=airport.flag,
                 delay_index=airport.delay_index,
@@ -273,31 +282,38 @@ def normalize_flights(
         airport_info=airport_info,
         skipped=tuple(skipped),
         unreadable=tuple(unreadable),
-        unplaced=tuple(
-            t
-            for t in unplaced
-            if not any(
-                f.source == TRIPIT
-                and t.scheduled is not None
-                and abs(f.scheduled_dep - t.scheduled) <= DEFAULT_IDENTITY_TOLERANCE
-                for f in flights
-            )
-        ),
+        unplaced=tuple(unplaced),
         blind=tuple(blind),
     )
 
 
 def _unplaced_transport(record: dict) -> Transport | None:
     """An unreadable byAir record as a transport to an unknown place: its live
-    times over its booked ones, None when neither reads as a span."""
+    times over its booked ones and its status, None when neither reads as a
+    span. Without a route it matches no other copy of the flight, so it is
+    kept beside them: no time window alone proves two records one flight."""
     snapshot = record.get("last_snapshot")
     snap = snapshot if isinstance(snapshot, dict) else {}
+    status = snap.get("computed_status")
     booked = _scheduled_departure(record)
     departs = _instant(snap.get("dep_time")) or booked
     arrives = _instant(snap.get("arr_time")) or _instant(record.get("scheduled_arr_time"))
+    if status == CANCELLED and departs is not None:
+        return Transport(departs, departs, None, None, scheduled=booked, status=CANCELLED)
     if departs is None or arrives is None or arrives <= departs:
         return None
     return Transport(departs, arrives, None, None, scheduled=booked)
+
+
+def _snapshot_code(record: dict, end: str) -> str | None:
+    """The IATA code byAir's own poll recorded for one end of the flight
+    (`last_snapshot.<end>_airport_code`), the fallback when the airport id
+    does not resolve."""
+    snapshot = record.get("last_snapshot")
+    code = snapshot.get(f"{end}_airport_code") if isinstance(snapshot, dict) else None
+    if isinstance(code, str) and re.fullmatch(r"[A-Za-z]{3}", code.strip()):
+        return code.strip().upper()
+    return None
 
 
 def _instant(raw: object) -> datetime | None:

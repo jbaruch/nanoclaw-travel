@@ -673,3 +673,20 @@ def test_a_delay_never_moves_a_hotel_across_its_flight():
     itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=[delayed])
     assert itinerary.position_at(_at("2025-11-25T22:00:00Z")).source == "home"
     assert itinerary.position_at(_at("2025-11-26T09:00:00Z")).address == AIRBNB
+
+
+def test_a_known_away_landing_stays_away_after_a_check_out():
+    """#337 review: landed at SFO, stayed, checked out; no trip wrapper covers
+    the day. The landing still says away, never home."""
+    schedule = [
+        {
+            "type": "Lodging",
+            "summary": "Union Square Inn",
+            "start": "2025-08-17T20:00:00Z",
+            "end": "2025-08-19T15:00:00Z",
+            "location": "1 Geary St",
+        },
+    ]
+    flights = [_transport("2025-08-17T14:00:00Z", "2025-08-17T19:00:00Z", "BNA", "SFO")]
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=flights)
+    assert itinerary.position_at(_at("2025-08-19T17:00:00Z")).source != "home"
