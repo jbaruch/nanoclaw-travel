@@ -722,7 +722,23 @@ def test_byair_status_reaches_the_itinerary():
             "last_snapshot": {"computed_status": status},
         }
 
+    trip = [
+        {
+            "type": "Trip",
+            "summary": "New York",
+            "start": "2020-07-12",
+            "end": "2020-07-14",
+            "location": "New York, NY",
+        }
+    ]
+    after = datetime(2020, 7, 12, 17, 0, tzinfo=UTC)
     cancelled = flight_from_byair(record(1, "cancelled"), dep_iata="BNA", arr_iata="JFK")
+    stayed = itinerary_for(
+        merge_flights([cancelled]), trip, home_address=HOME, home_airports=frozenset({"BNA"})
+    )
+    assert stayed.position_at(after).source == "home"
     diverted = flight_from_byair(record(2, "diverted"), dep_iata="LGA", arr_iata="BNA")
-    itinerary = itinerary_for(merge_flights([cancelled, diverted]), None, home_address=HOME)
-    assert [(t.origin, t.destination) for t in itinerary._transports] == [("LGA", None)]
+    elsewhere = itinerary_for(
+        merge_flights([diverted]), trip, home_address=HOME, home_airports=frozenset({"BNA"})
+    )
+    assert elsewhere.position_at(after).source != "home"

@@ -101,3 +101,54 @@ def test_an_unreadable_or_untimed_record_is_left_out(capsys):
 
     assert precheck.byair_transports([1, 2, 3, 4], read_state=read) == []
     assert capsys.readouterr().err.count("state unreadable") == 2
+
+
+def test_a_cancellation_without_an_arrival_still_cancels():
+    """#337 review: a cancelled record whose arrival is gone still carries its
+    route and booked departure, enough to take TripIt's copy with it."""
+    record = {**_record(computed_status="cancelled"), "scheduled_arr_time": None}
+    (transport,) = precheck.byair_transports([1], read_state=lambda _id: record)
+    assert transport.status == "cancelled"
+
+
+def test_this_cycles_poll_overrides_the_stored_snapshot():
+    stale = _record()
+    fresh = {
+        **stale["last_snapshot"],
+        "dep_time": "2025-11-02T22:40:00Z",
+        "arr_time": "2025-11-03T01:05:00Z",
+    }
+    (transport,) = precheck.byair_transports([1], read_state=lambda _id: stale, fresh={1: fresh})
+    assert transport.departs == _at("2025-11-02T22:40:00Z")
+
+
+def test_a_flight_whose_poll_failed_counts_on_its_booked_times():
+    """#337 review: a recalled snapshot is a hint; a failed poll this cycle
+    means its live times and status are not trusted."""
+    record = _record(dep_time="2025-11-02T22:40:00Z", computed_status="cancelled")
+    (transport,) = precheck.byair_transports([1], read_state=lambda _id: record, unverified={1})
+    assert (transport.departs, transport.status) == (_at("2025-11-02T18:40:00Z"), None)
+
+
+def test_the_cycle_origin_resolves_once_on_first_use(monkeypatch):
+    calls = []
+
+    def home(address, *, now, transports):
+        calls.append(transports)
+        return address
+
+    monkeypatch.setattr(precheck, "resolve_effective_home", home)
+    monkeypatch.setattr(
+        precheck, "_resolve_time_to_leave_origin", lambda *, home_address, now_utc: home_address
+    )
+    origin = precheck._CycleOrigin(
+        home_address="12 Example St",
+        flight_ids=[1],
+        now_utc=_at("2025-11-02T12:00:00Z"),
+        unverified=set(),
+        read_state=lambda _id: _record(),
+    )
+    assert calls == []  # nothing is read until a query needs the origin
+    assert origin({1: _record(dep_time="2025-11-02T20:00:00Z")["last_snapshot"]}) == "12 Example St"
+    assert origin() == "12 Example St"
+    assert len(calls) == 1 and calls[0][0].departs == _at("2025-11-02T20:00:00Z")

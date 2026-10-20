@@ -51,6 +51,7 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
+# E402: the shared lodging module resolves only after the sys.path insert above.
 from lodging import CHECK_IN, CHECK_OUT, hotel_name, lodging_role, trip_ref  # noqa: E402
 
 # A flight segment's route in its summary or description, e.g. "WN716 BNA to SAT".
@@ -129,6 +130,9 @@ class _Period:
     end: datetime | None  # None: open to the future
     airport: str | None
     stays: tuple[_Stay, ...] = ()
+    # The booked departure that ends the period: which journey reaches a stay is
+    # read off the booking, so a delay never moves a hotel across its flight.
+    booked_end: datetime | None = None
 
     def contains(self, at: datetime) -> bool:
         return (self.start is None or self.start <= at) and (self.end is None or at < self.end)
@@ -356,15 +360,18 @@ def _home_periods(stay: _Stay, periods: list[_Period], home_airports: frozenset[
     """The indexes of the ground periods a stay belongs to.
 
     One with only a check-out belongs to the period it is checked out of: the
-    one it ends in, or, checked out while in the air, the one before. One with
-    only a check-in belongs to the period it starts in, or to the next one when
-    it falls in the air; from there it moves on past each period that ends
-    within `_SLEPT_BEFORE_DEPARTURE` of the check-in or of its landing (a
-    flight to it, a connection). A stay with both ends belongs where it
-    overlaps most. It also belongs to every other period it overlaps at that
-    same airport: a hotel kept through a side trip is home base before it and
-    after it. Never at a home airport: a landing there is the journey's end
-    (the airport hotel the night before a flight is not where he returns)."""
+    one it ends in, or, checked out while in the air, the one before; from
+    there it moves back past each period that began within
+    `_SLEPT_BEFORE_DEPARTURE` of the check-out (the landing home, a
+    connection). One with only a check-in belongs to the period it starts in,
+    or to the next one when it falls in the air; from there it moves on past
+    each period whose booked departure comes within `_SLEPT_BEFORE_DEPARTURE`
+    of the check-in or of its landing (a flight to it, a connection). A stay
+    with both ends belongs where it overlaps most. Each also belongs to every
+    other period it overlaps at that same airport: a hotel kept through a side
+    trip is home base before it and after it. Never at a home airport: a
+    landing there is the journey's end (the airport hotel the night before a
+    flight is not where he returns)."""
     primary = _primary_period(stay, periods)
     if primary is None:
         return []
@@ -390,6 +397,14 @@ def _primary_period(stay: _Stay, periods: list[_Period]) -> int | None:
                 (i for i, p in enumerate(periods) if p.end is not None and p.end <= stay.end),
                 default=None,
             )
+        # A check-out too soon after a landing to have slept there is the
+        # hotel he flew away from (home, a connection): back to the ground
+        # before that flight.
+        while index is not None and index > 0:
+            landed = periods[index].start
+            if landed is None or stay.end - landed >= _SLEPT_BEFORE_DEPARTURE:
+                break
+            index -= 1
         return index
     if stay.open_end:
         index = next(
@@ -405,7 +420,8 @@ def _primary_period(stay: _Stay, periods: list[_Period]) -> int | None:
         while index < last:
             period = periods[index]
             begins = stay.start if period.start is None else max(stay.start, period.start)
-            if period.end is None or period.end - begins >= _SLEPT_BEFORE_DEPARTURE:
+            ends = period.booked_end or period.end
+            if ends is None or ends - begins >= _SLEPT_BEFORE_DEPARTURE:
                 break
             index += 1
         return index
@@ -419,22 +435,23 @@ def _periods(
 ) -> list[_Period]:
     """The ground periods between transports, each holding the stays that
     overlap it more than any other period, cut to the period."""
-    bounds: list[tuple[datetime | None, datetime | None, str | None]] = []
+    bounds: list[tuple[datetime | None, datetime | None, str | None, datetime | None]] = []
     previous: Transport | None = None
     for transport in transports:
         start = previous.arrives if previous is not None else None
         airport = previous.destination if previous is not None else transport.origin
         if start is None or start < transport.departs:
-            bounds.append((start, transport.departs, airport))
+            bounds.append((start, transport.departs, airport, transport.scheduled))
         previous = transport
     bounds.append(
         (
             previous.arrives if previous is not None else None,
             None,
             previous.destination if previous is not None else None,
+            None,
         )
     )
-    periods = [_Period(start=s, end=e, airport=a) for s, e, a in bounds]
+    periods = [_Period(start=s, end=e, airport=a, booked_end=b) for s, e, a, b in bounds]
 
     assigned: dict[int, list[_Stay]] = {}
     for stay in stays:
@@ -456,6 +473,7 @@ def _periods(
             end=p.end,
             airport=p.airport,
             stays=tuple(sorted(assigned.get(i, []), key=lambda s: s.start)),
+            booked_end=p.booked_end,
         )
         for i, p in enumerate(periods)
     ]

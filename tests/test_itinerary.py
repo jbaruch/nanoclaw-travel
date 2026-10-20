@@ -27,6 +27,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 
+# E402: the module resolves only after the sys.path insert above.
 from itinerary import Itinerary, Transport, schedule_transports  # noqa: E402
 
 HOME = "12 Example St, Sampleton, TN 37000"
@@ -152,7 +153,8 @@ def test_the_same_flight_from_two_sources_is_one_journey():
     byair = [_transport("2025-11-25T23:05:00Z", "2025-11-26T01:30:00Z", "BNA", "SAT")]
     itinerary = Itinerary(repeated, home_address=HOME, home_airports=BNA, transports=byair)
     assert itinerary.position_at(_at("2025-11-26T02:00:00Z")).address == AIRBNB
-    assert len(itinerary._transports) == 2  # outbound and return
+    # byAir's 23:05 departure governs: TripIt's 23:00 copy opens no gap.
+    assert itinerary.position_at(_at("2025-11-25T23:02:00Z")).source == "home"
 
 
 def test_schedule_transports_reads_timed_flights_and_trains():
@@ -348,8 +350,22 @@ def _thanksgiving(*transports: Transport) -> Itinerary:
 
 
 def test_two_connecting_trains_are_two_journeys():
-    """Trains carry no endpoints; only an exact copy of one is a duplicate."""
+    """Trains carry no endpoints; only an exact copy of one is a duplicate. The
+    hotel checked into during the second train is reached when it arrives."""
     trains = [
+        {
+            "type": "Trip",
+            "summary": "Rail",
+            "start": "2025-10-16",
+            "end": "2025-10-18",
+            "location": "C",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-in: Hotel C",
+            "start": "2025-10-16T12:30:00Z",
+            "location": "1 C St",
+        },
         {
             "type": "Rail",
             "summary": "A to B",
@@ -370,7 +386,8 @@ def test_two_connecting_trains_are_two_journeys():
         },
     ]
     itinerary = Itinerary(trains, home_address=HOME)
-    assert len(itinerary._transports) == 2
+    assert itinerary.position_at(_at("2025-10-16T13:00:00Z")).address != "1 C St"
+    assert itinerary.position_at(_at("2025-10-16T15:00:00Z")).address == "1 C St"
 
 
 def test_a_long_delay_still_replaces_the_booked_copy():
@@ -397,9 +414,10 @@ def test_a_cancelled_flight_takes_the_booked_copy_with_it():
         scheduled=_at("2025-11-25T23:00:00Z"),
         status="cancelled",
     )
-    itinerary = _thanksgiving(cancelled)
-    assert all(t.status != "cancelled" for t in itinerary._transports)
-    assert not any(t.origin == "BNA" and t.destination == "SAT" for t in itinerary._transports)
+    schedule = [THANKSGIVING[0], WN716]
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=[cancelled])
+    # Neither the cancelled flight nor TripIt's copy of it took him to SAT.
+    assert itinerary.position_at(_at("2025-11-26T03:00:00Z")).source == "home"
 
 
 def test_a_diverted_return_does_not_land_him_home():
@@ -583,3 +601,75 @@ def test_a_repeat_visit_to_one_hotel_does_not_pair_across_trips():
     ]
     itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA)
     assert itinerary.position_at(_at("2025-07-15T12:00:00Z")).source == "home"
+
+
+def test_a_check_out_after_the_flight_home_stays_with_the_hotel_before_it():
+    """SAT→BNA 12:00–14:00, the San Antonio check-out stamped 17:00: he is home
+    after landing, and at the hotel before the flight."""
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "SA",
+            "start": "2025-11-25",
+            "end": "2025-11-30",
+            "location": "San Antonio, TX",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-out: Riverwalk Inn",
+            "start": "2025-11-30T17:00:00Z",
+            "location": "2 River Walk",
+        },
+    ]
+    flights = [
+        _transport("2025-11-25T12:00:00Z", "2025-11-25T14:00:00Z", "BNA", "SAT"),
+        _transport("2025-11-30T12:00:00Z", "2025-11-30T14:00:00Z", "SAT", "BNA"),
+    ]
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=flights)
+    assert itinerary.position_at(_at("2025-11-30T14:30:00Z")).source == "home"
+    assert itinerary.position_at(_at("2025-11-30T09:00:00Z")).address == "2 River Walk"
+
+
+def test_a_check_out_during_a_connection_stays_with_the_city_left():
+    """FCO→CDG 09:00–11:00, check-out stamped 11:30, CDG→BNA 13:00: the Rome
+    hotel is not in Paris."""
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "Rome",
+            "start": "2025-10-12",
+            "end": "2025-10-16",
+            "location": "Rome",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-out: Hotel Roma",
+            "start": "2025-10-16T11:30:00Z",
+            "location": "1 Via Roma",
+        },
+    ]
+    flights = [
+        _transport("2025-10-16T09:00:00Z", "2025-10-16T11:00:00Z", "FCO", "CDG"),
+        _transport("2025-10-16T13:00:00Z", "2025-10-16T21:00:00Z", "CDG", "BNA"),
+    ]
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=flights)
+    # In Paris he is not at the Rome hotel; it is only the last one he left.
+    assert itinerary.position_at(_at("2025-10-16T11:15:00Z")).detail == "after Hotel Roma"
+    assert itinerary.position_at(_at("2025-10-16T07:00:00Z")).detail == "Hotel Roma"
+
+
+def test_a_delay_never_moves_a_hotel_across_its_flight():
+    """Check-in-only Airbnb at 21:00, BNA→SAT booked 23:00 but delayed to
+    06:00: the booking says the flight reaches the Airbnb, so at 22:00 he is
+    still home."""
+    schedule = [THANKSGIVING[0], {**THANKSGIVING[1], "end": None}]
+    delayed = Transport(
+        _at("2025-11-26T06:00:00Z"),
+        _at("2025-11-26T08:25:00Z"),
+        "BNA",
+        "SAT",
+        scheduled=_at("2025-11-25T23:00:00Z"),
+    )
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=[delayed])
+    assert itinerary.position_at(_at("2025-11-25T22:00:00Z")).source == "home"
+    assert itinerary.position_at(_at("2025-11-26T09:00:00Z")).address == AIRBNB

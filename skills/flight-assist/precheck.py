@@ -255,26 +255,7 @@ def _run_cycle(
     active_flight_ids = read_active_flights()
     config = read_config() or {}
     resolve_operator_tz = _memoized_operator_tz(operator_tz_reader)
-    # Trip-aware (#122, #335): "home" for this cycle is the itinerary's
-    # position — the static residence at home, the current lodging or trip city
-    # away — read with byAir's flights as well as TripIt's, so a trip only byAir
-    # tracks still moves the operator. None away with nothing resolvable
-    # disables routing via the existing no-home handling.
-    home_address = resolve_effective_home(
-        config.get("home_address"),
-        now=now_utc,
-        transports=byair_transports(active_flight_ids),
-    )
     min_transfer_minutes = _resolve_min_transfer_minutes(config)
-
-    # Resolve the time-to-leave origin once per cycle so every flight
-    # in this cycle queries Distance Matrix against the same snapshot.
-    # The host-orchestrator-owned `current-location.json` could be
-    # rewritten mid-cycle by a concurrent location update; reading it
-    # once per `_process_flight` would let two flights in the same
-    # cycle disagree on where the user is, which is incoherent. Per
-    # Copilot review on `jbaruch/nanoclaw-flight-assist#19`.
-    cycle_origin = _resolve_time_to_leave_origin(home_address=home_address, now_utc=now_utc)
 
     byair = ByAirClient.from_env(timeout=_BYAIR_CALL_TIMEOUT_SECONDS)
     maps = _maybe_maps_client()  # None when GOOGLE_MAPS_API_KEY unset
@@ -303,6 +284,15 @@ def _run_cycle(
     removed_upstream_ids: set[int] = set()
     poll_failed_ids: set[int] = set()
     deferred_ids: set[int] = set()
+    # The time-to-leave origin, resolved once per cycle so every flight queries
+    # Distance Matrix against the same position, and on first use, after that
+    # flight's own poll (see `_CycleOrigin`).
+    cycle_origin = _CycleOrigin(
+        home_address=config.get("home_address"),
+        flight_ids=active_flight_ids,
+        now_utc=now_utc,
+        unverified=poll_failed_ids,
+    )
     # Which flights could spawn the zone reader this cycle: their deadline
     # carries the reader reserve until the reader has run (#312).
     may_spawn_reader = {fid for fid in active_flight_ids if _may_spawn_reader(fid, now_utc)}
@@ -432,14 +422,55 @@ class _OperatorTzMemo:
         return self._cache[0]
 
 
+class _CycleOrigin:
+    """One cycle's time-to-leave origin, resolved on first use and then fixed.
+
+    Trip-aware (#122, #335): "home" is the itinerary's position: the static
+    residence at home, the current lodging or trip city away. It is read with
+    byAir's flights as well as TripIt's, so a trip only byAir tracks still moves
+    the operator. None away with nothing resolvable disables routing via the
+    existing no-home handling. It is resolved when the first time-to-leave
+    query is due, after that flight's own poll, whose fresh snapshot the
+    caller hands in. A flight whose poll failed this cycle counts on its booked
+    times only: a recalled snapshot is a hint, never live state."""
+
+    def __init__(
+        self,
+        *,
+        home_address: str | None,
+        flight_ids: list[int],
+        now_utc: datetime,
+        unverified: set[int],
+        read_state: Callable[[int], dict | None] = read_flight_state,
+    ):
+        self._home, self._ids, self._now = home_address, flight_ids, now_utc
+        self._unverified, self._read = unverified, read_state
+        self._resolved = False
+        self._origin: str | None = None
+
+    def __call__(self, fresh: dict[int, dict] | None = None) -> str | None:
+        if not self._resolved:
+            transports = byair_transports(
+                self._ids, read_state=self._read, fresh=fresh, unverified=self._unverified
+            )
+            home = resolve_effective_home(self._home, now=self._now, transports=transports)
+            self._origin = _resolve_time_to_leave_origin(home_address=home, now_utc=self._now)
+            self._resolved = True
+        return self._origin
+
+
 def byair_transports(
     flight_ids: list[int],
     *,
     read_state: Callable[[int], dict | None] = read_flight_state,
+    fresh: dict[int, dict] | None = None,
+    unverified: set[int] | frozenset[int] = frozenset(),
 ) -> list[Transport]:
     """byAir's tracked flights as itinerary transports (#335), from this skill's
-    own byAir poll (`last_snapshot`): its airport codes, and its live times
-    over the scheduled ones.
+    own byAir poll: the snapshot in `fresh` (polled this cycle) or the stored
+    `last_snapshot`, its airport codes, and its live times over the scheduled
+    ones. A flight in `unverified` (its poll failed this cycle) keeps only its
+    booked times and no status.
 
     A cancelled flight moves nobody and takes TripIt's copy of it with it. A
     diverted one keeps its times with no destination airport: he landed
@@ -462,16 +493,24 @@ def byair_transports(
             continue
         if record is None:
             continue
-        snapshot = record.get("last_snapshot")
+        snapshot = (fresh or {}).get(flight_id) or record.get("last_snapshot")
         if not isinstance(snapshot, dict):
             continue
-        status = snapshot.get("computed_status")
         origin, destination = snapshot.get("dep_airport_code"), snapshot.get("arr_airport_code")
         if not isinstance(origin, str) or not isinstance(destination, str):
             continue
-        departs = parse_time(snapshot.get("dep_time") or record.get("scheduled_dep_time"))
-        arrives = parse_time(snapshot.get("arr_time") or record.get("scheduled_arr_time"))
-        if departs is None or arrives is None or arrives <= departs:
+        live = flight_id not in unverified
+        status = snapshot.get("computed_status") if live else None
+        booked = parse_time(record.get("scheduled_dep_time"))
+        departs = parse_time(snapshot.get("dep_time") if live else None) or booked
+        arrives = parse_time(snapshot.get("arr_time") if live else None) or parse_time(
+            record.get("scheduled_arr_time")
+        )
+        if status == CANCELLED and departs is not None:
+            # A cancellation needs only its route and booked departure to take
+            # TripIt's copy with it; it moves nobody.
+            arrives = arrives if arrives is not None and arrives > departs else departs
+        elif departs is None or arrives is None or arrives <= departs:
             continue
         transports.append(
             Transport(
@@ -479,7 +518,7 @@ def byair_transports(
                 arrives,
                 origin,
                 None if status == DIVERTED else destination,
-                scheduled=parse_time(record.get("scheduled_dep_time")),
+                scheduled=booked,
                 status=status if status in (CANCELLED, DIVERTED) else None,
             )
         )
@@ -598,14 +637,15 @@ def _process_flight(
     now_utc: datetime,
     byair: ByAirClient,
     maps: MapsClient | None,
-    time_to_leave_origin: str | None,
+    time_to_leave_origin: Callable[[dict[int, dict]], str | None],
     resolve_operator_tz: Callable[[], str | None] = lambda: None,
 ) -> list[dict]:
     """Process a single flight: cadence-gate, fetch, diff, emit events.
 
-    `time_to_leave_origin` is resolved once per cycle by `_run_cycle`
-    and passed in here, so every flight processed in the same cycle
-    agrees on the user's location even when the host-orchestrator-owned
+    `time_to_leave_origin` is `_run_cycle`'s once-per-cycle origin
+    (`_CycleOrigin`), handed this flight's fresh snapshot and consulted only
+    when the time-to-leave query runs, so every flight processed in the same
+    cycle agrees on the user's location even when the host-orchestrator-owned
     `current-location.json` is rewritten mid-cycle.
 
     `resolve_operator_tz` is `_run_cycle`'s once-per-cycle memo of the
@@ -729,7 +769,7 @@ def _process_flight(
 
     travel_time_seconds = _maybe_query_travel_time(
         maps=maps,
-        origin=time_to_leave_origin,
+        resolve_origin=lambda: time_to_leave_origin({flight_id: new_snapshot}),
         raw_flight=raw_flight,
         scheduled_dep_time=scheduled_dep_time,
         now_utc=now_utc,
@@ -841,7 +881,7 @@ def _resolve_time_to_leave_origin(
 def _maybe_query_travel_time(
     *,
     maps: MapsClient | None,
-    origin: str | None,
+    resolve_origin: Callable[[], str | None],
     raw_flight: dict,
     scheduled_dep_time: str | None,
     now_utc: datetime,
@@ -857,11 +897,12 @@ def _maybe_query_travel_time(
     - Scheduled departure is more than _TIME_TO_LEAVE_QUERY_WINDOW_HOURS away
     - time_to_leave has already fired (no need to re-query)
 
-    `origin` is resolved once per cycle in `_run_cycle` and passed
-    through; this function does NOT re-read `current-location.json`,
-    so every flight in the same cycle agrees on the user's location.
+    `resolve_origin` is the cycle's origin (`_CycleOrigin`), called only
+    once the query is otherwise due; this function does NOT re-read
+    `current-location.json`, so every flight in the same cycle agrees on the
+    user's location.
     """
-    if maps is None or time_to_leave_already_fired or not origin:
+    if maps is None or time_to_leave_already_fired:
         return None
     dep_dt = _parse_iso8601(scheduled_dep_time)
     if dep_dt is None:
@@ -871,6 +912,9 @@ def _maybe_query_travel_time(
     dep_airport = raw_flight.get("depAirport", {})
     destination = dep_airport.get("name") or dep_airport.get("code") or ""
     if not destination:
+        return None
+    origin = resolve_origin()
+    if not origin:
         return None
     try:
         result = maps.travel_time(origin=origin, destination=destination)

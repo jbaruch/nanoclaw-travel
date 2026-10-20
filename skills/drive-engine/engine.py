@@ -340,14 +340,17 @@ def itinerary_for(
     transports = [
         Transport(
             f.effective_dep,
-            f.effective_arr,
+            f.effective_arr if f.effective_arr is not None else f.effective_dep,
             f.dep_airport,
             None if f.status == DIVERTED else f.arr_airport,
             scheduled=f.scheduled_dep,
             status=f.status if f.status in (CANCELLED, DIVERTED) else None,
         )
         for f in flights
-        if f.effective_arr is not None and f.effective_arr > f.effective_dep
+        # A cancellation needs only its route and booked departure to take
+        # the schedule's copy with it; a flight that moves him needs a span.
+        if f.status == CANCELLED
+        or (f.effective_arr is not None and f.effective_arr > f.effective_dep)
     ]
     return Itinerary(
         schedule, home_address=home_address, home_airports=home_airports, transports=transports
