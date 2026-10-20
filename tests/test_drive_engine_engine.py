@@ -742,3 +742,40 @@ def test_byair_status_reaches_the_itinerary():
         merge_flights([diverted]), trip, home_address=HOME, home_airports=frozenset({"BNA"})
     )
     assert elsewhere.position_at(after).source != "home"
+
+
+def test_a_cancellation_without_an_arrival_takes_tripits_copy_with_it():
+    """#337 review: the cancelled byAir record lost its arrival; its route and
+    booked departure still cancel the schedule's copy of the flight."""
+    from engine import itinerary_for
+    from flight_identity import merge_flights
+    from normalize import flight_from_byair
+
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "New York",
+            "start": "2020-07-12",
+            "end": "2020-07-14",
+            "location": "New York, NY",
+        },
+        {
+            "type": "Flight",
+            "summary": "DL1 BNA to JFK",
+            "start": "2020-07-12T14:00:00Z",
+            "end": "2020-07-12T16:00:00Z",
+        },
+    ]
+    cancelled = flight_from_byair(
+        {
+            "flight_id": 1,
+            "scheduled_dep_time": "2020-07-12T14:00:00Z",
+            "last_snapshot": {"computed_status": "cancelled"},
+        },
+        dep_iata="BNA",
+        arr_iata="JFK",
+    )
+    itinerary = itinerary_for(
+        merge_flights([cancelled]), schedule, home_address=HOME, home_airports=frozenset({"BNA"})
+    )
+    assert itinerary.position_at(datetime(2020, 7, 12, 17, 0, tzinfo=UTC)).source == "home"
