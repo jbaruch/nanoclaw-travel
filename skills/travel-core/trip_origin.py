@@ -1,34 +1,17 @@
-"""Trip-aware drive-anchor resolution — TripIt truth over the static home.
+"""Trip-aware drive anchors: the TripIt schedule read as one itinerary (#122, #335).
 
 Every drive leg the travel skills plan is anchored somewhere: the sweep's
-outbound/return legs at the operator's residence, flight-assist's
-time-to-leave and drive-home legs at `home_address`. That anchor was always
-the static home, with no awareness of whether the operator is on a trip —
-which is how a UK dinner reservation drew a 39-minute drive block from a
-Tennessee origin (issue #122). This module resolves the anchor from the
-TripIt-derived `travel-schedule.json` (written nightly by
-`nightly-travel-sync`'s refresh-travel-schedule.py):
+airport and meeting legs at the operator's position around the flight or the
+meeting, flight-assist's time-to-leave and drive-home legs at "home". That
+anchor used to be the static home, which drew a 39-minute drive block from a
+Tennessee origin for a UK dinner (#122), and then a ladder of rules over the
+TripIt schedule, which never saw a flight byAir alone tracked (#335).
 
-1. No active `Trip` segment covers the anchor time → the static home
-   (today's behavior, unchanged).
-2. An active `Trip` covers it → the `location` of the most recent `Lodging`
-   event (check-in OR check-out) within the trip's span at or before the
-   anchor time. In a check-out→check-in gap the latest event is the prior
-   check-out, so its lodging wins; after the next check-in, that lodging
-   wins. The event's `location` field carries the address (`address` is
-   null in the feed).
-3. On a trip but before its first lodging event → the `Trip` segment's own
-   `location` when present, else unresolved (`address=None`) — the caller
-   surfaces "no drivable origin" instead of planning from home. The static
-   home also anchors home-metro trips without lodging (#314).
-
-Rule 2/3 apply only from the moment the operator has actually left, though: the
-date-only `Trip` wrapper is "active" on the departure day itself, but before the
-trip's first flight departs the operator is still home. Anchoring the outbound
-airport-departure drive at the trip's destination there draws an absurd
-cross-country "drive" (a 34-hour San Francisco→BNA block for a BNA→SFO trip), so
-the static home wins until the first flight lifts off. A trip with no timed
-flight in the feed keeps the old behavior — nothing marks when it left home.
+The position now comes from `itinerary.Itinerary`: transports split time into
+ground periods, lodging stays belong to the period they overlap most, and a
+period at a home airport is home. This module wraps it for callers holding a
+schedule, and keeps the schedule's reader and the flight helpers the meeting
+scan uses.
 
 The schedule file is host-group state owned by `nightly-travel-sync` (see
 its state-schema.md); this module is a non-owner READER per
@@ -36,20 +19,18 @@ its state-schema.md); this module is a non-owner READER per
 forward-incompatible file resolves to "no usable schedule" (static-home
 behavior), never an exception, and never a migration.
 
-Shared across bundles: drive-engine's reconcile sweep imports this module
-cross-bundle the same way it already imports `maps_client` from flight-assist.
-
 stdlib-only per `coding-policy: dependency-management` (Stdlib First).
 
 Public API:
     from trip_origin import (
-        TripAnchor, flight_summaries, flight_windows, load_travel_schedule,
-        resolve_anchor,
+        TripAnchor, flight_summaries, flight_windows, home_airports,
+        load_travel_schedule, resolve_anchor, resolve_effective_home,
     )
 
     schedule = load_travel_schedule()            # list | None, tolerant
-    anchor = resolve_anchor(schedule, at=meeting_start, home_address=home)
-    anchor.address    # drivable anchor, or None (unresolved mid-trip)
+    anchor = resolve_anchor(schedule, at=meeting_start, home_address=home,
+                            home_airports=home_airports(), transports=byair)
+    anchor.address    # drivable anchor, or None (unresolved away from home)
     anchor.source     # "home" | "lodging" | "trip_location" | "unresolved"
     flight_windows(schedule)    # [(start, end), ...] — flight spans to filter (#85)
     flight_summaries(schedule)  # ["DL 4908 ...", ...] — flight identities to filter (#85)
@@ -59,8 +40,7 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 # Co-located in this bundle; import by module name so consumers that put the
@@ -70,8 +50,8 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from addresses import home_metro_names, is_home_metro  # noqa: E402
-from lodging import CHECK_IN, CHECK_OUT, hotel_name, lodging_role  # noqa: E402
+from addresses import read_values  # noqa: E402
+from itinerary import Itinerary, Position, Transport, parse_time  # noqa: E402
 
 SCHEDULE_PATH = "/workspace/group/travel-schedule.json"
 
@@ -84,25 +64,8 @@ SCHEDULE_PATH = "/workspace/group/travel-schedule.json"
 # no-usable-schedule path rather than guessing at a shape it doesn't know.
 SCHEDULE_SCHEMA_VERSION = 5
 
-
-@dataclass(frozen=True)
-class TripAnchor:
-    """Where home-anchored drive legs start/end at a given moment.
-
-    Fields:
-        address: the drivable anchor (static home off-trip, lodging or trip
-            location on-trip), or None when on a trip with nothing resolvable
-            — the caller must surface that, not fall back to home.
-        source: which rule produced the address — "home", "lodging",
-            "trip_location", or "unresolved" (address is None).
-        detail: human-readable context (the lodging event or trip summary,
-            or the reason nothing resolved) for diagnostics and operator
-            messaging.
-    """
-
-    address: str | None
-    source: str
-    detail: str | None = None
+# The anchor is an itinerary position: `address`, `source`, `detail`.
+TripAnchor = Position
 
 
 def load_travel_schedule(path: str | None = None) -> list[dict] | None:
@@ -160,238 +123,15 @@ def parse_schedule_time(value) -> datetime | None:
     value reads as midnight UTC. A naive datetime string (not a shape the
     feed writes) is tolerated as UTC rather than rejected.
     """
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    return parse_time(value)
 
 
-def _parse_day(value) -> date | None:
-    """A schedule `start`/`end` string as a UTC calendar date, else None."""
-    parsed = parse_schedule_time(value)
-    return parsed.date() if parsed is not None else None
+def home_airports(*, path: Path | None = None) -> frozenset[str]:
+    """The profile's `home_airport` codes (`addresses.read_values`), uppercased.
 
-
-def _active_trip(records: list[dict], on_day: date) -> dict | None:
-    """The `Trip` record whose date span covers `on_day`, else None.
-
-    Trip wrappers are date-only; the span is inclusive of both endpoint
-    dates. TripIt's date-only DTEND is nominally exclusive, so inclusive
-    reading may extend trip awareness one day past the return — the safe
-    direction: anchoring a landing-day evening at the last lodging beats
-    planning a mid-trip drive from home, which is the failure #122 exists
-    to stop. Multiple covering trips (overlapping wrappers) resolve to the
-    latest-starting one.
-    """
-    active = None
-    active_start = None
-    for record in records:
-        if record.get("type") != "Trip":
-            continue
-        start_day = _parse_day(record.get("start"))
-        end_day = _parse_day(record.get("end"))
-        if start_day is None or end_day is None:
-            continue
-        if start_day <= on_day <= end_day and (active_start is None or start_day > active_start):
-            active = record
-            active_start = start_day
-    return active
-
-
-# Record types whose departure marks the operator physically leaving for a
-# trip. Rail belongs beside Flight: a train out is a departure from home just as
-# much as a flight is.
-_DEPARTURE_TYPES = frozenset({"Flight", "Rail"})
-
-# How far in front of a trip's first transport departure a lodging check-in can
-# sit and still be a STAGING stay — an airport hotel the operator drove to from
-# home the night before, so the journey still opened at the house.
-#
-# The separator `opened_from_home` needs is staging-vs-destination, and without
-# geography the lead time is the signal there is: an overnight before an early
-# flight runs hours, while a stay the operator drove to and later flew a local
-# round trip out of runs days. A day covers the overnight case with room for a
-# long check-in-to-departure gap, and is well short of any destination stay.
-STAGING_STAY_MAX_LEAD = timedelta(hours=24)
-
-
-def _timed_within(record: dict, trip_start: date | None, trip_end: date | None) -> datetime | None:
-    """A record's `start` as a UTC instant, if it is TIMED and inside the span.
-
-    Timed only. A date-only `YYYY-MM-DD` start parses to midnight, which would
-    falsely mark the trip as already begun for the rest of that day and let a
-    same-day anchor fall through to the destination — the very bug the caller's
-    gate closes. Mirrors `flight_windows`.
-    """
-    raw_start = record.get("start")
-    if not (isinstance(raw_start, str) and "T" in raw_start):
-        return None
-    when = parse_schedule_time(raw_start)
-    if when is None:
-        return None
-    if trip_start is not None and trip_end is not None:
-        if not (trip_start <= when.date() <= trip_end):
-            return None
-    return when
-
-
-def _first_transport_departure(
-    records: list[dict], trip_start: date | None, trip_end: date | None
-) -> datetime | None:
-    """The earliest timed transport departure within the trip's span, else None."""
-    earliest: datetime | None = None
-    for record in records:
-        if record.get("type") not in _DEPARTURE_TYPES:
-            continue
-        when = _timed_within(record, trip_start, trip_end)
-        if when is not None and (earliest is None or when < earliest):
-            earliest = when
-    return earliest
-
-
-def _first_lodging_arrival(
-    records: list[dict], trip_start: date | None, trip_end: date | None
-) -> datetime | None:
-    """The earliest timed lodging check-in within the trip's span, else None.
-
-    Only a check-in with a usable location counts — the lodging ladder can
-    anchor on nothing else, so treating a blank-location check-in as the trip's
-    start would step past the caller's gate and land on the destination city,
-    which is the shape the gate exists to prevent.
-    """
-    earliest: datetime | None = None
-    for record in records:
-        if record.get("type") != "Lodging":
-            continue
-        if lodging_role(record.get("summary")) != CHECK_IN:
-            continue
-        location = record.get("location")
-        if not isinstance(location, str) or not location.strip():
-            continue
-        when = _timed_within(record, trip_start, trip_end)
-        if when is not None and (earliest is None or when < earliest):
-            earliest = when
-    return earliest
-
-
-def _trip_begins_at(
-    records: list[dict], trip_start: date | None, trip_end: date | None
-) -> datetime | None:
-    """When the operator physically leaves home for the trip, else None.
-
-    The EARLIEST of the trip's first timed transport departure and its first
-    timed lodging check-in. Before that instant the date-only Trip wrapper is
-    already "active" but the planned position is still home.
-
-    Each half covers a case the other misses:
-
-    - Transport alone left a FLIGHT-LESS drive trip with no begin instant at
-      all, so the gate never fired and a first-day anchor before check-in
-      resolved to the Trip wrapper's own `location` — the destination city, the
-      cross-country-drive shape the gate exists to prevent (#233).
-    - Transport FIRST rather than earliest missed the mirror case: an airport
-      hotel checked into the night before an early flight. The operator slept
-      there, but every instant before wheels-up read as home, so the morning
-      airport drive routed from the house he had already left (#235, the #154
-      shape reintroduced by this gate).
-
-    A trip with neither signal yields None and the caller leaves the anchor as
-    it was.
-    """
-    candidates = [
-        when
-        for when in (
-            _first_transport_departure(records, trip_start, trip_end),
-            _first_lodging_arrival(records, trip_start, trip_end),
-        )
-        if when is not None
-    ]
-    return min(candidates) if candidates else None
-
-
-# How far from checking out of another lodging, before or after its nominal
-# check-out, a departure still counts as the journey to the next one. TripIt's
-# nominal check-in routinely precedes the real arrival on a city-to-city
-# hotel-change day (#323); a departure after a night at the new lodging is
-# outbound from it, not inbound.
-_INBOUND_WINDOW = timedelta(hours=12)
-
-# Longest gap between one leg's arrival and the next leg's departure that still
-# continues the same journey (a train to the airport, a connecting flight).
-_CONNECTION_WINDOW = timedelta(hours=4)
-
-
-def _effective_check_in(
-    record: dict,
-    nominal: datetime,
-    schedule: list[dict],
-    trip_start: date | None,
-    trip_end: date | None,
-) -> datetime:
-    """When the operator can actually be at a checked-in lodging.
-
-    Only on a hotel change: the journey's first leg arrives after the nominal
-    check-in, departs before this lodging's check-out and within
-    _INBOUND_WINDOW of another lodging's nominal check-out, on either side.
-    Legs departing within _CONNECTION_WINDOW of the previous arrival continue
-    the journey, and the check-in takes effect at its final arrival. A first
-    lodging reached from home (#235) and a staging night before an outbound
-    departure keep their nominal check-in.
-    Lodgings and transports count only inside the active trip's span, so an
-    earlier trip's hotel is not a hotel change.
-    """
-    name = hotel_name(record.get("summary"))
-    checkout = None
-    left_lodging: list[datetime] = []
-    for other in schedule:
-        if other.get("type") != "Lodging" or lodging_role(other.get("summary")) != CHECK_OUT:
-            continue
-        other_name = hotel_name(other.get("summary"))
-        if other_name == name:
-            when = parse_schedule_time(other.get("start"))
-            if when is not None and when > nominal and (checkout is None or when < checkout):
-                checkout = when
-        elif other_name is not None:
-            when = _timed_within(other, trip_start, trip_end)
-            if when is not None:
-                left_lodging.append(when)
-    if not left_lodging:
-        return nominal
-    legs = []
-    for transport in schedule:
-        if transport.get("type") not in _DEPARTURE_TYPES:
-            continue
-        departs = _timed_within(transport, trip_start, trip_end)
-        arrives = parse_schedule_time(transport.get("end"))
-        if departs is None or arrives is None or arrives <= departs:
-            continue
-        if checkout is not None and departs >= checkout:
-            continue
-        legs.append((departs, arrives))
-    legs.sort()
-    first = next(
-        (
-            index
-            for index, (departs, arrives) in enumerate(legs)
-            if arrives > nominal
-            and any(abs(departs - left) <= _INBOUND_WINDOW for left in left_lodging)
-        ),
-        None,
-    )
-    if first is None:
-        return nominal
-    arrival = legs[first][1]
-    for departs, arrives in legs[first + 1 :]:
-        if departs > arrival + _CONNECTION_WINDOW:
-            break
-        if departs >= arrival:
-            arrival = arrives
-    return arrival if arrival > nominal else nominal
+    Empty when the profile has none: the itinerary then judges home by the trip
+    covering an instant rather than by airport (see `itinerary`)."""
+    return frozenset(code.strip().upper() for code in read_values("home_airport", path=path) if code)
 
 
 def resolve_anchor(
@@ -399,120 +139,23 @@ def resolve_anchor(
     *,
     at: datetime,
     home_address: str | None,
-    home_metros: frozenset[str] = frozenset(),
+    home_airports: frozenset[str] = frozenset(),
+    transports: list[Transport] | tuple[Transport, ...] = (),
 ) -> TripAnchor:
-    """Resolve the drive anchor for time `at` per the #122 rules. Pure.
+    """The operator's position at `at` (tz-aware; naive raises ValueError).
 
-    Args:
-        schedule: the record list from `load_travel_schedule` (None means
-            no usable schedule — anchor at home).
-        at: the tz-aware moment the anchor applies to (a meeting start, or
-            "now" for flight-assist's cycle origin). Naive raises ValueError
-            — comparing it to the schedule's UTC instants would be wrong,
-            not just an exception.
-        home_address: the static residence used off-trip. May be None
-            (flight-assist's config leaves it unset), in which case the
-            off-trip anchor is None with source "home" — same "no origin
-            configured" contract callers already handle.
-        home_metros: normalized labels from `addresses.home_metro_names`.
-            A matching trip without lodging resolves to home (#314).
-
-    Returns:
-        TripAnchor — see the class docstring for the source ladder.
+    One-shot convenience over `Itinerary`; a caller asking many instants of one
+    run builds the `Itinerary` once instead. `home_address` may be None (the
+    off-trip anchor then has no address, source "home"). `transports` are the
+    flights or trains known beyond the schedule (the drive engine passes
+    byAir's).
     """
-    if at.tzinfo is None or at.utcoffset() is None:
-        raise ValueError("resolve_anchor: `at` must be timezone-aware (UTC)")
-    if not schedule:
-        return TripAnchor(address=home_address, source="home")
-
-    at_utc = at.astimezone(UTC)
-    trip = _active_trip(schedule, at_utc.date())
-    if trip is None:
-        return TripAnchor(address=home_address, source="home")
-
-    trip_start = _parse_day(trip.get("start"))
-    trip_end = _parse_day(trip.get("end"))
-
-    # A local placeholder is still home unless its span contains a lodging
-    # reservation. Count future and address-less lodging too: neither proves
-    # that this is a placeholder (#314).
-    has_lodging = any(
-        record.get("type") == "Lodging"
-        and (day := _parse_day(record.get("start"))) is not None
-        and trip_start is not None
-        and trip_end is not None
-        and trip_start <= day <= trip_end
-        for record in schedule
-    )
-    if is_home_metro(trip.get("location"), home_metros) and not has_lodging:
-        return TripAnchor(
-            address=home_address, source="home", detail="home-metro trip without lodging"
-        )
-
-    # Before the trip begins the operator is still home — the date-only Trip
-    # wrapper is "active" on the first day, but anchoring an outbound drive at
-    # the destination draws a cross-country "drive" (the 34-hour San
-    # Francisco→BNA block for a BNA→SFO trip). "Begins" is the first transport
-    # departure, falling back to the first lodging check-in when the trip has
-    # none, so a flight-less drive trip is gated too (`_trip_begins_at`, #233).
-    # Transport still wins whenever it exists: a pre-flight staging hotel does
-    # NOT begin the trip, and the morning of an early flight still reads home
-    # (#235).
-    begins_at = _trip_begins_at(schedule, trip_start, trip_end)
-    if begins_at is not None and at_utc < begins_at:
-        return TripAnchor(
-            address=home_address,
-            source="home",
-            detail="before the trip begins",
-        )
-
-    best = None
-    best_when = None
-    for record in schedule:
-        if record.get("type") != "Lodging":
-            continue
-        location = record.get("location")
-        if not isinstance(location, str) or not location.strip():
-            continue
-        when = parse_schedule_time(record.get("start"))
-        if when is not None and lodging_role(record.get("summary")) == CHECK_IN:
-            when = _effective_check_in(record, when, schedule, trip_start, trip_end)
-        if when is None or when > at_utc:
-            continue
-        # Bound lodging to the active trip's span so a prior trip's
-        # straggler check-out (retained by the refresh's live-stay pairing)
-        # can't anchor this trip's meetings in the wrong city.
-        if trip_start is not None and trip_end is not None:
-            if not (trip_start <= when.date() <= trip_end):
-                continue
-        if best_when is None or when >= best_when:
-            best = record
-            best_when = when
-    if best is not None:
-        location = best.get("location")
-        assert isinstance(location, str)  # filtered non-str/empty above
-        return TripAnchor(
-            address=location.strip(),
-            source="lodging",
-            detail=best.get("summary") or None,
-        )
-
-    trip_location = trip.get("location")
-    trip_summary = trip.get("summary") or "active trip"
-    if isinstance(trip_location, str) and trip_location.strip():
-        return TripAnchor(
-            address=trip_location.strip(),
-            source="trip_location",
-            detail=trip_summary,
-        )
-    return TripAnchor(
-        address=None,
-        source="unresolved",
-        detail=(
-            f"on {trip_summary!r} with no lodging event at or before "
-            f"{at_utc.isoformat()} and no trip location — no drivable anchor"
-        ),
-    )
+    return Itinerary(
+        schedule,
+        home_address=home_address,
+        home_airports=home_airports,
+        transports=transports,
+    ).position_at(at)
 
 
 def _flight_records(schedule: list[dict] | None) -> list[dict]:
@@ -578,75 +221,26 @@ def flight_summaries(schedule: list[dict] | None) -> list[str]:
     return summaries
 
 
-def opened_from_home(
-    schedule: list[dict] | None,
-    *,
-    at: datetime,
+def resolve_effective_home(
     home_address: str | None,
-    home_metros: frozenset[str] = frozenset(),
-) -> bool:
-    """Whether the journey whose ground-reached departure sits at `at` left home.
-
-    A round trip that opened from home closes there too, so the drive off its
-    final landing goes to the house rather than to wherever the itinerary
-    happens to put the operator. `engine.build_reconcile_plan` asks this to
-    decide which final arrival is a homecoming.
-
-    It used to ask `position_at(at).source == "home"` instead, which is a
-    different question wearing the same clothes: "was he at the house at that
-    moment" rather than "did this journey start from the house". They agree
-    until the operator stages at an airport hotel the night before an early
-    flight — then he is at a hotel, but he still left from home, and the proxy
-    answers no and routes his drive home to that hotel (#235).
-
-    Asked directly: he opened from home when the planned position IS home, or
-    when this departure is the trip's own first transport departure — in which
-    case whatever lodging resolves here is a staging stay he drove to from the
-    house. A later flight inside a trip already under way is not an opening: a
-    round trip flown out of a foreign city during a long stay returns to that
-    city's hotel, not across an ocean.
-
-    A lodging check-in only reads as staging when it sits within
-    `STAGING_STAY_MAX_LEAD` of that departure. Further back and the operator has
-    been living at the destination — he drove there, and a round trip he later
-    flies out of is local, returning to the destination rather than the house.
-
-    Returns False when no home address is configured — there is nothing to route
-    a homecoming to.
-    """
-    if home_address is None:
-        return False
-    planned = resolve_anchor(schedule, at=at, home_address=home_address, home_metros=home_metros)
-    if planned.source == "home":
-        return planned.address is not None
-    if not schedule:
-        return False
-    trip = _active_trip(schedule, at.astimezone(UTC).date())
-    if trip is None:
-        return False
-    trip_start = _parse_day(trip.get("start"))
-    trip_end = _parse_day(trip.get("end"))
-    first_departure = _first_transport_departure(schedule, trip_start, trip_end)
-    if first_departure is None or at > first_departure:
-        return False
-    begins_at = _trip_begins_at(schedule, trip_start, trip_end)
-    if begins_at is not None and begins_at < first_departure - STAGING_STAY_MAX_LEAD:
-        return False
-    return True
-
-
-def resolve_effective_home(home_address: str | None, *, now: datetime) -> str | None:
+    *,
+    now: datetime,
+    transports: list[Transport] | tuple[Transport, ...] = (),
+) -> str | None:
     """The trip-aware stand-in for the static `home_address` at `now`.
 
-    The I/O convenience over `load_travel_schedule` + `resolve_anchor` for
-    callers that treat "home" as a single per-cycle value (flight-assist's
-    time-to-leave origin and drive-home destination): off-trip it's the
-    static home; on-trip it's the current lodging (or the trip location);
-    on-trip with nothing resolvable it's None — the callers' existing
-    "no home_address configured" handling then skips routing, which beats
-    routing to a residence an ocean away.
+    The I/O convenience for callers that treat "home" as a single per-cycle
+    value (flight-assist's time-to-leave origin and drive-home destination):
+    reads the schedule and the profile's home airports, and returns the
+    position's address — the static home at home, the current lodging or trip
+    location away, None when away with nothing resolvable (the callers'
+    existing "no home_address configured" handling then skips routing, which
+    beats routing to a residence an ocean away).
     """
-    anchor = resolve_anchor(
-        load_travel_schedule(), at=now, home_address=home_address, home_metros=home_metro_names()
-    )
-    return anchor.address
+    return resolve_anchor(
+        load_travel_schedule(),
+        at=now,
+        home_address=home_address,
+        home_airports=home_airports(),
+        transports=transports,
+    ).address

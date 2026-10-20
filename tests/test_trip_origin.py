@@ -5,10 +5,10 @@ Locks the anchor-resolution contract:
   - `load_travel_schedule` is a tolerant non-owner reader: missing /
     corrupt / non-UTF-8 / non-list-root / forward-incompatible files all
     resolve to None (static-home behavior), never an exception
-  - `resolve_anchor` rules: off-trip → home; on-trip → latest Lodging
-    event (check-in OR check-out) within the trip span at or before the
-    anchor time; pre-first-lodging → the Trip's own location; nothing →
-    unresolved (address None). Home-metro trips without lodging use home
+  - `resolve_anchor` is the itinerary's position (`itinerary.py`): a covering
+    stay → that lodging; no trip, a trip not yet begun, or a period at a home
+    airport → home; otherwise the lodging last checked out of on the trip, the
+    trip's location, or unresolved (address None)
   - the live #122 case: mid-gap between check-out and next check-in the
     prior stay's lodging wins
   - `resolve_effective_home` is the I/O convenience over both
@@ -38,7 +38,6 @@ from trip_origin import (  # noqa: E402
     flight_summaries,
     flight_windows,
     load_travel_schedule,
-    opened_from_home,
     resolve_anchor,
     resolve_effective_home,
 )
@@ -317,13 +316,9 @@ def test_outbound_departure_anchors_home_not_destination():
 
 def test_date_only_flight_is_not_read_as_a_midnight_departure():
     """A date-only `Flight` start (`YYYY-MM-DD`) carries no departure time. Read
-    as midnight it would falsely mark the trip as already departed — so an anchor
-    the day BEFORE the flight date (00:00Z of the flight day > the anchor) would
-    spuriously flip to home. Timed-only (mirroring flight_windows) ignores the
-    date-only flight, leaving the trip with no known departure, so the pre-lodging
-    anchor stays the trip location as the flightless contract prescribes. The
-    query sits before the would-be midnight so it discriminates the fix from the
-    midnight-parse bug."""
+    as midnight it would mark the trip as begun at 00:00Z of the flight day, so
+    an instant that morning would read as away. Timed-only ignores it: nothing
+    timed is booked, the trip has not begun, and he is home (#335)."""
     schedule = [
         _record(
             type="Trip",
@@ -340,15 +335,15 @@ def test_date_only_flight_is_not_read_as_a_midnight_departure():
             location="Nashville International Airport",
         ),
     ]
-    anchor = resolve_anchor(schedule, at=_at("2025-08-16T10:00:00Z"), home_address=HOME)
-    assert anchor.address == "San Francisco, CA"
-    assert anchor.source == "trip_location"
+    anchor = resolve_anchor(schedule, at=_at("2025-08-17T10:00:00Z"), home_address=HOME)
+    assert anchor.address == HOME
+    assert anchor.source == "home"
 
 
-def test_flightless_trip_keeps_pre_departure_trip_location():
-    """A trip with no timed flight in the feed has nothing marking when the
-    operator left home, so the pre-lodging anchor stays the trip location — the
-    gate only fires when a first-flight departure is known."""
+def test_a_trip_with_nothing_booked_is_home():
+    """No transport and no lodging: nothing says he left. The old ladder read
+    the trip's city here, which is how a local placeholder drew drives from a
+    metro centroid (#314) and a far-off one from a city he never reached."""
     schedule = [
         _record(
             type="Trip",
@@ -359,8 +354,8 @@ def test_flightless_trip_keeps_pre_departure_trip_location():
         ),
     ]
     anchor = resolve_anchor(schedule, at=_at("2025-08-16T02:00:00Z"), home_address=HOME)
-    assert anchor.address == "Asheville, NC"
-    assert anchor.source == "trip_location"
+    assert anchor.address == HOME
+    assert anchor.source == "home"
 
 
 def test_off_trip_none_home_is_none_with_home_source():
@@ -654,8 +649,9 @@ def test_a_blank_location_checkin_does_not_begin_the_trip():
     assert anchor.source == "trip_location"
 
 
-def test_a_checkout_record_does_not_begin_the_trip():
-    """Both sides of a stay are `Lodging`; only the check-in marks arrival."""
+def test_a_stay_known_only_by_its_checkout_runs_from_the_trips_start():
+    """The refresh drops a stay's check-in once the stay is under way (#41), so
+    a lone check-out is a stay in progress: it covers the trip up to check-out."""
     schedule = [
         _record(
             type="Trip",
@@ -672,10 +668,8 @@ def test_a_checkout_record_does_not_begin_the_trip():
             location="611 Historic Nature Trail Gatlinburg TN",
         ),
     ]
-    # With only a check-out there is no begin instant, so the gate cannot fire
-    # and the pre-existing flightless contract (trip location) stands.
-    anchor = resolve_anchor(schedule, at=_at("2025-08-14T12:00:00Z"), home_address=HOME)
-    assert anchor.source == "trip_location"
+    during = resolve_anchor(schedule, at=_at("2025-08-14T12:00:00Z"), home_address=HOME)
+    assert during.address == "611 Historic Nature Trail Gatlinburg TN"
 
 
 def test_a_date_only_checkin_does_not_gate_the_trip_to_home():
@@ -691,16 +685,92 @@ def test_a_date_only_checkin_does_not_gate_the_trip_to_home():
 
 
 # ---------------------------------------------------------------------------
-# opened_from_home — "did the JOURNEY leave home", not "is he in the house"
+# Coming home — the position after a landing (#235, #335)
 # ---------------------------------------------------------------------------
+
+BNA = frozenset({"BNA"})
+
+
+def _round_trip_schedule() -> list[dict]:
+    """BNA → JFK and back, with a hotel in New York."""
+    return [
+        _record(
+            type="Trip",
+            summary="New York 2025",
+            start="2025-09-10",
+            end="2025-09-13",
+            location="New York, NY",
+        ),
+        _record(
+            type="Flight",
+            summary="DL100 BNA to JFK",
+            start="2025-09-10T14:00:00Z",
+            end="2025-09-10T16:30:00Z",
+        ),
+        _record(
+            type="Lodging",
+            summary="Check-in: Hotel Manhattan",
+            start="2025-09-10T19:00:00Z",
+            end="2025-09-10T20:00:00Z",
+            location="1 Broadway, New York",
+        ),
+        _record(
+            type="Lodging",
+            summary="Check-out: Hotel Manhattan",
+            start="2025-09-13T15:00:00Z",
+            end="2025-09-13T16:00:00Z",
+            location="1 Broadway, New York",
+        ),
+        _record(
+            type="Flight",
+            summary="DL101 JFK to BNA",
+            start="2025-09-13T18:00:00Z",
+            end="2025-09-13T20:30:00Z",
+        ),
+    ]
+
+
+def test_landing_back_at_the_home_airport_is_home():
+    """The trip's span still covers the return day; the home airport says he is
+    back. The drive off that landing goes to the house."""
+    anchor = resolve_anchor(
+        _round_trip_schedule(),
+        at=_at("2025-09-13T21:00:00Z"),
+        home_address=HOME,
+        home_airports=BNA,
+    )
+    assert (anchor.address, anchor.source) == (HOME, "home")
+
+
+def test_between_checkout_and_the_flight_home_the_hotel_is_the_anchor():
+    anchor = resolve_anchor(
+        _round_trip_schedule(),
+        at=_at("2025-09-13T16:30:00Z"),
+        home_address=HOME,
+        home_airports=BNA,
+    )
+    assert anchor.address == "1 Broadway, New York"
+
+
+def test_a_journey_staged_at_an_airport_hotel_comes_home_to_the_house():
+    """He slept at the airport hotel before flying out; the hotel belongs to
+    the night before the flight, so the landing home goes to the house (#235)."""
+    schedule = _airport_hotel_schedule() + [
+        _record(
+            type="Flight",
+            summary="BA200 LHR to BNA",
+            start="2025-09-05T15:00:00Z",
+            end="2025-09-05T21:00:00Z",
+        )
+    ]
+    anchor = resolve_anchor(
+        schedule, at=_at("2025-09-05T22:00:00Z"), home_address=HOME, home_airports=BNA
+    )
+    assert (anchor.address, anchor.source) == (HOME, "home")
 
 
 def _mid_trip_round_trip_schedule() -> list[dict]:
-    """A long stay abroad with a round trip flown out of the destination.
-
-    The Athens hop returns to the Tel Aviv hotel, not across an ocean — the case
-    that keeps `opened_from_home` from simply answering yes to every round trip.
-    """
+    """A long stay abroad with a round trip flown out of the destination."""
     return [
         _record(
             type="Trip",
@@ -714,7 +784,6 @@ def _mid_trip_round_trip_schedule() -> list[dict]:
             summary="BNA to TLV",
             start="2025-08-01T12:00:00Z",
             end="2025-08-02T08:00:00Z",
-            location="Nashville International Airport",
         ),
         _record(
             type="Lodging",
@@ -728,61 +797,50 @@ def _mid_trip_round_trip_schedule() -> list[dict]:
             summary="TLV to ATH",
             start="2025-08-05T09:00:00Z",
             end="2025-08-05T11:00:00Z",
-            location="Ben Gurion Airport",
+        ),
+        _record(
+            type="Flight",
+            summary="ATH to TLV",
+            start="2025-08-07T09:00:00Z",
+            end="2025-08-07T11:00:00Z",
         ),
     ]
 
 
-def test_a_journey_leaving_the_house_opened_from_home():
-    assert opened_from_home(_uk_trip_schedule(), at=_at("2025-06-26T17:00:00Z"), home_address=HOME)
-
-
-def test_a_journey_staged_at_an_airport_hotel_still_opened_from_home():
-    """The whole point: he is at a hotel, but he got there FROM the house, so
-    the round trip still closes at the house. The old proxy said no here and
-    routed the drive home to the hotel (#235)."""
-    assert opened_from_home(
-        _airport_hotel_schedule(), at=_at("2025-09-02T09:00:00Z"), home_address=HOME
+def test_a_round_trip_flown_mid_stay_returns_to_the_stays_hotel():
+    """Landing back in Tel Aviv is not landing home: the drive goes to the
+    hotel, not to Tennessee."""
+    anchor = resolve_anchor(
+        _mid_trip_round_trip_schedule(),
+        at=_at("2025-08-07T12:00:00Z"),
+        home_address=HOME,
+        home_airports=BNA,
     )
+    assert anchor.address == "Rothschild Blvd, Tel Aviv"
 
 
-def test_a_round_trip_flown_mid_stay_did_not_open_from_home():
-    """Its departure is not the trip's first, so it returns to the Tel Aviv
-    hotel. Answering yes here would drive the operator to Tennessee."""
-    assert not opened_from_home(
-        _mid_trip_round_trip_schedule(), at=_at("2025-08-05T07:00:00Z"), home_address=HOME
+def test_the_outbound_of_that_same_trip_leaves_from_home():
+    anchor = resolve_anchor(
+        _mid_trip_round_trip_schedule(),
+        at=_at("2025-08-01T10:00:00Z"),
+        home_address=HOME,
+        home_airports=BNA,
     )
+    assert (anchor.address, anchor.source) == (HOME, "home")
 
 
-def test_the_outbound_of_that_same_trip_did_open_from_home():
-    """The discriminator is which departure, not which trip — the BNA leg of the
-    very schedule above still opens at home."""
-    assert opened_from_home(
-        _mid_trip_round_trip_schedule(), at=_at("2025-08-01T10:00:00Z"), home_address=HOME
+def test_no_home_address_configured_is_home_with_no_address():
+    anchor = resolve_anchor(
+        _round_trip_schedule(),
+        at=_at("2025-09-13T21:00:00Z"),
+        home_address=None,
+        home_airports=BNA,
     )
-
-
-def test_no_home_address_configured_is_never_a_homecoming():
-    """There is nothing to route the drive home to."""
-    assert not opened_from_home(
-        _uk_trip_schedule(), at=_at("2025-06-26T17:00:00Z"), home_address=None
-    )
-
-
-def test_an_off_trip_departure_opened_from_home():
-    """A flight TripIt never ingested has no Trip wrapper; the planned position
-    is the house, which is answer enough."""
-    assert opened_from_home([], at=_at("2025-06-26T17:00:00Z"), home_address=HOME)
+    assert (anchor.address, anchor.source) == (None, "home")
 
 
 def _drove_there_then_local_round_trip_schedule() -> list[dict]:
-    """Drove to Gatlinburg, checked in, then flies a local round trip days later.
-
-    Its first transport departure IS that round trip, so "is this the trip's
-    first departure" alone would call it home-originating and route the drive
-    off the final landing to Tennessee. The check-in's lead time is what says
-    otherwise: he has been living at the destination for days.
-    """
+    """Drove to Gatlinburg, checked in, then flew a local round trip days later."""
     return [
         _record(
             type="Trip",
@@ -803,40 +861,45 @@ def _drove_there_then_local_round_trip_schedule() -> list[dict]:
             summary="TYS to ATL",
             start="2025-07-13T09:00:00Z",
             end="2025-07-13T10:00:00Z",
-            location="McGhee Tyson Airport",
         ),
         _record(
             type="Flight",
             summary="ATL to TYS",
             start="2025-07-15T18:00:00Z",
             end="2025-07-15T19:00:00Z",
-            location="Hartsfield-Jackson",
         ),
     ]
 
 
-def test_a_trip_driven_to_then_flown_out_of_did_not_open_from_home():
-    """He drove there days earlier; the round trip returns to the hotel, not to
-    Tennessee. Both this helper and the proxy it replaced answered yes here —
-    the lead-time separator is what fixes it."""
-    assert not opened_from_home(
+def test_a_trip_driven_to_then_flown_out_of_returns_to_the_hotel():
+    """TYS is not home: the landing goes back to the Gatlinburg hotel."""
+    anchor = resolve_anchor(
         _drove_there_then_local_round_trip_schedule(),
-        at=_at("2025-07-13T08:00:00Z"),
+        at=_at("2025-07-15T19:30:00Z"),
         home_address=HOME,
+        home_airports=BNA,
     )
+    assert anchor.address == "611 Historic Nature Trail Gatlinburg TN"
 
 
-def test_the_staging_separator_is_the_check_ins_lead_time():
-    """Same schedule, check-in pulled to the night before the flight: now it is
-    an overnight stay he drove to from the house, so the trip opens at home."""
-    schedule = _drove_there_then_local_round_trip_schedule()
-    schedule[1]["start"] = "2025-07-12T22:00:00Z"
-    schedule[1]["end"] = "2025-07-12T23:00:00Z"
-    assert opened_from_home(schedule, at=_at("2025-07-13T08:00:00Z"), home_address=HOME)
+def test_before_driving_there_he_is_home():
+    anchor = resolve_anchor(
+        _drove_there_then_local_round_trip_schedule(),
+        at=_at("2025-07-10T12:00:00Z"),
+        home_address=HOME,
+        home_airports=BNA,
+    )
+    assert (anchor.address, anchor.source) == (HOME, "home")
 
 
-@pytest.mark.parametrize("location", ["Nashville, TN", "  NASHVILLE,   TN  "])
-def test_home_metro_without_lodging_anchors_at_home(location):
+# ---------------------------------------------------------------------------
+# Placeholder trips — nothing booked is home (#314)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("location", ["Nashville, TN", "Franklin, TN", "Asheville, NC"])
+def test_a_placeholder_trip_without_lodging_is_home(location):
+    """Wherever the placeholder points, nothing booked means nothing moved him."""
     schedule = [
         _record(
             type="Trip",
@@ -846,35 +909,11 @@ def test_home_metro_without_lodging_anchors_at_home(location):
             location=location,
         )
     ]
-    anchor = resolve_anchor(
-        schedule,
-        at=_at("2025-07-07T18:00:00Z"),
-        home_address=HOME,
-        home_metros=frozenset({"nashville, tn"}),
-    )
-    assert anchor.address == HOME
-    assert anchor.source == "home"
+    anchor = resolve_anchor(schedule, at=_at("2025-07-07T18:00:00Z"), home_address=HOME)
+    assert (anchor.address, anchor.source) == (HOME, "home")
 
 
-@pytest.mark.parametrize("metros", [frozenset(), frozenset({"franklin, tn"})])
-def test_trip_without_matching_home_metro_keeps_trip_location(metros):
-    schedule = [
-        _record(
-            type="Trip",
-            summary="Trip",
-            start="2025-07-07",
-            end="2025-07-07",
-            location="Nashville, TN",
-        )
-    ]
-    anchor = resolve_anchor(
-        schedule, at=_at("2025-07-07T18:00:00Z"), home_address=HOME, home_metros=metros
-    )
-    assert anchor.address == "Nashville, TN"
-    assert anchor.source == "trip_location"
-
-
-def test_home_metro_with_lodging_keeps_hotel_anchor():
+def test_a_local_trip_with_lodging_anchors_at_the_hotel():
     schedule = [
         _record(
             type="Trip",
@@ -891,17 +930,11 @@ def test_home_metro_with_lodging_keeps_hotel_anchor():
             location="42 Example Ave",
         ),
     ]
-    anchor = resolve_anchor(
-        schedule,
-        at=_at("2025-07-07T18:00:00Z"),
-        home_address=HOME,
-        home_metros=frozenset({"nashville, tn"}),
-    )
-    assert anchor.address == "42 Example Ave"
-    assert anchor.source == "lodging"
+    anchor = resolve_anchor(schedule, at=_at("2025-07-07T18:00:00Z"), home_address=HOME)
+    assert (anchor.address, anchor.source) == ("42 Example Ave", "lodging")
 
 
-def test_home_metro_without_home_address_does_not_guess_centroid():
+def test_a_placeholder_without_a_home_address_does_not_guess_a_centroid():
     schedule = [
         _record(
             type="Trip",
@@ -911,17 +944,12 @@ def test_home_metro_without_home_address_does_not_guess_centroid():
             location="Nashville, TN",
         )
     ]
-    anchor = resolve_anchor(
-        schedule,
-        at=_at("2025-07-07T18:00:00Z"),
-        home_address=None,
-        home_metros=frozenset({"nashville, tn"}),
-    )
-    assert anchor.address is None
-    assert anchor.source == "home"
+    anchor = resolve_anchor(schedule, at=_at("2025-07-07T18:00:00Z"), home_address=None)
+    assert (anchor.address, anchor.source) == (None, "home")
 
 
-def test_home_metro_with_future_addressless_lodging_is_not_a_placeholder():
+def test_before_a_trips_first_stay_he_is_home():
+    """An address-less check-in tomorrow has not begun the trip today."""
     schedule = [
         _record(
             type="Trip",
@@ -937,17 +965,11 @@ def test_home_metro_with_future_addressless_lodging_is_not_a_placeholder():
             end="2025-07-08T15:00:00Z",
         ),
     ]
-    anchor = resolve_anchor(
-        schedule,
-        at=_at("2025-07-07T18:00:00Z"),
-        home_address=HOME,
-        home_metros=frozenset({"nashville, tn"}),
-    )
-    assert anchor.address == "Nashville, TN"
-    assert anchor.source == "trip_location"
+    anchor = resolve_anchor(schedule, at=_at("2025-07-07T18:00:00Z"), home_address=HOME)
+    assert (anchor.address, anchor.source) == (HOME, "home")
 
 
-def test_home_metro_ignores_lodging_from_prior_trip():
+def test_a_prior_trips_checkout_does_not_anchor_a_placeholder():
     schedule = [
         _record(
             type="Trip",
@@ -964,39 +986,24 @@ def test_home_metro_ignores_lodging_from_prior_trip():
             location="42 Example Ave",
         ),
     ]
-    anchor = resolve_anchor(
-        schedule,
-        at=_at("2025-07-07T18:00:00Z"),
-        home_address=HOME,
-        home_metros=frozenset({"nashville, tn"}),
-    )
-    assert anchor.address == HOME
-    assert anchor.source == "home"
+    anchor = resolve_anchor(schedule, at=_at("2025-07-07T18:00:00Z"), home_address=HOME)
+    assert (anchor.address, anchor.source) == (HOME, "home")
 
 
-def test_effective_home_reads_profile_metro_for_local_placeholder(tmp_path, monkeypatch):
+def test_effective_home_reads_the_profiles_home_airport(tmp_path, monkeypatch):
+    """`resolve_effective_home` judges the return landing by the profile's
+    `home_airport`: back at BNA is the house, not the New York hotel."""
     import addresses
 
     profile = tmp_path / "user_profile.md"
-    profile.write_text("## Addresses\n- schema_version: 2\n- home_metro: Nashville, TN\n")
+    profile.write_text("## Addresses\n- schema_version: 2\n- home_airport: BNA\n")
     schedule = tmp_path / "travel-schedule.json"
-    schedule.write_text(
-        json.dumps(
-            [
-                _record(
-                    type="Trip",
-                    summary="Local placeholder",
-                    start="2025-07-07",
-                    end="2025-07-07",
-                    location="Nashville, TN",
-                )
-            ]
-        )
-    )
+    schedule.write_text(json.dumps(_round_trip_schedule()))
     monkeypatch.setattr(addresses, "profile_path", lambda: profile)
     monkeypatch.setattr(trip_origin, "SCHEDULE_PATH", str(schedule))
 
-    assert resolve_effective_home(HOME, now=_at("2025-07-07T18:00:00Z")) == HOME
+    assert resolve_effective_home(HOME, now=_at("2025-09-13T21:00:00Z")) == HOME
+    assert resolve_effective_home(HOME, now=_at("2025-09-11T12:00:00Z")) == "1 Broadway, New York"
 
 
 # --- #323: a nominal check-in before the inbound flight --------------------
