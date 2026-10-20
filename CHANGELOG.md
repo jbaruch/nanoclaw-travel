@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.154 — 2026-10-20
+
 ### travel-core — one itinerary timeline replaces the position ladder (#335)
 
 A shadow sweep on 2026-10-19 skipped every home↔BNA drive of the November trips as 13- to 35-hour "drives": the engine placed the operator at his destination on the day he flew out and on the day he flew back. Those trips' flights lived in byAir alone, and `trip_origin` read the TripIt schedule alone, so nothing told it he had left. Behind that sat a ladder of rules each added for one live case: a begin gate keyed on the first transport or check-in (#233, #235), a staging-stay lead time, an inbound window and a connection window for hotel changes (#323, #331), a home-metro rule for placeholder trips (#314), and an `opened_from_home` question plus a TripIt-alias grouping pass to decide homecomings (#235, #219). A check-in stamped two hours before the flight to it (the Thanksgiving Airbnb) still read as arrived.
