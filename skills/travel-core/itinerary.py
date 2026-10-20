@@ -480,11 +480,8 @@ class Itinerary:
         trip = _trip_on(self._trips, at.date())
         for i in range(index, -1, -1):
             period = self._periods[i]
-            if i < index:
-                if trip is None or (period.end is not None and period.end.date() < trip.start):
-                    return None
-                if self._is_home(period, period.end or at):
-                    return None
+            if i < index and (trip is None or self._is_home(period, period.end or at)):
+                return None
             left = [
                 s
                 for s in period.stays

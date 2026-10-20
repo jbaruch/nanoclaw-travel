@@ -225,3 +225,80 @@ def test_a_stale_trip_wrapper_does_not_keep_him_home():
     assert itinerary.position_at(_at("2025-11-08T19:00:00Z")).source == "home"
     assert itinerary.position_at(_at("2025-11-10T18:00:00Z")).address == "Salt Lake City, UT"
     assert itinerary.position_at(_at("2025-11-13T04:40:00Z")).source == "home"
+
+
+def _check_in_only_trip(check_in: str) -> list[dict]:
+    """San Antonio with a check-in the feed never paired with a check-out."""
+    return [
+        THANKSGIVING[0],
+        {
+            "type": "Lodging",
+            "summary": "Check-in: Airbnb - Jennifer",
+            "start": check_in,
+            "location": AIRBNB,
+        },
+        THANKSGIVING[2],
+        THANKSGIVING[4],
+    ]
+
+
+def test_a_check_in_only_stay_hours_before_its_flight_waits_for_the_landing():
+    """The 15:00 check-in two hours before the 17:00 flight to it: before the
+    flight he is still home, after it he is at the Airbnb."""
+    itinerary = Itinerary(
+        _check_in_only_trip("2025-11-25T21:00:00Z"), home_address=HOME, home_airports=BNA
+    )
+    assert itinerary.position_at(_at("2025-11-25T21:20:00Z")).source == "home"
+    assert itinerary.position_at(_at("2025-11-26T02:00:00Z")).address == AIRBNB
+
+
+def test_a_check_in_only_stay_slept_in_before_the_flight_is_the_hotel():
+    """Checked in the evening before an early flight: that night he is there."""
+    schedule = _check_in_only_trip("2025-11-25T02:00:00Z")
+    position = Itinerary(schedule, home_address=HOME, home_airports=BNA).position_at(
+        _at("2025-11-25T12:00:00Z")
+    )
+    assert position.address == AIRBNB
+
+
+CHICAGO_TWICE = [
+    {
+        "type": "Trip",
+        "summary": "Chicago twice 2025",
+        "start": "2025-09-01",
+        "end": "2025-09-10",
+        "location": "Chicago, IL",
+    },
+    {
+        "type": "Lodging",
+        "summary": "Check-out: Loop Hotel",
+        "start": "2025-09-03T15:00:00Z",
+        "location": "1 Loop Pl, Chicago",
+    },
+]
+CHICAGO_FLIGHTS = [
+    _transport("2025-09-01T14:00:00Z", "2025-09-01T15:30:00Z", "BNA", "ORD"),
+    _transport("2025-09-03T18:00:00Z", "2025-09-03T19:30:00Z", "ORD", "BNA"),
+    _transport("2025-09-05T14:00:00Z", "2025-09-05T15:30:00Z", "BNA", "ORD"),
+]
+
+
+def _chicago() -> Itinerary:
+    return Itinerary(
+        CHICAGO_TWICE, home_address=HOME, home_airports=BNA, transports=CHICAGO_FLIGHTS
+    )
+
+
+def test_a_check_out_only_stay_begins_when_he_lands():
+    """The stay belongs to the period he checks out of, so the morning of the
+    flight out is still home."""
+    itinerary = _chicago()
+    assert itinerary.position_at(_at("2025-09-01T10:00:00Z")).source == "home"
+    assert itinerary.position_at(_at("2025-09-02T12:00:00Z")).address == "1 Loop Pl, Chicago"
+
+
+def test_a_hotel_left_before_a_spell_at_home_does_not_anchor_the_next_visit():
+    """He flew home between two Chicago visits: the second, with nothing booked
+    yet, is the trip's city, not the hotel of the first."""
+    position = _chicago().position_at(_at("2025-09-06T12:00:00Z"))
+    assert (position.address, position.source) == ("Chicago, IL", "trip_location")
