@@ -779,3 +779,29 @@ def test_a_cancellation_without_an_arrival_takes_tripits_copy_with_it():
         merge_flights([cancelled]), schedule, home_address=HOME, home_airports=frozenset({"BNA"})
     )
     assert itinerary.position_at(datetime(2020, 7, 12, 17, 0, tzinfo=UTC)).source == "home"
+
+
+def test_an_unreadable_byair_flight_still_moves_him():
+    """#337 review: a byAir flight whose airports did not read is placed on the
+    timeline at an unknown airport, so its trip begins and he is not home."""
+    from engine import itinerary_for
+    from itinerary import Transport
+
+    trip = [
+        {
+            "type": "Trip",
+            "summary": "Somewhere",
+            "start": "2020-07-12",
+            "end": "2020-07-14",
+            "location": "Denver, CO",
+        }
+    ]
+    unplaced = (
+        Transport(
+            datetime(2020, 7, 12, 14, 0, tzinfo=UTC), datetime(2020, 7, 12, 16, 0, tzinfo=UTC)
+        ),
+    )
+    itinerary = itinerary_for(
+        [], trip, home_address=HOME, home_airports=frozenset({"BNA"}), unplaced=unplaced
+    )
+    assert itinerary.position_at(datetime(2020, 7, 12, 18, 0, tzinfo=UTC)).address == "Denver, CO"
