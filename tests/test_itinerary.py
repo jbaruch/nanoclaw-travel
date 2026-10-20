@@ -690,3 +690,29 @@ def test_a_known_away_landing_stays_away_after_a_check_out():
     flights = [_transport("2025-08-17T14:00:00Z", "2025-08-17T19:00:00Z", "BNA", "SFO")]
     itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA, transports=flights)
     assert itinerary.position_at(_at("2025-08-19T17:00:00Z")).source != "home"
+
+
+def test_a_routeless_copy_never_replaces_tripits_known_route():
+    """#337 review: an unreadable byAir flight home with TripIt's exact times
+    must not drop TripIt's BNA destination; landing there is home."""
+    trip = [
+        {
+            "type": "Trip",
+            "summary": "NY",
+            "start": "2025-11-02",
+            "end": "2025-11-05",
+            "location": "New York, NY",
+        }
+    ]
+    tripit = {
+        "type": "Flight",
+        "summary": "DL1 LGA to BNA",
+        "start": "2025-11-04T22:00:00Z",
+        "end": "2025-11-05T00:29:00Z",
+    }
+    outbound = _transport("2025-11-02T18:40:00Z", "2025-11-02T21:05:00Z", "BNA", "LGA")
+    routeless = Transport(_at("2025-11-04T22:00:00Z"), _at("2025-11-05T00:29:00Z"))
+    itinerary = Itinerary(
+        trip + [tripit], home_address=HOME, home_airports=BNA, transports=[outbound, routeless]
+    )
+    assert itinerary.position_at(_at("2025-11-05T01:00:00Z")).source == "home"

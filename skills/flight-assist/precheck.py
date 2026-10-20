@@ -294,6 +294,7 @@ def _run_cycle(
         now_utc=now_utc,
         due=_due_ids(active_flight_ids, now_utc),
         polled=polled_ids,
+        removed=removed_upstream_ids,
     )
     # Which flights could spawn the zone reader this cycle: their deadline
     # carries the reader reserve until the reader has run (#312).
@@ -453,7 +454,8 @@ class _CycleOrigin:
     caller hands in. A recalled snapshot is a hint, never live state: every
     flight `due` this cycle and not yet `polled` by then (failed, deferred, or
     still ahead in the loop) counts on its booked times only. A flight not due
-    keeps the snapshot its cadence vouches for."""
+    keeps the snapshot its cadence vouches for. A flight byAir no longer tracks
+    (`removed`, a 404 this cycle) is left out altogether."""
 
     def __init__(
         self,
@@ -463,10 +465,12 @@ class _CycleOrigin:
         now_utc: datetime,
         due: set[int],
         polled: set[int],
+        removed: set[int] | frozenset[int] = frozenset(),
         read_state: Callable[[int], dict | None] = read_flight_state,
     ):
         self._home, self._ids, self._now = home_address, flight_ids, now_utc
         self._due, self._polled, self._read = due, polled, read_state
+        self._removed = removed
         self._resolved = False
         self._origin: str | None = None
 
@@ -475,7 +479,10 @@ class _CycleOrigin:
             fresh = fresh or {}
             unverified = self._due - self._polled - set(fresh)
             transports = byair_transports(
-                self._ids, read_state=self._read, fresh=fresh, unverified=unverified
+                [i for i in self._ids if i not in self._removed],
+                read_state=self._read,
+                fresh=fresh,
+                unverified=unverified,
             )
             home = resolve_effective_home(self._home, now=self._now, transports=transports)
             self._origin = _resolve_time_to_leave_origin(home_address=home, now_utc=self._now)

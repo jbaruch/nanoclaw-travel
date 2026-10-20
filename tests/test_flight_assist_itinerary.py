@@ -187,3 +187,26 @@ def test_a_flight_due_but_not_yet_polled_counts_on_its_booked_times(monkeypatch)
     origin({1: stored[1]["last_snapshot"]})
     by_origin = {t.origin: t.departs for t in seen}
     assert by_origin == {"BNA": _at("2025-11-02T20:00:00Z"), "LGA": _at("2025-11-04T22:00:00Z")}
+
+
+def test_a_flight_byair_no_longer_tracks_never_moves_the_origin(monkeypatch):
+    """#337 review: a 404 this cycle means its stored snapshot is known stale."""
+    seen = []
+    monkeypatch.setattr(
+        precheck, "resolve_effective_home", lambda a, *, now, transports: seen.extend(transports)
+    )
+    monkeypatch.setattr(
+        precheck, "_resolve_time_to_leave_origin", lambda *, home_address, now_utc: "x"
+    )
+    stored = {1: _record(), 2: _record(dep="LGA", arr="BNA")}
+    origin = precheck._CycleOrigin(
+        home_address="12 Example St",
+        flight_ids=[1, 2],
+        now_utc=_at("2025-11-02T12:00:00Z"),
+        due=set(),
+        polled=set(),
+        removed={1},
+        read_state=stored.get,
+    )
+    origin()
+    assert [t.origin for t in seen] == ["LGA"]

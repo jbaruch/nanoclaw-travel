@@ -217,12 +217,16 @@ def _same_journey(kept: Transport, other: Transport) -> bool:
     route both know matches within `_SAME_TRANSPORT` of the booked departures,
     and a diverted copy (no destination) matches on its origin alone; a train
     or any other copy with an unknown endpoint matches only an exact copy of
-    its times."""
+    its times that knows no more of the route than it does."""
     if kept.origin is not None and other.origin is not None and kept.origin != other.origin:
         return False
     if None in (kept.origin, kept.destination, other.origin, other.destination):
         if kept.status == DIVERTED and kept.origin is not None:
             return kept.origin == other.origin and _booked_close(kept, other)
+        if (kept.origin, kept.destination) != (other.origin, other.destination):
+            # One copy knows a route the other does not: keep both, so the
+            # known route is never lost to a copy that cannot name it.
+            return False
         return kept.departs == other.departs and kept.arrives == other.arrives
     if kept.destination != other.destination:
         return False
