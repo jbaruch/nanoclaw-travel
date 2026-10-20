@@ -665,3 +665,43 @@ def test_an_implausibly_long_airport_transfer_writes_no_block():
     )
     assert all(c.desired.kind != "airport_transfer" for c in result.plan.creates)
     assert any(r.startswith("transfer ") and "implausible 7.0 h" in r for r in result.skipped)
+
+
+def test_byair_only_trip_drives_from_and_to_home():
+    """#335: a trip whose flights only byAir tracks, with no lodging in the
+    schedule. The old position ladder never learned the operator had left and
+    put him in New York on the morning he flew out, skipping both home drives as
+    13-hour "drives". On the itinerary they plan from and to the house."""
+    flights = [
+        flight("BNA", "LGA", _dt(18, 40, day=2), _dt(21, 5, day=2), fid=1, trip_id=7),
+        flight("LGA", "BNA", _dt(22, 0, day=4), _dt(23, 59, day=4), fid=2, trip_id=8),
+    ]
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "DevCon",
+            "start": "2020-07-02",
+            "end": "2020-07-05",
+            "location": "New York, NY",
+        }
+    ]
+    result = build_reconcile_plan(
+        flights=flights,
+        airport_info=_us_info("BNA", "LGA"),
+        current_blocks=[],
+        route=const_route(45),
+        schedule=schedule,
+        home_address=HOME,
+        home_airports=frozenset({"BNA"}),
+        now=datetime(2020, 7, 1, tzinfo=UTC),
+    )
+    created = [c.desired for c in result.plan.creates]
+    to_bna = next(
+        d for d in created if d.kind == "airport_departure" and d.destination == "BNA airport"
+    )
+    from_bna = next(d for d in created if d.kind == "airport_arrival" and d.origin == "BNA airport")
+    from_lga = next(d for d in created if d.kind == "airport_arrival" and d.origin == "LGA airport")
+    assert to_bna.origin == HOME
+    assert (from_bna.destination, from_bna.summary) == (HOME, "Drive: BNA → home")
+    assert from_lga.destination == "New York, NY"
+    assert result.held == ()

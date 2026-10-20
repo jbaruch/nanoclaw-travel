@@ -1,6 +1,6 @@
 ---
 name: travel-core
-description: "Shared travel-domain library bundle for the nanoclaw-travel plugin. Hosts the cross-skill Python modules trip_origin (TripIt-over-home position/anchor resolution) and airport_lead (clearance / post-arrival buffer policy) so flight-assist and the drive engine import one source of truth instead of duplicating them. Not a user workflow — background code the other skills load at runtime; never invoke directly."
+description: "Shared travel-domain library bundle for the nanoclaw-travel plugin. Hosts the cross-skill Python modules itinerary (the operator's position timeline), trip_origin (its schedule-holding wrapper) and airport_lead (clearance / post-arrival buffer policy) so flight-assist and the drive engine import one source of truth instead of duplicating them. Not a user workflow — background code the other skills load at runtime; never invoke directly."
 user-invocable: false
 disable-model-invocation: true
 ---
@@ -13,7 +13,8 @@ It ships the travel-domain Python modules that more than one skill depends on, s
 
 ## Hosted modules
 
-- `trip_origin.py` — resolves the operator's planned position/anchor at a given instant (TripIt truth over the static home, #122). Public surface: `resolve_anchor`, `resolve_effective_home`, `load_travel_schedule`, and the flight-window / flight-summary helpers the meeting sweep uses. The resolution ladder itself lives in `trip_origin.py` and its tests — do not restate it here. Consumed by flight-assist (`precheck`) and the drive engine (`reconcile_sweep`).
+- `itinerary.py` — the operator's position at any instant, read off one timeline of transports and lodging stays (#335). Public surface: `Itinerary` (`position_at`), `Transport`, `Position`, `schedule_transports`, `parse_time`, `flight_route`. Its rules live in `itinerary.py` and its tests — do not restate them here. Consumed by the drive engine (`engine`, `position`, `reconcile_sweep`) and through `trip_origin`.
+- `trip_origin.py` — the itinerary for callers holding a TripIt schedule (#122). Public surface: `resolve_anchor`, `resolve_effective_home`, `home_airports`, `load_travel_schedule`, and the flight-window / flight-summary helpers the meeting sweep uses. Consumed by flight-assist (`precheck`) and the drive engine (`reconcile_sweep`).
 - `airport_lead.py` — the airport clearance / post-arrival buffer policy. Public surface: `resolve_departure_clearance_minutes`, `resolve_post_arrival_minutes`, `departure_class`, `arrival_class`. The classification rules and buffer values live in `airport_lead.py` and its tests. Consumed by flight-assist (`airport_drive_inputs`) and the drive engine.
 - `trip_key.py` — the canonical per-trip identifier. Public surface: `trip_key(summary, start)`. Joins `travel-db.json`'s trip slugs to the drive engine's per-trip drive-or-fly verdicts; a second implementation would decide whether a cross-skill read hits or silently misses. Consumed by check-travel-bookings (`build-travel-db`) and the drive engine (`lodging_source`).
 - `lodging.py` — the `Check-in:` / `Check-out:` discriminator for the two `Lodging` records TripIt writes per stay. Public surface: `lodging_role`, `hotel_name`, `CHECK_IN`, `CHECK_OUT`. Consumed by nightly-travel-sync (`refresh-travel-schedule`), check-travel-bookings, and the drive engine.
@@ -40,6 +41,6 @@ from airport_lead import resolve_departure_clearance_minutes  # noqa: E402
 ```
 
 - These modules are pure library code (no I/O beyond `trip_origin`'s schedule-file read and `operator_tz`'s reader spawn). Their behavior and tests are the source of truth; do not restate their thresholds or ladders in consumer skills — reference the module.
-- Tests live in `tests/test_trip_origin.py`, `tests/test_airport_lead.py`, `tests/test_trip_key.py`, `tests/test_lodging.py`, `tests/test_addresses.py`, and `tests/test_operator_tz.py`.
+- Tests live in `tests/test_itinerary.py`, `tests/test_trip_origin.py`, `tests/test_airport_lead.py`, `tests/test_trip_key.py`, `tests/test_lodging.py`, `tests/test_addresses.py`, and `tests/test_operator_tz.py`.
 
 A script one directory deeper (`skills/<name>/scripts/*.py`) walks up one more level for the dev-clone fallback: `Path(__file__).resolve().parent.parent` as `_BUNDLE_DIR`.
