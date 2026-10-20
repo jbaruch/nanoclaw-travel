@@ -55,16 +55,6 @@ if not _TRAVEL_CORE.is_dir():
     _TRAVEL_CORE = _BUNDLE_DIR.parent / "travel-core"
 sys.path.insert(0, str(_TRAVEL_CORE))
 
-# The drive engine owns the airport-facts cache (byAir airport id → IATA) this
-# precheck reads, through its owner API, to place byAir's flights on the
-# itinerary (#335). Appended, never prepended: this bundle's own modules win.
-_DRIVE_ENGINE = Path("/home/node/.claude/skills/tessl__drive-engine")
-if not _DRIVE_ENGINE.is_dir():
-    _DRIVE_ENGINE = _BUNDLE_DIR.parent / "drive-engine"
-if str(_DRIVE_ENGINE) not in sys.path:
-    sys.path.append(str(_DRIVE_ENGINE))
-
-from airport_facts_cache import load_static_facts  # noqa: E402
 from boarding_lead import resolve_boarding_lead_minutes  # noqa: E402
 from byair_client import ByAirClient, ByAirError  # noqa: E402
 from connection_risk import (  # noqa: E402
@@ -446,15 +436,19 @@ def byair_transports(
     flight_ids: list[int],
     *,
     read_state: Callable[[int], dict | None] = read_flight_state,
-    load_facts: Callable[[], dict] = load_static_facts,
 ) -> list[Transport]:
-    """byAir's tracked flights as itinerary transports (#335).
+    """byAir's tracked flights as itinerary transports (#335), from this skill's
+    own byAir poll (`last_snapshot`): its airport codes, and its live times
+    over the scheduled ones.
 
-    A flight state record carries airport ids; the drive engine's airport-facts
-    cache maps them to IATA codes. A flight whose record cannot be read, whose
-    times do not parse, or whose airports the cache has not seen yet is left
-    out: the itinerary then knows less, never something wrong."""
-    facts = load_facts()
+    A cancelled flight moves nobody and is left out. A diverted one keeps its
+    times with no destination airport: he landed somewhere, not where it was
+    going, so the itinerary judges that landing by the trip rather than by an
+    airport. A flight never polled yet has no snapshot and is left out: the
+    poll reaches every tracked flight before it departs, so that flight is
+    still ahead, and the position now depends only on flights already flown.
+    A record that cannot be read, or whose times do not parse, is left out
+    too; the poll loop reports it at its own turn."""
     transports: list[Transport] = []
     for flight_id in flight_ids:
         try:
@@ -466,15 +460,22 @@ def byair_transports(
             continue
         if record is None:
             continue
-        departs = parse_time(record.get("scheduled_dep_time"))
-        arrives = parse_time(record.get("scheduled_arr_time"))
-        origin = facts.get(record.get("dep_airport_id"))
-        destination = facts.get(record.get("arr_airport_id"))
+        snapshot = record.get("last_snapshot")
+        if not isinstance(snapshot, dict):
+            continue
+        status = snapshot.get("computed_status")
+        if status == "cancelled":
+            continue
+        origin, destination = snapshot.get("dep_airport_code"), snapshot.get("arr_airport_code")
+        if not isinstance(origin, str) or not isinstance(destination, str):
+            continue
+        departs = parse_time(snapshot.get("dep_time") or record.get("scheduled_dep_time"))
+        arrives = parse_time(snapshot.get("arr_time") or record.get("scheduled_arr_time"))
         if departs is None or arrives is None or arrives <= departs:
             continue
-        if origin is None or destination is None:
-            continue
-        transports.append(Transport(departs, arrives, origin.iata, destination.iata))
+        transports.append(
+            Transport(departs, arrives, origin, None if status == "diverted" else destination)
+        )
     return transports
 
 

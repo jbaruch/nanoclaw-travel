@@ -12,7 +12,8 @@ The timeline is built from what moves him and where he sleeps:
   period at the first transport's origin). Transports come from the TripIt
   schedule and from any caller that knows more (the drive engine passes byAir's
   flights): the November trips' flights lived in byAir alone, so a schedule-only
-  model never learned the operator had left home (#335).
+  model never learned the operator had left home (#335). A journey both carry
+  keeps the caller's copy, which carries byAir's live times.
 - **Lodging stays** (check-in to check-out, paired by hotel) are nominal: TripIt
   stamps a standard check-in hour whether or not he can be there yet. Each stay
   belongs to the ground period it overlaps most, and counts only inside it. A
@@ -183,10 +184,12 @@ def schedule_transports(schedule: list[dict] | None) -> list[Transport]:
     return out
 
 
-def _dedupe(transports: list[Transport]) -> list[Transport]:
-    """One transport per physical journey, ordered by departure."""
+def _dedupe(preferred: list[Transport], rest: list[Transport]) -> list[Transport]:
+    """One transport per physical journey, ordered by departure. A journey
+    both lists carry keeps its `preferred` copy: the caller's byAir flights
+    carry live times, the schedule's copy only the booked ones."""
     kept: list[Transport] = []
-    for transport in sorted(transports, key=lambda t: (t.departs, t.arrives)):
+    for transport in sorted(preferred, key=_by_departure) + sorted(rest, key=_by_departure):
         if any(
             other.origin == transport.origin
             and other.destination == transport.destination
@@ -195,7 +198,11 @@ def _dedupe(transports: list[Transport]) -> list[Transport]:
         ):
             continue
         kept.append(transport)
-    return kept
+    return sorted(kept, key=_by_departure)
+
+
+def _by_departure(transport: Transport) -> tuple[datetime, datetime]:
+    return (transport.departs, transport.arrives)
 
 
 def _trips(schedule: list[dict]) -> list[_Trip]:
@@ -384,7 +391,8 @@ class Itinerary:
     """The operator's timeline. Build once per run; ask `position_at` per leg.
 
     `schedule` is the TripIt record list (None for none), `transports` any
-    flights or trains the caller knows beyond it, `home_address` the static
+    flights or trains the caller knows beyond it (preferred over the
+    schedule's copy of the same journey), `home_address` the static
     residence (None when unconfigured: a home position then has no address),
     `home_airports` the IATA codes of the airports home is reached by.
     """
@@ -401,7 +409,7 @@ class Itinerary:
         self._home = home_address
         self._home_airports = frozenset(code.strip().upper() for code in home_airports if code)
         self._trips = _trips(records)
-        self._transports = _dedupe(list(transports) + schedule_transports(records))
+        self._transports = _dedupe(list(transports), schedule_transports(records))
         self._periods = _periods(self._transports, _stays(records, self._trips))
 
     def _period_index(self, at: datetime) -> int:

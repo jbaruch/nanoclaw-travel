@@ -324,3 +324,12 @@ def test_without_a_trip_an_earlier_hotel_does_not_anchor_the_next_city():
         schedule, home_address=HOME, home_airports=BNA, transports=flights
     ).position_at(_at("2025-09-04T12:00:00Z"))
     assert (position.address, position.source) == (None, "unresolved")
+
+
+def test_a_delayed_byair_copy_wins_over_the_schedules_booked_times():
+    """byAir governs flight status: WN716 left three hours late, so an hour
+    after its booked departure he is still home, not in the air."""
+    delayed = [_transport("2025-11-26T02:00:00Z", "2025-11-26T04:25:00Z", "BNA", "SAT")]
+    itinerary = Itinerary(THANKSGIVING, home_address=HOME, home_airports=BNA, transports=delayed)
+    assert itinerary.position_at(_at("2025-11-26T00:00:00Z")).source == "home"
+    assert itinerary.position_at(_at("2025-11-26T05:00:00Z")).address == AIRBNB
