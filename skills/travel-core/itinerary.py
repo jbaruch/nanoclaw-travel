@@ -211,15 +211,16 @@ def _dedupe(preferred: list[Transport], rest: list[Transport]) -> list[Transport
 def _same_journey(kept: Transport, other: Transport) -> bool:
     """Whether `other` is a copy of the journey `kept` already stands for. A
     route both know matches within `_SAME_TRANSPORT` of the booked departures,
-    and a diverted copy matches on its origin alone; a train or any copy with
-    an unknown endpoint matches only an exact copy of its times."""
+    and a diverted copy (no destination) matches on its origin alone; a train
+    or any other copy with an unknown endpoint matches only an exact copy of
+    its times."""
     if kept.origin is not None and other.origin is not None and kept.origin != other.origin:
         return False
     if None in (kept.origin, kept.destination, other.origin, other.destination):
         if kept.status == DIVERTED and kept.origin is not None:
             return kept.origin == other.origin and _booked_close(kept, other)
         return kept.departs == other.departs and kept.arrives == other.arrives
-    if kept.destination != other.destination and kept.status != DIVERTED:
+    if kept.destination != other.destination:
         return False
     return _booked_close(kept, other)
 
