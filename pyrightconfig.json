@@ -1,7 +1,7 @@
 {
   "executionEnvironments": [
     { "root": "skills/drive-engine", "extraPaths": ["skills/drive-engine", "skills/travel-core", "skills/flight-assist"] },
-    { "root": "skills/flight-assist", "extraPaths": ["skills/flight-assist", "skills/travel-core"] },
+    { "root": "skills/flight-assist", "extraPaths": ["skills/flight-assist", "skills/travel-core", "skills/drive-engine"] },
     { "root": "skills/travel-core", "extraPaths": ["skills/travel-core"] },
     { "root": "skills/check-travel-bookings", "extraPaths": ["skills/check-travel-bookings", "skills/travel-core"] },
     { "root": "skills/nightly-travel-sync", "extraPaths": ["skills/nightly-travel-sync", "skills/flight-assist", "skills/travel-core"] },

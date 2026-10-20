@@ -203,10 +203,11 @@ def test_a_utc_instant_from_another_zone_reads_the_same():
     assert _devcon().position_at(eastern).source == "home"
 
 
-def test_a_flight_the_evening_before_the_trip_still_takes_him_away():
-    """Live KubeCon shape: the BNA→SLC flight leaves at 20:00Z the day before
-    the trip wrapper's first date. The landing at a non-home airport, not the
-    wrapper's dates, says he is away."""
+def test_a_stale_trip_wrapper_does_not_keep_him_home():
+    """The local schedule copy refreshes nightly and can lag TripIt re-snapping a
+    trip to its flights: on 2026-10-19 it still dated KubeCon a day after the
+    BNA→SLC flight. The landing at a non-home airport, not the wrapper's dates,
+    says he is away."""
     schedule = [
         {
             "type": "Trip",

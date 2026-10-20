@@ -55,12 +55,23 @@ if not _TRAVEL_CORE.is_dir():
     _TRAVEL_CORE = _BUNDLE_DIR.parent / "travel-core"
 sys.path.insert(0, str(_TRAVEL_CORE))
 
+# The drive engine owns the airport-facts cache (byAir airport id → IATA) this
+# precheck reads, through its owner API, to place byAir's flights on the
+# itinerary (#335). Appended, never prepended: this bundle's own modules win.
+_DRIVE_ENGINE = Path("/home/node/.claude/skills/tessl__drive-engine")
+if not _DRIVE_ENGINE.is_dir():
+    _DRIVE_ENGINE = _BUNDLE_DIR.parent / "drive-engine"
+if str(_DRIVE_ENGINE) not in sys.path:
+    sys.path.append(str(_DRIVE_ENGINE))
+
+from airport_facts_cache import load_static_facts  # noqa: E402
 from boarding_lead import resolve_boarding_lead_minutes  # noqa: E402
 from byair_client import ByAirClient, ByAirError  # noqa: E402
 from connection_risk import (  # noqa: E402
     DEFAULT_MIN_TRANSFER_MINUTES,
     detect_connection_risks,
 )
+from itinerary import Transport, parse_time  # noqa: E402
 from maps_client import MapsClient, MapsError  # noqa: E402
 from operator_tz import READER_TIMEOUT_SECONDS, OperatorTz, read_operator_tz  # noqa: E402
 from phase_markers import (  # noqa: E402
@@ -254,12 +265,16 @@ def _run_cycle(
     active_flight_ids = read_active_flights()
     config = read_config() or {}
     resolve_operator_tz = _memoized_operator_tz(operator_tz_reader)
-    # Trip-aware (#122): "home" for this cycle is the static residence
-    # off-trip, but the current lodging while a TripIt trip is active —
-    # routing a time-to-leave from a residence an ocean away is worse than
-    # not routing at all. None mid-trip (no lodging yet) disables routing
-    # via the existing no-home handling.
-    home_address = resolve_effective_home(config.get("home_address"), now=now_utc)
+    # Trip-aware (#122, #335): "home" for this cycle is the itinerary's
+    # position — the static residence at home, the current lodging or trip city
+    # away — read with byAir's flights as well as TripIt's, so a trip only byAir
+    # tracks still moves the operator. None away with nothing resolvable
+    # disables routing via the existing no-home handling.
+    home_address = resolve_effective_home(
+        config.get("home_address"),
+        now=now_utc,
+        transports=byair_transports(active_flight_ids),
+    )
     min_transfer_minutes = _resolve_min_transfer_minutes(config)
 
     # Resolve the time-to-leave origin once per cycle so every flight
@@ -425,6 +440,42 @@ class _OperatorTzMemo:
             zone = self._reader()
             self._cache.append(zone.tz if zone is not None else None)
         return self._cache[0]
+
+
+def byair_transports(
+    flight_ids: list[int],
+    *,
+    read_state: Callable[[int], dict | None] = read_flight_state,
+    load_facts: Callable[[], dict] = load_static_facts,
+) -> list[Transport]:
+    """byAir's tracked flights as itinerary transports (#335).
+
+    A flight state record carries airport ids; the drive engine's airport-facts
+    cache maps them to IATA codes. A flight whose record cannot be read, whose
+    times do not parse, or whose airports the cache has not seen yet is left
+    out: the itinerary then knows less, never something wrong."""
+    facts = load_facts()
+    transports: list[Transport] = []
+    for flight_id in flight_ids:
+        try:
+            record = read_state(flight_id)
+        except (StateError, OSError) as exc:
+            # The poll loop meets the same record at its own turn and reports it
+            # there; this pass only leaves the flight off the itinerary.
+            print(f"[flight-assist] flight {flight_id} state unreadable ({exc})", file=sys.stderr)
+            continue
+        if record is None:
+            continue
+        departs = parse_time(record.get("scheduled_dep_time"))
+        arrives = parse_time(record.get("scheduled_arr_time"))
+        origin = facts.get(record.get("dep_airport_id"))
+        destination = facts.get(record.get("arr_airport_id"))
+        if departs is None or arrives is None or arrives <= departs:
+            continue
+        if origin is None or destination is None:
+            continue
+        transports.append(Transport(departs, arrives, origin.iata, destination.iata))
+    return transports
 
 
 def _memoized_operator_tz(reader: Callable[[], OperatorTz | None]) -> _OperatorTzMemo:
