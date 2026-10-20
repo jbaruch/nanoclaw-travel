@@ -302,3 +302,25 @@ def test_a_hotel_left_before_a_spell_at_home_does_not_anchor_the_next_visit():
     yet, is the trip's city, not the hotel of the first."""
     position = _chicago().position_at(_at("2025-09-06T12:00:00Z"))
     assert (position.address, position.source) == ("Chicago, IL", "trip_location")
+
+
+def test_without_a_trip_an_earlier_hotel_does_not_anchor_the_next_city():
+    """No trip wrapper ties Chicago to San Francisco: landing at SFO with nothing
+    booked is unresolved, not the Chicago hotel."""
+    schedule = [
+        {
+            "type": "Lodging",
+            "summary": "Loop Hotel",
+            "start": "2025-09-01T20:00:00Z",
+            "end": "2025-09-03T15:00:00Z",
+            "location": "1 Loop Pl, Chicago",
+        }
+    ]
+    flights = [
+        _transport("2025-09-01T14:00:00Z", "2025-09-01T15:30:00Z", "BNA", "ORD"),
+        _transport("2025-09-03T18:00:00Z", "2025-09-03T22:30:00Z", "ORD", "SFO"),
+    ]
+    position = Itinerary(
+        schedule, home_address=HOME, home_airports=BNA, transports=flights
+    ).position_at(_at("2025-09-04T12:00:00Z"))
+    assert (position.address, position.source) == (None, "unresolved")
