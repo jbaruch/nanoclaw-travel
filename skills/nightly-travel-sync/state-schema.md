@@ -9,6 +9,7 @@ Flat list of upcoming TripIt events, projected from the live ICS feed.
 - **Owner skill:** `nightly-travel-sync` (this skill)
 - **Writer:** `scripts/refresh-travel-schedule.py` (Step 2) — the sole writer
 - **Readers:**
+  - `nanoclaw-admin` `ask-my-data` (external, read-only): projects the common required fields, validates dates, deduplicates UIDs and reports incomplete coverage. It requires v5 except during the initial rollout before `2026-10-28T00:00:00Z`, when integer versions 1–5 are accepted. After expiry, older records provide no usable prior state and require an owner refresh. Unknown or unversioned rows are unusable. This reader never migrates or writes the artifact. Its freshness contract is the owning seven-day mtime helper; missing or stale data cannot prove absence or historical totals. The installed rule is `rules/travel-schedule-contract.md`.
   - `tessl__check-travel-bookings/scripts/build-travel-db.py` (same plugin, Step 4 rebuilds `travel-db.json` from this file)
   - `scripts/check-travel-freshness.py` (same plugin, Step 3 reads **mtime only**, never the body)
   - `nanoclaw-admin`'s `morning-brief` and `check-cfps` (cross-plugin via the shared `/workspace/group/` mount, reading Trip-type records for travel-conflict checks)
