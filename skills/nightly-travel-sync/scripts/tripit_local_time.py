@@ -174,9 +174,7 @@ def local_times(
         return None, None
     local_start = _apply(start, start_offset)
 
-    arrival_line = next(
-        (i for i, line in enumerate(lines) if _ARRIVE_RE.match(line)), None
-    )
+    arrival_line = next((i for i, line in enumerate(lines) if _ARRIVE_RE.match(line)), None)
     if arrival_line is None:
         return local_start, None
     arrival = _clock_above(lines, arrival_line)

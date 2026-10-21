@@ -195,9 +195,7 @@ def _load_module(modname: str, filename: str):
 def load_shared_modules() -> dict:
     """Load every shared helper, or raise. All-or-nothing on purpose: a
     partial load could otherwise fetch with no sanitizer."""
-    return {
-        name: _load_module(name, filename) for name, filename in _SHARED_MODULES.items()
-    }
+    return {name: _load_module(name, filename) for name, filename in _SHARED_MODULES.items()}
 
 
 class FetchResult(NamedTuple):
@@ -289,13 +287,7 @@ def main(argv: list[str]) -> int:
 
     try:
         mods = load_shared_modules()
-    except (
-        FileNotFoundError,
-        PermissionError,
-        ImportError,
-        OSError,
-        SyntaxError,
-    ) as exc:
+    except (FileNotFoundError, PermissionError, ImportError, OSError, SyntaxError) as exc:
         sys.stderr.write(
             f"fetch-tripit-emails: shared Gmail helper unavailable ({exc}) — expected under "
             f"{_heartbeat_scripts_dir()} (the co-loaded tessl__heartbeat mount, or "
@@ -317,9 +309,7 @@ def main(argv: list[str]) -> int:
         sys.stderr.write(f"fetch-tripit-emails: Gmail is unauthenticated — {exc}\n")
         return EXIT_CONFIG
     except google_rest.TierAccessRestricted as exc:
-        sys.stderr.write(
-            f"fetch-tripit-emails: Gmail unavailable at this tier — {exc}\n"
-        )
+        sys.stderr.write(f"fetch-tripit-emails: Gmail unavailable at this tier — {exc}\n")
         return EXIT_CONFIG
     except _CALL_ERRORS as exc:
         sys.stderr.write(

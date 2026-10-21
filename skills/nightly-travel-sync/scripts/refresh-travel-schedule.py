@@ -135,17 +135,12 @@ def _parse_dt(s):
 
 def validate_schedule(records):
     """Reject incomplete or conflicting cache evidence before atomic replacement."""
-    error = (
-        "Invalid TripIt schedule; verify the feed and retry; previous cache retained."
-    )
+    error = "Invalid TripIt schedule; verify the feed and retry; previous cache retained."
     if not isinstance(records, list):
         raise RuntimeError(error)
     seen = set()
     for record in records:
-        if (
-            not isinstance(record, dict)
-            or type(record.get("schema_version")) is not int
-        ):
+        if not isinstance(record, dict) or type(record.get("schema_version")) is not int:
             raise RuntimeError(error)
         if record["schema_version"] != SCHEMA_VERSION:
             raise RuntimeError(error)
@@ -247,9 +242,7 @@ def main():
     # Unfold ICS line continuations (RFC 5545: CRLF + whitespace = continuation)
     ics = re.sub(r"\r?\n[ \t]", "", ics)
 
-    if not ics.strip().startswith("BEGIN:VCALENDAR") or not ics.strip().endswith(
-        "END:VCALENDAR"
-    ):
+    if not ics.strip().startswith("BEGIN:VCALENDAR") or not ics.strip().endswith("END:VCALENDAR"):
         raise RuntimeError(
             "Invalid TripIt calendar; verify the feed and retry; previous cache retained."
         )
@@ -396,9 +389,7 @@ def main():
         # so a reader that doesn't ask for it, and a record that can't
         # answer, both stay on the UTC dates they used at v2.
         if ev["start_timed"] and ev["end_timed"]:
-            local_start, local_end = local_times(
-                ev["start"], ev["end"], ev["description"]
-            )
+            local_start, local_end = local_times(ev["start"], ev["end"], ev["description"])
             if local_start is not None:
                 record["start_local"] = local_start.isoformat()
             if local_end is not None:

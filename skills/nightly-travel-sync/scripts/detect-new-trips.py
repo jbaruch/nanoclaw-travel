@@ -205,9 +205,7 @@ def _write_snapshot(trips: dict) -> None:
 def _commit() -> None:
     trips = _load_db_trips()
     _write_snapshot(trips)
-    print(
-        json.dumps({"committed": True, "trips_tracked": len(trips)}, ensure_ascii=False)
-    )
+    print(json.dumps({"committed": True, "trips_tracked": len(trips)}, ensure_ascii=False))
 
 
 def _detect() -> None:
