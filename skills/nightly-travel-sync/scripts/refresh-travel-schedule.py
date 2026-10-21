@@ -149,7 +149,7 @@ def _event_end(component, start, start_timed):
         return start + (timedelta(0) if start_timed else timedelta(days=1)), start_timed
     match = re.fullmatch(
         r"\+?P(?:(?P<weeks>\d+)W|(?:(?P<days>\d+)D)?"
-        r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?)",
+        r"(?:T(?=\d)(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?)",
         duration,
     )
     if not match or not any(match.groupdict().values()):
