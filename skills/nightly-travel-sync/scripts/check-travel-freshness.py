@@ -47,7 +47,10 @@ def main():
                     "reason": "future_mtime",
                     "mtime": mtime.isoformat(),
                     "age_days": age_days,
-                    "action": "Verify the host clock and refresh the TripIt schedule before using this cache.",
+                    "action": (
+                        "Verify the host clock and refresh the TripIt schedule "
+                        "before using this cache."
+                    ),
                 }
             )
         )
