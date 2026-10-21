@@ -6,7 +6,7 @@ applyTo: "skills/ask-my-data/**, skills/nightly-travel-sync/**, scripts/** — w
 # Travel Schedule Reader Contract
 
 - Artifact: `/workspace/group/travel-schedule.json`, a JSON array of upcoming TripIt itinerary events.
-- Owner: `jbaruch/nanoclaw-flight-assist` `nightly-travel-sync`.
+- Owner: `jbaruch/nanoclaw-travel` (formerly `nanoclaw-flight-assist`) `nightly-travel-sync`.
 - Schema of record: `skills/nightly-travel-sync/state-schema.md` in this plugin.
 - Sole writer: `skills/nightly-travel-sync/scripts/refresh-travel-schedule.py`.
 - The writer regenerates the full array and atomically replaces the file after validation; failed refreshes retain the prior file and mtime.
