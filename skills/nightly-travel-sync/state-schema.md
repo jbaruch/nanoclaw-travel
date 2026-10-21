@@ -9,6 +9,7 @@ Flat list of upcoming TripIt events, projected from the live ICS feed.
 - **Owner skill:** `nightly-travel-sync` (this skill)
 - **Writer:** `scripts/refresh-travel-schedule.py` (Step 2) — the sole writer
 - **Readers:**
+  - `nanoclaw-admin` `ask-my-data` (external, read-only): projects the common required fields, validates dates, deduplicates UIDs and reports incomplete coverage. It requires v5 except during the initial rollout before `2026-10-28T00:00:00Z`, when integer versions 1–5 are accepted. After expiry, older records provide no usable prior state and require an owner refresh. Unknown or unversioned rows are unusable. This reader never migrates or writes the artifact. Its freshness contract is the owning seven-day mtime helper; missing or stale data cannot prove absence or historical totals. The installed rule is `rules/travel-schedule-contract.md`.
   - `tessl__check-travel-bookings/scripts/build-travel-db.py` (same plugin, Step 4 rebuilds `travel-db.json` from this file)
   - `scripts/check-travel-freshness.py` (same plugin, Step 3 reads **mtime only**, never the body)
   - `nanoclaw-admin`'s `morning-brief` and `check-cfps` (cross-plugin via the shared `/workspace/group/` mount, reading Trip-type records for travel-conflict checks)
@@ -73,6 +74,8 @@ Value-shape: `location` arrives with its RFC 5545 escapes decoded (#275). No sto
 
 ### Lifecycle
 
+- **Validation** — before replacement, reject invalid record versions, missing or empty required fields, invalid/reversed dates and duplicate or empty UIDs. A failed validation retains the previous file and mtime.
+- **Freshness** — the owning freshness helper treats future mtimes as uncertain; the nightly workflow reports the clock discrepancy and stops before rebuilding derived data.
 - **Regenerated, not accumulated** — Step 2 overwrites the whole file from the live ICS feed every run. There is no read-modify-write continuity. The writer never migrates an existing file in place. It always emits the current `SCHEMA_VERSION`.
 - **Write atomicity** — the writer stages a same-dir `.tmp` sibling, validates it is a list with the required keys, then `os.replace`s it into place. A failed fetch/parse or a partial write exits non-zero and leaves the prior file (and its mtime) untouched, which Step 3's two-tier probe detects.
 

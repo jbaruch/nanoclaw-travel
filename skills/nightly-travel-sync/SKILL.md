@@ -1,5 +1,7 @@
 ---
 name: nightly-travel-sync
+# This existing travel-domain overlay owns the TripIt refresh and its Gmail freshness probe.
+placement-admin-content-ok: true
 description: "Travel-data refresh bundle: TripIt → Reclaim timezone sync, refresh travel-schedule.json from the TripIt iCal feed with a two-tier Gmail freshness probe, rebuild travel-db.json, log newly-appeared trips to daily memory, then check upcoming trips for booking gaps. Runs daily; precheck-gated on travel-db.json freshness and schema currency. Triggers: 'sync trips', 'sync travel', 'update travel data', 'pull trip info', 'refresh travel schedule', 'rebuild travel db', 'check my bookings'."
 cadence: "0 6 * * * (TZ=local)"
 # agentModel renewal: no scanner tracks this pin. Re-check it on each new Claude model release and bump it in its own PR.
@@ -56,6 +58,7 @@ python3 /home/node/.claude/skills/tessl__nightly-travel-sync/scripts/check-trave
 Parse the JSON output and branch on `status` (the staleness threshold lives in `scripts/check-travel-freshness.py`):
 
 - `"missing"` — file does not exist. Report via `mcp__nanoclaw__send_message`.
+- `"uncertain"` — the cache mtime is in the future. Surface a one-line clock-discrepancy note with the returned `mtime` and `action`, then finish this run without rebuilding derived travel data.
 - `"fresh"` — silent. Skip to Step 4.
 - `"stale"` — consult Gmail. Script output includes `gmail_query` (already buffered for the `after:` boundary), `subject_prefix`, and `mtime`. Pass `gmail_query` verbatim to the fetch script and pipe it into the filter — one command, no tool call:
 

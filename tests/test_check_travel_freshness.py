@@ -4,7 +4,8 @@ Locks down the documented contract per `coding-policy: testing-standards`:
 
   - "missing"  — schedule file does not exist; output JSON has only
                  `status` and `path`
-  - "fresh"    — file age < 7 days; payload includes `mtime` + `age_days`
+  - "uncertain" — future mtime; verify the clock before using the cache
+  - "fresh"    — nonnegative file age < 7 days; payload includes `mtime` + `age_days`
   - "stale"    — file age >= 7 days; payload includes `mtime`,
                  `age_days`, plus the Gmail query (`from:tripit.com
                  after:<mtime-1d>`) and `subject_prefix` for re-sync
@@ -18,6 +19,8 @@ explicitly per case.
 import json
 import os
 from datetime import UTC, datetime
+
+import pytest
 
 _FROZEN_NOW = datetime(2026, 4, 30, 12, 0, 0, tzinfo=UTC)
 
@@ -125,3 +128,29 @@ def test_far_stale_file_emits_stale(check_travel_freshness, monkeypatch, capsys)
     code, out, _ = _run(module, monkeypatch, capsys)
     assert code == 0
     assert json.loads(out)["status"] == "stale"
+
+
+@pytest.mark.parametrize("future_seconds", [1, 86400])
+def test_future_mtime_is_uncertain_and_not_a_gmail_window(
+    check_travel_freshness, monkeypatch, capsys, future_seconds
+):
+    module, schedule_path = check_travel_freshness
+    schedule_path.write_text("[]")
+    target = _FROZEN_NOW.timestamp() + future_seconds
+    os.utime(schedule_path, (target, target))
+    code, out, err = _run(module, monkeypatch, capsys)
+    assert code == 0 and err == ""
+    payload = json.loads(out)
+    assert payload["status"] == "uncertain"
+    assert payload["reason"] == "future_mtime"
+    assert "clock" in payload["action"] and "refresh" in payload["action"]
+    assert "gmail_query" not in payload
+
+
+def test_exact_current_mtime_is_fresh(check_travel_freshness, monkeypatch, capsys):
+    module, schedule_path = check_travel_freshness
+    schedule_path.write_text("[]")
+    _set_mtime(schedule_path, _FROZEN_NOW, days_ago=0)
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    assert json.loads(out)["status"] == "fresh"
