@@ -1,6 +1,6 @@
 ---
 alwaysApply: false
-applyTo: "skills/**"
+applyTo: "skills/ask-my-data/** — when nanoclaw-admin reads /workspace/group/travel-schedule.json"
 ---
 
 # Travel Schedule Reader Contract
@@ -15,13 +15,20 @@ applyTo: "skills/**"
 - Records require integer `schema_version`, stable `uid`, `type`, `summary`, `start` and `end`.
 - Current record version is 5; optional description, local clocks and location are documented by the schema of record.
 
-## Reader rollout
+## External reader rollout
 
-- Non-owner readers require version 5 outside the bounded rollout below and never migrate or write the artifact.
-- The `nanoclaw-admin` `ask-my-data` rollout may read the common required fields from versions 1 through 5 until `2026-10-28T00:00:00Z`, while existing legacy caches await the next owner refresh.
-- That compatibility window expires at the stated UTC instant. After expiry, older records provide no usable prior state; request an owner refresh instead of prolonging compatibility.
+- This reader contract applies to `nanoclaw-admin` `ask-my-data`; existing in-plugin readers retain the behavior documented by the owner schema.
+- `ask-my-data` requires version 5 and never migrates or writes the artifact.
+- Narrow exception for the initial `ask-my-data` cache rollout.
+- Preconditions (all required):
+  1. The reader is `nanoclaw-admin` `ask-my-data`.
+  2. The read occurs before `2026-10-28T00:00:00Z`.
+  3. Each accepted record has integer version 1 through 5 and the required common fields documented by the owner schema.
+- Every other `ask-my-data` read requires version 5; older records provide no usable prior state and require an owner refresh.
 - Unversioned or unknown-version records provide no usable itinerary evidence; report incomplete coverage and an update/refresh diagnostic.
-- Date-only values describe calendar dates. Timed values describe UTC instants. Date-based answers prefer optional local clocks and otherwise state the UTC fallback.
+- Date-only values describe calendar dates.
+- Timed values describe UTC instants.
+- Date-based answers prefer optional local clocks and otherwise state the UTC fallback.
 
 ## Freshness and evidence
 
