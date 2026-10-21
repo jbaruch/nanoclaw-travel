@@ -58,6 +58,7 @@ python3 /home/node/.claude/skills/tessl__nightly-travel-sync/scripts/check-trave
 Parse the JSON output and branch on `status` (the staleness threshold lives in `scripts/check-travel-freshness.py`):
 
 - `"missing"` — file does not exist. Report via `mcp__nanoclaw__send_message`.
+- `"uncertain"` — the cache mtime is in the future. Surface a one-line clock-discrepancy note with the returned `mtime` and `action`, then finish this run without rebuilding derived travel data.
 - `"fresh"` — silent. Skip to Step 4.
 - `"stale"` — consult Gmail. Script output includes `gmail_query` (already buffered for the `after:` boundary), `subject_prefix`, and `mtime`. Pass `gmail_query` verbatim to the fetch script and pipe it into the filter — one command, no tool call:
 

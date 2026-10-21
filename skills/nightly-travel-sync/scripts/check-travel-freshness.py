@@ -3,7 +3,8 @@
 
 Statuses:
   - "missing" — file does not exist (sync pipeline never wrote it or it was deleted)
-  - "fresh"   — file age (now - mtime) < STALE_THRESHOLD_DAYS (steady state, no alert)
+  - "uncertain" — future mtime; verify the host clock and refresh before using it
+  - "fresh"   — nonnegative file age (now - mtime) < STALE_THRESHOLD_DAYS (steady state, no alert)
   - "stale"   — file age >= threshold; agent must consult Gmail for missed bookings.
                 Output includes the Gmail query string (with one-day pre-buffer
                 for Gmail `after:` boundary semantics) and the subject prefix
@@ -37,6 +38,20 @@ def main():
     mtime = datetime.fromtimestamp(SCHEDULE_PATH.stat().st_mtime, tz=UTC)
     age = datetime.now(UTC) - mtime
     age_days = round(age.total_seconds() / 86400, 2)
+
+    if age < timedelta(0):
+        print(
+            json.dumps(
+                {
+                    "status": "uncertain",
+                    "reason": "future_mtime",
+                    "mtime": mtime.isoformat(),
+                    "age_days": age_days,
+                    "action": "Verify the host clock and refresh the TripIt schedule before using this cache.",
+                }
+            )
+        )
+        return 0
 
     if age < timedelta(days=STALE_THRESHOLD_DAYS):
         print(

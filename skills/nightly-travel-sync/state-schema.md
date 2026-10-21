@@ -74,6 +74,8 @@ Value-shape: `location` arrives with its RFC 5545 escapes decoded (#275). No sto
 
 ### Lifecycle
 
+- **Validation** — before replacement, reject invalid record versions, missing or empty required fields, invalid/reversed dates and duplicate or empty UIDs. A failed validation retains the previous file and mtime.
+- **Freshness** — the owning freshness helper treats future mtimes as uncertain; the nightly workflow reports the clock discrepancy and stops before rebuilding derived data.
 - **Regenerated, not accumulated** — Step 2 overwrites the whole file from the live ICS feed every run. There is no read-modify-write continuity. The writer never migrates an existing file in place. It always emits the current `SCHEMA_VERSION`.
 - **Write atomicity** — the writer stages a same-dir `.tmp` sibling, validates it is a list with the required keys, then `os.replace`s it into place. A failed fetch/parse or a partial write exits non-zero and leaves the prior file (and its mtime) untouched, which Step 3's two-tier probe detects.
 

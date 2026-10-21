@@ -2,6 +2,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -132,6 +133,77 @@ def _parse_dt(s):
         return None, False
 
 
+def validate_schedule(records):
+    """Reject incomplete or conflicting cache evidence before atomic replacement."""
+    error = "Invalid TripIt schedule; verify the feed and retry; previous cache retained."
+    if not isinstance(records, list):
+        raise RuntimeError(error)
+    seen = set()
+    for record in records:
+        if not isinstance(record, dict) or type(record.get("schema_version")) is not int:
+            raise RuntimeError(error)
+        if record["schema_version"] != SCHEMA_VERSION:
+            raise RuntimeError(error)
+        for field in ("uid", "type", "summary", "start", "end"):
+            value = record.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise RuntimeError(error)
+        uid = record["uid"]
+        if uid in seen:
+            raise RuntimeError(error)
+        seen.add(uid)
+        values = []
+        for field in ("start", "end"):
+            value = record[field]
+            fmt = "%Y-%m-%d" if len(value) == 10 else "%Y-%m-%dT%H:%M:%SZ"
+            try:
+                instant = datetime.strptime(value, fmt).replace(tzinfo=UTC)
+            except ValueError as exc:
+                raise RuntimeError(error) from exc
+            if instant.strftime(fmt) != value:
+                raise RuntimeError(error)
+            values.append(instant)
+        if values[0] > values[1]:
+            raise RuntimeError(error)
+
+
+def write_schedule(events):
+    """Validate the actual staged bytes and retain the previous cache on failure."""
+    try:
+        descriptor, tmp_path = tempfile.mkstemp(
+            prefix=Path(OUTPUT_PATH).name + ".", suffix=".tmp", dir=Path(OUTPUT_PATH).parent
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            "Cannot stage TripIt schedule; check output permissions and disk space, then retry; previous cache retained."
+        ) from exc
+    try:
+        try:
+            with os.fdopen(descriptor, "w") as output:
+                json.dump(events, output, indent=2)
+                output.flush()
+                os.fsync(output.fileno())
+            try:
+                with open(tmp_path) as staged:
+                    verified = json.load(staged)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "Invalid staged TripIt JSON; retry the refresh; previous cache retained."
+                ) from exc
+            validate_schedule(verified)
+            os.replace(tmp_path, OUTPUT_PATH)
+            return verified
+        except OSError as exc:
+            raise RuntimeError(
+                "Cannot replace TripIt schedule; check output permissions and disk space, then retry; previous cache retained."
+            ) from exc
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass  # Successful replacement already consumed this invocation's file.
+
+
 def main():
     with open(URL_PATH) as f:
         url = f.read().strip()
@@ -166,6 +238,11 @@ def main():
     # Unfold ICS line continuations (RFC 5545: CRLF + whitespace = continuation)
     ics = re.sub(r"\r?\n[ \t]", "", ics)
 
+    if not ics.strip().startswith("BEGIN:VCALENDAR") or not ics.strip().endswith("END:VCALENDAR"):
+        raise RuntimeError(
+            "Invalid TripIt calendar; verify the feed and retry; previous cache retained."
+        )
+
     now = datetime.now(UTC)
 
     # First pass: parse every VEVENT into a record. The past-event filter
@@ -181,7 +258,9 @@ def main():
         start, start_timed = _parse_dt(_get_field(component, "DTSTART"))
         end, end_timed = _parse_dt(_get_field(component, "DTEND"))
         if not start or not end:
-            continue
+            raise RuntimeError(
+                "Invalid TripIt event dates; verify the feed and retry; previous cache retained."
+            )
 
         uid = _get_field(component, "UID")
         description = _get_field(component, "DESCRIPTION")
@@ -321,19 +400,7 @@ def main():
     # place. A failed or partial refresh never truncates or freshens the
     # live travel-schedule.json — the mtime-preserving failure contract
     # the sibling state-schema.md documents. Mirrors build-travel-db.py.
-    tmp_path = OUTPUT_PATH + ".tmp"
-    with open(tmp_path, "w") as f:
-        json.dump(events, f, indent=2)
-
-    # Validate the staged file before it goes live.
-    with open(tmp_path) as f:
-        verified = json.load(f)
-    assert isinstance(verified, list), "travel-schedule.json is not a JSON array"
-    assert all("summary" in e and "start" in e and "end" in e and "type" in e for e in verified), (
-        "travel-schedule.json contains events missing required fields"
-    )
-
-    os.replace(tmp_path, OUTPUT_PATH)
+    verified = write_schedule(events)
 
     # Structured JSON run summary per `jbaruch/coding-policy:
     # script-delegation` (Script Requirements: JSON-producing — output
