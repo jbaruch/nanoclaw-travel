@@ -16,8 +16,8 @@ Locks down the documented contract per `coding-policy: testing-standards`:
       * UID with `item-` and no `[Type]` marker → `'Unknown'`
   - Output JSON is a list sorted ascending by `start`, each entry
     carrying `summary` / `start` / `end` / `location` / `type` / `uid`
-  - On success, the script also re-reads the file and asserts
-    `isinstance(verified, list)` plus the four required keys per entry
+  - Before atomic replacement, validates record versions, required fields,
+    canonical dates and unique nonempty UIDs; failed staging retains the cache
 
 Tests freeze `module.datetime` (now() returning a fixed UTC instant) so
 the `DTEND < now` filter is deterministic and patch
@@ -25,6 +25,7 @@ the `DTEND < now` filter is deterministic and patch
 """
 
 import json
+import os
 from datetime import UTC, datetime
 
 import pytest
@@ -838,3 +839,108 @@ def test_decoded_summary_still_pairs_a_lodging_check_in_to_its_check_out(
     _, key_out = module.lodging_pair_key("Check-out: Radisson Blu Airport Hotel, Oslo", url)
     assert key_in == key_out
     assert key_in == ("12345", "Radisson Blu Airport Hotel, Oslo")
+
+
+def _valid_record():
+    return {
+        "schema_version": 5,
+        "uid": "item-valid@tripit.com",
+        "summary": "Flight",
+        "type": "Flight",
+        "start": "2026-06-01T12:00:00Z",
+        "end": "2026-06-01T14:00:00Z",
+    }
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"schema_version": None},
+        {"schema_version": True},
+        {"schema_version": 1},
+        {"uid": ""},
+        {"uid": "  "},
+        {"uid": None},
+        {"type": ""},
+        {"summary": ""},
+        {"start": None},
+        {"start": "2026-02-30"},
+        {"end": "2026-06-01T11:00:00Z"},
+    ],
+)
+def test_invalid_staged_records_preserve_previous_cache(refresh_travel_schedule, updates):
+    module, _, output = refresh_travel_schedule
+    output.write_text(json.dumps([_valid_record()]))
+    os.utime(output, (1234567890, 1234567890))
+    before = (output.read_bytes(), output.stat().st_mtime_ns)
+    with pytest.raises(RuntimeError, match="previous cache retained"):
+        module.write_schedule([{**_valid_record(), **updates}])
+    assert (output.read_bytes(), output.stat().st_mtime_ns) == before
+    assert list(output.parent.glob(output.name + ".*.tmp")) == []
+
+
+@pytest.mark.parametrize("missing", ["uid", "type", "summary", "start", "end", "schema_version"])
+def test_missing_required_field_is_rejected(refresh_travel_schedule, missing):
+    module, _, _ = refresh_travel_schedule
+    record = _valid_record()
+    del record[missing]
+    with pytest.raises(RuntimeError, match="verify the feed"):
+        module.validate_schedule([record])
+
+
+def test_duplicate_uid_never_replaces_valid_cache(refresh_travel_schedule):
+    module, _, output = refresh_travel_schedule
+    output.write_text("[]")
+    before = (output.read_bytes(), output.stat().st_mtime_ns)
+    with pytest.raises(RuntimeError, match="previous cache retained"):
+        module.write_schedule(
+            [_valid_record(), {**_valid_record(), "summary": "Conflicting flight"}]
+        )
+    assert (output.read_bytes(), output.stat().st_mtime_ns) == before
+    assert list(output.parent.glob(output.name + ".*.tmp")) == []
+
+
+@pytest.mark.parametrize("body", ["", "<html>not a calendar</html>"])
+def test_invalid_feed_never_freshens_the_cache(refresh_travel_schedule, monkeypatch, capsys, body):
+    module, url, output = refresh_travel_schedule
+    url.write_text("https://tripit.example.test/feed.ics")
+    output.write_text(json.dumps([_valid_record()]))
+    before = (output.read_bytes(), output.stat().st_mtime_ns)
+    _patch_urlopen(monkeypatch, body)
+    with pytest.raises(RuntimeError, match="previous cache retained"):
+        _run(module, monkeypatch, capsys)
+    assert (output.read_bytes(), output.stat().st_mtime_ns) == before
+
+
+@pytest.mark.parametrize("damage", ["missing_uid", "duplicate_uid", "invalid_dates"])
+def test_malformed_events_do_not_replace_cache(
+    refresh_travel_schedule, monkeypatch, capsys, damage
+):
+    module, url, output = refresh_travel_schedule
+    url.write_text("https://tripit.example.test/feed.ics")
+    output.write_text(json.dumps([_valid_record()]))
+    before = (output.read_bytes(), output.stat().st_mtime_ns)
+    fields = [("DTSTART", "20260601"), ("DTEND", "20260602"), ("SUMMARY", "Trip")]
+    if damage != "missing_uid":
+        fields.append(("UID", "trip-one@tripit.com"))
+    if damage == "invalid_dates":
+        fields[0] = ("DTSTART", "not-a-date")
+    _patch_urlopen(monkeypatch, _ics(fields, fields) if damage == "duplicate_uid" else _ics(fields))
+    with pytest.raises(RuntimeError, match="previous cache retained"):
+        _run(module, monkeypatch, capsys)
+    assert (output.read_bytes(), output.stat().st_mtime_ns) == before
+    assert list(output.parent.glob(output.name + ".*.tmp")) == []
+
+
+@pytest.mark.parametrize("staged", ["{", "{}", "[null]"])
+def test_corrupt_staged_bytes_preserve_cache(refresh_travel_schedule, monkeypatch, staged):
+    module, _, output = refresh_travel_schedule
+    output.write_text("[]")
+    before = (output.read_bytes(), output.stat().st_mtime_ns)
+    monkeypatch.setattr(
+        module.json, "dump", lambda _events, stream, **_kwargs: stream.write(staged)
+    )
+    with pytest.raises(RuntimeError, match="previous cache retained"):
+        module.write_schedule([_valid_record()])
+    assert (output.read_bytes(), output.stat().st_mtime_ns) == before
+    assert list(output.parent.glob(output.name + ".*.tmp")) == []
