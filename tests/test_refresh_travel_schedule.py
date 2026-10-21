@@ -944,3 +944,24 @@ def test_corrupt_staged_bytes_preserve_cache(refresh_travel_schedule, monkeypatc
         module.write_schedule([_valid_record()])
     assert (output.read_bytes(), output.stat().st_mtime_ns) == before
     assert list(output.parent.glob(output.name + ".*.tmp")) == []
+
+
+@pytest.mark.parametrize("failure", ["create", "flush", "replace"])
+def test_staging_io_failure_preserves_cache(refresh_travel_schedule, monkeypatch, failure):
+    module, _, output = refresh_travel_schedule
+    output.write_text(json.dumps([_valid_record()]))
+    before = (output.read_bytes(), output.stat().st_mtime_ns)
+
+    def fail(*_args, **_kwargs):
+        raise PermissionError("fixture output unavailable")
+
+    target, attribute = {
+        "create": (module.tempfile, "mkstemp"),
+        "flush": (module.os, "fsync"),
+        "replace": (module.os, "replace"),
+    }[failure]
+    monkeypatch.setattr(target, attribute, fail)
+    with pytest.raises(RuntimeError, match="permissions and disk space"):
+        module.write_schedule([_valid_record()])
+    assert (output.read_bytes(), output.stat().st_mtime_ns) == before
+    assert list(output.parent.glob(output.name + ".*.tmp")) == []
