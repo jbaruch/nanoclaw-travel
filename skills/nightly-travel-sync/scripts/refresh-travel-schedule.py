@@ -7,7 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # travel-core owns the `Check-in:` / `Check-out:` discriminator this writer
@@ -133,6 +133,38 @@ def _parse_dt(s):
         return None, False
 
 
+def _event_end(component, start, start_timed):
+    """RFC 5545 section 3.6.1: explicit end, duration, or implicit end.
+
+    An unparseable explicit end is not an omitted end. Keep it uncertain
+    rather than replacing it with an invented zero-length event.
+    """
+    end_text = _get_field(component, "DTEND")
+    if end_text:
+        return _parse_dt(end_text)
+    if start is None:
+        return None, False
+    duration = _get_field(component, "DURATION")
+    if not duration:
+        return start + (timedelta(0) if start_timed else timedelta(days=1)), start_timed
+    match = re.fullmatch(
+        r"\+?P(?:(?P<weeks>\d+)W|(?:(?P<days>\d+)D)?"
+        r"(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?)",
+        duration,
+    )
+    if not match or not any(match.groupdict().values()):
+        return None, False
+    if not start_timed and any(match[name] for name in ("hours", "minutes", "seconds")):
+        return None, False
+    try:
+        span = timedelta(**{key: int(value or 0) for key, value in match.groupdict().items()})
+        if span <= timedelta(0):
+            return None, False
+        return start + span, start_timed
+    except (OverflowError, ValueError):
+        return None, False
+
+
 def validate_schedule(records):
     """Reject incomplete or conflicting cache evidence before atomic replacement."""
     error = "Invalid TripIt schedule; verify the feed and retry; previous cache retained."
@@ -183,6 +215,12 @@ def write_schedule(events):
     try:
         try:
             with os.fdopen(descriptor, "w") as output:
+                # Match a normal open(..., "w") so readers sharing the
+                # group mount retain access. This standalone writer is
+                # single-threaded; restore the process umask immediately.
+                mask = os.umask(0)
+                os.umask(mask)
+                os.fchmod(output.fileno(), 0o666 & ~mask)
                 json.dump(events, output, indent=2)
                 output.flush()
                 os.fsync(output.fileno())
@@ -260,8 +298,8 @@ def main():
     parsed = []
     for component in ics.split("BEGIN:VEVENT")[1:]:
         start, start_timed = _parse_dt(_get_field(component, "DTSTART"))
-        end, end_timed = _parse_dt(_get_field(component, "DTEND"))
-        if not start or not end:
+        end, end_timed = _event_end(component, start, start_timed)
+        if end is None:
             raise RuntimeError(
                 "Invalid TripIt event dates; verify the feed and retry; previous cache retained."
             )
@@ -349,6 +387,14 @@ def main():
                 keep = True
         if not keep:
             continue
+
+        # Only records surviving the past/lodging filter must be complete.
+        # A broken historical start with a proven past end cannot poison
+        # upcoming trips; a live or paired record still fails closed.
+        if ev["start"] is None:
+            raise RuntimeError(
+                "Invalid TripIt event dates; verify the feed and retry; previous cache retained."
+            )
 
         # Preserve time-of-day for timed VEVENTs (flights, lodging
         # check-ins, rentals) so downstream consumers can answer
