@@ -236,7 +236,7 @@ def _run_cycle(
     poll_failures: set[int] | None = None,
 ) -> list[dict]:
     failed = poll_failures if poll_failures is not None else set()
-    active = read_active_flights()
+    active = list(dict.fromkeys(read_active_flights()))
     with notification_store(now_utc=now_utc) as delivery:
         delivery.prune(active_ids=set(active))
         verified: set[int] = set()
@@ -268,8 +268,12 @@ def _run_cycle(
 
 
 def _notice_is_current(flight_id: int | None, event: dict, now_utc: datetime) -> bool:
-    if flight_id is None or event["reason"] == "removed_upstream":
+    if flight_id is None:
         return True
+    if event["reason"] == "removed_upstream":
+        # Reconciliation reaches this predicate only after a successful live
+        # refresh. A current 404 is not verified and keeps its pending notice.
+        return False
     state = read_flight_state(flight_id)
     if state is None:
         return False

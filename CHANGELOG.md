@@ -12,6 +12,8 @@ An inbound warning that recovers before delivery produces no spurious all-clear.
 
 The delivery schema documents every root/row field, required presence, null meanings, phase-marker mapping, identity derivation and bounds, and binds stored event data to the versioned row's event-payload reference.
 
+A successful live refresh supersedes a pending upstream-removal notice. A continuing 404 retains that notice and its ID for retry.
+
 ## 0.2.154 — 2026-10-20
 
 ### travel-core — one itinerary timeline replaces the position ladder (#335)

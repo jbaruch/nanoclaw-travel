@@ -2273,3 +2273,38 @@ def test_inbound_all_clear_refers_only_to_the_last_delivered_forecast(state_root
         assert notices == []
     with notification_store(now_utc=now + timedelta(minutes=15)) as store:
         assert store.confirm([pending["notification_id"]])["stale"] == [pending["notification_id"]]
+
+
+@pytest.mark.parametrize("recovers", [True, False])
+@pytest.mark.parametrize("duplicate_index", [True, False])
+def test_pending_removal_notice_follows_the_next_live_source_result(
+    state_root, recovers, duplicate_index
+):
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=_scheduled_snapshot(),
+            phase_markers={name: True for name in _phase_markers()},
+        )
+    )
+    write_active_flights([12345, 12345] if duplicate_index else [12345])
+    now = datetime(2026, 5, 18, 16, 0, tzinfo=UTC)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.side_effect = precheck.ByAirError("not_found", "missing")
+        first = precheck._run_cycle(now_utc=now)
+        removed = next(e for e in first if e["event"]["reason"] == "removed_upstream")
+        if recovers:
+            client.return_value.get_flight.side_effect = None
+            client.return_value.get_flight.return_value = _byair_flight()
+        retry = precheck._run_cycle(now_utc=now + timedelta(minutes=5))
+        assert client.return_value.get_flight.call_count == 2
+    notices = [e for e in retry if e["event"]["reason"] == "removed_upstream"]
+    if recovers:
+        assert notices == []
+        with notification_store(now_utc=now + timedelta(minutes=5)) as store:
+            assert store.confirm([removed["notification_id"]])["stale"] == [
+                removed["notification_id"]
+            ]
+    else:
+        assert notices == [removed]
