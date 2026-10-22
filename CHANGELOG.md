@@ -10,6 +10,8 @@ Undelivered departure shifts retain their original baseline across later small c
 
 An inbound warning that recovers before delivery produces no spurious all-clear. When an earlier prediction was actually delivered, its clear uses that last confirmed estimate; a newer delivered all-clear supersedes it. Prediction departure clocks are derived from the existing scheduled departure and current inbound-delay minutes in an ephemeral notification projection, leaving the persisted schema-7 shape unchanged. Regression coverage executes every declared helper lookup (native renderer, checkout and Tessl consumer).
 
+The delivery schema documents every root/row field, required presence, null meanings, phase-marker mapping, identity derivation and bounds, and binds stored event data to the versioned row's event-payload reference.
+
 ## 0.2.154 — 2026-10-20
 
 ### travel-core — one itinerary timeline replaces the position ladder (#335)

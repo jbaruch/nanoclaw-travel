@@ -344,7 +344,39 @@ Tolerance:
 
 `flight-assist` owns `notifications.json` and its `notifications.lock` in the state directory. The owner library is `skills/flight-assist/notification_delivery.py`; only its transaction API writes this artifact. Its schema version is independent of the per-flight family.
 
-The file has `schema_version: 1`, a nonnegative monotonic `sequence`, and a `notices` map keyed by observation digest. Every notice carries `schema_version: 1`, `id`, `key`, `sequence`, `prior_poll`, `flight_id`, `event`, `marker`, `expires_at`, `retry_at` and `confirmed_at`. IDs and keys bind the stored observation; timestamps carry UTC offsets. `flight_id` and `marker` may be null. `confirmed_at` is null until the caller acknowledges a confirmed send. The library owns field validation, bounds and retry timing.
+All root and notice fields below are required; omitted fields have no defaults in an existing file. A missing file is first-run state with version 1, sequence 0 and an empty notices map. The library owns validation, bounds and retry timing.
+
+| Root field | Type and meaning |
+|---|---|
+| `schema_version` | Plain integer `1`, never a boolean; independent of the per-flight schema |
+| `sequence` | Nonnegative integer; the owner increments it for each new or replacement observation and retains it when pruning |
+| `notices` | JSON object keyed by the notice's 64-character lowercase hex `key`; empty on first run; at most 2,048 entries |
+
+| Notice field | Type, presence and meaning |
+|---|---|
+| `schema_version` | Plain integer `1`, required on every row |
+| `id` | Required 32-character lowercase hex string; first 32 characters of SHA-256 over the canonical JSON `[sequence, key, event]`; an exact acknowledgement identity, not independent proof of a send |
+| `key` | Required 64-character lowercase SHA-256 hex string matching the map key; hashes `[flight_id, marker]` for a phase, otherwise `[flight_id, prior_poll, event]` |
+| `sequence` | Required positive integer no greater than the root sequence; identifies this observation's insertion or replacement order |
+| `prior_poll` | Required string or null; opaque source-poll identity used verbatim in delta deduplication, normally a `last_polled_at` RFC 3339 value. Single-flight events use the prior snapshot's poll; derived connection events use the downstream record's current poll. Null means no source-poll identity was available, including a first observation; it is not interpreted as a clock |
+| `flight_id` | Required integer or null; byAir flight ID for flight-specific observations. Null denotes an observation without an associated flight; the current poll owner offers flight IDs only |
+| `event` | Required finite JSON object with a string `reason`, following the applicable flight-event shape in `skills/flight-assist/references/event-payloads.md`. It contains event data, without the outer `flight_id`/`notification_id` wrapper or composed message text; canonical encoded size is at most 8,192 bytes |
+| `marker` | Required string or null; exact reason-to-gate mapping below. Null means an observation rather than a once-per-flight phase gate |
+| `expires_at` | Required timezone-aware RFC 3339 string; owner serialization uses UTC. Pending observations at or beyond this deadline are pruned; confirmed receipts remain while their flight is active. The poll caller normally uses two hours, day-before uses departure, and arrival/carousel notices are capped at arrival plus two hours |
+| `retry_at` | Required timezone-aware RFC 3339 string or null; null means no attempt has been emitted and the observation is immediately eligible subject to freshness/expiry. Emitting an attempt sets now plus 300 seconds; an unexpired replacement retains that deadline |
+| `confirmed_at` | Required timezone-aware RFC 3339 string or null; null means no acknowledged successful send. Exact-ID acknowledgement sets the owner's confirmation clock; repeated acknowledgement preserves the original value |
+
+Canonical JSON uses sorted keys, compact separators and UTF-8 without nonfinite numbers. The whole file is bounded to 4 MiB. The store validates row shape, identity binding, timestamp formats and bounds; event consumers follow the referenced per-reason payload contract.
+
+| Event reason | `marker` value |
+|---|---|
+| `day_before` | `day_before_fired` |
+| `time_to_leave` | `time_to_leave_fired` |
+| `boarding_started` | `boarding_fired` |
+| `arrival_logistics` | `arrival_logistics_fired` |
+| `connection_at_risk` | `connection_at_risk_fired` |
+| `gate_assignment` | `gate_assignment_fired` |
+| Other documented flight observations | null |
 
 The precheck persists notices before advancing their flight snapshots. A due attempt changes only its retry deadline. A failed send leaves it unconfirmed. A changed pending phase or mutable observation gets a fresh ID and retains its retry deadline; acknowledging the older ID cannot consume its replacement. Mutable observations are inbound estimates, departure shifts, carousels and each side's gate. Retries refresh these from live data even inside the wake detector's delta tolerance. Departure shifts retain their original undelivered baseline; a fully recovered shift or gate move is discarded without creating a receipt. Retried predictions and retractions match the exact refreshed estimate. An already-confirmed observation remains consumed. Notices for inactive flights and expired pending notices are removed before new observations; confirmed phase receipts remain while that flight is active. A failed or deferred live poll cannot surface its queued notice.
 
