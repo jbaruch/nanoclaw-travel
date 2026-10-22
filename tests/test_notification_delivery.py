@@ -19,6 +19,7 @@ from helpers import must
 BUNDLE = Path(__file__).resolve().parents[1] / "skills/flight-assist"
 sys.path.insert(0, str(BUNDLE))
 
+# Insert the shipped bundle path before importing its module.
 from notification_delivery import DeliveryError, notification_store  # noqa: E402
 
 NOW = datetime(2025, 5, 18, 10, 0, tzinfo=UTC)
@@ -253,7 +254,20 @@ def test_full_store_refuses_new_notices_without_erasing_pending_work(store_root,
         assert store.confirm([identity])["confirmed"] == [identity]
 
 
-def test_native_lookup_runs_the_co_shipped_helper_from_an_unrelated_directory(store_root, tmp_path):
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        "/home/node/.claude/skills/tessl__flight-assist/scripts/confirm-notifications.py",
+        "skills/flight-assist/scripts/confirm-notifications.py",
+        ".tessl/plugins/jbaruch/nanoclaw-travel/skills/flight-assist/scripts/confirm-notifications.py",
+    ],
+)
+def test_declared_lookup_runs_the_co_shipped_helper_from_an_unrelated_directory(
+    store_root, tmp_path, lookup
+):
+    contract = (BUNDLE.parents[1] / "rules/flight-notification-delivery.md").read_text()
+    declared = set(re.findall(r"`([^`]*confirm-notifications\.py)`", contract))
+    assert lookup in declared
     reference = (BUNDLE / "references/notification-delivery.md").read_text()
     match = re.search(
         r"python3 (/home/node/\.claude/skills/"
@@ -261,7 +275,9 @@ def test_native_lookup_runs_the_co_shipped_helper_from_an_unrelated_directory(st
         reference,
     )
     assert match is not None
-    native = tmp_path / "renderer" / match[1].lstrip("/")
+    if lookup.startswith("/"):
+        assert lookup == match[1]
+    native = tmp_path / "installation" / lookup.lstrip("/")
     shutil.copytree(BUNDLE, native.parents[1], ignore=shutil.ignore_patterns("__pycache__"))
     with notification_store(now_utc=NOW) as store:
         identity = must(offer(store))

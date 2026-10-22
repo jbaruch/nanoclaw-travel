@@ -26,6 +26,8 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 
 import precheck  # noqa: E402
+
+# Insert the shipped bundle path before importing its delivery module.
 from notification_delivery import notification_store  # noqa: E402
 from operator_tz import OperatorTz  # noqa: E402
 from state import (  # noqa: E402
@@ -2067,6 +2069,7 @@ def test_pending_inbound_prediction_retries_only_the_exact_live_estimate(state_r
         )
         first = precheck._run_cycle(now_utc=now)
         old = next(e for e in first if e["event"]["reason"] == "inbound_delay_predicted")
+        assert old["event"]["predicted_time"] == "2026-05-18T17:25:00+00:00"
         client.return_value.get_flight.return_value = _byair_flight(
             inbound={"predicted_delay": {"delay_minutes": later_minutes}}
         )
@@ -2075,6 +2078,8 @@ def test_pending_inbound_prediction_retries_only_the_exact_live_estimate(state_r
     predictions = [e for e in retry if e["event"]["reason"] == "inbound_delay_predicted"]
     assert len(predictions) == 1
     assert predictions[0]["event"]["delay_minutes"] == later_minutes
+    expected_departure = datetime(2026, 5, 18, 17, tzinfo=UTC) + timedelta(minutes=later_minutes)
+    assert predictions[0]["event"]["predicted_time"] == expected_departure.isoformat()
     assert predictions[0]["notification_id"] != old["notification_id"]
     assert [e for e in again if e["event"]["reason"] == "inbound_delay_predicted"] == predictions
     with notification_store(now_utc=now + timedelta(minutes=10)) as store:
@@ -2217,3 +2222,54 @@ def test_pending_gate_changes_track_each_side_through_missing_values(state_root,
         assert store.confirm([e["notification_id"] for e in old])["stale"] == [
             e["notification_id"] for e in old
         ]
+
+
+@pytest.mark.parametrize("history", ["none", "forecast", "cleared"])
+def test_inbound_all_clear_refers_only_to_the_last_delivered_forecast(state_root, history):
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=_scheduled_snapshot(),
+            phase_markers={name: True for name in _phase_markers()},
+        )
+    )
+    write_active_flights([12345])
+    now = datetime(2026, 5, 18, 16, 0, tzinfo=UTC)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _byair_flight(
+            computed_status="check_in_open", inbound={"predicted_delay": {"delay_minutes": 25}}
+        )
+        first = precheck._run_cycle(now_utc=now)
+        first_prediction = next(
+            e for e in first if e["event"]["reason"] == "inbound_delay_predicted"
+        )
+        if history != "none":
+            with notification_store(now_utc=now) as store:
+                store.confirm([first_prediction["notification_id"]])
+        if history == "cleared":
+            client.return_value.get_flight.return_value = _byair_flight(
+                computed_status="check_in_open", inbound={"predicted_delay": {"delay_minutes": 0}}
+            )
+            cleared = precheck._run_cycle(now_utc=now + timedelta(minutes=5))
+            notice = next(e for e in cleared if e["event"]["reason"] == "inbound_delay_retracted")
+            with notification_store(now_utc=now + timedelta(minutes=5)) as store:
+                store.confirm([notice["notification_id"]])
+        client.return_value.get_flight.return_value = _byair_flight(
+            computed_status="check_in_open", inbound={"predicted_delay": {"delay_minutes": 40}}
+        )
+        changed = precheck._run_cycle(now_utc=now + timedelta(minutes=10))
+        pending = next(e for e in changed if e["event"]["reason"] == "inbound_delay_predicted")
+        client.return_value.get_flight.return_value = _byair_flight(
+            computed_status="check_in_open", inbound={"predicted_delay": {"delay_minutes": 0}}
+        )
+        recovered = precheck._run_cycle(now_utc=now + timedelta(minutes=15))
+    notices = [e for e in recovered if e["event"]["reason"] == "inbound_delay_retracted"]
+    if history == "forecast":
+        assert len(notices) == 1
+        assert notices[0]["event"]["prev_delay_minutes"] == 25
+        assert notices[0]["event"]["new_delay_minutes"] is None
+    else:
+        assert notices == []
+    with notification_store(now_utc=now + timedelta(minutes=15)) as store:
+        assert store.confirm([pending["notification_id"]])["stale"] == [pending["notification_id"]]

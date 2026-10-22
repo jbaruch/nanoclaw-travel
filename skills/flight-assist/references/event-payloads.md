@@ -47,7 +47,7 @@ Same trigger as `cancelled` but for `diverted` status.
 {"reason": "inbound_delay_predicted", "delay_minutes": 35, "predicted_time": "2026-05-17T13:00:00-07:00"}
 ```
 
-`delay_minutes` is the predicted inbound-aircraft delay; `predicted_time` is the new estimated departure. Firing threshold and dedupe live in `wake_rules.py` (`detect_wake_events`).
+`delay_minutes` is the predicted inbound-aircraft delay; `predicted_time` is the new estimated departure. The precheck derives that clock from the flight record's scheduled departure plus the current positive inbound delay, preserving the scheduled offset. It enriches only the notification projection; the persisted schema-7 snapshot has no new field. Firing threshold and dedupe live in `wake_rules.py` (`detect_wake_events`).
 
 #### `inbound_delay_retracted`
 
@@ -57,13 +57,15 @@ Same trigger as `cancelled` but for `diverted` status.
 
 `prev_delay_minutes` is the delay last surfaced to the user; `new_delay_minutes` is the current prediction (`null` when retracted entirely). Send the all-clear even if an earlier surface escalated to "rebook now" — without it, silence reads as still-delayed. Firing conditions live in `wake_rules.py` (`detect_wake_events`).
 
+An unsent prediction that recovers produces no all-clear. If an earlier prediction was delivered, the clear refers to that last confirmed prediction. A more recent confirmed all-clear supersedes older confirmed predictions.
+
 #### `boarding_started`
 
 ```json
 {"reason": "boarding_started"}
 ```
 
-Fires on transition into actual boarding, gated on the real-boarding signal rather than the `computed_status` label alone — byAir labels the phase `boarding` before boarding starts. The real-boarding predicate is also held against flight-assist's own planned boarding window, the one its boarding block uses (#295), each snapshot judged at its own poll instant. First-cycle "already boarding" does not fire. The `phase_markers.boarding_fired` flag is reserved for a future boarding-prep notification and does not gate this event in v0.1. Firing conditions and the real-boarding predicate live in `wake_rules.py` (`detect_wake_events`, `is_real_boarding`); the window in `phase_markers.py` (`boarding_window_open`).
+Fires on transition into actual boarding, gated on the real-boarding signal rather than the `computed_status` label alone — byAir labels the phase `boarding` before boarding starts. The real-boarding predicate is also held against flight-assist's own planned boarding window, the one its boarding block uses (#295), each snapshot judged at its own poll instant. First-cycle "already boarding" does not fire. An undelivered notice retries while the live snapshot still reflects boarding. The precheck sets `phase_markers.boarding_fired` only from a confirmed receipt and suppresses subsequent transitions on that consumed flag; existing true legacy flags remain consumed. Firing conditions and the real-boarding predicate live in `wake_rules.py` (`detect_wake_events`, `is_real_boarding`); the window in `phase_markers.py` (`boarding_window_open`).
 
 #### `carousel_revealed`
 

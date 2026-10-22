@@ -71,6 +71,8 @@ Travel history is the same story. **`jbaruch/tripit-api`** ships the `using-trip
 |------|---------|
 | [flight-data-locality](rules/flight-data-locality.md) | byAir is the single upstream for flight data; AeroAPI / Flighty / airline-specific APIs forbidden. Travel already booked or flown (past trips, PNRs, costs) comes from `jbaruch/tripit-api`, never from hand-parsing the iCal feed |
 | [operator-local-tz-phrasing](rules/operator-local-tz-phrasing.md) | Relative-date words ("today"/"tomorrow") in a surface are phrased against the operator's local date (via the core `current-tz` skill's `read-current-tz.py`), not the container UTC clock; displayed airport clock times stay as-is |
+| [travel-schedule-contract](rules/travel-schedule-contract.md) | Ownership, version and freshness contract for travel-schedule readers |
+| [flight-notification-delivery](rules/flight-notification-delivery.md) | Co-shipped receipt helper lookup and JSON acknowledgement contract for confirmed flight-notification sends |
 
 ## Skills
 

@@ -207,7 +207,7 @@ Top-level fields:
 - `dep_airport_id`, `arr_airport_id` (int, required) — byAir airport IDs
 - `last_polled_at` (RFC 3339 UTC, required) — wall-clock time of the last byAir fetch; cadence-gating consults this
 - `last_snapshot` (object, optional) — the slim ~1KB operational slice from byAir; `null` on the first run before the precheck has fetched anything
-- `phase_markers` (object, required) — once-per-flight fire-and-forget gates for time-based wakes
+- `phase_markers` (object, required) — once-per-flight consumed gates; new notification flags advance only from acknowledged successful sends, while true legacy flags remain consumed
 - `last_wake_at` (RFC 3339 UTC, optional) — when the agent was last woken for this flight
 - `last_wake_reason` (string, optional) — the most recent wake reason for debug
 - `calendar_events` (object, optional) — the ledger of flight-assist-owned/adopted Google Calendar events for this flight, keyed by event kind. Absent or `{}` means none are tracked yet. Validated structurally (object) by `state.py`; the per-entry shape below is owned and deep-validated by the calendar-reconcile planner (`calendar_plan.py`) — the same split as `last_snapshot` ↔ `byair_client`. The map is the source of truth for O(1) update/delete and doubles as the teardown tombstone when a flight leaves `active-flights.json` (the reconciler still holds the event IDs after the flight is gone). Tombstone lifecycle: when a flight drops from the upstream index, `sync_tripit` retains `flight-<id>.json` instead of deleting it if this map is non-empty; the reconcile sweep then deletes the managed events off the ledger and archives (removes) the state file once teardown settles — every teardown delete succeeded, or the flight has completed and its events are left as a record. A failed delete keeps its entry, so the tombstone is retained for the next cycle's retry
@@ -243,7 +243,7 @@ Each entry's fields:
 - `aircraft_model` (string, optional) — byAir's top-level aircraft model. Consumed by the calendar `reconcile` boarding-lead resolver (`boarding_lead.py`), which falls back to `inbound.aircraft_model` when this is absent or empty
 - `dep_lat`, `dep_lon`, `arr_lat`, `arr_lon` (float, optional) — departure/arrival **airport** coordinates (distinct from `position_lat`/`position_lon`, which track the aircraft). The boarding-lead resolver uses them for the transoceanic (TATL/TPAC) check; when any is absent it skips that check and falls back to aircraft size. Populated once the byAir field names for top-level model and airport coordinates are confirmed (#55 runtime facts); until then the resolver runs on `inbound.aircraft_model` and the narrowbody default
 
-`phase_markers` booleans — `true` means the corresponding time-based wake event has already fired and won't fire again for this flight:
+`phase_markers` booleans — `true` consumes the corresponding gate for this flight. New notification flags are copied from confirmed delivery receipts; a wake alone leaves them false. Existing true flags are consumed legacy attempts and do not prove delivery. `landed_acknowledged` remains the separate user-acknowledgement flag:
 
 - `day_before_fired` — T-24h sanity check
 - `time_to_leave_fired` — Traffic-aware leave-by alert
@@ -251,7 +251,7 @@ Each entry's fields:
 - `arrival_logistics_fired` — T-arr−15min logistics push
 - `landed_acknowledged` — User acknowledged the landing notification
 - `connection_at_risk_fired` — Cross-flight: projected transfer window on this leg-2 has fallen below `min_transfer_minutes`. Carried on the leg-2 (downstream) record so the marker survives leg-1 landing
-- `gate_assignment_fired` — The once-per-flight gate + terminal readout has fired (first gate seen inside the pre-boarding window). `gate_change` is gated against this readout anchor: suppressed (recorded silently) until the readout fires; on the readout's own cycle only the redundant departure gate_change is dropped while an arrival-gate move still surfaces; and a flight already boarding or gone — whose readout never fires — surfaces gate moves rather than muting them forever
+- `gate_assignment_fired` — The once-per-flight gate + terminal readout is consumed after acknowledged delivery. Before that receipt, departure gate moves coalesce into the pending readout; on a readout wake the redundant departure gate_change is dropped while an arrival-gate move can still surface. A flight already boarding or gone, whose readout is unreachable, surfaces gate moves directly
 
 ## Atomic Writes
 

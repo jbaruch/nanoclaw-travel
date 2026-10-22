@@ -8,6 +8,8 @@ Pending inbound predictions and all-clears follow the exact refreshed estimate, 
 
 Undelivered departure shifts retain their original baseline across later small changes, so a +30-minute delay followed by another +10 minutes becomes a current +40-minute notice. Pending carousel and gate notices track their current values, including a gate disappearing and reappearing before delivery. A recovered shift or gate move needs no stale notice and creates no delivery receipt.
 
+An inbound warning that recovers before delivery produces no spurious all-clear. When an earlier prediction was actually delivered, its clear uses that last confirmed estimate; a newer delivered all-clear supersedes it. Prediction departure clocks are derived from the existing scheduled departure and current inbound-delay minutes in an ephemeral notification projection, leaving the persisted schema-7 shape unchanged. Regression coverage executes every declared helper lookup (native renderer, checkout and Tessl consumer).
+
 ## 0.2.154 — 2026-10-20
 
 ### travel-core — one itinerary timeline replaces the position ladder (#335)

@@ -262,6 +262,18 @@ class DeliveryStore:
                 return json.loads(_json(row["event"]))
         return None
 
+    def last_confirmed_event(self, flight_id: int, reasons: set[str]) -> dict | None:
+        candidates = [
+            row
+            for row in self.data["notices"].values()
+            if row["flight_id"] == flight_id
+            and row["event"]["reason"] in reasons
+            and row["confirmed_at"] is not None
+        ]
+        if not candidates:
+            return None
+        return json.loads(_json(max(candidates, key=lambda row: row["sequence"])["event"]))
+
     def prune(self, *, active_ids: set[int]) -> None:
         """Make room before observations; retain active flights' delivery receipts."""
         updated = json.loads(_json(self.data))

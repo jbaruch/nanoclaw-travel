@@ -63,6 +63,8 @@ from connection_risk import (  # noqa: E402
 )
 from itinerary import CANCELLED, DIVERTED, Transport, parse_time  # noqa: E402
 from maps_client import MapsClient, MapsError  # noqa: E402
+
+# The co-shipped bundle path must be inserted before this import.
 from notification_delivery import PHASE_BY_REASON, DeliveryStore, notification_store  # noqa: E402
 from operator_tz import READER_TIMEOUT_SECONDS, OperatorTz, read_operator_tz  # noqa: E402
 from phase_markers import (  # noqa: E402
@@ -300,7 +302,8 @@ def _notice_is_current(flight_id: int | None, event: dict, now_utc: datetime) ->
             return (
                 delayed
                 and predicted == event.get("delay_minutes")
-                and inbound.get("predicted_time") == event.get("predicted_time")
+                and _predicted_departure(state.get("scheduled_dep_time"), snapshot)
+                == event.get("predicted_time")
             )
         return not delayed and predicted == event.get("new_delay_minutes")
     if reason == "carousel_revealed":
@@ -311,6 +314,14 @@ def _notice_is_current(flight_id: int | None, event: dict, now_utc: datetime) ->
 def _positive_prediction(inbound: dict) -> int | None:
     value = inbound.get("predicted_delay_minutes")
     return value if type(value) is int and value > 0 else None
+
+
+def _predicted_departure(scheduled_dep_time: str | None, snapshot: dict) -> str | None:
+    scheduled = _parse_iso8601(scheduled_dep_time)
+    minutes = _positive_prediction(snapshot.get("inbound") or {})
+    if scheduled is None or minutes is None:
+        return None
+    return (scheduled + timedelta(minutes=minutes)).isoformat()
 
 
 def _refresh_pending_events(
@@ -341,9 +352,26 @@ def _refresh_pending_events(
                 },
             )
     else:
-        previous = delivery.pending_event(flight_id, "inbound_delay_retracted")
-        if previous is not None:
-            replace("inbound_delay_retracted", {**previous, "new_delay_minutes": predicted})
+        pending_prediction = delivery.pending_event(flight_id, "inbound_delay_predicted")
+        last_delivered = delivery.last_confirmed_event(
+            flight_id, {"inbound_delay_predicted", "inbound_delay_retracted"}
+        )
+        if pending_prediction is not None:
+            if last_delivered is None or last_delivered["reason"] != "inbound_delay_predicted":
+                replace("inbound_delay_retracted", None)
+            else:
+                replace(
+                    "inbound_delay_retracted",
+                    {
+                        "reason": "inbound_delay_retracted",
+                        "prev_delay_minutes": last_delivered["delay_minutes"],
+                        "new_delay_minutes": predicted,
+                    },
+                )
+        else:
+            previous = delivery.pending_event(flight_id, "inbound_delay_retracted")
+            if previous is not None:
+                replace("inbound_delay_retracted", {**previous, "new_delay_minutes": predicted})
 
     previous = delivery.pending_event(flight_id, "delay")
     if previous is not None:
@@ -959,16 +987,24 @@ def _process_flight(
         if prior_snapshot
         else None
     )
+    # The notification projection derives its clock without changing the persisted schema-7 slice.
+    notification_snapshot = {
+        **new_snapshot,
+        "inbound": {
+            **new_snapshot["inbound"],
+            "predicted_time": _predicted_departure(scheduled_dep_time, new_snapshot),
+        },
+    }
     delta_events = detect_wake_events(
         prior_snapshot,
-        new_snapshot,
+        notification_snapshot,
         scheduled_dep_time,
         boarding_window_open=boarding_open,
         now_utc=now_utc,
         prev_polled_at=_parse_iso8601(prior_state.get("last_polled_at")) if prior_state else None,
         prev_boarding_window_open=prev_boarding_open,
     )
-    delta_events = _refresh_pending_events(delivery, flight_id, new_snapshot, delta_events)
+    delta_events = _refresh_pending_events(delivery, flight_id, notification_snapshot, delta_events)
     delta_events = _filter_gate_changes(
         delta_events,
         readout_fired_before=readout_fired_before,
