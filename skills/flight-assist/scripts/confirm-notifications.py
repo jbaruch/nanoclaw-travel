@@ -16,7 +16,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from notification_delivery import DeliveryError, notification_store  # noqa: E402
+try:
+    from notification_delivery import DeliveryError, notification_store
+except ModuleNotFoundError as error:
+    print(
+        f"Flight notice dependency {error.name} is missing; reinstall the complete "
+        "nanoclaw-travel flight-assist bundle and retry the acknowledgement without resending.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 def main(*, now_utc: datetime | None = None) -> int:

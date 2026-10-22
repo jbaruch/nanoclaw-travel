@@ -292,12 +292,44 @@ def _notice_is_current(flight_id: int | None, event: dict, now_utc: datetime) ->
         )
         return is_real_boarding(snapshot, boarding_window_open=window, at=now_utc)
     if reason in {"inbound_delay_predicted", "inbound_delay_retracted"}:
-        predicted = (snapshot.get("inbound") or {}).get("predicted_delay_minutes")
-        delayed = type(predicted) is int and predicted >= INBOUND_DELAY_THRESHOLD_MINUTES
-        return delayed if reason == "inbound_delay_predicted" else not delayed
+        inbound = snapshot.get("inbound") or {}
+        predicted = _positive_prediction(inbound)
+        delayed = predicted is not None and predicted >= INBOUND_DELAY_THRESHOLD_MINUTES
+        if reason == "inbound_delay_predicted":
+            return (
+                delayed
+                and predicted == event.get("delay_minutes")
+                and inbound.get("predicted_time") == event.get("predicted_time")
+            )
+        return not delayed and predicted == event.get("new_delay_minutes")
     if reason == "carousel_revealed":
         return snapshot.get("baggage") == event.get("baggage")
     return True
+
+
+def _positive_prediction(inbound: dict) -> int | None:
+    value = inbound.get("predicted_delay_minutes")
+    return value if type(value) is int and value > 0 else None
+
+
+def _refresh_pending_inbound(delivery: DeliveryStore, flight_id: int, snapshot: dict) -> list[dict]:
+    """Refresh unsent observations even inside the wake detector's delta tolerance."""
+    inbound = snapshot.get("inbound") or {}
+    predicted = _positive_prediction(inbound)
+    if predicted is not None and predicted >= INBOUND_DELAY_THRESHOLD_MINUTES:
+        if delivery.pending_event(flight_id, "inbound_delay_predicted") is not None:
+            return [
+                {
+                    "reason": "inbound_delay_predicted",
+                    "delay_minutes": predicted,
+                    "predicted_time": inbound.get("predicted_time"),
+                }
+            ]
+    else:
+        previous = delivery.pending_event(flight_id, "inbound_delay_retracted")
+        if previous is not None:
+            return [{**previous, "new_delay_minutes": predicted}]
+    return []
 
 
 def _offer_notice(
@@ -894,6 +926,12 @@ def _process_flight(
         now_utc=now_utc,
         prev_polled_at=_parse_iso8601(prior_state.get("last_polled_at")) if prior_state else None,
         prev_boarding_window_open=prev_boarding_open,
+    )
+    detected_reasons = {event["reason"] for event in delta_events}
+    delta_events.extend(
+        event
+        for event in _refresh_pending_inbound(delivery, flight_id, new_snapshot)
+        if event["reason"] not in detected_reasons
     )
     delta_events = _filter_gate_changes(
         delta_events,

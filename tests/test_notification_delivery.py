@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import runpy
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -249,6 +251,67 @@ def test_full_store_refuses_new_notices_without_erasing_pending_work(store_root,
             offer(store, {"reason": "cancelled"})
         assert due(store)[0]["notification_id"] == identity
         assert store.confirm([identity])["confirmed"] == [identity]
+
+
+def test_native_lookup_runs_the_co_shipped_helper_from_an_unrelated_directory(store_root, tmp_path):
+    reference = (BUNDLE / "references/notification-delivery.md").read_text()
+    match = re.search(
+        r"python3 (/home/node/\.claude/skills/"
+        r"tessl__flight-assist/scripts/confirm-notifications\.py)",
+        reference,
+    )
+    assert match is not None
+    native = tmp_path / "renderer" / match[1].lstrip("/")
+    shutil.copytree(BUNDLE, native.parents[1], ignore=shutil.ignore_patterns("__pycache__"))
+    with notification_store(now_utc=NOW) as store:
+        identity = must(offer(store))
+    reply = subprocess.run(
+        [sys.executable, str(native)],
+        cwd=tmp_path,
+        input=json.dumps({"notification_ids": [identity]}),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert reply.returncode == 0, reply.stderr
+    assert json.loads(reply.stdout) == {"confirmed": [identity], "stale": []}
+    bad = subprocess.run(
+        [sys.executable, str(native)],
+        cwd=tmp_path,
+        input="{}",
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert bad.returncode == 2 and bad.stdout == ""
+    assert "without resending" in bad.stderr
+    (native.parents[1] / "notification_delivery.py").unlink()
+    missing = subprocess.run(
+        [sys.executable, str(native)],
+        cwd=tmp_path,
+        input="{}",
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert missing.returncode == 2 and missing.stdout == ""
+    assert "reinstall the complete" in missing.stderr
+
+
+def test_replacing_pending_payload_keeps_the_existing_retry_deadline(store_root):
+    with notification_store(now_utc=NOW) as store:
+        old = must(offer(store))
+        assert due(store)[0]["notification_id"] == old
+    with notification_store(now_utc=NOW + timedelta(minutes=2)) as store:
+        current = must(offer(store, {"reason": "gate_assignment", "dep_gate": "B2"}))
+        assert current != old
+        assert due(store) == []
+        assert store.confirm([old])["stale"] == [old]
+    with notification_store(now_utc=NOW + timedelta(minutes=5)) as store:
+        assert due(store)[0]["notification_id"] == current
 
 
 @pytest.mark.parametrize(

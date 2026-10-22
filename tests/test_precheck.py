@@ -2045,3 +2045,74 @@ def test_snapshot_write_failure_keeps_the_notice_for_the_next_owner_run(state_ro
     notice = next(event for event in restarted if event["event"]["reason"] == "boarding_started")
     assert notice["notification_id"] == identity
     assert must(read_flight_state(12345))["phase_markers"]["boarding_fired"] is False
+
+
+@pytest.mark.parametrize("later_minutes", [28, 40])
+def test_pending_inbound_prediction_retries_only_the_exact_live_estimate(state_root, later_minutes):
+    markers = _phase_markers()
+    markers.update(day_before_fired=True, gate_assignment_fired=True, time_to_leave_fired=True)
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=_scheduled_snapshot(),
+            phase_markers=markers,
+        )
+    )
+    write_active_flights([12345])
+    now = datetime(2026, 5, 18, 16, 0, tzinfo=UTC)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _byair_flight(
+            inbound={"predicted_delay": {"delay_minutes": 25}}
+        )
+        first = precheck._run_cycle(now_utc=now)
+        old = next(e for e in first if e["event"]["reason"] == "inbound_delay_predicted")
+        client.return_value.get_flight.return_value = _byair_flight(
+            inbound={"predicted_delay": {"delay_minutes": later_minutes}}
+        )
+        retry = precheck._run_cycle(now_utc=now + timedelta(minutes=5))
+        again = precheck._run_cycle(now_utc=now + timedelta(minutes=10))
+    predictions = [e for e in retry if e["event"]["reason"] == "inbound_delay_predicted"]
+    assert len(predictions) == 1
+    assert predictions[0]["event"]["delay_minutes"] == later_minutes
+    assert predictions[0]["notification_id"] != old["notification_id"]
+    assert [e for e in again if e["event"]["reason"] == "inbound_delay_predicted"] == predictions
+    with notification_store(now_utc=now + timedelta(minutes=10)) as store:
+        assert store.confirm([old["notification_id"]])["stale"] == [old["notification_id"]]
+
+
+@pytest.mark.parametrize("later_minutes,expected", [(10, 10), (0, None)])
+def test_pending_inbound_retraction_refreshes_its_exact_cleared_estimate(
+    state_root, later_minutes, expected
+):
+    markers = _phase_markers()
+    markers.update(day_before_fired=True, gate_assignment_fired=True, time_to_leave_fired=True)
+    snapshot = _scheduled_snapshot()
+    snapshot["inbound"]["predicted_delay_minutes"] = 95
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=snapshot,
+            phase_markers=markers,
+        )
+    )
+    write_active_flights([12345])
+    now = datetime(2026, 5, 18, 16, 0, tzinfo=UTC)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _byair_flight(
+            inbound={"predicted_delay": {"delay_minutes": 5}}
+        )
+        first = precheck._run_cycle(now_utc=now)
+        old = next(e for e in first if e["event"]["reason"] == "inbound_delay_retracted")
+        client.return_value.get_flight.return_value = _byair_flight(
+            inbound={"predicted_delay": {"delay_minutes": later_minutes}}
+        )
+        retry = precheck._run_cycle(now_utc=now + timedelta(minutes=5))
+    retractions = [e for e in retry if e["event"]["reason"] == "inbound_delay_retracted"]
+    assert len(retractions) == 1
+    assert retractions[0]["event"]["new_delay_minutes"] == expected
+    assert retractions[0]["event"]["prev_delay_minutes"] == 95
+    assert retractions[0]["notification_id"] != old["notification_id"]
+    with notification_store(now_utc=now + timedelta(minutes=5)) as store:
+        assert store.confirm([old["notification_id"]])["stale"] == [old["notification_id"]]

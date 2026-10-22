@@ -108,10 +108,10 @@ Send each composed notification through `mcp__nanoclaw__send_message` in the cur
 
 Treat the current wake's events as work to deliver. A phase marker in the flight snapshot is not a delivery receipt; never suppress the current notification solely on that marker. A duplicate requires evidence of a confirmed earlier send.
 
-For an event carrying `notification_id`, send its notification; the delivery store already selected an unconfirmed attempt. After `send_message` returns success, acknowledge only the IDs covered by that message. A merged notification acknowledges every included ID. Read the installed delivery contract:
+For an event carrying `notification_id`, send its notification. After `send_message` returns success, acknowledge only the IDs covered by that message. A merged notification acknowledges every included ID. Read the delivery contract:
 
 ```text
-/home/node/.claude/skills/tessl__flight-assist/references/notification-delivery.md
+skills/flight-assist/references/notification-delivery.md
 ```
 
 On a failed send, leave those IDs pending and continue other notifications. Do not call the acknowledgement helper for an uncertain send. A confirmation-helper error permits retrying only the acknowledgement, never another send in that turn. Final text is internal bookkeeping, never delivery.

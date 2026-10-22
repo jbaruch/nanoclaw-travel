@@ -38,6 +38,7 @@ PHASE_BY_REASON = {
     "gate_assignment": "gate_assignment_fired",
 }
 PHASE_MARKERS = frozenset(PHASE_BY_REASON.values())
+INBOUND_REASONS = frozenset({"inbound_delay_predicted", "inbound_delay_retracted"})
 _ROW_KEYS = frozenset(
     {
         "schema_version",
@@ -197,6 +198,17 @@ class DeliveryStore:
         previous = self.data["notices"].get(key)
         if previous and previous["confirmed_at"] is not None:
             return None
+        if previous is None and reason in INBOUND_REASONS:
+            previous = next(
+                (
+                    row
+                    for row in self.data["notices"].values()
+                    if row["flight_id"] == flight_id
+                    and row["event"]["reason"] == reason
+                    and row["confirmed_at"] is None
+                ),
+                None,
+            )
         if previous and previous["event"] == event and _time(previous["expires_at"]) > self.now:
             return previous["id"]
         if previous is None and len(self.data["notices"]) >= MAX_NOTICES:
@@ -205,6 +217,8 @@ class DeliveryStore:
                 "and the active-flight index before retrying; do not erase receipts."
             )
         updated = json.loads(_json(self.data))
+        if previous is not None and previous["key"] != key:
+            del updated["notices"][previous["key"]]
         sequence = updated["sequence"] + 1
         identity = _digest([sequence, key, event])[:32]
         updated["sequence"] = sequence
@@ -218,11 +232,25 @@ class DeliveryStore:
             "event": event,
             "marker": marker,
             "expires_at": _stamp(expiry),
-            "retry_at": None,
+            "retry_at": (
+                previous["retry_at"]
+                if previous is not None and _time(previous["expires_at"]) > self.now
+                else None
+            ),
             "confirmed_at": None,
         }
         self._save(updated)
         return identity
+
+    def pending_event(self, flight_id: int, reason: str) -> dict | None:
+        for row in self.data["notices"].values():
+            if (
+                row["flight_id"] == flight_id
+                and row["event"]["reason"] == reason
+                and row["confirmed_at"] is None
+            ):
+                return json.loads(_json(row["event"]))
+        return None
 
     def prune(self, *, active_ids: set[int]) -> None:
         """Make room before observations; retain active flights' delivery receipts."""

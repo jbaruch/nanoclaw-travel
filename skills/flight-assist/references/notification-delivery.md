@@ -8,7 +8,7 @@ After the tool confirms a send, save only that message's included IDs as JSON da
 {"notification_ids":["<id from the delivered wake event>"]}
 ```
 
-Invoke the co-shipped helper:
+Invoke the co-shipped helper using `rules/flight-notification-delivery.md`. In NanoClaw:
 
 ```bash
 python3 /home/node/.claude/skills/tessl__flight-assist/scripts/confirm-notifications.py \

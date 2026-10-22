@@ -15,6 +15,7 @@
   "rules": [
     "rules/flight-data-locality.md",
     "rules/operator-local-tz-phrasing.md",
-    "rules/travel-schedule-contract.md"
+    "rules/travel-schedule-contract.md",
+    "rules/flight-notification-delivery.md"
   ]
 }
