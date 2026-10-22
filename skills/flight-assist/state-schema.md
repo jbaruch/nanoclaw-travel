@@ -338,3 +338,18 @@ Tolerance:
 
 - A block whose state is missing or malformed (no marker, unparseable JSON, unparseable baseline / anchor, empty endpoints, unknown direction, missing event id) parses to `None` and is treated as "not a block I recheck" — never raised on.
 - The API fetch / create / find / patch go through `google_calendar_client` — the native Calendar REST API, brokered by OneCLI's gateway (nanoclaw#638).
+
+
+## Notification delivery store
+
+`flight-assist` owns `notifications.json` and its `notifications.lock` in the state directory. The owner library is `skills/flight-assist/notification_delivery.py`; only its transaction API writes this artifact. Its schema version is independent of the per-flight family.
+
+The file has `schema_version: 1`, a nonnegative monotonic `sequence`, and a `notices` map keyed by observation digest. Every notice carries `schema_version: 1`, `id`, `key`, `sequence`, `prior_poll`, `flight_id`, `event`, `marker`, `expires_at`, `retry_at` and `confirmed_at`. IDs and keys bind the stored observation; timestamps carry UTC offsets. `flight_id` and `marker` may be null. `confirmed_at` is null until the caller acknowledges a confirmed send. The library owns field validation, bounds and retry timing.
+
+The precheck persists notices before advancing their flight snapshots. A due attempt changes only its retry deadline. A failed send leaves it unconfirmed. A changed pending phase gets a fresh ID; acknowledging the older ID cannot consume its replacement. An already-confirmed observation remains consumed. Notices for inactive flights and expired pending notices are removed; confirmed phase receipts remain while that flight is active. A failed or deferred live poll cannot surface its queued notice.
+
+The model sends the notice with `send_message`, then acknowledges only the IDs covered by that successful send through `skills/flight-assist/scripts/confirm-notifications.py`. The helper sends nothing. A helper failure permits retrying the acknowledgement, not resending the same notice in that turn. The helper cannot independently verify a Telegram receipt; the owner workflow supplies the confirmed-send precondition. Delivery is at least once: a crash after Telegram accepts a send but before acknowledgement can produce a later duplicate.
+
+The new store takes the stateful-artifacts gate-store exception. Unknown versions, malformed records and unreadable files refuse with a repair diagnostic; they never become an empty store. Version 1 has no predecessor. A future owner version must migrate every accepted older version and rewrite it on read. Missing state is first-run state. Readers are the precheck and acknowledgement helper; they use only the owner library.
+
+The existing per-flight schema remains version 7 with the same fields and gate values. Existing true flags remain consumed legacy attempts; the change creates no synthetic receipts and replays no historical alerts. New flags advance only from confirmed entries in the new store. The flags alone remain insufficient evidence that an old notification was delivered.

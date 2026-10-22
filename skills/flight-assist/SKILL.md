@@ -61,7 +61,7 @@ It converges the calendar to byAir truth — creates/shifts the boarding block, 
 
 It prints single-line JSON: `{"status": "...", "planned": N, "executed": N, "archived": N, "failed": [...], "airport_drive": {...}}`. Output keys vary by `status`: `byair_calendar_id` and `archived` are present only when a cycle ran (`ok` / `no_flights`) and are omitted on `no_calendar`, so do not depend on a key that may be absent. `status: "ok"` means a cycle ran. `no_calendar` (no flight calendar resolved from config), `no_flights` (nothing tracked), or `{"status": "error", "error": "gateway"}` (the OneCLI gateway is not authenticating the requests) or `{"status": "error", "error": "tier"}` (this agent's tier is gated from Google by design) all mean reconciliation is inactive this cycle. The `airport_drive` object is now a fixed retired marker — `{"status": "retired", "engine": "drive-engine"}` — since airport drives moved to the unified drive-engine (#156); it is bookkeeping only, absent on the error exits. Treat a non-empty `failed` list (those ops retry next cycle) as expected: proceed to the notification below. Reconcile output is calendar bookkeeping, never a user-facing message — do not surface it; proceed silently regardless of its result.
 
-Then compose the notification. Each event is `{"flight_id": int | null, "event": {"reason": "...", ...}}`. Compose one human-readable notification per event.
+Then compose the notification. Each event is `{"flight_id": int | null, "event": {"reason": "...", ...}, "notification_id": "<opaque id>"}`. Other callers may omit `notification_id`. Compose one human-readable notification per event.
 
 The full event-shape contract is in `references/event-payloads.md`; consult it when an event's `reason` is unfamiliar.
 
@@ -104,6 +104,16 @@ If multiple events share the same `flight_id` (e.g., `gate_change` + `delay` in 
 
 Source-level events (`flight_id: null`) are never merged: compose each one as its own notification, separate from flight events and from each other.
 
-After composing, route the notification through the user's main channel (the orchestrator handles routing; the skill just produces the message text).
+Send each composed notification through `mcp__nanoclaw__send_message` in the current main chat. Omit `sender` and `chat_jid`. Scheduled skill runs do not forward final text to the user.
 
-If no actionable text would result for an event (e.g., a duplicate notification you've already sent within the last 10 min), emit nothing for it: no `send_message`, no emoji, no reaction, no "no notification needed". A scheduled wake has no inbound message to react to. Never send an emoji ack from it. Finish here.
+Treat the current wake's events as work to deliver. A phase marker in the flight snapshot is not a delivery receipt; never suppress the current notification solely on that marker. A duplicate requires evidence of a confirmed earlier send.
+
+For an event carrying `notification_id`, send its notification; the delivery store already selected an unconfirmed attempt. After `send_message` returns success, acknowledge only the IDs covered by that message. A merged notification acknowledges every included ID. Read the installed delivery contract:
+
+```text
+/home/node/.claude/skills/tessl__flight-assist/references/notification-delivery.md
+```
+
+On a failed send, leave those IDs pending and continue other notifications. Do not call the acknowledgement helper for an uncertain send. A confirmation-helper error permits retrying only the acknowledgement, never another send in that turn. Final text is internal bookkeeping, never delivery.
+
+For events without `notification_id`, if no actionable text would result (e.g., a duplicate notification you've already sent within the last 10 min), emit nothing for it: no `send_message`, no emoji, no reaction, no "no notification needed". A scheduled wake has no inbound message to react to. Never send an emoji ack from it. Finish here.

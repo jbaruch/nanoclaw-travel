@@ -1,5 +1,9 @@
 # Changelog
 
+### flight-assist — consume notifications after confirmed delivery (#341)
+
+A wake previously advanced the snapshot and consumed its phase flags before the agent sent anything. Scheduled final text is internal, and the compose step could mistake that consumed flag for evidence that the user had already been notified. Flight notices now enter a separate schema-1 delivery store before snapshot writes. Pending attempts survive restarts and retry after five minutes, with refreshed flight data and both legs refreshed for connection warnings. Obsolete or expired observations are removed without creating receipts. An explicit successful `send_message` is followed by an exact-ID acknowledgement; stale acknowledgements cannot consume replacement notices. Existing schema-7 phase flags remain consumed legacy attempts, without importing them as receipts or replaying historical alerts. A send accepted immediately before a crash can still duplicate on retry.
+
 ## 0.2.154 — 2026-10-20
 
 ### travel-core — one itinerary timeline replaces the position ladder (#335)

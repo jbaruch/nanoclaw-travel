@@ -13,7 +13,7 @@ import json
 import subprocess
 import sys
 import urllib.error
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 
 import precheck  # noqa: E402
+from notification_delivery import notification_store  # noqa: E402
 from operator_tz import OperatorTz  # noqa: E402
 from state import (  # noqa: E402
     CURRENT_LOCATION_FILE,
@@ -725,9 +726,21 @@ def test_gate_assignment_readout_fires_in_window(state_root: Path):
     assert by_reason["gate_assignment"]["dep_gate"] == "D6"
     assert by_reason["gate_assignment"]["dep_terminal"] == "1"
     assert "gate_change" not in by_reason  # muted on the readout cycle
-    # Marker persisted so the next gate move surfaces as gate_change.
+    # A wake alone is not delivery. The next gate change is released only
+    # after this exact notice has a confirmed send acknowledgement.
     persisted = must(read_flight_state(12345))
-    assert persisted["phase_markers"]["gate_assignment_fired"] is True
+    assert persisted["phase_markers"]["gate_assignment_fired"] is False
+    notice = next(e for e in events if e["event"]["reason"] == "gate_assignment")
+    with notification_store(now_utc=fake_now) as delivery:
+        assert delivery.confirm([notice["notification_id"]])["stale"] == []
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _byair_flight(
+            flight_id=12345, dep_gate="D7", dep_terminal="1"
+        )
+        later = precheck._run_cycle(now_utc=fake_now + timedelta(minutes=10))
+    assert any(e["event"]["reason"] == "gate_change" for e in later)
+    assert not any(e["event"]["reason"] == "gate_assignment" for e in later)
+    assert must(read_flight_state(12345))["phase_markers"]["gate_assignment_fired"] is True
 
 
 def test_gate_assignment_window_resolves_widebody_lead_from_snapshot(state_root: Path):
@@ -1028,7 +1041,21 @@ def test_seeded_state_with_no_snapshot_forces_poll(state_root: Path):
     assert "day_before" in reasons
     persisted = must(read_flight_state(12345))
     assert persisted["last_snapshot"] is not None
-    assert persisted["phase_markers"]["day_before_fired"] is True
+    assert persisted["phase_markers"]["day_before_fired"] is False
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = fake_flight
+        retried = precheck._run_cycle(
+            now_utc=fake_now + timedelta(minutes=5), operator_tz_reader=_CountingReader(_CHICAGO)
+        )
+        assert client.return_value.get_flight.call_count == 1
+    retry = next(e for e in retried if e["event"]["reason"] == "day_before")
+    with notification_store(now_utc=fake_now + timedelta(minutes=5)) as delivery:
+        delivery.confirm([retry["notification_id"]])
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = fake_flight
+        after_ack = precheck._run_cycle(now_utc=fake_now + timedelta(minutes=35))
+    assert _day_before_events(after_ack) == []
+    assert must(read_flight_state(12345))["phase_markers"]["day_before_fired"] is True
 
 
 def test_wall_clock_budget_defers_remaining_slow_flights(state_root: Path):
@@ -1421,7 +1448,7 @@ def test_script_safe_shape_on_byair_misconfig(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_connection_risk_pass_fires_and_persists_marker(state_root: Path):
+def test_connection_risk_pass_queues_without_claiming_delivery(state_root: Path):
     """Two-leg trip with tight transfer: cycle should emit connection_at_risk
     and flip the leg-2 marker so the next cycle does not re-fire."""
     leg1 = _make_state(
@@ -1482,9 +1509,9 @@ def test_connection_risk_pass_fires_and_persists_marker(state_root: Path):
     assert risk_events[0]["event"]["transfer_minutes_remaining"] == 30
     assert risk_events[0]["event"]["min_transfer_minutes"] == 45
 
-    # Marker persisted: next cycle should not re-fire
+    # A wake changes only the delivery retry deadline, never the phase flag.
     leg2_after = must(read_flight_state(2))
-    assert leg2_after["phase_markers"]["connection_at_risk_fired"] is True
+    assert leg2_after["phase_markers"]["connection_at_risk_fired"] is False
 
     with patch("precheck.ByAirClient.from_env"):
         events_second = precheck._run_cycle(now_utc=fake_now)
@@ -1823,9 +1850,9 @@ def test_connection_risk_fires_when_leg2_is_beyond_poll_horizon(state_root: Path
     assert len(risk_events) == 1
     assert risk_events[0]["flight_id"] == 2
     assert risk_events[0]["event"]["transfer_minutes_remaining"] == 30
-    # leg-2 marker flipped by the risk pass, but it was never polled.
+    # Leg 2 remains unnotified until a real send is acknowledged.
     leg2_after = must(read_flight_state(2))
-    assert leg2_after["phase_markers"]["connection_at_risk_fired"] is True
+    assert leg2_after["phase_markers"]["connection_at_risk_fired"] is False
     assert leg2_after["last_snapshot"] is None
 
 
@@ -1923,7 +1950,9 @@ def test_a_later_flight_byair_drops_never_reaches_the_origin(state_root: Path, m
             now_utc=datetime(2026, 5, 18, 16, 0, 0, tzinfo=UTC),
             operator_tz_reader=_CountingReader(_CHICAGO),
         )
-    assert {"flight_id": 2, "event": {"reason": "removed_upstream"}} in events
+    removed = next(e for e in events if e["flight_id"] == 2)
+    assert removed["event"] == {"reason": "removed_upstream"}
+    assert isinstance(removed["notification_id"], str)
     assert seen and all(t.origin != "LGA" for t in seen)
 
 
@@ -1932,3 +1961,87 @@ class _NoRouteMaps:
 
     def travel_time(self, *, origin, destination):
         raise precheck.MapsError("ZERO_RESULTS", "no route")
+
+
+def test_undelivered_boarding_retries_while_boarding_continues(state_root):
+    markers = _phase_markers()
+    markers.update(day_before_fired=True, gate_assignment_fired=True, time_to_leave_fired=True)
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=_scheduled_snapshot(),
+            phase_markers=markers,
+        )
+    )
+    write_active_flights([12345])
+    now = datetime(2026, 5, 18, 16, 31, tzinfo=UTC)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _boarding_now_flight()
+        first = precheck._run_cycle(now_utc=now)
+        first_boarding = next(e for e in first if e["event"]["reason"] == "boarding_started")
+        retry = precheck._run_cycle(now_utc=now + timedelta(minutes=5))
+    retry_boarding = next(e for e in retry if e["event"]["reason"] == "boarding_started")
+    assert first_boarding["notification_id"] == retry_boarding["notification_id"]
+    assert must(read_flight_state(12345))["phase_markers"]["boarding_fired"] is False
+    with notification_store(now_utc=now + timedelta(minutes=5)) as delivery:
+        delivery.confirm([retry_boarding["notification_id"]])
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _boarding_now_flight()
+        assert not any(
+            e["event"]["reason"] == "boarding_started"
+            for e in precheck._run_cycle(now_utc=now + timedelta(minutes=10))
+        )
+    assert must(read_flight_state(12345))["phase_markers"]["boarding_fired"] is True
+
+
+def test_legacy_consumed_boarding_is_not_replayed_or_imported_as_a_receipt(state_root):
+    markers = {name: True for name in _phase_markers()}
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=_scheduled_snapshot(),
+            phase_markers=markers,
+        )
+    )
+    write_active_flights([12345])
+    now = datetime(2026, 5, 18, 16, 31, tzinfo=UTC)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _boarding_now_flight()
+        events = precheck._run_cycle(now_utc=now)
+    assert not any(event["event"]["reason"] == "boarding_started" for event in events)
+    assert must(read_flight_state(12345))["phase_markers"] == markers
+    with notification_store(now_utc=now) as store:
+        assert store.confirmed_markers(12345) == set()
+
+
+def test_snapshot_write_failure_keeps_the_notice_for_the_next_owner_run(state_root):
+    prior = _make_state(
+        flight_id=12345,
+        last_polled_at="2026-05-18T15:00:00Z",
+        last_snapshot=_scheduled_snapshot(),
+        phase_markers=_phase_markers(),
+    )
+    write_flight_state(prior)
+    before = must(read_flight_state(12345))
+    write_active_flights([12345])
+    now = datetime(2026, 5, 18, 16, 31, tzinfo=UTC)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _boarding_now_flight()
+        with patch("precheck.write_flight_state", side_effect=OSError("disk unavailable")):
+            with pytest.raises(OSError, match="disk unavailable"):
+                precheck._run_cycle(now_utc=now)
+        assert read_flight_state(12345) == before
+        with notification_store(now_utc=now) as store:
+            pending = next(
+                row
+                for row in store.data["notices"].values()
+                if row["event"]["reason"] == "boarding_started"
+            )
+            identity = pending["id"]
+            assert pending["confirmed_at"] is None
+        restarted = precheck._run_cycle(now_utc=now + timedelta(minutes=5))
+    notice = next(event for event in restarted if event["event"]["reason"] == "boarding_started")
+    assert notice["notification_id"] == identity
+    assert must(read_flight_state(12345))["phase_markers"]["boarding_fired"] is False
