@@ -2116,3 +2116,104 @@ def test_pending_inbound_retraction_refreshes_its_exact_cleared_estimate(
     assert retractions[0]["notification_id"] != old["notification_id"]
     with notification_store(now_utc=now + timedelta(minutes=5)) as store:
         assert store.confirm([old["notification_id"]])["stale"] == [old["notification_id"]]
+
+
+@pytest.mark.parametrize(
+    "later_time,minutes",
+    [
+        ("2026-05-18T17:40:00+00:00", 40),
+        ("2026-05-18T17:20:00+00:00", 20),
+        ("2026-05-18T17:00:00+00:00", None),
+    ],
+)
+def test_pending_delay_uses_its_undelivered_baseline_after_small_drift(
+    state_root, later_time, minutes
+):
+    snapshot = _scheduled_snapshot()
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=snapshot,
+            phase_markers={name: True for name in _phase_markers()},
+        )
+    )
+    write_active_flights([12345])
+    now = datetime(2026, 5, 18, 16, 0, tzinfo=UTC)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _byair_flight(
+            dep_time="2026-05-18T17:30:00+00:00"
+        )
+        first = precheck._run_cycle(now_utc=now)
+        old = next(e for e in first if e["event"]["reason"] == "delay")
+        client.return_value.get_flight.return_value = _byair_flight(dep_time=later_time)
+        retry = precheck._run_cycle(now_utc=now + timedelta(minutes=5))
+    delays = [e for e in retry if e["event"]["reason"] == "delay"]
+    if minutes is None:
+        assert delays == []
+    else:
+        assert len(delays) == 1
+        assert delays[0]["event"]["delay_minutes"] == minutes
+        assert delays[0]["event"]["new_dep_time"] == later_time
+    with notification_store(now_utc=now + timedelta(minutes=5)) as store:
+        assert store.confirm([old["notification_id"]])["stale"] == [old["notification_id"]]
+
+
+@pytest.mark.parametrize("baggage", ["5", None])
+def test_pending_carousel_refreshes_before_delivery_or_retracts_missing_data(state_root, baggage):
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=_scheduled_snapshot(),
+            phase_markers={name: True for name in _phase_markers()},
+        )
+    )
+    write_active_flights([12345])
+    now = datetime(2026, 5, 18, 16, 0, tzinfo=UTC)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _byair_flight(baggage="3")
+        old = next(
+            e
+            for e in precheck._run_cycle(now_utc=now)
+            if e["event"]["reason"] == "carousel_revealed"
+        )
+        client.return_value.get_flight.return_value = _byair_flight(baggage=baggage)
+        retry = precheck._run_cycle(now_utc=now + timedelta(minutes=5))
+    carousels = [e for e in retry if e["event"]["reason"] == "carousel_revealed"]
+    assert [e["event"]["baggage"] for e in carousels] == ([] if baggage is None else [baggage])
+    with notification_store(now_utc=now + timedelta(minutes=5)) as store:
+        assert store.confirm([old["notification_id"]])["stale"] == [old["notification_id"]]
+
+
+@pytest.mark.parametrize("gate", ["C3", "A1"])
+def test_pending_gate_changes_track_each_side_through_missing_values(state_root, gate):
+    snapshot = {**_scheduled_snapshot(), "dep_gate": "A1", "arr_gate": "A2"}
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=snapshot,
+            phase_markers={name: True for name in _phase_markers()},
+        )
+    )
+    write_active_flights([12345])
+    now = datetime(2026, 5, 18, 16, 0, tzinfo=UTC)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _byair_flight()
+        first = precheck._run_cycle(now_utc=now)
+        old = [e for e in first if e["event"]["reason"] == "gate_change"]
+        assert len(old) == 2
+        raw = _byair_flight(dep_gate=gate)
+        raw["arrGate"] = "D4"
+        client.return_value.get_flight.return_value = raw
+        retry = precheck._run_cycle(now_utc=now + timedelta(minutes=5))
+    changes = [e["event"] for e in retry if e["event"]["reason"] == "gate_change"]
+    expected = [{"reason": "gate_change", "side": "arr", "from": "A2", "to": "D4"}]
+    if gate != "A1":
+        expected.append({"reason": "gate_change", "side": "dep", "from": "A1", "to": gate})
+    assert sorted(changes, key=lambda e: e["side"]) == sorted(expected, key=lambda e: e["side"])
+    with notification_store(now_utc=now + timedelta(minutes=5)) as store:
+        assert store.confirm([e["notification_id"] for e in old])["stale"] == [
+            e["notification_id"] for e in old
+        ]

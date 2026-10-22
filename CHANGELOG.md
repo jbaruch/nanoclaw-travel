@@ -6,6 +6,8 @@ A wake previously advanced the snapshot and consumed its phase flags before the 
 
 Pending inbound predictions and all-clears follow the exact refreshed estimate, including changes inside the wake detector's delta tolerance. Replacements preserve their attempt deadline and invalidate old IDs. The named flight-notification delivery contract declares native, checkout and Tessl helper lookup plus its JSON I/O; executable regression coverage runs the co-shipped helper through the declared native layout from an unrelated working directory.
 
+Undelivered departure shifts retain their original baseline across later small changes, so a +30-minute delay followed by another +10 minutes becomes a current +40-minute notice. Pending carousel and gate notices track their current values, including a gate disappearing and reappearing before delivery. A recovered shift or gate move needs no stale notice and creates no delivery receipt.
+
 ## 0.2.154 — 2026-10-20
 
 ### travel-core — one itinerary timeline replaces the position ladder (#335)

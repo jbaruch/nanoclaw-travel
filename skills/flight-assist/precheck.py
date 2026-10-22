@@ -86,6 +86,7 @@ from state import (  # noqa: E402
 from trip_origin import resolve_effective_home  # noqa: E402
 from trip_window import evaluate_trip_window  # noqa: E402
 from wake_rules import (  # noqa: E402
+    DELAY_THRESHOLD_MINUTES,
     INBOUND_DELAY_THRESHOLD_MINUTES,
     detect_wake_events,
     is_real_boarding,
@@ -312,24 +313,64 @@ def _positive_prediction(inbound: dict) -> int | None:
     return value if type(value) is int and value > 0 else None
 
 
-def _refresh_pending_inbound(delivery: DeliveryStore, flight_id: int, snapshot: dict) -> list[dict]:
-    """Refresh unsent observations even inside the wake detector's delta tolerance."""
+def _refresh_pending_events(
+    delivery: DeliveryStore, flight_id: int, snapshot: dict, events: list[dict]
+) -> list[dict]:
+    """Refresh unsent observations against their original, unannounced baseline."""
+    result = list(events)
+
+    def replace(reason: str, event: dict | None, *, side: str | None = None) -> None:
+        result[:] = [
+            item
+            for item in result
+            if item["reason"] != reason or side is not None and item.get("side") != side
+        ]
+        if event is not None:
+            result.append(event)
+
     inbound = snapshot.get("inbound") or {}
     predicted = _positive_prediction(inbound)
     if predicted is not None and predicted >= INBOUND_DELAY_THRESHOLD_MINUTES:
         if delivery.pending_event(flight_id, "inbound_delay_predicted") is not None:
-            return [
+            replace(
+                "inbound_delay_predicted",
                 {
                     "reason": "inbound_delay_predicted",
                     "delay_minutes": predicted,
                     "predicted_time": inbound.get("predicted_time"),
-                }
-            ]
+                },
+            )
     else:
         previous = delivery.pending_event(flight_id, "inbound_delay_retracted")
         if previous is not None:
-            return [{**previous, "new_delay_minutes": predicted}]
-    return []
+            replace("inbound_delay_retracted", {**previous, "new_delay_minutes": predicted})
+
+    previous = delivery.pending_event(flight_id, "delay")
+    if previous is not None:
+        observed = _parse_iso8601(previous.get("new_dep_time"))
+        current = _parse_iso8601(snapshot.get("dep_time"))
+        event = None
+        if observed is not None and current is not None:
+            baseline = observed - timedelta(minutes=previous["delay_minutes"])
+            minutes = int((current - baseline).total_seconds() // 60)
+            if abs(minutes) >= DELAY_THRESHOLD_MINUTES:
+                event = {**previous, "delay_minutes": minutes, "new_dep_time": snapshot["dep_time"]}
+        replace("delay", event)
+
+    previous = delivery.pending_event(flight_id, "carousel_revealed")
+    if previous is not None:
+        baggage = snapshot.get("baggage")
+        replace(
+            "carousel_revealed", {**previous, "baggage": baggage} if baggage is not None else None
+        )
+
+    for side in ("dep", "arr"):
+        previous = delivery.pending_event(flight_id, "gate_change", side=side)
+        if previous is not None:
+            gate = snapshot.get(f"{side}_gate")
+            event = {**previous, "to": gate} if gate != previous["from"] else None
+            replace("gate_change", event, side=side)
+    return result
 
 
 def _offer_notice(
@@ -927,12 +968,7 @@ def _process_flight(
         prev_polled_at=_parse_iso8601(prior_state.get("last_polled_at")) if prior_state else None,
         prev_boarding_window_open=prev_boarding_open,
     )
-    detected_reasons = {event["reason"] for event in delta_events}
-    delta_events.extend(
-        event
-        for event in _refresh_pending_inbound(delivery, flight_id, new_snapshot)
-        if event["reason"] not in detected_reasons
-    )
+    delta_events = _refresh_pending_events(delivery, flight_id, new_snapshot, delta_events)
     delta_events = _filter_gate_changes(
         delta_events,
         readout_fired_before=readout_fired_before,

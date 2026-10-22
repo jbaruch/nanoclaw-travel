@@ -38,7 +38,15 @@ PHASE_BY_REASON = {
     "gate_assignment": "gate_assignment_fired",
 }
 PHASE_MARKERS = frozenset(PHASE_BY_REASON.values())
-INBOUND_REASONS = frozenset({"inbound_delay_predicted", "inbound_delay_retracted"})
+MUTABLE_OBSERVATION_REASONS = frozenset(
+    {
+        "inbound_delay_predicted",
+        "inbound_delay_retracted",
+        "delay",
+        "carousel_revealed",
+        "gate_change",
+    }
+)
 _ROW_KEYS = frozenset(
     {
         "schema_version",
@@ -198,13 +206,14 @@ class DeliveryStore:
         previous = self.data["notices"].get(key)
         if previous and previous["confirmed_at"] is not None:
             return None
-        if previous is None and reason in INBOUND_REASONS:
+        if previous is None and reason in MUTABLE_OBSERVATION_REASONS:
             previous = next(
                 (
                     row
                     for row in self.data["notices"].values()
                     if row["flight_id"] == flight_id
                     and row["event"]["reason"] == reason
+                    and (reason != "gate_change" or row["event"].get("side") == event.get("side"))
                     and row["confirmed_at"] is None
                 ),
                 None,
@@ -242,11 +251,12 @@ class DeliveryStore:
         self._save(updated)
         return identity
 
-    def pending_event(self, flight_id: int, reason: str) -> dict | None:
+    def pending_event(self, flight_id: int, reason: str, *, side: str | None = None) -> dict | None:
         for row in self.data["notices"].values():
             if (
                 row["flight_id"] == flight_id
                 and row["event"]["reason"] == reason
+                and (side is None or row["event"].get("side") == side)
                 and row["confirmed_at"] is None
             ):
                 return json.loads(_json(row["event"]))
