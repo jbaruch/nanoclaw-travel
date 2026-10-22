@@ -11,9 +11,9 @@ decision is possible BEFORE leg-1 takes off (when the user still has
 agency on the ground).
 
 Fires once per leg-2 flight (the `connection_at_risk_fired` phase
-marker on leg-2's state). After firing, the alert won't re-fire even
-if the delay magnitude grows further — the user already knows the
-connection is tight; what they need is enough lead time to act.
+marker on leg-2's state). The caller keeps a wake pending until its
+successful send is acknowledged. After confirmed delivery, the marker
+suppresses later alerts even if the delay magnitude grows further.
 
 Inputs are loaded by the precheck from existing on-disk per-flight
 state — no fresh byAir call is needed here, because the cadence ladder
@@ -21,8 +21,8 @@ already keeps each leg's snapshot at the appropriate freshness. The
 per-flight `trip_id` stored at sync time is the grouping key.
 
 Pure functions: no I/O, no state mutation. The caller (precheck.py)
-sets the marker flag in state after firing so subsequent cycles
-don't re-emit.
+sets the marker flag only from a confirmed receipt. A wake alone
+does not consume this gate.
 
 stdlib-only: `datetime` per `coding-policy: dependency-management`.
 """
@@ -54,9 +54,9 @@ def detect_connection_risks(
     """Return per-leg-2 connection-risk events for tight transfers.
 
     Returns a list of `(leg2_flight_id, event_dict)` tuples. The caller
-    (precheck.py) flips `phase_markers["connection_at_risk_fired"]` on
-    each leg-2 state record after the event is emitted, so subsequent
-    cycles don't re-fire.
+    (precheck.py) queues these notices, then copies confirmed receipts into
+    each leg-2 record's `phase_markers["connection_at_risk_fired"]`.
+    Emitting a wake leaves that gate unconsumed.
 
     `flight_states` is the full on-disk list of per-flight records
     (each matches the shape in state-schema.md). The function groups by

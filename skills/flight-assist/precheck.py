@@ -63,6 +63,9 @@ from connection_risk import (  # noqa: E402
 )
 from itinerary import CANCELLED, DIVERTED, Transport, parse_time  # noqa: E402
 from maps_client import MapsClient, MapsError  # noqa: E402
+
+# The co-shipped bundle path must be inserted before this import.
+from notification_delivery import PHASE_BY_REASON, DeliveryStore, notification_store  # noqa: E402
 from operator_tz import READER_TIMEOUT_SECONDS, OperatorTz, read_operator_tz  # noqa: E402
 from phase_markers import (  # noqa: E402
     boarding_window_open,
@@ -84,7 +87,12 @@ from state import (  # noqa: E402
 )
 from trip_origin import resolve_effective_home  # noqa: E402
 from trip_window import evaluate_trip_window  # noqa: E402
-from wake_rules import detect_wake_events  # noqa: E402
+from wake_rules import (  # noqa: E402
+    DELAY_THRESHOLD_MINUTES,
+    INBOUND_DELAY_THRESHOLD_MINUTES,
+    detect_wake_events,
+    is_real_boarding,
+)
 
 # Cadence ladder (minutes). Keyed by `computed_status`; the
 # scheduled / en_route bins split further on time-to-departure or
@@ -227,6 +235,210 @@ def _run_cycle(
     operator_tz_reader: Callable[[], OperatorTz | None] = read_operator_tz,
     poll_failures: set[int] | None = None,
 ) -> list[dict]:
+    failed = poll_failures if poll_failures is not None else set()
+    active = list(dict.fromkeys(read_active_flights()))
+    with notification_store(now_utc=now_utc) as delivery:
+        delivery.prune(active_ids=set(active))
+        verified: set[int] = set()
+        events, excluded = _collect_cycle(
+            now_utc=now_utc,
+            monotonic=monotonic,
+            operator_tz_reader=operator_tz_reader,
+            poll_failures=failed,
+            delivery=delivery,
+            active_flight_ids=active,
+            verified_ids=verified,
+        )
+        removed = {
+            item["flight_id"] for item in events if item["event"]["reason"] == "removed_upstream"
+        }
+        phases = {
+            (item["flight_id"], PHASE_BY_REASON[item["event"]["reason"]])
+            for item in events
+            if item["event"]["reason"] in PHASE_BY_REASON
+        }
+        delivery.reconcile(
+            verified_ids=verified,
+            current_phases=phases,
+            is_current=lambda fid, event: _notice_is_current(fid, event, now_utc),
+        )
+        return delivery.due(
+            active_ids=set(active), excluded_ids=excluded - removed, removed_ids=removed
+        )
+
+
+def _notice_is_current(flight_id: int | None, event: dict, now_utc: datetime) -> bool:
+    if flight_id is None:
+        return True
+    if event["reason"] == "removed_upstream":
+        # Reconciliation reaches this predicate only after a successful live
+        # refresh. A current 404 is not verified and keeps its pending notice.
+        return False
+    state = read_flight_state(flight_id)
+    if state is None:
+        return False
+    snapshot = state.get("last_snapshot") or {}
+    status = snapshot.get("computed_status")
+    reason = event["reason"]
+    if status in {"cancelled", "diverted"}:
+        return reason == status
+    if reason in {"cancelled", "diverted"}:
+        return False
+    if reason == "gate_change":
+        side = event.get("side")
+        return side in {"dep", "arr"} and snapshot.get(f"{side}_gate") == event.get("to")
+    if reason == "delay":
+        current = _parse_iso8601(snapshot.get("dep_time"))
+        observed = _parse_iso8601(event.get("new_dep_time"))
+        return current is not None and current == observed
+    if reason == "boarding_started":
+        window = boarding_window_open(
+            scheduled_dep_time=state.get("scheduled_dep_time"),
+            boarding_lead_minutes=_resolve_boarding_lead_minutes(snapshot),
+            snapshot=snapshot,
+        )
+        return is_real_boarding(snapshot, boarding_window_open=window, at=now_utc)
+    if reason in {"inbound_delay_predicted", "inbound_delay_retracted"}:
+        inbound = snapshot.get("inbound") or {}
+        predicted = _positive_prediction(inbound)
+        delayed = predicted is not None and predicted >= INBOUND_DELAY_THRESHOLD_MINUTES
+        if reason == "inbound_delay_predicted":
+            return (
+                delayed
+                and predicted == event.get("delay_minutes")
+                and _predicted_departure(state.get("scheduled_dep_time"), snapshot)
+                == event.get("predicted_time")
+            )
+        return not delayed and predicted == event.get("new_delay_minutes")
+    if reason == "carousel_revealed":
+        return snapshot.get("baggage") == event.get("baggage")
+    return True
+
+
+def _positive_prediction(inbound: dict) -> int | None:
+    value = inbound.get("predicted_delay_minutes")
+    return value if type(value) is int and value > 0 else None
+
+
+def _predicted_departure(scheduled_dep_time: str | None, snapshot: dict) -> str | None:
+    scheduled = _parse_iso8601(scheduled_dep_time)
+    minutes = _positive_prediction(snapshot.get("inbound") or {})
+    if scheduled is None or minutes is None:
+        return None
+    return (scheduled + timedelta(minutes=minutes)).isoformat()
+
+
+def _refresh_pending_events(
+    delivery: DeliveryStore, flight_id: int, snapshot: dict, events: list[dict]
+) -> list[dict]:
+    """Refresh unsent observations against their original, unannounced baseline."""
+    result = list(events)
+
+    def replace(reason: str, event: dict | None, *, side: str | None = None) -> None:
+        result[:] = [
+            item
+            for item in result
+            if item["reason"] != reason or side is not None and item.get("side") != side
+        ]
+        if event is not None:
+            result.append(event)
+
+    inbound = snapshot.get("inbound") or {}
+    predicted = _positive_prediction(inbound)
+    if predicted is not None and predicted >= INBOUND_DELAY_THRESHOLD_MINUTES:
+        if delivery.pending_event(flight_id, "inbound_delay_predicted") is not None:
+            replace(
+                "inbound_delay_predicted",
+                {
+                    "reason": "inbound_delay_predicted",
+                    "delay_minutes": predicted,
+                    "predicted_time": inbound.get("predicted_time"),
+                },
+            )
+    else:
+        pending_prediction = delivery.pending_event(flight_id, "inbound_delay_predicted")
+        last_delivered = delivery.last_confirmed_event(
+            flight_id, {"inbound_delay_predicted", "inbound_delay_retracted"}
+        )
+        if pending_prediction is not None:
+            if last_delivered is None or last_delivered["reason"] != "inbound_delay_predicted":
+                replace("inbound_delay_retracted", None)
+            else:
+                replace(
+                    "inbound_delay_retracted",
+                    {
+                        "reason": "inbound_delay_retracted",
+                        "prev_delay_minutes": last_delivered["delay_minutes"],
+                        "new_delay_minutes": predicted,
+                    },
+                )
+        else:
+            previous = delivery.pending_event(flight_id, "inbound_delay_retracted")
+            if previous is not None:
+                replace("inbound_delay_retracted", {**previous, "new_delay_minutes": predicted})
+
+    previous = delivery.pending_event(flight_id, "delay")
+    if previous is not None:
+        observed = _parse_iso8601(previous.get("new_dep_time"))
+        current = _parse_iso8601(snapshot.get("dep_time"))
+        event = None
+        if observed is not None and current is not None:
+            baseline = observed - timedelta(minutes=previous["delay_minutes"])
+            minutes = int((current - baseline).total_seconds() // 60)
+            if abs(minutes) >= DELAY_THRESHOLD_MINUTES:
+                event = {**previous, "delay_minutes": minutes, "new_dep_time": snapshot["dep_time"]}
+        replace("delay", event)
+
+    previous = delivery.pending_event(flight_id, "carousel_revealed")
+    if previous is not None:
+        baggage = snapshot.get("baggage")
+        replace(
+            "carousel_revealed", {**previous, "baggage": baggage} if baggage is not None else None
+        )
+
+    for side in ("dep", "arr"):
+        previous = delivery.pending_event(flight_id, "gate_change", side=side)
+        if previous is not None:
+            gate = snapshot.get(f"{side}_gate")
+            event = {**previous, "to": gate} if gate != previous["from"] else None
+            replace("gate_change", event, side=side)
+    return result
+
+
+def _offer_notice(
+    delivery: DeliveryStore,
+    flight_id: int,
+    event: dict,
+    state: dict | None,
+    now_utc: datetime,
+    *,
+    prior: dict | None = None,
+) -> None:
+    snapshot = (state or {}).get("last_snapshot") or {}
+    reason = event["reason"]
+    expiry = now_utc + timedelta(hours=2)
+    if reason == "day_before":
+        expiry = _parse_iso8601((state or {}).get("scheduled_dep_time")) or expiry
+    elif reason in {"arrival_logistics", "carousel_revealed"}:
+        arrival = _parse_iso8601(
+            snapshot.get("arr_time") or (state or {}).get("scheduled_arr_time")
+        )
+        if arrival is not None:
+            expiry = min(expiry, arrival + timedelta(hours=2))
+    prior_poll = (prior if prior is not None else state or {}).get("last_polled_at")
+    delivery.offer(flight_id, event, prior_poll=prior_poll, expires_at=expiry)
+
+
+def _collect_cycle(
+    *,
+    now_utc: datetime,
+    monotonic: Callable[[], float] = time.monotonic,
+    operator_tz_reader: Callable[[], OperatorTz | None] = read_operator_tz,
+    poll_failures: set[int],
+    delivery: DeliveryStore,
+    active_flight_ids: list[int],
+    verified_ids: set[int],
+) -> tuple[list[dict], set[int]]:
     """Execute one precheck cycle, return aggregated wake events.
 
     `poll_failures`, when given, receives the ids of flights whose byAir
@@ -252,7 +464,6 @@ def _run_cycle(
     timeout is held back from a flight's start deadline only while that
     flight could still be the one to spawn it (#312).
     """
-    active_flight_ids = read_active_flights()
     config = read_config() or {}
     resolve_operator_tz = _memoized_operator_tz(operator_tz_reader)
     min_transfer_minutes = _resolve_min_transfer_minutes(config)
@@ -287,18 +498,21 @@ def _run_cycle(
     # The time-to-leave origin, resolved once per cycle so every flight queries
     # Distance Matrix against the same position, and on first use, after that
     # flight's own poll (see `_CycleOrigin`).
-    polled_ids: set[int] = set()
+    polled_ids = verified_ids
+    forced_ids = delivery.retry_due_ids()
     cycle_origin = _CycleOrigin(
         home_address=config.get("home_address"),
         flight_ids=active_flight_ids,
         now_utc=now_utc,
-        due=_due_ids(active_flight_ids, now_utc),
+        due=_due_ids(active_flight_ids, now_utc) | forced_ids,
         polled=polled_ids,
         removed=removed_upstream_ids,
     )
     # Which flights could spawn the zone reader this cycle: their deadline
     # carries the reader reserve until the reader has run (#312).
-    may_spawn_reader = {fid for fid in active_flight_ids if _may_spawn_reader(fid, now_utc)}
+    may_spawn_reader = {
+        fid for fid in active_flight_ids if _may_spawn_reader(fid, now_utc, force=fid in forced_ids)
+    }
     poll_deadline = monotonic() + _CYCLE_WALL_CLOCK_BUDGET_SECONDS
     for index, flight_id in enumerate(active_flight_ids):
         reserve = (
@@ -331,14 +545,18 @@ def _run_cycle(
                 maps=maps,
                 time_to_leave_origin=cycle_origin,
                 resolve_operator_tz=resolve_operator_tz,
+                delivery=delivery,
+                force=flight_id in forced_ids,
+                verified_ids=verified_ids,
             )
         except ByAirError as byair_err:
             # 404 on the byAir side means the flight is no longer
             # tracked upstream; surface as a removed_upstream event.
             if byair_err.error_type == "not_found":
-                aggregated_events.append(
-                    {"flight_id": flight_id, "event": {"reason": "removed_upstream"}}
-                )
+                removed = {"reason": "removed_upstream"}
+                prior = read_flight_state(flight_id)
+                _offer_notice(delivery, flight_id, removed, prior, now_utc)
+                aggregated_events.append({"flight_id": flight_id, "event": removed})
                 removed_upstream_ids.add(flight_id)
                 continue
             # Other byAir errors: log to stderr, skip this flight this
@@ -368,7 +586,6 @@ def _run_cycle(
             )
             poll_failed_ids.add(flight_id)
             continue
-        polled_ids.add(flight_id)
         for event in flight_events:
             aggregated_events.append({"flight_id": flight_id, "event": event})
 
@@ -395,9 +612,10 @@ def _run_cycle(
             active_flight_ids=risk_candidate_ids,
             now_utc=now_utc,
             min_transfer_minutes=min_transfer_minutes,
+            delivery=delivery,
         )
     )
-    return aggregated_events
+    return aggregated_events, excluded_ids
 
 
 class _OperatorTzMemo:
@@ -575,7 +793,7 @@ def _memoized_operator_tz(reader: Callable[[], OperatorTz | None]) -> _OperatorT
     return _OperatorTzMemo(reader)
 
 
-def _may_spawn_reader(flight_id: int, now_utc: datetime) -> bool:
+def _may_spawn_reader(flight_id: int, now_utc: datetime, *, force: bool = False) -> bool:
     """Whether processing this flight this cycle could spawn the zone reader.
 
     `_process_flight` asks for the zone only when `day_before_due` holds for
@@ -594,7 +812,7 @@ def _may_spawn_reader(flight_id: int, now_utc: datetime) -> bool:
         return True
     if prior_state is None:
         return True
-    if not _due_for_poll(prior_state, now_utc):
+    if not force and not _due_for_poll(prior_state, now_utc):
         return False
     return day_before_due(
         scheduled_dep_time=prior_state.get("scheduled_dep_time"),
@@ -608,18 +826,16 @@ def _check_connection_risks(
     active_flight_ids: list[int],
     now_utc: datetime,
     min_transfer_minutes: int,
+    delivery: DeliveryStore,
 ) -> list[dict]:
-    """Run the cross-flight connection-risk pass and persist fired markers.
-
-    Returns the `{flight_id, event}`-shaped list ready to merge into the
-    precheck's aggregated event output. For each fired event, this
-    function flips the leg-2 flight's `connection_at_risk_fired` marker
-    in state so subsequent cycles don't re-fire.
-    """
+    """Queue cross-flight risks without treating a wake as delivery."""
     flight_states: list[dict] = []
     for fid in active_flight_ids:
         state = read_flight_state(fid)
         if state is not None:
+            state = {**state, "phase_markers": dict(state["phase_markers"])}
+            for marker in delivery.confirmed_markers(fid):
+                state["phase_markers"][marker] = True
             flight_states.append(state)
     risks = detect_connection_risks(
         flight_states=flight_states,
@@ -632,8 +848,7 @@ def _check_connection_risks(
         leg2_state = states_by_id.get(leg2_flight_id)
         if leg2_state is None:
             continue
-        leg2_state["phase_markers"]["connection_at_risk_fired"] = True
-        write_flight_state(leg2_state)
+        _offer_notice(delivery, leg2_flight_id, event, leg2_state, now_utc)
         emitted.append({"flight_id": leg2_flight_id, "event": event})
     return emitted
 
@@ -683,6 +898,9 @@ def _process_flight(
     byair: ByAirClient,
     maps: MapsClient | None,
     time_to_leave_origin: Callable[[dict[int, dict]], str | None],
+    delivery: DeliveryStore,
+    verified_ids: set[int],
+    force: bool = False,
     resolve_operator_tz: Callable[[], str | None] = lambda: None,
 ) -> list[dict]:
     """Process a single flight: cadence-gate, fetch, diff, emit events.
@@ -705,11 +923,15 @@ def _process_flight(
     if phase_markers is None:
         phase_markers = _initial_phase_markers()
 
-    if not _due_for_poll(prior_state, now_utc):
+    phase_markers = dict(phase_markers)
+    for marker in delivery.confirmed_markers(flight_id):
+        phase_markers[marker] = True
+    if not force and not _due_for_poll(prior_state, now_utc):
         return []
 
     raw_flight = byair.get_flight(flight_id=flight_id)
     new_snapshot = _trim_to_snapshot(raw_flight)
+    verified_ids.add(flight_id)
 
     events: list[dict] = []
 
@@ -769,24 +991,37 @@ def _process_flight(
         if prior_snapshot
         else None
     )
+    # The notification projection derives its clock without changing the persisted schema-7 slice.
+    notification_snapshot = {
+        **new_snapshot,
+        "inbound": {
+            **new_snapshot["inbound"],
+            "predicted_time": _predicted_departure(scheduled_dep_time, new_snapshot),
+        },
+    }
     delta_events = detect_wake_events(
         prior_snapshot,
-        new_snapshot,
+        notification_snapshot,
         scheduled_dep_time,
         boarding_window_open=boarding_open,
         now_utc=now_utc,
         prev_polled_at=_parse_iso8601(prior_state.get("last_polled_at")) if prior_state else None,
         prev_boarding_window_open=prev_boarding_open,
     )
+    delta_events = _refresh_pending_events(delivery, flight_id, notification_snapshot, delta_events)
     delta_events = _filter_gate_changes(
         delta_events,
         readout_fired_before=readout_fired_before,
         readout_fires_now=readout_fired,
         readout_unreachable=readout_unreachable,
     )
+    delta_events = [
+        event
+        for event in delta_events
+        if not phase_markers.get(PHASE_BY_REASON.get(event["reason"], ""), False)
+    ]
     events.extend(delta_events)
     if readout_fired and readout_event is not None:
-        phase_markers["gate_assignment_fired"] = True
         events.append(readout_event)
 
     # Time-based events from phase_markers.
@@ -809,7 +1044,6 @@ def _process_flight(
         operator_tz=operator_tz,
     )
     if fired and event is not None:
-        phase_markers["day_before_fired"] = True
         events.append(event)
 
     travel_time_seconds = _maybe_query_travel_time(
@@ -829,7 +1063,6 @@ def _process_flight(
         boarding_lead_minutes=boarding_lead_minutes,
     )
     if fired and event is not None:
-        phase_markers["time_to_leave_fired"] = True
         events.append(event)
 
     fired, event = check_arrival_logistics(
@@ -838,7 +1071,6 @@ def _process_flight(
         now_utc=now_utc,
     )
     if fired and event is not None:
-        phase_markers["arrival_logistics_fired"] = True
         events.append(event)
 
     # Persist updated state. write_flight_state requires every documented
@@ -852,6 +1084,8 @@ def _process_flight(
         phase_markers=phase_markers,
         now_utc=now_utc,
     )
+    for event in events:
+        _offer_notice(delivery, flight_id, event, new_state, now_utc, prior=prior_state or {})
     write_flight_state(new_state)
 
     return events

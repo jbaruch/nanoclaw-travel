@@ -207,7 +207,7 @@ Top-level fields:
 - `dep_airport_id`, `arr_airport_id` (int, required) — byAir airport IDs
 - `last_polled_at` (RFC 3339 UTC, required) — wall-clock time of the last byAir fetch; cadence-gating consults this
 - `last_snapshot` (object, optional) — the slim ~1KB operational slice from byAir; `null` on the first run before the precheck has fetched anything
-- `phase_markers` (object, required) — once-per-flight fire-and-forget gates for time-based wakes
+- `phase_markers` (object, required) — once-per-flight consumed gates; new notification flags advance only from acknowledged successful sends, while true legacy flags remain consumed
 - `last_wake_at` (RFC 3339 UTC, optional) — when the agent was last woken for this flight
 - `last_wake_reason` (string, optional) — the most recent wake reason for debug
 - `calendar_events` (object, optional) — the ledger of flight-assist-owned/adopted Google Calendar events for this flight, keyed by event kind. Absent or `{}` means none are tracked yet. Validated structurally (object) by `state.py`; the per-entry shape below is owned and deep-validated by the calendar-reconcile planner (`calendar_plan.py`) — the same split as `last_snapshot` ↔ `byair_client`. The map is the source of truth for O(1) update/delete and doubles as the teardown tombstone when a flight leaves `active-flights.json` (the reconciler still holds the event IDs after the flight is gone). Tombstone lifecycle: when a flight drops from the upstream index, `sync_tripit` retains `flight-<id>.json` instead of deleting it if this map is non-empty; the reconcile sweep then deletes the managed events off the ledger and archives (removes) the state file once teardown settles — every teardown delete succeeded, or the flight has completed and its events are left as a record. A failed delete keeps its entry, so the tombstone is retained for the next cycle's retry
@@ -243,7 +243,7 @@ Each entry's fields:
 - `aircraft_model` (string, optional) — byAir's top-level aircraft model. Consumed by the calendar `reconcile` boarding-lead resolver (`boarding_lead.py`), which falls back to `inbound.aircraft_model` when this is absent or empty
 - `dep_lat`, `dep_lon`, `arr_lat`, `arr_lon` (float, optional) — departure/arrival **airport** coordinates (distinct from `position_lat`/`position_lon`, which track the aircraft). The boarding-lead resolver uses them for the transoceanic (TATL/TPAC) check; when any is absent it skips that check and falls back to aircraft size. Populated once the byAir field names for top-level model and airport coordinates are confirmed (#55 runtime facts); until then the resolver runs on `inbound.aircraft_model` and the narrowbody default
 
-`phase_markers` booleans — `true` means the corresponding time-based wake event has already fired and won't fire again for this flight:
+`phase_markers` booleans — `true` consumes the corresponding gate for this flight. New notification flags are copied from confirmed delivery receipts; a wake alone leaves them false. Existing true flags are consumed legacy attempts and do not prove delivery. `landed_acknowledged` remains the separate user-acknowledgement flag:
 
 - `day_before_fired` — T-24h sanity check
 - `time_to_leave_fired` — Traffic-aware leave-by alert
@@ -251,7 +251,7 @@ Each entry's fields:
 - `arrival_logistics_fired` — T-arr−15min logistics push
 - `landed_acknowledged` — User acknowledged the landing notification
 - `connection_at_risk_fired` — Cross-flight: projected transfer window on this leg-2 has fallen below `min_transfer_minutes`. Carried on the leg-2 (downstream) record so the marker survives leg-1 landing
-- `gate_assignment_fired` — The once-per-flight gate + terminal readout has fired (first gate seen inside the pre-boarding window). `gate_change` is gated against this readout anchor: suppressed (recorded silently) until the readout fires; on the readout's own cycle only the redundant departure gate_change is dropped while an arrival-gate move still surfaces; and a flight already boarding or gone — whose readout never fires — surfaces gate moves rather than muting them forever
+- `gate_assignment_fired` — The once-per-flight gate + terminal readout is consumed after acknowledged delivery. Before that receipt, departure gate moves coalesce into the pending readout; on a readout wake the redundant departure gate_change is dropped while an arrival-gate move can still surface. A flight already boarding or gone, whose readout is unreachable, surfaces gate moves directly
 
 ## Atomic Writes
 
@@ -338,3 +338,50 @@ Tolerance:
 
 - A block whose state is missing or malformed (no marker, unparseable JSON, unparseable baseline / anchor, empty endpoints, unknown direction, missing event id) parses to `None` and is treated as "not a block I recheck" — never raised on.
 - The API fetch / create / find / patch go through `google_calendar_client` — the native Calendar REST API, brokered by OneCLI's gateway (nanoclaw#638).
+
+
+## Notification delivery store
+
+`flight-assist` owns `notifications.json` and its `notifications.lock` in the state directory. The owner library is `skills/flight-assist/notification_delivery.py`; only its transaction API writes this artifact. Its schema version is independent of the per-flight family.
+
+All root and notice fields below are required; omitted fields have no defaults in an existing file. A missing file is first-run state with version 1, sequence 0 and an empty notices map. The library owns validation, bounds and retry timing.
+
+| Root field | Type and meaning |
+|---|---|
+| `schema_version` | Plain integer `1`, never a boolean; independent of the per-flight schema |
+| `sequence` | Nonnegative integer; the owner increments it for each new or replacement observation and retains it when pruning |
+| `notices` | JSON object keyed by the notice's 64-character lowercase hex `key`; empty on first run; at most 2,048 entries |
+
+| Notice field | Type, presence and meaning |
+|---|---|
+| `schema_version` | Plain integer `1`, required on every row |
+| `id` | Required 32-character lowercase hex string; first 32 characters of SHA-256 over the canonical JSON `[sequence, key, event]`; an exact acknowledgement identity, not independent proof of a send |
+| `key` | Required 64-character lowercase SHA-256 hex string matching the map key; hashes `[flight_id, marker]` for a phase, otherwise `[flight_id, prior_poll, event]` |
+| `sequence` | Required positive integer no greater than the root sequence; identifies this observation's insertion or replacement order |
+| `prior_poll` | Required string or null; opaque source-poll identity used verbatim in delta deduplication, normally a `last_polled_at` RFC 3339 value. Single-flight events use the prior snapshot's poll; derived connection events use the downstream record's current poll. Null means no source-poll identity was available, including a first observation; it is not interpreted as a clock |
+| `flight_id` | Required integer or null; byAir flight ID for flight-specific observations. Null denotes an observation without an associated flight; the current poll owner offers flight IDs only |
+| `event` | Required finite JSON object with a string `reason`, following the applicable flight-event shape in `skills/flight-assist/references/event-payloads.md`. It contains event data, without the outer `flight_id`/`notification_id` wrapper or composed message text; canonical encoded size is at most 8,192 bytes |
+| `marker` | Required string or null; exact reason-to-gate mapping below. Null means an observation rather than a once-per-flight phase gate |
+| `expires_at` | Required timezone-aware RFC 3339 string; owner serialization uses UTC. Pending observations at or beyond this deadline are pruned; confirmed receipts remain while their flight is active. The poll caller normally uses two hours, day-before uses departure, and arrival/carousel notices are capped at arrival plus two hours |
+| `retry_at` | Required timezone-aware RFC 3339 string or null; null means no attempt has been emitted and the observation is immediately eligible subject to freshness/expiry. Emitting an attempt sets now plus 300 seconds; an unexpired replacement retains that deadline |
+| `confirmed_at` | Required timezone-aware RFC 3339 string or null; null means no acknowledged successful send. Exact-ID acknowledgement sets the owner's confirmation clock; repeated acknowledgement preserves the original value |
+
+Canonical JSON uses sorted keys, compact separators and UTF-8 without nonfinite numbers. The whole file is bounded to 4 MiB. The store validates row shape, identity binding, timestamp formats and bounds; event consumers follow the referenced per-reason payload contract.
+
+| Event reason | `marker` value |
+|---|---|
+| `day_before` | `day_before_fired` |
+| `time_to_leave` | `time_to_leave_fired` |
+| `boarding_started` | `boarding_fired` |
+| `arrival_logistics` | `arrival_logistics_fired` |
+| `connection_at_risk` | `connection_at_risk_fired` |
+| `gate_assignment` | `gate_assignment_fired` |
+| Other documented flight observations | null |
+
+The precheck persists notices before advancing their flight snapshots. A due attempt changes only its retry deadline. A failed send leaves it unconfirmed. A changed pending phase or mutable observation gets a fresh ID and retains its retry deadline; acknowledging the older ID cannot consume its replacement. Mutable observations are inbound estimates, departure shifts, carousels and each side's gate. Retries refresh these from live data even inside the wake detector's delta tolerance. Departure shifts retain their original undelivered baseline; a fully recovered shift or gate move is discarded without creating a receipt. Retried predictions and retractions match the exact refreshed estimate. An already-confirmed observation remains consumed. Notices for inactive flights and expired pending notices are removed before new observations; confirmed phase receipts remain while that flight is active. A failed or deferred live poll cannot surface its queued notice.
+
+The model sends the notice with `send_message`, then acknowledges only the IDs covered by that successful send through `skills/flight-assist/scripts/confirm-notifications.py`. The helper sends nothing. A helper failure permits retrying the acknowledgement, not resending the same notice in that turn. The helper cannot independently verify a Telegram receipt; the owner workflow supplies the confirmed-send precondition. Delivery is at least once: a crash after Telegram accepts a send but before acknowledgement can produce a later duplicate.
+
+The new store takes the stateful-artifacts gate-store exception. Unknown versions, malformed records and unreadable files refuse with a repair diagnostic; they never become an empty store. Version 1 has no predecessor. A future owner version must migrate every accepted older version and rewrite it on read. Missing state is first-run state. Readers are the precheck and acknowledgement helper; they use only the owner library.
+
+The existing per-flight schema remains version 7 with the same fields and gate values. Existing true flags remain consumed legacy attempts; the change creates no synthetic receipts and replays no historical alerts. New flags advance only from confirmed entries in the new store. The flags alone remain insufficient evidence that an old notification was delivered.

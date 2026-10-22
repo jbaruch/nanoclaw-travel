@@ -1,5 +1,19 @@
 # Changelog
 
+### flight-assist — consume notifications after confirmed delivery (#341)
+
+A wake previously advanced the snapshot and consumed its phase flags before the agent sent anything. Scheduled final text is internal, and the compose step could mistake that consumed flag for evidence that the user had already been notified. Flight notices now enter a separate schema-1 delivery store before snapshot writes. Pending attempts survive restarts and retry after five minutes, with refreshed flight data and both legs refreshed for connection warnings. Obsolete or expired observations are removed without creating receipts. An explicit successful `send_message` is followed by an exact-ID acknowledgement; stale acknowledgements cannot consume replacement notices. Existing schema-7 phase flags remain consumed legacy attempts, without importing them as receipts or replaying historical alerts. A send accepted immediately before a crash can still duplicate on retry.
+
+Pending inbound predictions and all-clears follow the exact refreshed estimate, including changes inside the wake detector's delta tolerance. Replacements preserve their attempt deadline and invalidate old IDs. The named flight-notification delivery contract declares native, checkout and Tessl helper lookup plus its JSON I/O; executable regression coverage runs the co-shipped helper through the declared native layout from an unrelated working directory.
+
+Undelivered departure shifts retain their original baseline across later small changes, so a +30-minute delay followed by another +10 minutes becomes a current +40-minute notice. Pending carousel and gate notices track their current values, including a gate disappearing and reappearing before delivery. A recovered shift or gate move needs no stale notice and creates no delivery receipt.
+
+An inbound warning that recovers before delivery produces no spurious all-clear. When an earlier prediction was actually delivered, its clear uses that last confirmed estimate; a newer delivered all-clear supersedes it. Prediction departure clocks are derived from the existing scheduled departure and current inbound-delay minutes in an ephemeral notification projection, leaving the persisted schema-7 shape unchanged. Regression coverage executes every declared helper lookup (native renderer, checkout and Tessl consumer).
+
+The delivery schema documents every root/row field, required presence, null meanings, phase-marker mapping, identity derivation and bounds, and binds stored event data to the versioned row's event-payload reference.
+
+A successful live refresh supersedes a pending upstream-removal notice. A continuing 404 retains that notice and its ID for retry.
+
 ## 0.2.154 — 2026-10-20
 
 ### travel-core — one itinerary timeline replaces the position ladder (#335)

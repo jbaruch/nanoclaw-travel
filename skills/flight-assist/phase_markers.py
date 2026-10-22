@@ -22,8 +22,9 @@ Three time-based events:
   (capability 6: baggage carousel + Lyft + lounge prompts)
 
 Each function returns `(should_fire, event_dict | None)`. The caller
-(precheck.py) is responsible for setting the marker flag in state
-after firing so subsequent cycles don't re-emit.
+(precheck.py) persists the notice before advancing its snapshot. Only a
+confirmed send consumes the notice; later polls copy its receipt into
+the marker flag. A wake alone never sets that flag.
 
 Pure functions: no I/O, no state mutation. Travel time for the
 time_to_leave gate comes in as an argument; the caller is the one
@@ -90,8 +91,8 @@ def check_day_before(
 ) -> tuple[bool, dict | None]:
     """T-24h gate. Returns (should_fire, event_payload).
 
-    `phase_markers["day_before_fired"]` must be False to fire; once
-    fired the caller sets it to True. `now_utc` must be timezone-aware
+    `phase_markers["day_before_fired"]` must be False to fire; after
+    confirmed delivery the caller sets it to True. `now_utc` must be timezone-aware
     UTC (callers use `datetime.now(timezone.utc)`).
 
     The gate is unchanged from v0.1; the payload is not. `hours_until_dep`
