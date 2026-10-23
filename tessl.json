@@ -5,6 +5,9 @@
     "jbaruch/coding-policy": {
       "version": "latest"
     },
+    "jbaruch/nanoclaw-host": {
+      "version": "latest"
+    },
     "finsi/codex-review": {
       "version": "0.1.2"
     }
