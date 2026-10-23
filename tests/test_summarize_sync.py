@@ -157,3 +157,35 @@ def test_cli_rejects_invalid_json_without_a_partial_report():
     assert result.returncode == 2
     assert result.stdout == ""
     assert "Inspect the sync JSON" in result.stderr
+
+
+@pytest.mark.parametrize("payload", [{}, {"errors": []}, {"timezoneChanges": []}])
+def test_cli_rejects_missing_success_fields_instead_of_reporting_no_change(payload):
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)], input=json.dumps(payload), text=True, capture_output=True
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "Inspect the sync JSON" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "key,value", [("noChanges", 1), ("segments", {}), ("conflicts", None), ("homeTimezone", False)]
+)
+def test_cli_rejects_invalid_success_field_types(key, value):
+    payload = {
+        "errors": [],
+        "noChanges": True,
+        "homeTimezone": "Europe/Paris",
+        "segments": [],
+        "conflicts": [],
+        "ooo": None,
+        "timezoneChanges": [],
+    }
+    payload[key] = value
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)], input=json.dumps(payload), text=True, capture_output=True
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "invalid field types" in result.stderr

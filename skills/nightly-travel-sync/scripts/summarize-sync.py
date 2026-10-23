@@ -104,6 +104,27 @@ def main() -> int:
         result = json.load(sys.stdin)
         if not isinstance(result, dict):
             raise ValueError("sync output must be a JSON object")
+        errors = result.get("errors")
+        if not isinstance(errors, list) or any(not isinstance(error, str) for error in errors):
+            raise ValueError("sync output needs an errors array")
+        if not errors:
+            required = {
+                "noChanges",
+                "homeTimezone",
+                "timezoneChanges",
+                "segments",
+                "ooo",
+                "conflicts",
+            }
+            if not required.issubset(result):
+                raise ValueError("successful sync output is missing required fields")
+            if (
+                type(result["noChanges"]) is not bool
+                or not isinstance(result["segments"], list)
+                or not isinstance(result["conflicts"], list)
+                or not isinstance(result["homeTimezone"], (str, type(None)))
+            ):
+                raise ValueError("successful sync output has invalid field types")
         output = summarize(result, datetime.now(UTC).date())
     except (ValueError, TypeError) as error:
         print(

@@ -68,7 +68,9 @@ def _make_node_shim(bin_dir: Path) -> Path:
     node = bin_dir / "node"
     node.write_text(
         "#!/bin/bash\n"
-        'printf \'{"args":"%s","tripit":"%s","reclaim":"%s","tz":"%s","segments":[]}\\n\''
+        'printf \'{"args":"%s","tripit":"%s","reclaim":"%s","tz":"%s",'
+        '"segments":[],"noChanges":true,"homeTimezone":null,"timezoneChanges":[],"ooo":null,'
+        '"conflicts":[],"errors":[]}\\n\''
         ' "$*" "$TRIPIT_ICAL_URL" "$RECLAIM_API_TOKEN" "${TZ-}"\n'
     )
     node.chmod(0o755)
