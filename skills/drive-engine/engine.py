@@ -89,6 +89,7 @@ class EngineResult:
     skipped: tuple[str, ...] = ()  # human diagnostics for legs that couldn't be built
     # Legs that exist but could not be computed this sweep; their blocks are kept.
     held: tuple[HeldLeg, ...] = ()
+    origin_sources: tuple[dict[str, str], ...] = ()
 
 
 # A builder's outcome: the block, or None with a diagnostic, and whether the leg
@@ -179,6 +180,7 @@ def _build_departure(
     itinerary: Itinerary,
     now: datetime,
     live_origin: str | None,
+    origin_sources: list[dict[str, str]],
     route: RouteFn,
     boarding_present: BoardingPresentFn,
     airport_info: dict[str, AirportInfo],
@@ -196,6 +198,13 @@ def _build_departure(
     leave_by = anchor - approx
     resolved = resolve_leg_origin(
         planned, now=now, leave_by=leave_by, drive=approx, live_origin=live_origin
+    )
+    origin_sources.append(
+        {
+            "identity": leg_identity(leg),
+            "kind": "airport_departure",
+            "source": "live_gps" if resolved.source == "live_gps" else "planned",
+        }
     )
     origin = resolved.address or planned.address
     drive = route(origin, dest_point)
@@ -415,6 +424,7 @@ def build_reconcile_plan(
     desired: list[DesiredBlock] = []
     skipped: list[str] = []
     held: list[HeldLeg] = []
+    origin_sources: list[dict[str, str]] = []
 
     for chain in chains:
         contexts = build_pair_contexts(chain, schedule=schedule, left_terminal=left_terminal)
@@ -472,6 +482,7 @@ def build_reconcile_plan(
                     itinerary=itinerary,
                     now=now,
                     live_origin=live_origin,
+                    origin_sources=origin_sources,
                     route=route,
                     boarding_present=boarding_present,
                     airport_info=airport_info,
@@ -514,4 +525,6 @@ def build_reconcile_plan(
         plan = plan_reconcile(
             desired, current_blocks, managed_legacy=managed_legacy, held=held_keys, now=now
         )
-    return EngineResult(plan=plan, skipped=tuple(skipped), held=tuple(held))
+    return EngineResult(
+        plan=plan, skipped=tuple(skipped), held=tuple(held), origin_sources=tuple(origin_sources)
+    )

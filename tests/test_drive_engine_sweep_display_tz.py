@@ -104,10 +104,12 @@ def _stub_live_clients(monkeypatch, reader, state_dir: Path) -> dict:
     monkeypatch.setattr(
         reconcile_sweep,
         "build_plan",
-        lambda **_kwargs: SimpleNamespace(plan=ReconcilePlan(), skipped=(), held=()),
+        lambda **_kwargs: SimpleNamespace(
+            plan=ReconcilePlan(), skipped=(), held=(), origin_sources=()
+        ),
     )
     monkeypatch.setattr(
-        reconcile_sweep, "finish_sweep", lambda *_args, **_kwargs: {"wake_agent": False}
+        reconcile_sweep, "finish_sweep", lambda *_args, **_kwargs: {"wake_agent": False, "data": {}}
     )
     return captured
 
@@ -117,7 +119,7 @@ def test_sweep_passes_the_operator_zone_to_the_meeting_planner(monkeypatch, tmp_
         tz="America/Chicago", local_now="2026-09-11T08:00:00-05:00", local_date="2026-09-11"
     )
     captured = _stub_live_clients(monkeypatch, lambda: zone, tmp_path)
-    assert reconcile_sweep._run_sweep() == {"wake_agent": False}
+    assert reconcile_sweep._run_sweep() == {"wake_agent": False, "data": {"origin_sources": []}}
     assert captured["display_tz"] == "America/Chicago"
     # The frozen clock is the one the sweep used for its calendar window.
     assert captured["window_start"] == datetime(2026, 9, 11, 13, 0, tzinfo=UTC)
@@ -125,7 +127,7 @@ def test_sweep_passes_the_operator_zone_to_the_meeting_planner(monkeypatch, tmp_
 
 def test_sweep_passes_none_when_the_reader_has_no_zone(monkeypatch, tmp_path):
     captured = _stub_live_clients(monkeypatch, lambda: None, tmp_path)
-    assert reconcile_sweep._run_sweep() == {"wake_agent": False}
+    assert reconcile_sweep._run_sweep() == {"wake_agent": False, "data": {"origin_sources": []}}
     assert captured["display_tz"] is None
 
 
@@ -179,7 +181,9 @@ def test_home_metro_placeholder_routes_meeting_from_current_home(monkeypatch, tm
     monkeypatch.setattr(reconcile_sweep, "build_plan", real_build_plan)
     plans = []
     monkeypatch.setattr(
-        reconcile_sweep, "finish_sweep", lambda plan, *_args, **_kwargs: plans.append(plan) or {}
+        reconcile_sweep,
+        "finish_sweep",
+        lambda plan, *_args, **_kwargs: plans.append(plan) or {"data": {}},
     )
 
     reconcile_sweep._run_sweep()

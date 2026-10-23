@@ -86,6 +86,9 @@ _MANAGED_LEGACY: frozenset[str] = frozenset()
 
 SWEEP_WINDOW = timedelta(days=14)
 
+# A location arriving during a sweep may be slightly newer than its cycle clock.
+_MAX_LIVE_ORIGIN_FUTURE_MINUTES = 2
+
 # Shadow / dry-run opt-in (#156 R4): plan and render, write nothing. Lets a
 # block-shape change be validated against the production calendar before the
 # cutover applies anything. The rendering itself lives in `shadow.py`.
@@ -203,6 +206,7 @@ class PlanResult:
     plan: ReconcilePlan
     skipped: tuple[str, ...] = field(default_factory=tuple)
     held: tuple[HeldLeg, ...] = field(default_factory=tuple)
+    origin_sources: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -436,7 +440,12 @@ def build_plan(
             if not _covered_by_retained(c.desired.identity, c.desired.kind, retained)
         ),
     )
-    return PlanResult(plan=plan, skipped=normalized.skipped + result.skipped, held=result.held)
+    return PlanResult(
+        plan=plan,
+        skipped=normalized.skipped + result.skipped,
+        held=result.held,
+        origin_sources=result.origin_sources,
+    )
 
 
 _AIRPORT_KINDS = frozenset({"airport_departure", "airport_arrival", "airport_transfer"})
@@ -600,7 +609,7 @@ def _fresh_live_origin(now: datetime, max_age_minutes: int) -> str | None:
     if when.tzinfo is None:
         return None
     age = (now - when.astimezone(UTC)).total_seconds() / 60
-    if age < 0 or age > max_age_minutes:
+    if age < -_MAX_LIVE_ORIGIN_FUTURE_MINUTES or age > max_age_minutes:
         return None
     lat, lng = loc.get("latitude"), loc.get("longitude")
     if isinstance(lat, int | float) and isinstance(lng, int | float):
@@ -747,7 +756,8 @@ def build_sweep_payload(
             "unplanned": unplanned_lines,
             "message": render_notification(material, added, questions, unplanned_lines),
             "deferred": applied.deferred,
-            "skipped": len(skipped),
+            "skipped": len(skipped) + len(applied.skipped_creations),
+            "skipped_creations": list(applied.skipped_creations),
             "errors": len(applied.errors),
         },
     }
@@ -1477,7 +1487,7 @@ def _run_sweep() -> dict:
     if static_facts_dirty():
         _persist_static_facts_best_effort(static_facts)
 
-    return finish_sweep(
+    payload = finish_sweep(
         result.plan,
         skipped,
         calendar=calendar,
@@ -1487,6 +1497,8 @@ def _run_sweep() -> dict:
         display_zone=operator_zone,
         now=now,
     )
+    payload["data"]["origin_sources"] = list(result.origin_sources)
+    return payload
 
 
 def _missing(

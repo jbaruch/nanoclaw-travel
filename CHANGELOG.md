@@ -1,5 +1,9 @@
 # Changelog
 
+### Keep fresh GPS fixes and refuse backdated drive creation (#343)
+
+Location fixes arriving during a sweep may be up to two minutes newer than its cycle clock. Airport departure diagnostics report planned versus live GPS origins without coordinates. Immediately before each create or legacy replacement, a separate fresh clock refuses starts already in the past and records a skipped-creation reason; patches to existing blocks remain allowed. The write clock is checked for each operation, including after earlier calendar calls.
+
 ## 0.2.157 — 2026-10-22
 
 ### flight-assist — consume notifications after confirmed delivery (#341)
