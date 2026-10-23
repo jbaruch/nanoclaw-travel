@@ -11,7 +11,8 @@ treated as done.
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -158,7 +159,7 @@ def test_create_args_add_no_self_attendee_so_block_shows_accepted():
 def test_deletes_need_only_ids():
     plan = ReconcilePlan(deletes=(Delete("dp1", "orphan"), Delete("dp2", "orphan")))
     comp = FakeCalendar()
-    result = apply_plan(plan, calendar=comp, calendar_id="primary")
+    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
     assert result.deleted == 2
     assert set(comp.deleted) == {"dp1", "dp2"}
     assert comp.created == []
@@ -167,14 +168,14 @@ def test_deletes_need_only_ids():
 def test_delete_404_counts_as_done():
     plan = ReconcilePlan(deletes=(Delete("gone1", "orphan"),))
     comp = FakeCalendar(delete_404={"gone1"})
-    result = apply_plan(plan, calendar=comp, calendar_id="primary")
+    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
     assert result.deleted == 1  # 404 = already gone = success
 
 
 def test_delete_failure_recorded_not_counted():
     plan = ReconcilePlan(deletes=(Delete("bad", "orphan"),))
     comp = FakeCalendar(delete_fail={"bad"})
-    result = apply_plan(plan, calendar=comp, calendar_id="primary")
+    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
     assert result.deleted == 0
     assert any("bad" in e for e in result.errors)
 
@@ -185,7 +186,7 @@ def test_delete_failure_recorded_not_counted():
 def test_create_builds_one_event():
     plan = ReconcilePlan(creates=(Create(_desired()),))
     comp = FakeCalendar()
-    result = apply_plan(plan, calendar=comp, calendar_id="primary")
+    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
     assert result.created == 1 and len(comp.created) == 1
 
 
@@ -206,7 +207,9 @@ def test_create_renders_the_notice_time_and_body_in_the_block_zone():
         timezone="America/Chicago",
     )
     cal = FakeCalendar()
-    result = apply_plan(ReconcilePlan(creates=(Create(desired),)), calendar=cal)
+    result = apply_plan(
+        ReconcilePlan(creates=(Create(desired),)), calendar=cal, creation_clock=lambda: _dt(0)
+    )
     assert result.created == 1
     [leg] = result.added_meeting_legs
     assert leg["meeting"] == "ExamOne Appointment"
@@ -220,7 +223,7 @@ def test_create_renders_the_notice_time_and_body_in_the_block_zone():
 def test_convert_creates_new_and_deletes_all_legacy():
     plan = ReconcilePlan(converts=(Convert(_desired(), ("leg1", "leg2")),))
     comp = FakeCalendar()
-    result = apply_plan(plan, calendar=comp, calendar_id="primary")
+    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
     assert result.converted == 1
     assert len(comp.created) == 1
     assert set(comp.deleted) == {"leg1", "leg2"}
@@ -231,7 +234,7 @@ def test_convert_rolls_back_new_when_a_legacy_delete_fails():
     # new block and don't count the convert (retried next cycle).
     plan = ReconcilePlan(converts=(Convert(_desired(), ("leg1", "leg2")),))
     comp = FakeCalendar(delete_fail={"leg2"})
-    result = apply_plan(plan, calendar=comp, calendar_id="primary")
+    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
     assert result.converted == 0
     assert "leg1" in comp.deleted  # the deletable legacy was still removed
     assert "new1" in comp.deleted  # replacement rolled back (no duplicate left)
@@ -243,7 +246,7 @@ def test_update_patches_in_place_never_duplicates():
     no delete, so a kill right after can't leave a duplicate."""
     plan = ReconcilePlan(updates=(Update("old1", _desired()),))
     comp = FakeCalendar()
-    result = apply_plan(plan, calendar=comp, calendar_id="primary")
+    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
     assert result.updated == 1
     assert comp.created == []  # never recreated
     assert comp.deleted == []  # never deletes the old block
@@ -261,7 +264,7 @@ def test_update_patches_in_place_never_duplicates():
 def test_update_patch_failure_is_recorded_not_counted():
     plan = ReconcilePlan(updates=(Update("old1", _desired(identity="m1")),))
     comp = FakeCalendar(patch_fail={"old1"})
-    result = apply_plan(plan, calendar=comp, calendar_id="primary")
+    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
     assert result.updated == 0
     assert comp.created == [] and comp.deleted == []  # nothing left behind
     assert any("m1" in e for e in result.errors)
@@ -270,7 +273,7 @@ def test_update_patch_failure_is_recorded_not_counted():
 def test_update_with_no_event_id_is_skipped():
     plan = ReconcilePlan(updates=(Update(None, _desired()),))
     comp = FakeCalendar()
-    result = apply_plan(plan, calendar=comp, calendar_id="primary")
+    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
     assert result.updated == 0
     assert comp.patched == []
     assert any("no event_id" in e for e in result.errors)
@@ -297,7 +300,12 @@ def test_budget_defers_writes_past_the_deadline():
     plan = ReconcilePlan(creates=tuple(Create(_desired(identity=f"m{i}")) for i in range(5)))
     comp = FakeCalendar()
     result = apply_plan(
-        plan, calendar=comp, calendar_id="primary", budget_seconds=2.5, monotonic=_Clock()
+        plan,
+        calendar=comp,
+        calendar_id="primary",
+        budget_seconds=2.5,
+        monotonic=_Clock(),
+        creation_clock=lambda: _dt(0),
     )
     assert result.created == 2
     assert result.deferred == 3
@@ -313,7 +321,12 @@ def test_budget_applies_current_corrections_before_cleanup_backlog():
     )
     comp = FakeCalendar()
     result = apply_plan(
-        plan, calendar=comp, calendar_id="primary", budget_seconds=2.5, monotonic=_Clock()
+        plan,
+        calendar=comp,
+        calendar_id="primary",
+        budget_seconds=2.5,
+        monotonic=_Clock(),
+        creation_clock=lambda: _dt(0),
     )
     assert result.updated == 1
     assert result.created == 1
@@ -328,7 +341,7 @@ def test_no_budget_applies_everything():
     """Without a budget, apply runs the whole plan (unchanged default behavior)."""
     plan = ReconcilePlan(creates=tuple(Create(_desired(identity=f"m{i}")) for i in range(5)))
     comp = FakeCalendar()
-    result = apply_plan(plan, calendar=comp, calendar_id="primary")
+    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
     assert result.created == 5
     assert result.deferred == 0
 
@@ -336,3 +349,36 @@ def test_no_budget_applies_everything():
 def test_apply_result_totals():
     result = ApplyResult(created=1, updated=2, deleted=3, converted=4)
     assert result.total_writes == 10
+
+
+def test_new_drive_with_a_past_start_is_skipped_but_existing_drive_is_patchable():
+    cal = FakeCalendar()
+    desired = _desired()
+    plan = ReconcilePlan(creates=(Create(desired),), updates=(Update("existing", desired, 1800),))
+    result = apply_plan(plan, calendar=cal, now=_dt(7), creation_clock=lambda: _dt(8, 19))
+    assert cal.created == []
+    assert len(cal.patched) == 1
+    assert result.created == 0 and result.updated == 1
+    assert len(result.skipped_creations) == 1
+    assert "start already past" in result.skipped_creations[0]
+
+
+def test_clock_is_rechecked_between_creates_and_equal_start_is_allowed():
+    cal = FakeCalendar()
+    first = _desired("first")
+    second = replace(first, identity="second", start=first.start + timedelta(seconds=1))
+    ticks = iter([first.start, second.start + timedelta(seconds=1)])
+    plan = ReconcilePlan(creates=(Create(first), Create(second)))
+    result = apply_plan(plan, calendar=cal, creation_clock=lambda: next(ticks))
+    assert len(cal.created) == 1
+    assert result.created == 1
+    assert len(result.skipped_creations) == 1
+    assert "second" in result.skipped_creations[0]
+
+
+def test_past_legacy_conversion_preserves_legacy_event():
+    cal = FakeCalendar()
+    plan = ReconcilePlan(converts=(Convert(_desired(), ("legacy",)),))
+    result = apply_plan(plan, calendar=cal, creation_clock=lambda: _dt(9))
+    assert cal.created == [] and cal.deleted == []
+    assert result.converted == 0 and len(result.skipped_creations) == 1

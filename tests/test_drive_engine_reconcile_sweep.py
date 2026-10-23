@@ -700,6 +700,7 @@ class _ApplySpy:
 
 
 class _ApplyResult:
+    skipped_creations = ()
     created = updated = deleted = converted = 0
     added_meeting_legs = ()
     material_updates = ()
@@ -1032,3 +1033,45 @@ def test_resolve_a_refresh_without_coordinates_keeps_the_cached_pair():
     )
     assert (resolved.lat, resolved.lon, resolved.delay_index) == (36.12, -86.68, "high")
     assert new_static is None  # nothing changed worth persisting
+
+
+@pytest.mark.parametrize(
+    "age_seconds,expected",
+    [
+        (-121, None),
+        (-120, "36.1,-86.7"),
+        (-11, "36.1,-86.7"),
+        (0, "36.1,-86.7"),
+        (1800, "36.1,-86.7"),
+        (1801, None),
+    ],
+)
+def test_live_fix_freshness_includes_mid_sweep_arrival(monkeypatch, age_seconds, expected):
+    import state
+
+    fix = {
+        "captured_at": (NOW - timedelta(seconds=age_seconds)).isoformat(),
+        "latitude": 36.1,
+        "longitude": -86.7,
+    }
+    monkeypatch.setattr(state, "read_current_location", lambda: fix)
+    assert reconcile_sweep._fresh_live_origin(NOW, 30) == expected
+
+
+@pytest.mark.parametrize("live_origin,source", [("36.1,-86.7", "live_gps"), (None, "planned")])
+def test_departure_origin_source_is_reported_without_location_values(live_origin, source):
+    result = build_plan(
+        flight_records=[_record(1, 4, 3, "2020-07-10T14:00:00Z", "2020-07-10T16:00:00Z")],
+        resolve_airport=_resolve_airport,
+        meeting_blocks=[],
+        current_blocks=[],
+        route=_route,
+        now=NOW,
+        home_address=HOME,
+        live_origin=live_origin,
+    )
+    departures = [row for row in result.origin_sources if row["kind"] == "airport_departure"]
+    assert len(departures) == 1
+    assert departures[0]["source"] == source
+    assert HOME not in json.dumps(departures)
+    assert "36.1" not in json.dumps(departures)
