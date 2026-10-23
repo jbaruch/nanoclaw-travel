@@ -1,0 +1,159 @@
+"""Net reporting must not turn provider rewrites into new travel."""
+
+import importlib.util
+import json
+import subprocess
+import sys
+from datetime import date
+from pathlib import Path
+
+import pytest
+
+SCRIPT = (
+    Path(__file__).resolve().parents[1] / "skills/nightly-travel-sync/scripts/summarize-sync.py"
+)
+spec = importlib.util.spec_from_file_location("summarize_sync", SCRIPT)
+assert spec and spec.loader
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+TODAY = date(2024, 10, 23)
+
+
+def change(action="create", zone="Europe/Paris", start="2024-10-24", end="2024-10-26"):
+    return {"action": action, "timezone": zone, "from": start, "to": end}
+
+
+def test_rewriting_the_same_rows_has_no_report():
+    payload = {
+        "noChanges": False,
+        "timezoneChanges": [change("delete"), change()],
+        "segments": [{"trip": "An unrelated existing itinerary"}],
+        "ooo": {"created": 0, "deleted": 0},
+    }
+    result = module.summarize(payload, TODAY)
+    assert result["timezoneDiff"] == {"added": [], "removed": [], "changed": []}
+    assert result["reportLines"] == []
+    assert result["segments"] == payload["segments"]
+    assert payload.get("reportLines") is None
+
+
+def test_end_date_today_is_not_a_new_block_and_named_ooo_stays_separate():
+    result = module.summarize(
+        {
+            "timezoneChanges": [
+                change("delete"),
+                change(),
+                change(start="2024-10-22", end="2024-10-23"),
+            ],
+            "ooo": {"created": 1, "createdNames": ["Future conference"]},
+        },
+        TODAY,
+    )
+    assert result["timezoneDiff"]["added"] == []
+    assert result["reportLines"] == ["OOO: создан блок для поездки «Future conference»."]
+
+
+def test_added_removed_and_changed_rows_are_deterministic():
+    result = module.summarize(
+        {
+            "timezoneChanges": [
+                change("delete"),
+                change(zone="Europe/Berlin"),
+                change(start="2024-10-27", end="2024-10-29"),
+                change("delete", start="2024-10-30", end="2024-11-01"),
+            ]
+        },
+        TODAY,
+    )
+    diff = result["timezoneDiff"]
+    assert diff["changed"] == [
+        {
+            "from": "2024-10-24",
+            "to": "2024-10-26",
+            "oldTimezone": "Europe/Paris",
+            "newTimezone": "Europe/Berlin",
+        }
+    ]
+    assert len(diff["added"]) == len(diff["removed"]) == 1
+    assert len(result["reportLines"]) == 3
+
+
+def test_duplicate_rows_are_netted_as_a_multiset():
+    result = module.summarize({"timezoneChanges": [change("delete"), change(), change()]}, TODAY)
+    assert len(result["timezoneDiff"]["added"]) == 1
+
+
+def test_ambiguous_pairing_retains_explicit_additions_and_removals():
+    result = module.summarize(
+        {
+            "timezoneChanges": [
+                change("delete"),
+                change(zone="Europe/Berlin"),
+                change(zone="Europe/London"),
+            ]
+        },
+        TODAY,
+    )
+    assert result["timezoneDiff"]["changed"] == []
+    assert len(result["timezoneDiff"]["added"]) == 2
+    assert len(result["timezoneDiff"]["removed"]) == 1
+
+
+def test_ooo_lines_name_each_actual_created_and_deleted_trip():
+    result = module.summarize(
+        {
+            "ooo": {
+                "created": 2,
+                "deleted": 1,
+                "prioritySet": 2,
+                "createdNames": ["Conference A", "Trip\nB"],
+                "deletedNames": ["Old C"],
+            }
+        },
+        TODAY,
+    )
+    assert result["reportLines"] == [
+        "OOO: создан блок для поездки «Conference A».",
+        "OOO: создан блок для поездки «Trip B».",
+        "OOO: удалён блок для поездки «Old C».",
+        "OOO: приоритет P2 установлен для блоков: 2.",
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"timezoneChanges": {}},
+        {"timezoneChanges": [change("unknown")]},
+        {"timezoneChanges": [change(start="invalid")]},
+        {"timezoneChanges": [change(end="2024-10-24")]},
+        {"ooo": {"created": 1}},
+        {"ooo": {"created": 0, "createdNames": ["Unbound"]}},
+        {"ooo": {"created": True, "createdNames": ["Wrong count"]}},
+        {"ooo": {"prioritySet": -1}},
+    ],
+)
+def test_incomplete_or_ambiguous_provider_output_is_not_reported(payload):
+    with pytest.raises((ValueError, TypeError)):
+        module.summarize(payload, TODAY)
+
+
+def test_cli_preserves_errors_and_reports_one_json_object():
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)],
+        input=json.dumps({"errors": ["Provider failed"]}),
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["errors"] == ["Provider failed"]
+    assert json.loads(result.stdout)["reportLines"] == []
+
+
+def test_cli_rejects_invalid_json_without_a_partial_report():
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)], input="not JSON", text=True, capture_output=True
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "Inspect the sync JSON" in result.stderr

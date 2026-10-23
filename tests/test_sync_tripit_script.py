@@ -129,3 +129,12 @@ def test_sync_runs_in_utc_whatever_the_container_zone(tmp_path):
     result = _run(pkg, onecli_url="http://gateway.test", path_prepend=shim, tz="Europe/Brussels")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["tz"] == "UTC"
+
+
+def test_wrapper_preserves_failed_sync_status_through_reporter(tmp_path):
+    shim = _make_node_shim(tmp_path / "bin")
+    (shim / "node").write_text('#!/bin/bash\nprintf \'{"errors":["failed"]}\\n\'\nexit 7\n')
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    result = _run(pkg, onecli_url="http://gateway.test", path_prepend=shim)
+    assert result.returncode == 7

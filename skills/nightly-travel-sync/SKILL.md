@@ -25,7 +25,7 @@ Run the sync in-container; credentials are swapped at the OneCLI gateway (#748):
 bash /home/node/.claude/skills/tessl__nightly-travel-sync/scripts/sync-tripit.sh
 ```
 
-The script runs `reclaim-tripit-timezones-sync` (agent-image global) and prints one JSON object: `{ noChanges, homeTimezone, timezoneChanges[], segments[], ooo, conflicts[], errors[] }`. Parse it:
+The script runs `reclaim-tripit-timezones-sync` (agent-image global) and prints one JSON object with the upstream fields plus `timezoneDiff` and `reportLines`. The report contract and netting logic live in `skills/nightly-travel-sync/scripts/summarize-sync.py`. Parse it:
 
 - **`errors` non-empty** — surface the messages via `mcp__nanoclaw__send_message`, emit `<internal>nightly-travel-sync exited step-1: sync-error</internal>` as your final turn text, and finish. (A missing-credential or gateway-auth failure lands here.)
 - **Persist the timezone segments to the host** — always call this on a clean run so the owner-tz backbone (scheduler local-tz, the 30-min heartbeat advisory) stays current:
@@ -35,7 +35,7 @@ The script runs `reclaim-tripit-timezones-sync` (agent-image global) and prints 
   ```
 
   Call it even when `segments` is `[]` — an empty array is the correct "no active travel" state and clears stale segments.
-- **Report changes** via `mcp__nanoclaw__send_message` when any are non-empty: `timezoneChanges` (new/updated zones), `ooo` (OOO blocks applied), `conflicts` (overlapping trips — flag as a warning). Silent when the run is clean with nothing to report.
+- **Report changes** via `mcp__nanoclaw__send_message` using `reportLines` verbatim. Report non-empty `conflicts` separately as warnings. Never reconstruct changes or attach trip names from the raw `timezoneChanges`, `ooo` counts or `segments`. Silent when `reportLines` and `conflicts` are empty.
 
 If the script itself exits non-zero (the CLI/package missing, or `ONECLI_URL` unset / the gateway unreachable so the sync could not run), surface its stderr via `mcp__nanoclaw__send_message`, emit `<internal>nightly-travel-sync exited step-1: sync-fail</internal>`, and finish. Otherwise proceed to Step 2.
 
