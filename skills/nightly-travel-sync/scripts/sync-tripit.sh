@@ -53,4 +53,13 @@ cd "$PKG_DIR"
 # jbaruch/reclaim-tripit-timezones-sync#20). OOO events are written and read
 # back with an explicit home timeZone, so nothing else depends on the process
 # zone. Keep the pin after the upstream fix ships.
-TZ=UTC node sync.mjs sync --output=json | python3 "$SCRIPT_DIR/summarize-sync.py"
+if TZ=UTC node sync.mjs sync --output=json | python3 "$SCRIPT_DIR/summarize-sync.py"; then
+    exit 0
+else
+    statuses=("${PIPESTATUS[@]}")
+    if [ "${statuses[0]}" -ne 0 ]; then
+        echo "sync-tripit: upstream CLI failed (exit ${statuses[0]}). Check its errors JSON and OneCLI connection before retrying." >&2
+        exit "${statuses[0]}"
+    fi
+    exit "${statuses[1]}"
+fi

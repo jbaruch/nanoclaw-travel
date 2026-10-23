@@ -140,3 +140,5 @@ def test_wrapper_preserves_failed_sync_status_through_reporter(tmp_path):
     pkg.mkdir()
     result = _run(pkg, onecli_url="http://gateway.test", path_prepend=shim)
     assert result.returncode == 7
+    assert "upstream CLI failed (exit 7)" in result.stderr
+    assert "OneCLI connection before retrying" in result.stderr
