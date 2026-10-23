@@ -377,6 +377,7 @@ def test_unplanned_lines_reach_the_rendered_notice():
         converted=0,
         deferred=0,
         errors=[],
+        skipped_creations=[],
     )
     payload = reconcile_sweep.build_sweep_payload(applied, [], [], ["Couldn't plan X: why"])
     assert payload["data"]["message"] == "Couldn't plan X: why"
@@ -457,6 +458,7 @@ def test_a_live_sweep_announces_a_drive_missing_for_an_hour(state_dir, monkeypat
         converted=0,
         deferred=0,
         errors=[],
+        skipped_creations=[],
     )
     leg = _held()
     messages = [

@@ -72,6 +72,7 @@ class ApplyResult:
     converted: int = 0
     deferred: int = 0
     errors: list[str] = field(default_factory=list)
+    skipped_creations: list[str] = field(default_factory=list)
     # Operator-facing notification material, recorded ONLY for ops that actually
     # applied this sweep (never for deferred / failed ones). Per-leg here; the
     # sweep payload builder groups them per meeting. `added_meeting_legs` holds
@@ -254,6 +255,7 @@ def apply_plan(
     budget_seconds: float | None = None,
     monotonic: Callable[[], float] = time.monotonic,
     now: datetime | None = None,
+    creation_clock: Callable[[], datetime] | None = None,
 ) -> ApplyResult:
     """Execute a reconcile plan against the calendar. Returns applied counts.
 
@@ -278,8 +280,14 @@ def apply_plan(
     silently. It is separate from `monotonic`, which measures only elapsed write
     time and cannot answer "how far away is this drive"; injected for the same
     determinism reason, defaulting to the real clock.
+
+    `creation_clock` is checked immediately before each new block or legacy
+    replacement. A start that passed during planning or earlier writes is
+    skipped without creating a backdated event or deleting its legacy source.
+    Existing blocks may still be patched; the alert cycle clock remains `now`.
     """
     result = ApplyResult()
+    creation_clock = creation_clock or (lambda: datetime.now(UTC))
     now = now or datetime.now(UTC)
     deadline = monotonic() + budget_seconds if budget_seconds is not None else None
 
@@ -326,6 +334,11 @@ def apply_plan(
             )
 
     for c in plan.creates:
+        if c.desired.start < creation_clock():
+            result.skipped_creations.append(
+                f"{c.desired.kind} {c.desired.identity}: start already past"
+            )
+            continue
         if over_budget():
             result.deferred += 1
             continue
@@ -348,6 +361,11 @@ def apply_plan(
             )
 
     for cv in plan.converts:
+        if cv.desired.start < creation_clock():
+            result.skipped_creations.append(
+                f"{cv.desired.kind} {cv.desired.identity}: start already past"
+            )
+            continue
         if over_budget():
             result.deferred += 1
             continue

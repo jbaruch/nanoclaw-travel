@@ -165,7 +165,13 @@ def test_an_alerting_swing_reaches_apply_plan():
     plan = plan_reconcile([_desired("m1", "meeting_return", 2700)], [_current(1800)])
     assert len(plan.updates) == 1
     assert plan.updates[0].prior_baseline_seconds == 1800
-    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary", now=NOW_APPLY)
+    result = apply_plan(
+        plan,
+        calendar=FakeCalendar(),
+        calendar_id="primary",
+        now=NOW_APPLY,
+        creation_clock=lambda: _dt(0),
+    )
     assert [(u["minutes"], u["direction"]) for u in result.material_updates] == [(15, "sooner")]
 
 
@@ -175,7 +181,13 @@ def test_a_swing_over_the_patch_gate_but_under_the_alert_floor_patches_silently(
     # opened up between "worth fixing" and "worth saying".
     plan = plan_reconcile([_desired("m1", "meeting_return", 720)], [_current(600)])
     assert len(plan.updates) == 1
-    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary", now=NOW_APPLY)
+    result = apply_plan(
+        plan,
+        calendar=FakeCalendar(),
+        calendar_id="primary",
+        now=NOW_APPLY,
+        creation_clock=lambda: _dt(0),
+    )
     assert result.updated == 1
     assert result.material_updates == []
 
@@ -186,7 +198,9 @@ def test_sub_tolerance_change_produces_no_update_and_no_alert():
     # the patch gate agree, so a "material" claim never outruns the reconcile.
     plan = plan_reconcile([_desired("m1", "meeting_return", 660)], [_current(600)])
     assert plan.updates == ()
-    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary")
+    result = apply_plan(
+        plan, calendar=FakeCalendar(), calendar_id="primary", creation_clock=lambda: _dt(0)
+    )
     assert result.material_updates == []
 
 
@@ -200,7 +214,9 @@ def test_meeting_create_recorded_airport_create_not():
             Create(_desired("flt", "airport_departure", 1200, "Drive: STN")),
         )
     )
-    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary")
+    result = apply_plan(
+        plan, calendar=FakeCalendar(), calendar_id="primary", creation_clock=lambda: _dt(0)
+    )
     assert result.created == 2
     # only the MEETING add is a notification (airport drives aren't skippable)
     assert [leg["meeting"] for leg in result.added_meeting_legs] == ["Massage"]
@@ -213,7 +229,13 @@ def test_material_update_recorded_routine_update_not():
             Update("e2", _desired("mtg2", "meeting_return", 1830), prior_baseline_seconds=1800),
         )
     )
-    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary", now=NOW_APPLY)
+    result = apply_plan(
+        plan,
+        calendar=FakeCalendar(),
+        calendar_id="primary",
+        now=NOW_APPLY,
+        creation_clock=lambda: _dt(0),
+    )
     assert result.updated == 2  # both patched (calendar stays accurate)
     assert len(result.material_updates) == 1  # only the +15min one alerts
     alert = result.material_updates[0]
@@ -226,7 +248,13 @@ def test_a_far_future_update_patches_without_alerting():
     far = _desired("mtg1", "meeting_return", 2700)
     far = replace(far, start=FAR, end=FAR + timedelta(minutes=45), anchor=FAR)
     plan = ReconcilePlan(updates=(Update("e1", far, prior_baseline_seconds=1800),))
-    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary", now=NOW_APPLY)
+    result = apply_plan(
+        plan,
+        calendar=FakeCalendar(),
+        calendar_id="primary",
+        now=NOW_APPLY,
+        creation_clock=lambda: _dt(0),
+    )
     assert result.updated == 1
     assert result.material_updates == []
 
@@ -236,7 +264,13 @@ def test_deferred_update_is_not_recorded():
     plan = ReconcilePlan(
         updates=(Update("e1", _desired("m", "meeting_return", 900), prior_baseline_seconds=600),)
     )
-    result = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary", budget_seconds=0.0)
+    result = apply_plan(
+        plan,
+        calendar=FakeCalendar(),
+        calendar_id="primary",
+        budget_seconds=0.0,
+        creation_clock=lambda: _dt(0),
+    )
     assert result.deferred == 1
     assert result.material_updates == []
 
@@ -443,7 +477,9 @@ def test_a_created_lodging_drive_stays_silent():
     plan = ReconcilePlan(
         creates=(Create(_desired(identity="tn-tigers-2020-08", kind="lodging_outbound")),)
     )
-    applied = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary")
+    applied = apply_plan(
+        plan, calendar=FakeCalendar(), calendar_id="primary", creation_clock=lambda: _dt(0)
+    )
     payload = build_sweep_payload(applied, [])
     assert applied.created == 1
     assert applied.added_meeting_legs == []
@@ -474,7 +510,13 @@ def test_a_far_future_change_produces_no_notice_at_all():
     far = _desired("mtg1", "meeting_return", 2700)
     far = replace(far, start=FAR, end=FAR + timedelta(minutes=45), anchor=FAR)
     plan = ReconcilePlan(updates=(Update("e1", far, prior_baseline_seconds=1800),))
-    applied = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary", now=NOW_APPLY)
+    applied = apply_plan(
+        plan,
+        calendar=FakeCalendar(),
+        calendar_id="primary",
+        now=NOW_APPLY,
+        creation_clock=lambda: _dt(0),
+    )
     payload = build_sweep_payload(applied, [])
     assert applied.updated == 1
     assert payload["wake_agent"] is False
@@ -492,7 +534,13 @@ def test_the_same_change_inside_the_horizon_does_notify():
             ),
         )
     )
-    applied = apply_plan(plan, calendar=FakeCalendar(), calendar_id="primary", now=NOW_APPLY)
+    applied = apply_plan(
+        plan,
+        calendar=FakeCalendar(),
+        calendar_id="primary",
+        now=NOW_APPLY,
+        creation_clock=lambda: _dt(0),
+    )
     payload = build_sweep_payload(applied, [])
     # #285: the sweep no longer wakes for a notice — the host delivers
     # `data.message` verbatim. "Has something to say" is now the message
