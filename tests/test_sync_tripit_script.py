@@ -69,7 +69,7 @@ def _make_node_shim(bin_dir: Path) -> Path:
     node.write_text(
         "#!/bin/bash\n"
         'printf \'{"args":"%s","tripit":"%s","reclaim":"%s","tz":"%s",'
-        '"segments":[],"noChanges":true,"homeTimezone":null,"timezoneChanges":[],"ooo":null,'
+        '"mode":"sync","segments":[],"noChanges":true,"homeTimezone":null,"timezoneChanges":[],"ooo":null,'
         '"conflicts":[],"errors":[]}\\n\''
         ' "$*" "$TRIPIT_ICAL_URL" "$RECLAIM_API_TOKEN" "${TZ-}"\n'
     )

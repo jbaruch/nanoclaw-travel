@@ -35,6 +35,82 @@ def calendar_date(home_timezone: str | None, instant: datetime) -> date:
     return instant.astimezone(zone).date()
 
 
+def day(value: Any) -> date:
+    """Parse a date-only contract field without echoing untrusted values."""
+    if not isinstance(value, str):
+        raise ValueError("date fields must use YYYY-MM-DD strings")
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        raise ValueError("date fields must use valid YYYY-MM-DD strings") from None
+    if parsed.isoformat() != value:
+        raise ValueError("date fields must use YYYY-MM-DD strings")
+    return parsed
+
+
+def text_record(value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    if not isinstance(value, dict) or any(not isinstance(value.get(key), str) for key in fields):
+        raise ValueError("sync output contains an incomplete or invalid string record")
+    return value
+
+
+def validate_success(result: dict[str, Any]) -> None:
+    """Validate the complete public success shape before any host persistence."""
+    required = {
+        "mode",
+        "noChanges",
+        "homeTimezone",
+        "timezoneChanges",
+        "segments",
+        "ooo",
+        "conflicts",
+    }
+    if not required.issubset(result):
+        raise ValueError("successful sync output is missing required fields")
+    if (
+        not isinstance(result["mode"], str)
+        or not result["mode"]
+        or type(result["noChanges"]) is not bool
+        or not isinstance(result["homeTimezone"], (str, type(None)))
+        or any(
+            not isinstance(result[key], list)
+            for key in ("segments", "conflicts", "timezoneChanges")
+        )
+    ):
+        raise ValueError("successful sync output has invalid field types")
+    for item in result["segments"]:
+        row = text_record(item, ("timezone", "from", "to", "label"))
+        if day(row["from"]) >= day(row["to"]):
+            raise ValueError("segment date bounds must have a positive exclusive interval")
+        for key in ("from_dt", "to_dt"):
+            if key not in row or (row[key] is not None and not isinstance(row[key], str)):
+                raise ValueError("segment instants must be ISO-8601 strings or null")
+            if row[key] is not None:
+                try:
+                    parsed = datetime.fromisoformat(row[key])
+                except ValueError:
+                    raise ValueError("segment instants must be valid ISO-8601 strings") from None
+                if parsed.tzinfo is None:
+                    raise ValueError("segment instants must include a timezone offset")
+    for item in result["conflicts"]:
+        row = text_record(item, ("trip1", "trip2", "overlap"))
+        day(row["overlap"])
+    ooo = result["ooo"]
+    if ooo is not None:
+        counts = ("created", "deleted", "setToP2", "prioritySet")
+        if not isinstance(ooo, dict) or any(
+            type(ooo.get(key)) is not int or ooo[key] < 0 for key in counts
+        ):
+            raise ValueError("OOO counters must be nonnegative integers")
+        if ooo["setToP2"] != ooo["prioritySet"]:
+            raise ValueError("OOO priority aliases must agree")
+        for key in ("createdNames", "deletedNames"):
+            if not isinstance(ooo.get(key), list) or any(
+                not isinstance(value, str) for value in ooo[key]
+            ):
+                raise ValueError("OOO names must be string arrays")
+
+
 def summarize(result: dict[str, Any], today: date) -> dict[str, Any]:
     """Pure report transformation; today is injected for deterministic cutoffs."""
     changes = result.get("timezoneChanges", [])
@@ -47,7 +123,7 @@ def summarize(result: dict[str, Any], today: date) -> dict[str, Any]:
             raise ValueError("unrecognized timezone change")
 
         zone, start, end = (required_text(change, key) for key in ("timezone", "from", "to"))
-        start_date, end_date = date.fromisoformat(start), date.fromisoformat(end)
+        start_date, end_date = day(start), day(end)
         if start_date >= end_date:
             raise ValueError("timezone change has invalid exclusive date bounds")
         if end_date <= today:
@@ -118,23 +194,7 @@ def main() -> int:
         if not isinstance(errors, list) or any(not isinstance(error, str) for error in errors):
             raise ValueError("sync output needs an errors array")
         if not errors:
-            required = {
-                "noChanges",
-                "homeTimezone",
-                "timezoneChanges",
-                "segments",
-                "ooo",
-                "conflicts",
-            }
-            if not required.issubset(result):
-                raise ValueError("successful sync output is missing required fields")
-            if (
-                type(result["noChanges"]) is not bool
-                or not isinstance(result["segments"], list)
-                or not isinstance(result["conflicts"], list)
-                or not isinstance(result["homeTimezone"], (str, type(None)))
-            ):
-                raise ValueError("successful sync output has invalid field types")
+            validate_success(result)
         output = summarize(result, calendar_date(result.get("homeTimezone"), datetime.now(UTC)))
     except (ValueError, TypeError) as error:
         print(

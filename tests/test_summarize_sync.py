@@ -18,6 +18,27 @@ assert spec and spec.loader
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 TODAY = date(2024, 10, 23)
+SEGMENT = {
+    "timezone": "Europe/Paris",
+    "from": "2024-06-08",
+    "to": "2024-06-10",
+    "from_dt": "2024-06-08T00:00:00Z",
+    "to_dt": "2024-06-10T00:00:00Z",
+    "label": "Paris",
+}
+
+
+def successful_payload():
+    return {
+        "mode": "sync",
+        "errors": [],
+        "noChanges": True,
+        "homeTimezone": "America/Chicago",
+        "timezoneChanges": [],
+        "segments": [dict(SEGMENT)],
+        "conflicts": [],
+        "ooo": None,
+    }
 
 
 def change(action="create", zone="Europe/Paris", start="2024-10-24", end="2024-10-26"):
@@ -176,6 +197,7 @@ def test_cli_rejects_missing_success_fields_instead_of_reporting_no_change(paylo
 def test_cli_rejects_invalid_success_field_types(key, value):
     payload = {
         "errors": [],
+        "mode": "sync",
         "noChanges": True,
         "homeTimezone": "Europe/Paris",
         "segments": [],
@@ -190,6 +212,67 @@ def test_cli_rejects_invalid_success_field_types(key, value):
     assert result.returncode == 2
     assert result.stdout == ""
     assert "invalid field types" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("mode", None),
+        ("segments", ["not-a-record"]),
+        ("segments", [{}]),
+        ("segments", [{**SEGMENT, "label": None}]),
+        ("segments", [{**SEGMENT, "from": "private-fixture-value"}]),
+        ("segments", [{**SEGMENT, "from_dt": 7}]),
+        ("segments", [{**SEGMENT, "from_dt": "private-fixture-value"}]),
+        ("segments", [{**SEGMENT, "to_dt": "2024-06-10T00:00:00"}]),
+        ("conflicts", ["not-a-record"]),
+        ("conflicts", [{}]),
+        ("conflicts", [{"trip1": "A", "trip2": "B", "overlap": "private-fixture-value"}]),
+        ("ooo", {}),
+        ("ooo", {"created": True, "deleted": 0, "setToP2": 0, "prioritySet": 0}),
+        ("ooo", {"created": 0, "deleted": 0, "setToP2": 1, "prioritySet": 0}),
+        (
+            "ooo",
+            {
+                "created": 0,
+                "deleted": 0,
+                "setToP2": 0,
+                "prioritySet": 0,
+                "createdNames": "not-an-array",
+                "deletedNames": [],
+            },
+        ),
+        ("timezoneChanges", [{"action": "create"}]),
+    ],
+)
+def test_cli_refuses_incomplete_nested_success_records(key, value):
+    payload = successful_payload()
+    payload[key] = value
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)], input=json.dumps(payload), text=True, capture_output=True
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "Inspect the sync JSON" in result.stderr
+    assert "private-fixture-value" not in result.stderr
+
+
+def test_cli_accepts_complete_success_records_without_changing_the_schedule():
+    payload = successful_payload()
+    payload["conflicts"] = [{"trip1": "A", "trip2": "B", "overlap": "2024-06-09"}]
+    payload["ooo"] = {
+        "created": 0,
+        "deleted": 0,
+        "setToP2": 0,
+        "prioritySet": 0,
+        "createdNames": [],
+        "deletedNames": [],
+    }
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT)], input=json.dumps(payload), text=True, capture_output=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["segments"] == payload["segments"]
 
 
 @pytest.mark.parametrize(
@@ -213,6 +296,7 @@ def test_cli_report_uses_the_same_home_date_as_reclaim(zone, instant, active, mo
 
     payload = {
         "errors": [],
+        "mode": "sync",
         "noChanges": False,
         "homeTimezone": zone,
         "segments": [],
