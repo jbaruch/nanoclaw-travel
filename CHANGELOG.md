@@ -1,5 +1,9 @@
 # Changelog
 
+### Load the host runtime contract for policy review
+
+Declare nanoclaw-host as an authoring dependency. The central reviewer installs authority plugins from the trusted base branch, so this declaration precedes changes that consume the host-owned runtime CLI contract. The existing dependency install and deployment gate remain owned by the host.
+
 ## 0.2.158 — 2026-10-23
 
 ### Keep fresh GPS fixes and refuse backdated drive creation (#343)
