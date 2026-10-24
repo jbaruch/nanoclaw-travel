@@ -21,6 +21,7 @@ set -euo pipefail
 # guards deterministically in CI (`ci-safety: Install, Don't Skip`), where the
 # real global package is absent. Production never sets it.
 PKG_DIR="${SYNC_TRIPIT_PKG_DIR:-/usr/local/lib/node_modules/reclaim-tripit-timezones-sync}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 if [ ! -d "$PKG_DIR" ]; then
     echo "sync-tripit: $PKG_DIR not found — the agent image must install it (\`npm install -g jbaruch/reclaim-tripit-timezones-sync\` in container/Dockerfile, jbaruch/nanoclaw #748)." >&2
     exit 1
@@ -52,4 +53,13 @@ cd "$PKG_DIR"
 # jbaruch/reclaim-tripit-timezones-sync#20). OOO events are written and read
 # back with an explicit home timeZone, so nothing else depends on the process
 # zone. Keep the pin after the upstream fix ships.
-TZ=UTC node sync.mjs sync --output=json
+if TZ=UTC node sync.mjs sync --output=json | python3 "$SCRIPT_DIR/summarize-sync.py"; then
+    exit 0
+else
+    statuses=("${PIPESTATUS[@]}")
+    if [ "${statuses[0]}" -ne 0 ]; then
+        echo "sync-tripit: upstream CLI failed (exit ${statuses[0]}). Check its errors JSON and OneCLI connection before retrying." >&2
+        exit "${statuses[0]}"
+    fi
+    exit "${statuses[1]}"
+fi
