@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.160 — 2026-10-24
+
 ### Load the host runtime contract for policy review
 
 Declare nanoclaw-host as an authoring dependency. The central reviewer installs authority plugins from the trusted base branch, so this declaration precedes changes that consume the host-owned runtime CLI contract. The existing dependency install and deployment gate remain owned by the host.
