@@ -16,6 +16,7 @@ import sys
 from collections import Counter
 from datetime import UTC, date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 def required_text(record: dict[str, Any], key: str) -> str:
@@ -23,6 +24,15 @@ def required_text(record: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("timezone change needs timezone, from and to strings")
     return value
+
+
+def calendar_date(home_timezone: str | None, instant: datetime) -> date:
+    """Use the producer's home-calendar boundary, falling back to UTC."""
+    try:
+        zone = ZoneInfo(home_timezone) if home_timezone else UTC
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = UTC
+    return instant.astimezone(zone).date()
 
 
 def summarize(result: dict[str, Any], today: date) -> dict[str, Any]:
@@ -125,7 +135,7 @@ def main() -> int:
                 or not isinstance(result["homeTimezone"], (str, type(None)))
             ):
                 raise ValueError("successful sync output has invalid field types")
-        output = summarize(result, datetime.now(UTC).date())
+        output = summarize(result, calendar_date(result.get("homeTimezone"), datetime.now(UTC)))
     except (ValueError, TypeError) as error:
         print(
             f"sync-tripit: cannot verify the sync report ({error}). "

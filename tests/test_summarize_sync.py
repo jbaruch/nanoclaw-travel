@@ -4,7 +4,8 @@ import importlib.util
 import json
 import subprocess
 import sys
-from datetime import date
+from datetime import UTC, date, datetime
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -189,3 +190,39 @@ def test_cli_rejects_invalid_success_field_types(key, value):
     assert result.returncode == 2
     assert result.stdout == ""
     assert "invalid field types" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "zone,instant,active",
+    [
+        ("America/Chicago", "2024-06-10T04:59:00+00:00", True),
+        ("America/Chicago", "2024-06-10T05:00:00+00:00", False),
+        ("Europe/Brussels", "2024-06-09T21:59:00+00:00", True),
+        ("Europe/Brussels", "2024-06-09T22:00:00+00:00", False),
+        ("invalid-zone", "2024-06-10T00:00:00+00:00", False),
+        (None, "2024-06-10T00:00:00+00:00", False),
+    ],
+)
+def test_cli_report_uses_the_same_home_date_as_reclaim(zone, instant, active, monkeypatch, capsys):
+    reference = datetime.fromisoformat(instant)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=UTC):
+            return reference.astimezone(tz)
+
+    payload = {
+        "errors": [],
+        "noChanges": False,
+        "homeTimezone": zone,
+        "segments": [],
+        "conflicts": [],
+        "ooo": None,
+        "timezoneChanges": [change(start="2024-06-08", end="2024-06-10")],
+    }
+    monkeypatch.setattr(module, "datetime", Clock)
+    monkeypatch.setattr(module.sys, "stdin", StringIO(json.dumps(payload)))
+    assert module.main() == 0
+    output = json.loads(capsys.readouterr().out)
+    assert bool(output["timezoneDiff"]["added"]) is active
+    assert bool(output["reportLines"]) is active

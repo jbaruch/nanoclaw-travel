@@ -2,7 +2,7 @@
 
 ### Report net timezone changes and named OOO operations (#346)
 
-Nightly sync now adds a deterministic net report before the model sees the result. Equal delete/create rows cancel as a multiset; ended Reclaim intervals do not appear as new travel. The original segments remain available for the host timezone schedule. Timezone changes never imply a trip name, and each created or deleted OOO block names its own upstream trip. Missing OOO names fail with an actionable diagnostic instead of inventing an attribution. The skill sends the rendered report lines verbatim and stays silent when there is no net change or conflict. Provider failure status survives the reporting pipeline.
+Nightly sync now adds a deterministic net report before the model sees the result. Equal delete/create rows cancel as a multiset; ended Reclaim intervals do not appear as new travel. The original segments remain available for the host timezone schedule. Timezone changes never imply a trip name, and each created or deleted OOO block names its own upstream trip. Missing OOO names fail with an actionable diagnostic instead of inventing an attribution. The skill sends the rendered report lines verbatim and stays silent when there is no net change or conflict. Provider failure status survives the reporting pipeline. Net reporting uses the producer’s home-calendar date at midnight; the skill declares the full output contract.
 
 ## 0.2.160 — 2026-10-24
 
