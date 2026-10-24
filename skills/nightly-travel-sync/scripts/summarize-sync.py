@@ -27,11 +27,11 @@ def required_text(record: dict[str, Any], key: str) -> str:
 
 
 def calendar_date(home_timezone: str | None, instant: datetime) -> date:
-    """Use the producer's home-calendar boundary, falling back to UTC."""
+    """Use the home-calendar boundary; only a null home zone falls back to UTC."""
     try:
-        zone = ZoneInfo(home_timezone) if home_timezone else UTC
+        zone = UTC if home_timezone is None else ZoneInfo(home_timezone)
     except (ZoneInfoNotFoundError, ValueError):
-        zone = UTC
+        raise ValueError("homeTimezone must be a valid IANA timezone or null") from None
     return instant.astimezone(zone).date()
 
 

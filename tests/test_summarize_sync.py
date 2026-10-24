@@ -282,7 +282,6 @@ def test_cli_accepts_complete_success_records_without_changing_the_schedule():
         ("America/Chicago", "2024-06-10T05:00:00+00:00", False),
         ("Europe/Brussels", "2024-06-09T21:59:00+00:00", True),
         ("Europe/Brussels", "2024-06-09T22:00:00+00:00", False),
-        ("invalid-zone", "2024-06-10T00:00:00+00:00", False),
         (None, "2024-06-10T00:00:00+00:00", False),
     ],
 )
@@ -310,3 +309,23 @@ def test_cli_report_uses_the_same_home_date_as_reclaim(zone, instant, active, mo
     output = json.loads(capsys.readouterr().out)
     assert bool(output["timezoneDiff"]["added"]) is active
     assert bool(output["reportLines"]) is active
+
+
+@pytest.mark.parametrize("zone", ["invalid-zone", "", " ", "/private/zone"])
+def test_cli_rejects_invalid_nonnull_home_zone_without_emitting_a_report(zone, monkeypatch, capsys):
+    payload = {
+        "errors": [],
+        "mode": "sync",
+        "noChanges": True,
+        "homeTimezone": zone,
+        "segments": [],
+        "conflicts": [],
+        "ooo": None,
+        "timezoneChanges": [],
+    }
+    monkeypatch.setattr(module.sys, "stdin", StringIO(json.dumps(payload)))
+    assert module.main() == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "valid IANA timezone or null" in output.err
+    assert "Inspect the sync JSON" in output.err
