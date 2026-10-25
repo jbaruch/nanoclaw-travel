@@ -68,6 +68,7 @@ from meeting_source import (  # noqa: E402
     meeting_desired_blocks,
 )
 from normalize import flight_from_byair  # noqa: E402
+from postarrival import PostarrivalMeeting, postarrival_meetings_from  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg, ReconcilePlan  # noqa: E402
 from shadow import plan_counts, render_plan  # noqa: E402
 from tripit_flights import flights_from_schedule  # noqa: E402
@@ -392,6 +393,7 @@ def build_plan(
     lodging_blocks: list[DesiredBlock] | None = None,
     held: list[HeldLeg] | None = None,
     itinerary: Itinerary | None = None,
+    postarrival_meetings: list[PostarrivalMeeting] | None = None,
 ) -> PlanResult:
     """Assemble the combined (airport + meeting + lodging) reconcile plan.
 
@@ -431,6 +433,7 @@ def build_plan(
         extra_desired=meeting_blocks + list(lodging_blocks or []),
         extra_held=list(held or []) + retained,
         managed_legacy=_MANAGED_LEGACY,
+        postarrival_meetings=postarrival_meetings,
     )
     plan = replace(
         result.plan,
@@ -1358,6 +1361,7 @@ def _run_sweep() -> dict:
     meeting_skipped: list[str] = []
     meeting_held: list[HeldLeg] = []
     operator_zone: str | None = None
+    postarrival_meetings: list[PostarrivalMeeting] = []
     if home:
         fetcher = CalendarFetcher()
         events = exclude_drive_block_events(
@@ -1386,6 +1390,7 @@ def _run_sweep() -> dict:
             flight_windows=[],
             flight_summaries=[],
         )
+        postarrival_meetings = postarrival_meetings_from(meetings)
         # A trip the operator DRIVES to is resolved before the meeting side, so
         # that trip's own events are spared the away-suppression: with a
         # check-in stamped after the first event the anchor resolves home, the
@@ -1478,6 +1483,7 @@ def _run_sweep() -> dict:
         live_origin=live_origin,
         held=meeting_held + lodging_held,
         itinerary=itinerary,
+        postarrival_meetings=postarrival_meetings,
     )
 
     skipped = list(result.skipped) + list(meeting_skipped) + list(lodging_skipped)

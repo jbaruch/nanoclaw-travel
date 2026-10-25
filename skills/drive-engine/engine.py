@@ -45,13 +45,20 @@ if not _TRAVEL_CORE.is_dir():
 if str(_TRAVEL_CORE) not in sys.path:
     sys.path.insert(0, str(_TRAVEL_CORE))
 
-from block_codec import leg_identity  # noqa: E402
+from block_codec import canonical_flight_key, leg_identity  # noqa: E402
 from chain import LegKind, plan_chain_legs  # noqa: E402
 from chain_builder import build_pair_contexts, group_into_chains  # noqa: E402
 from flight_identity import Flight, MergedFlight, merge_flights  # noqa: E402
 from itinerary import CANCELLED, DIVERTED, Itinerary, Transport  # noqa: E402
-from leg_anchor import AirportFacts, BufferOverrides, ConcreteLeg, resolve_leg_anchor  # noqa: E402
+from leg_anchor import (  # noqa: E402
+    AirportFacts,
+    BufferOverrides,
+    ConcreteLeg,
+    flight_protected_bounds,
+    resolve_leg_anchor,
+)
 from position import position_at, resolve_leg_origin  # noqa: E402
+from postarrival import FlightGuard, PostarrivalMeeting, compose_postarrival  # noqa: E402
 from reconcile import (  # noqa: E402
     DesiredBlock,
     HeldLeg,
@@ -386,6 +393,7 @@ def build_reconcile_plan(
     extra_desired: list[DesiredBlock] | None = None,
     extra_held: list[HeldLeg] | None = None,
     managed_legacy: frozenset[str] | None = None,
+    postarrival_meetings: list[PostarrivalMeeting] | None = None,
 ) -> EngineResult:
     """Run the full engine pipeline and return the reconcile plan + diagnostics.
 
@@ -396,7 +404,10 @@ def build_reconcile_plan(
     geofence evidence. `extra_desired` folds in blocks from another source (the
     meeting-leg source) so both are diffed against the calendar in one reconcile,
     and `extra_held` the legs those sources could not compute, so their blocks are
-    kept (#334). `managed_legacy`, when given, is passed through to
+    kept (#334). `postarrival_meetings` are timed in-person meetings composed with
+    inbound arrivals before reconcile (#350): a reachable ongoing meeting replaces
+    airport-to-lodging, and no desired drive may start inside a flight interval.
+    `managed_legacy`, when given, is passed through to
     `plan_reconcile` to scope which legacy generations the engine may converge /
     orphan-delete.
 
@@ -425,8 +436,29 @@ def build_reconcile_plan(
     skipped: list[str] = []
     held: list[HeldLeg] = []
     origin_sources: list[dict[str, str]] = []
+    guards: list[FlightGuard] = []
 
     for chain in chains:
+        closing = chain[-1]
+        for merged in chain:
+            if merged.status == DIVERTED or merged.effective_arr is None:
+                continue
+            facts = _facts_for(merged, airport_info)
+            guard_start, ready_at = flight_protected_bounds(
+                merged, facts=facts, overrides=overrides
+            )
+            guards.append(
+                FlightGuard(
+                    identity=canonical_flight_key(merged),
+                    guard_start=guard_start,
+                    ready_at=ready_at,
+                    airport_code=merged.arr_airport,
+                    airport_point=_airport_point(merged.arr_airport, airport_info),
+                    airport_label=_airport_place(merged.arr_airport),
+                    timezone=facts.arr_timezone,
+                    chain_closing=merged is closing,
+                )
+            )
         contexts = build_pair_contexts(chain, schedule=schedule, left_terminal=left_terminal)
         planned_legs = plan_chain_legs(chain, contexts)
         for planned in planned_legs:
@@ -517,6 +549,26 @@ def build_reconcile_plan(
     if extra_desired:
         desired.extend(extra_desired)
     held.extend(extra_held or [])
+
+    if guards:
+
+        def lodging_lookup(at: datetime) -> str | None:
+            pos = itinerary.addressable_lodging_in_period(at)
+            return pos.address if pos is not None else None
+
+        def fallback_lookup(at: datetime) -> str | None:
+            return itinerary.position_at(at).address
+
+        desired, held, post_diags = compose_postarrival(
+            guards=guards,
+            meetings=tuple(postarrival_meetings or ()),
+            desired=desired,
+            held=held,
+            lodging_lookup=lodging_lookup,
+            fallback_lookup=fallback_lookup,
+            route=route,
+        )
+        skipped.extend(post_diags)
 
     held_keys = frozenset(leg.key for leg in held)
     if managed_legacy is None:

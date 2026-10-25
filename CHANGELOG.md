@@ -1,5 +1,9 @@
 # Changelog
 
+### Plan post-arrival meeting drives around inbound flights (#350)
+
+No drive may start inside a flight's clearance / airborne / post-arrival window. An ongoing reachable meeting after landing replaces airport→lodging with airport→venue; the return goes to the period's addressable lodging. An ended or unreachable meeting gets no drive, and a trip-city centroid is not used when lodging exists. Flight identity, connection masking, and hold/delete semantics stay as they were, except that an airborne or centroid-stale block is deleted rather than held.
+
 ## 0.2.161 — 2026-10-24
 
 ### Report net timezone changes and named OOO operations (#346)

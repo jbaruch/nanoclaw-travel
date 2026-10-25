@@ -146,6 +146,22 @@ def test_in_the_air_he_belongs_to_where_he_is_going():
     assert (position.address, position.source) == ("San Antonio, TX", "trip_location")
 
 
+def test_addressable_lodging_in_period_finds_the_destination_hotel_while_airborne():
+    """#350: lodging of the arrival period, even when position_at is still the city."""
+    itinerary = Itinerary(THANKSGIVING, home_address=HOME, home_airports=BNA)
+    airborne = _at("2025-11-26T00:00:00Z")
+    assert itinerary.position_at(airborne).source == "trip_location"
+    lodging = itinerary.addressable_lodging_in_period(airborne)
+    assert lodging is not None
+    assert (lodging.address, lodging.source) == (AIRBNB, "lodging")
+
+
+def test_addressable_lodging_in_period_is_none_without_a_stay():
+    itinerary = _devcon()
+    assert itinerary.addressable_lodging_in_period(_at("2025-11-03T15:00:00Z")) is None
+    assert itinerary.position_at(_at("2025-11-03T15:00:00Z")).source == "trip_location"
+
+
 def test_the_same_flight_from_two_sources_is_one_journey():
     """The feed triplicates segments and byAir tracks the same flight: one
     journey, so no phantom ground period opens between the copies."""
