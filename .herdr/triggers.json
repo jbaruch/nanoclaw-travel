@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "package_roots": [
-    "skills/*"
+    "skills/*",
+    "rules"
   ],
   "package_change_lines": 400,
   "trust_boundary_paths": [
@@ -21,17 +22,24 @@
     "skills/drive-engine/postarrival.py",
     "skills/drive-engine/scan.py",
     "skills/drive-engine/tripit_flights.py",
-    "skills/expertflyer/scripts/expertflyer.py"
+    "skills/expertflyer/scripts/expertflyer.py",
+    ".github/fleet-review-enabled",
+    ".herdr/triggers.json",
+    "rules/flight-data-locality.md",
+    "rules/flight-notification-delivery.md"
   ],
   "cli_spec_paths": [
-    "skills/*.py"
+    "skills/*.py",
+    "skills/*/scripts/*.py"
   ],
   "cli_surface_markers": [
     "add_parser(",
-    "add_argument("
+    "add_argument(",
+    "ArgumentParser("
   ],
   "user_doc_paths": [
     "README.md",
-    "docs/*"
+    "docs/*",
+    "skills/*/SKILL.md"
   ]
 }
