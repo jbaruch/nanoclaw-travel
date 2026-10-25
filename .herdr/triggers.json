@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "package_roots": [
+    "skills/*"
+  ],
+  "package_change_lines": 400,
+  "trust_boundary_paths": [
+    ".github/workflows/*",
+    "skills/*/*client.py",
+    "skills/*/*apply.py",
+    "skills/*/*reconcile*.py",
+    "skills/*/*state.py",
+    "skills/*/scripts/fetch-*.py",
+    "skills/*/scripts/refresh-*.py",
+    "skills/*/scripts/update-*.py",
+    "skills/*/scripts/build-*.py",
+    "skills/drive-engine/block_codec.py",
+    "skills/drive-engine/engine.py",
+    "skills/drive-engine/meeting_source.py",
+    "skills/drive-engine/normalize.py",
+    "skills/drive-engine/postarrival.py",
+    "skills/drive-engine/scan.py",
+    "skills/drive-engine/tripit_flights.py",
+    "skills/expertflyer/scripts/expertflyer.py"
+  ],
+  "cli_spec_paths": [
+    "skills/*.py"
+  ],
+  "cli_surface_markers": [
+    "add_parser(",
+    "add_argument("
+  ],
+  "user_doc_paths": [
+    "README.md",
+    "docs/*"
+  ]
+}
