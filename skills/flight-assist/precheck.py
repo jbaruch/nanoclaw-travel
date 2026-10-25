@@ -68,17 +68,20 @@ from maps_client import MapsClient, MapsError  # noqa: E402
 from notification_delivery import PHASE_BY_REASON, DeliveryStore, notification_store  # noqa: E402
 from operator_tz import READER_TIMEOUT_SECONDS, OperatorTz, read_operator_tz  # noqa: E402
 from phase_markers import (  # noqa: E402
+    at_departure_airport,
     boarding_window_open,
     check_arrival_logistics,
     check_day_before,
     check_gate_assignment,
     check_time_to_leave,
     day_before_due,
+    departure_airport_coords,
     gate_assignment_window_open,
     is_boarding_or_gone,
 )
 from state import (  # noqa: E402
     StateError,
+    fresh_live_coordinates,
     read_active_flights,
     read_config,
     read_flight_state,
@@ -1054,6 +1057,14 @@ def _process_flight(
         now_utc=now_utc,
         time_to_leave_already_fired=phase_markers.get("time_to_leave_fired", False),
     )
+    gps = fresh_live_coordinates(now_utc)
+    dep_lat, dep_lon = departure_airport_coords(raw_flight.get("depAirport"))
+    at_airport = at_departure_airport(
+        origin_lat=None if gps is None else gps[0],
+        origin_lon=None if gps is None else gps[1],
+        dep_lat=dep_lat,
+        dep_lon=dep_lon,
+    )
     fired, event = check_time_to_leave(
         scheduled_dep_time=scheduled_dep_time,
         travel_time_seconds=travel_time_seconds,
@@ -1061,6 +1072,7 @@ def _process_flight(
         now_utc=now_utc,
         snapshot=new_snapshot,
         boarding_lead_minutes=boarding_lead_minutes,
+        at_airport=at_airport,
     )
     if fired and event is not None:
         events.append(event)

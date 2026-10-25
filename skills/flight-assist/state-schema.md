@@ -113,6 +113,8 @@ Origin-resolution ladder used by `precheck._resolve_time_to_leave_origin`:
 2. `home_address` from `config.json`
 3. `None` — caller skips the maps query
 
+The same 30-minute window feeds the at-airport presence check for `time_to_leave` (#349): `state.fresh_live_coordinates` returns the fix only when it is fresh, and `phase_markers.at_departure_airport` compares it to `depAirport.lat`/`lon` from the already-fetched flight payload. A stale, future, missing, or coordinate-less reading is not proof the owner is at the airport, and is not proof they are away.
+
 A `schema_version` mismatch (host bumped) returns `None` from the reader and the precheck falls back to `home_address`, matching the no-snapshot-on-disk path.
 
 ### `travel-db.json` — trip-window gate (#147)

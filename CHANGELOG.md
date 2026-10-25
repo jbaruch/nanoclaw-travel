@@ -1,5 +1,9 @@
 # Changelog
 
+### Suppress time_to_leave after taxi-out and at-airport GPS (#349)
+
+`time_to_leave` stayed silent for real boarding and the documented gone statuses, then fired 19 minutes after leave-by on a taxi-out snapshot while live GPS was already in the departure terminal. The gate now treats taxi / pushback / gate-closed prose on `computed_status_detail` as gone-phase, independent of `computed_status` and of the boarding window, and treats unpublished status strings as not pre-departure rather than minting a live enum. A fresh (≤ 30 min) GPS fix inside 3 km of the already-fetched `depAirport` coordinates suppresses the alert; missing airport coordinates skip that presence check this cycle. After scheduled departure the remaining missed leave-by notice fires only when that fresh fix is clearly away — absent, stale, or ambiguous location is not proof of being away. SKILL.md composes the missed payload as leave-by passed plus alternatives, and does not improvise taxi/gone copy off the snapshot.
+
 ## 0.2.162 — 2026-10-26
 
 ### Plan post-arrival meeting drives around inbound flights (#350)

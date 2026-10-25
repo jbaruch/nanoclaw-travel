@@ -386,8 +386,46 @@ def read_current_location() -> dict | None:
 # origin. Older than this and origin resolution falls back to `home_address`,
 # on the principle that a stale location guess is worse than the static home
 # base (#18). 30 min matches the orchestrator's typical Telegram
-# live-location write cadence.
+# live-location write cadence. The at-airport presence check (#349) uses this
+# same window: a stale or future fix is not evidence of being at — or away
+# from — the departure airport.
 MAX_LIVE_ORIGIN_AGE_MINUTES = 30
+
+
+def _require_aware_now(now: datetime, caller: str) -> None:
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError(f"{caller}: `now` must be timezone-aware (UTC)")
+
+
+def _fresh_location(now: datetime, *, caller: str) -> dict | None:
+    """Host-owned current-location.json when it is inside the freshness window.
+
+    Returns the shape-validated snapshot, or None when the file is missing,
+    unusable, in the future, or older than `MAX_LIVE_ORIGIN_AGE_MINUTES`.
+    None is absence of a fresh fix, not a location of its own.
+    """
+    _require_aware_now(now, caller)
+    loc = read_current_location()
+    if loc is None:
+        return None
+    captured = datetime.fromisoformat(loc["captured_at"].replace("Z", "+00:00"))
+    age = now - captured
+    if timedelta() <= age <= timedelta(minutes=MAX_LIVE_ORIGIN_AGE_MINUTES):
+        return loc
+    return None
+
+
+def fresh_live_coordinates(now: datetime) -> tuple[float, float] | None:
+    """Return `(latitude, longitude)` from a fresh live GPS fix, else None.
+
+    Same 30-minute window as `resolve_live_origin`. A missing, stale, or
+    future `captured_at` yields None — that is not proof the owner is away
+    from the departure airport (#349).
+    """
+    loc = _fresh_location(now, caller="fresh_live_coordinates")
+    if loc is None:
+        return None
+    return loc["latitude"], loc["longitude"]
 
 
 def resolve_live_origin(home_address: str | None, *, now: datetime) -> str | None:
@@ -415,14 +453,9 @@ def resolve_live_origin(home_address: str | None, *, now: datetime) -> str | Non
     `home_address` here, and the `captured_at` on a returned snapshot is always a
     parseable UTC string.
     """
-    if now.tzinfo is None or now.utcoffset() is None:
-        raise ValueError("resolve_live_origin: `now` must be timezone-aware (UTC)")
-    loc = read_current_location()
+    loc = _fresh_location(now, caller="resolve_live_origin")
     if loc is not None:
-        captured = datetime.fromisoformat(loc["captured_at"].replace("Z", "+00:00"))
-        age = now - captured
-        if timedelta() <= age <= timedelta(minutes=MAX_LIVE_ORIGIN_AGE_MINUTES):
-            return f"{loc['latitude']},{loc['longitude']}"
+        return f"{loc['latitude']},{loc['longitude']}"
     return home_address
 
 

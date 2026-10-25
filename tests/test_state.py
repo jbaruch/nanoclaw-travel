@@ -27,6 +27,7 @@ from state import (  # noqa: E402
     STATE_SCHEMA_VERSION,
     StateError,
     delete_flight_state,
+    fresh_live_coordinates,
     list_flight_state_ids,
     read_active_flights,
     read_active_flights_snapshot,
@@ -1278,6 +1279,17 @@ def test_resolve_live_origin_uses_fresh_location(state_root: Path):
     # 15 min old (within the 30-min window) → the live lat,lng wins.
     _write_location(state_root, "2026-05-20T11:45:00Z")
     assert resolve_live_origin("1 Infinite Loop", now=_NOW) == "59.6519,17.9186"
+    assert fresh_live_coordinates(_NOW) == (59.6519, 17.9186)
+
+
+def test_fresh_live_coordinates_none_when_stale_or_future_or_missing(state_root: Path):
+    """Stale, future, and missing fixes are not a location — #349 presence
+    must not treat them as proof of being away from the airport."""
+    assert fresh_live_coordinates(_NOW) is None
+    _write_location(state_root, "2026-05-20T11:00:00Z")  # 60 min old
+    assert fresh_live_coordinates(_NOW) is None
+    _write_location(state_root, "2026-05-20T12:30:00Z")  # future
+    assert fresh_live_coordinates(_NOW) is None
 
 
 def test_resolve_live_origin_falls_back_to_home_when_stale(state_root: Path):
@@ -1306,6 +1318,8 @@ def test_resolve_live_origin_rejects_naive_now(state_root: Path):
     naive = datetime(2026, 5, 20, 12, 0, 0)
     with pytest.raises(ValueError, match="timezone-aware"):
         resolve_live_origin("1 Infinite Loop", now=naive)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        fresh_live_coordinates(naive)
 
 
 class _OffsetNaiveTZ(tzinfo):

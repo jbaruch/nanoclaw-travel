@@ -122,10 +122,11 @@ Fires once per flight. The firing logic lives in `phase_markers.py` (`check_day_
 #### `time_to_leave`
 
 ```json
-{"reason": "time_to_leave", "leave_by": "2026-05-18T16:15:00+00:00", "travel_time_minutes": 30, "scheduled_dep_time": "2026-05-18T17:00:00+00:00"}
+{"reason": "time_to_leave", "leave_by": "2026-05-18T16:15:00+00:00", "travel_time_minutes": 30, "scheduled_dep_time": "2026-05-18T17:00:00+00:00", "missed": false}
+{"reason": "time_to_leave", "leave_by": "2026-05-18T16:45:00+00:00", "travel_time_minutes": 0, "scheduled_dep_time": "2026-05-18T17:00:00+00:00", "missed": true}
 ```
 
-Fires when `now + travel_time + 15min buffer ≥ scheduled_dep_time`. `travel_time_minutes` is the in-traffic estimate from Google Maps Distance Matrix. Suppressed once the snapshot shows the flight really boarding or already gone — departed, en_route, landed, cancelled, or diverted (`phase_markers.is_boarding_or_gone`) — the leave-by alert is moot by then (#102).
+Fires when `now + travel_time + 15min buffer ≥ scheduled_dep_time`. `travel_time_minutes` is the in-traffic estimate from Google Maps Distance Matrix. `missed` is true once `now` has reached scheduled departure — SKILL.md then says the leave-by has passed and names alternatives. Suppressed when the snapshot is really boarding, taxiing / pushed back / gate-closed, already gone (`phase_markers.is_boarding_or_gone`), or a fresh GPS fix is inside the departure-airport radius. A missed fire additionally requires a fresh GPS fix clearly away from that airport: absent, stale, or ambiguous location is not proof of being away (#102 / #349).
 
 #### `gate_assignment`
 

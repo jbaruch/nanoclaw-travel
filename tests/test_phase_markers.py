@@ -17,9 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 
 from phase_markers import (  # noqa: E402
+    AIRPORT_PRESENCE_RADIUS_KM,
     ARRIVAL_LOGISTICS_LEAD_MINUTES,
     DAY_BEFORE_HOURS,
     TIME_TO_LEAVE_BUFFER_MINUTES,
+    at_departure_airport,
     boarding_window_open,
     check_arrival_logistics,
     check_day_before,
@@ -27,6 +29,7 @@ from phase_markers import (  # noqa: E402
     check_time_to_leave,
     day_before_due,
     day_label,
+    departure_airport_coords,
     is_boarding_or_gone,
 )
 
@@ -255,6 +258,7 @@ def test_time_to_leave_fires_at_leave_by():
     assert event is not None
     assert event["reason"] == "time_to_leave"
     assert event["travel_time_minutes"] == travel_minutes
+    assert event["missed"] is False
 
 
 def test_time_to_leave_fires_past_leave_by():
@@ -415,6 +419,187 @@ def test_time_to_leave_fires_pre_boarding_with_scheduled_snapshot():
     assert fired is True
     assert event is not None
     assert event["reason"] == "time_to_leave"
+    assert event["missed"] is False
+
+
+# ---------------------------------------------------------------------------
+# #349: taxi / GPS presence / missed leave-by
+# ---------------------------------------------------------------------------
+
+# leave_by with travel 0 = 16:45Z; +19m is 17:04Z = scheduled dep + one 2-min
+# boarding-cadence cycle. Live-sampled BNA coords from test_byair_client.BNA_AIRPORT.
+_LEAVE_BY_PLUS_19 = datetime(2026, 5, 18, 17, 4, 0, tzinfo=UTC)
+_BNA_LAT = 36.125247
+_BNA_LON = -86.677102
+_NASHVILLE_DOWNTOWN_LAT = 36.1627
+_NASHVILLE_DOWNTOWN_LON = -86.7816
+
+
+def _ttl(**overrides):
+    kwargs = {
+        "scheduled_dep_time": SCHED_DEP,
+        "travel_time_seconds": 0,
+        "phase_markers": _markers(),
+        "now_utc": _LEAVE_BY_PLUS_19,
+        "boarding_lead_minutes": 30,
+    }
+    kwargs.update(overrides)
+    return check_time_to_leave(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        {"computed_status": "scheduled", "computed_status_detail": "Taxiing to the runway"},
+        {"computed_status": "check_in_open", "computed_status_detail": "Taxiing to the runway"},
+        {"computed_status": "scheduled", "computed_status_detail": "Pushing back"},
+        {
+            "computed_status": "check_in_open",
+            "computed_status_detail": "Pushing back from the gate",
+        },
+        {"computed_status": "scheduled", "computed_status_detail": "Gate closed"},
+        {"computed_status": "taxiing", "computed_status_detail": "Taxiing to the runway"},
+        {"computed_status": "pushback", "computed_status_detail": "Pushing back"},
+        {"computed_status": "gate_closed"},
+        {"computed_status": "departing"},
+        {"computed_status": "outgate"},
+        {
+            "computed_status": "boarding",
+            "computed_status_detail": "Taxiing to the runway",
+            "dep_time": "2026-05-18T17:40:00+00:00",
+        },
+    ],
+)
+def test_time_to_leave_silent_for_taxi_or_undocumented_gone_at_plus_19(snapshot):
+    """#349 — the 19-minute-late taxi-out fire. Status-or-window lift after
+    boarding suppression is the leading cause; taxi/pushback detail and
+    unpublished statuses stay silent even with travel 0 past leave_by."""
+    fired, event = _ttl(snapshot=snapshot)
+    assert fired is False
+    assert event is None
+
+
+def test_time_to_leave_in_window_boarding_plus_taxi_stays_silent():
+    """Working #102 path: in-window real boarding with taxi prose is already
+    silent; the new detail match must not change that."""
+    now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=UTC)
+    fired, _ = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=0,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot=_boarding_snapshot(computed_status_detail="Taxiing to the runway"),
+        boarding_lead_minutes=30,
+    )
+    assert fired is False
+
+
+def test_time_to_leave_fresh_gps_at_bna_suppresses_at_leave_by():
+    """Fresh GPS inside the BNA radius at leave_by, still scheduled, travel 0."""
+    now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=UTC)
+    fired, _ = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=0,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot={"computed_status": "scheduled"},
+        at_airport=True,
+    )
+    assert fired is False
+
+
+def test_time_to_leave_fresh_gps_downtown_fires_at_leave_by():
+    """Fresh GPS clearly away (downtown Nashville) at leave_by still fires."""
+    now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=UTC)
+    fired, event = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=1800,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot={"computed_status": "scheduled"},
+        at_airport=False,
+    )
+    assert fired is True
+    assert event is not None
+    assert event["missed"] is False
+
+
+def test_time_to_leave_missed_requires_clearly_away():
+    """After scheduled departure, absent/stale/ambiguous location is not
+    proof of being away — only a fresh off-airport fix may fire."""
+    fired_unknown, _ = _ttl(
+        travel_time_seconds=1800,
+        snapshot={"computed_status": "scheduled"},
+        at_airport=None,
+    )
+    assert fired_unknown is False
+    fired_at, _ = _ttl(
+        travel_time_seconds=1800,
+        snapshot={"computed_status": "scheduled"},
+        at_airport=True,
+    )
+    assert fired_at is False
+    fired_away, event = _ttl(
+        travel_time_seconds=1800,
+        snapshot={"computed_status": "scheduled"},
+        at_airport=False,
+    )
+    assert fired_away is True
+    assert event is not None
+    assert event["missed"] is True
+
+
+def test_time_to_leave_already_fired_stays_silent_with_gps_away():
+    fired, _ = _ttl(
+        travel_time_seconds=1800,
+        phase_markers=_markers(time_to_leave_fired=True),
+        snapshot={"computed_status": "scheduled"},
+        at_airport=False,
+    )
+    assert fired is False
+
+
+def test_at_departure_airport_bna_vs_downtown():
+    assert (
+        at_departure_airport(
+            origin_lat=_BNA_LAT, origin_lon=_BNA_LON, dep_lat=_BNA_LAT, dep_lon=_BNA_LON
+        )
+        is True
+    )
+    downtown = at_departure_airport(
+        origin_lat=_NASHVILLE_DOWNTOWN_LAT,
+        origin_lon=_NASHVILLE_DOWNTOWN_LON,
+        dep_lat=_BNA_LAT,
+        dep_lon=_BNA_LON,
+    )
+    assert downtown is False
+    assert AIRPORT_PRESENCE_RADIUS_KM == 3.0
+    assert (
+        at_departure_airport(
+            origin_lat=_NASHVILLE_DOWNTOWN_LAT,
+            origin_lon=_NASHVILLE_DOWNTOWN_LON,
+            dep_lat=None,
+            dep_lon=_BNA_LON,
+        )
+        is None
+    )
+
+
+def test_departure_airport_coords_reads_documented_lat_lon():
+    lat, lon = departure_airport_coords({"lat": _BNA_LAT, "lon": _BNA_LON, "code": "BNA"})
+    assert (lat, lon) == (_BNA_LAT, _BNA_LON)
+    assert departure_airport_coords({"id": 98, "code": "BNA"}) == (None, None)
+    assert departure_airport_coords(None) == (None, None)
+
+
+def test_is_boarding_or_gone_taxi_detail_ignores_status_and_window():
+    window = datetime(2026, 5, 18, 16, 30, 0, tzinfo=UTC)
+    at = _LEAVE_BY_PLUS_19
+    snapshot = {
+        "computed_status": "scheduled",
+        "computed_status_detail": "Taxiing to the runway",
+    }
+    assert is_boarding_or_gone(snapshot, boarding_window_open=window, at=at) is True
 
 
 # ---------------------------------------------------------------------------
