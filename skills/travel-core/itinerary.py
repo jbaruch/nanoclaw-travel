@@ -634,8 +634,10 @@ class Itinerary:
     def addressable_lodging_in_period(self, at: datetime) -> Position | None:
         """Addressable lodging of the ground period `at` belongs to (or is flying to).
 
-        A covering stay with an address wins. Otherwise the next addressable stay
-        assigned to that same period. Never changes `position_at`, never returns a
+        A covering stay wins: with an address it is returned; without one this
+        returns None so the existing annotated fallback applies. The next
+        addressable stay in that period is used only when no stay covers `at`
+        (arrivals before check-in). Never changes `position_at`, never returns a
         prior trip's lodging, and never falls back to the trip-city centroid.
         """
         if at.tzinfo is None or at.utcoffset() is None:
@@ -644,9 +646,11 @@ class Itinerary:
             )
         at = at.astimezone(UTC)
         period = self._periods[self._period_index(at)]
-        covering = [stay for stay in period.stays if stay.start <= at < stay.end and stay.address]
+        covering = [stay for stay in period.stays if stay.start <= at < stay.end]
         if covering:
             stay = max(covering, key=lambda s: s.start)
+            if stay.address is None:
+                return None
             return Position(address=stay.address, source=LODGING, detail=stay.name)
         upcoming = [stay for stay in period.stays if stay.address is not None and stay.end > at]
         if not upcoming:

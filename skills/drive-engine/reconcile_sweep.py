@@ -1390,7 +1390,7 @@ def _run_sweep() -> dict:
             flight_windows=[],
             flight_summaries=[],
         )
-        postarrival_meetings = postarrival_meetings_from(meetings)
+        postarrival_meetings = postarrival_meetings_from(meetings, skip_state=skips, now=now)
         # A trip the operator DRIVES to is resolved before the meeting side, so
         # that trip's own events are spared the away-suppression: with a
         # check-in stamped after the first event the anchor resolves home, the

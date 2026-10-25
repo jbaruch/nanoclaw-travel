@@ -20,11 +20,18 @@ if str(_BUNDLE_DIR) not in sys.path:
 
 from block_codec import GEN_LEGACY_DP  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
+from scan import DEFAULT_TIGHT_GAP_SECONDS  # noqa: E402
 
 # Matches engine.MAX_AIRPORT_DRIVE: a longer airport-to-venue is not a real drive.
 _MAX_HANDOFF_DRIVE = timedelta(hours=6)
 
 _MEETING_KINDS = frozenset({"meeting_outbound", "meeting_return"})
+
+# Scan buckets that represent a real in-person meeting the composer may hand off.
+# filtered / skipped stay out; past is included because an in-flight sweep sees
+# an already-started meeting as past (scan assigns that after declined/cancelled/
+# virtual/anchor filters, and before the skip check).
+_ELIGIBLE_BUCKETS = frozenset({"needs_decision", "bridge", "back_to_back", "has_block", "past"})
 
 RouteFn = Callable[[str, str], "timedelta | None"]
 AddressLookup = Callable[[datetime], str | None]
@@ -54,18 +61,101 @@ class PostarrivalMeeting:
     start: datetime
     end: datetime
     timezone: str | None = None
+    return_suppressed: bool = False
 
 
-def postarrival_meetings_from(scan_results: Sequence[object]) -> list[PostarrivalMeeting]:
-    """Lift scan results that have an identity and a timed span."""
-    out: list[PostarrivalMeeting] = []
+def _skip_is_active(skip_state: dict[str, str] | None, identity: str, now: datetime | None) -> bool:
+    """True when `skip_state` still suppresses `identity` at `now`.
+
+    Mirrors scan's skip predicate so a `past` meeting (classified before the
+    skip check) cannot enter the composer while an active skip remains.
+    """
+    if not skip_state:
+        return False
+    expiry_raw = skip_state.get(identity)
+    if not isinstance(expiry_raw, str):
+        return False
+    text = expiry_raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        expiry = datetime.fromisoformat(text)
+    except ValueError:
+        return False
+    if expiry.tzinfo is None:
+        return False
+    if now is None:
+        return True
+    return expiry > now
+
+
+def _has_return_leg(meeting: object) -> bool:
+    legs = getattr(meeting, "legs", ()) or ()
+    return any(getattr(leg, "direction", None) == "return" for leg in legs)
+
+
+def _has_any_leg(meeting: object) -> bool:
+    legs = getattr(meeting, "legs", ()) or ()
+    return bool(legs)
+
+
+def _next_starts_within(meeting: object, others: Sequence[object], tight_gap_seconds: int) -> bool:
+    end = getattr(meeting, "end", None)
+    identity = getattr(meeting, "meeting_id", None)
+    if end is None:
+        return False
+    for other in others:
+        if getattr(other, "meeting_id", None) == identity:
+            continue
+        start = getattr(other, "start", None)
+        if start is None:
+            continue
+        gap = (start - end).total_seconds()
+        if 0 <= gap <= tight_gap_seconds:
+            return True
+    return False
+
+
+def postarrival_meetings_from(
+    scan_results: Sequence[object],
+    *,
+    skip_state: dict[str, str] | None = None,
+    now: datetime | None = None,
+    tight_gap_seconds: int = DEFAULT_TIGHT_GAP_SECONDS,
+) -> list[PostarrivalMeeting]:
+    """Lift scan results that are eligible in-person meeting intents.
+
+    Declined, cancelled, skipped, virtual, at-anchor, planner-block, and other
+    filtered results stay out even when they still carry a timed location. An
+    active skip excludes a `past` meeting (scan buckets past before it checks
+    skip). A legitimate in-flight `past` in-person meeting remains eligible.
+    """
+    eligible: list[object] = []
     for meeting in scan_results:
         identity = getattr(meeting, "meeting_id", None)
         start = getattr(meeting, "start", None)
         end = getattr(meeting, "end", None)
+        bucket = getattr(meeting, "bucket", None)
         if not isinstance(identity, str) or start is None or end is None:
             continue
+        if bucket not in _ELIGIBLE_BUCKETS:
+            continue
+        if _skip_is_active(skip_state, identity, now):
+            continue
+        eligible.append(meeting)
+
+    out: list[PostarrivalMeeting] = []
+    for meeting in eligible:
+        identity = getattr(meeting, "meeting_id", None)
+        start = getattr(meeting, "start", None)
+        end = getattr(meeting, "end", None)
         location = getattr(meeting, "location", None)
+        if not isinstance(identity, str) or start is None or end is None:
+            continue
+        if _has_any_leg(meeting):
+            return_suppressed = not _has_return_leg(meeting)
+        else:
+            return_suppressed = _next_starts_within(meeting, eligible, tight_gap_seconds)
         out.append(
             PostarrivalMeeting(
                 identity=identity,
@@ -74,6 +164,7 @@ def postarrival_meetings_from(scan_results: Sequence[object]) -> list[Postarriva
                 start=start,
                 end=end,
                 timezone=getattr(meeting, "timezone", None),
+                return_suppressed=return_suppressed,
             )
         )
     return out
@@ -164,20 +255,52 @@ def compose_postarrival(
         used_meetings.add(meeting.identity)
 
     kept: list[DesiredBlock] = []
-    protected_meetings: set[str] = set()
+    protected_outbound: set[str] = set()
+    protected_return: set[str] = set()
     for block in desired_list:
         if not _in_protected(block.start, guards):
             kept.append(block)
             continue
         unsafe.add(_key(block))
-        if block.kind in _MEETING_KINDS:
-            protected_meetings.add(block.identity)
+        if block.kind == "meeting_outbound":
+            protected_outbound.add(block.identity)
             diagnostics.append(
                 f"postarrival {block.identity}: drive would start inside a flight "
                 "interval — suppressed"
             )
-    for identity in protected_meetings:
+        elif block.kind == "meeting_return":
+            protected_return.add(block.identity)
+            diagnostics.append(
+                f"postarrival {block.identity}: drive would start inside a flight "
+                "interval — suppressed"
+            )
+
+    # Held-only meeting legs (in-flight `past` bucket) never appear as desired
+    # blocks. Mark a held key unsafe when its timestamp falls in a protected
+    # interval, but leave meetings the handoff already rewrote — those own the
+    # post-arrival return, and their stale outbound is already unsafe.
+    for item in held:
+        if item.identity in used_meetings or item.kind not in _MEETING_KINDS:
+            continue
+        if item.when is None or not _in_protected(item.when, guards):
+            continue
+        if item.kind == "meeting_outbound":
+            protected_outbound.add(item.identity)
+        else:
+            protected_return.add(item.identity)
+        diagnostics.append(
+            f"postarrival {item.identity}: drive would start inside a flight interval — suppressed"
+        )
+
+    for identity in protected_outbound:
         kept = _drop_meeting(kept, unsafe, identity)
+    for identity in protected_return - protected_outbound:
+        unsafe.add((identity, "meeting_return"))
+        kept = [
+            block
+            for block in kept
+            if not (block.identity == identity and block.kind == "meeting_return")
+        ]
 
     held_list = [item for item in held if item.key not in unsafe]
     return kept, held_list, diagnostics
@@ -214,7 +337,11 @@ def _apply_handoff(
 
     lodging = lodging_lookup(guard.ready_at)
     return_dest = lodging if lodging is not None else fallback_lookup(guard.ready_at)
-    ret_drive = route(venue, return_dest) if return_dest is not None else None
+    need_return = not meeting.return_suppressed
+    ret_drive = route(venue, return_dest) if need_return and return_dest is not None else None
+    if need_return and (ret_drive is None or return_dest is None):
+        diagnostics.append(f"postarrival {meeting.identity}: venue-to-lodging route failed")
+        return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
 
     rewritten: list[DesiredBlock] = []
     found_return = False
@@ -238,9 +365,10 @@ def _apply_handoff(
             continue
         if block.kind == "meeting_return" and block.identity == meeting.identity:
             found_return = True
-            if ret_drive is None or return_dest is None:
+            if not need_return:
                 unsafe.add(_key(block))
                 continue
+            assert ret_drive is not None and return_dest is not None
             rewritten.append(
                 replace(
                     block,
@@ -255,7 +383,8 @@ def _apply_handoff(
             continue
         rewritten.append(block)
 
-    if not found_return and ret_drive is not None and return_dest is not None:
+    if need_return and not found_return:
+        assert ret_drive is not None and return_dest is not None
         rewritten.append(
             DesiredBlock(
                 identity=meeting.identity,
@@ -271,9 +400,8 @@ def _apply_handoff(
                 legacy_keys=frozenset({(GEN_LEGACY_DP, meeting.identity, "return")}),
             )
         )
-    elif ret_drive is None:
-        diagnostics.append(f"postarrival {meeting.identity}: venue-to-lodging route failed")
-        unsafe.update(_meeting_keys(meeting.identity))
+    elif not need_return:
+        unsafe.add((meeting.identity, "meeting_return"))
 
     unsafe.add((meeting.identity, "meeting_outbound"))
     return rewritten, diagnostics

@@ -2,7 +2,7 @@
 
 ### Plan post-arrival meeting drives around inbound flights (#350)
 
-No drive may start inside a flight's clearance / airborne / post-arrival window. An ongoing reachable meeting after landing replaces airport→lodging with airport→venue; the return goes to the period's addressable lodging. An ended or unreachable meeting gets no drive, and a trip-city centroid is not used when lodging exists. Flight identity, connection masking, and hold/delete semantics stay as they were, except that an airborne or centroid-stale block is deleted rather than held.
+No drive may start inside a flight's clearance / airborne / post-arrival window. An ongoing reachable meeting after landing replaces airport→lodging with airport→venue; the return goes to the period's addressable lodging. An ended or unreachable meeting gets no drive, and a trip-city centroid is not used when lodging exists. Flight identity, connection masking, and hold/delete semantics stay as they were, except that an airborne or centroid-stale block is deleted rather than held. Scan classification governs which meetings enter that composition: declined, cancelled, skipped, virtual, at-anchor, and planner-block events keep ordinary airport→lodging, including an active skip on a past-bucket meeting. A tight next meeting suppresses the hotel return. A protected return leaves a legitimate outbound; a protected outbound removes both meeting legs. Held-only meeting keys inside the window are deleted rather than preserved when routing fails. A covering stay without an address is not replaced by a later hotel. A failed venue→lodging route keeps ordinary airport→lodging.
 
 ## 0.2.161 — 2026-10-24
 

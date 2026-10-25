@@ -20,12 +20,16 @@ from block_codec import GEN_UNIFIED, ParsedBlock, canonical_flight_key  # noqa: 
 from engine import AirportInfo, build_reconcile_plan  # noqa: E402
 from flight_identity import BYAIR, Flight, merge_flights  # noqa: E402
 from flight_mask import is_flight_event, known_flight_codes  # noqa: E402
+from itinerary import Itinerary  # noqa: E402
+from meeting_source import meeting_desired_blocks  # noqa: E402
 from postarrival import (  # noqa: E402
     FlightGuard,
     PostarrivalMeeting,
     compose_postarrival,
+    postarrival_meetings_from,
 )
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
+from scan import scan  # noqa: E402
 
 UTC = UTC
 HOME = "12 Example St, TN"
@@ -115,6 +119,18 @@ def _meeting(*, identity="mtg-1", start=MEETING_START, end=MEETING_END, location
     )
 
 
+def _meeting_suppressed():
+    return PostarrivalMeeting(
+        identity="mtg-1",
+        summary="Keynote",
+        location=VENUE,
+        start=MEETING_START,
+        end=MEETING_END,
+        timezone="America/Denver",
+        return_suppressed=True,
+    )
+
+
 def _meeting_blocks(*, origin=CITY, dest_back=CITY, start=MEETING_START, end=MEETING_END):
     return [
         DesiredBlock(
@@ -142,11 +158,13 @@ def _meeting_blocks(*, origin=CITY, dest_back=CITY, start=MEETING_START, end=MEE
     ]
 
 
-def _route(table, default_minutes=30):
+def _route(table, default_minutes: int | None = 30):
     def route(origin, dest):
         if (origin, dest) in table:
             value = table[(origin, dest)]
             return None if value is None else timedelta(minutes=value)
+        if default_minutes is None:
+            return None
         return timedelta(minutes=default_minutes)
 
     return route
@@ -554,3 +572,420 @@ def test_two_overlapping_meetings_do_not_pick_by_input_order():
     assert arrival.destination == HOTEL
     assert not any(b.kind in {"meeting_outbound", "meeting_return"} for b in created)
     assert any("overlapping meetings" in s for s in result.skipped)
+
+
+# --- case 7b: return-route failure is a proposed-handoff failure (B2) --------
+
+
+def test_return_route_failure_keeps_lodging_and_drops_unsafe_meeting():
+    result = _plan(
+        route=_route(
+            {("DEN airport", VENUE): 37, ("DEN airport", HOTEL): 37, (VENUE, HOTEL): None}
+        ),
+    )
+    created = _created(result)
+    arrival = next(b for b in created if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert not any(b.kind in {"meeting_outbound", "meeting_return"} for b in created)
+    assert all(h.identity != "mtg-1" for h in result.held)
+    assert any("venue-to-lodging route failed" in s for s in result.skipped)
+
+
+# --- F2 injected: suppressed return keeps the arrival handoff ----------------
+
+
+def test_suppressed_return_keeps_handoff_and_omits_hotel_return():
+    result = _plan(postarrival_meetings=[_meeting_suppressed()])
+    created = _created(result)
+    arrival = next(b for b in created if b.kind == "airport_arrival")
+    assert arrival.destination == VENUE
+    assert not any(b.kind == "meeting_return" for b in created)
+    assert not any(b.kind == "meeting_outbound" for b in created)
+
+
+# --- F3 pairing on desired blocks -------------------------------------------
+
+
+def test_protected_return_keeps_unprotected_outbound():
+    extra = [
+        DesiredBlock(
+            identity="pre-1",
+            kind="meeting_outbound",
+            summary="Drive: Office",
+            start=datetime(2020, 7, 12, 13, 30, tzinfo=UTC),
+            end=datetime(2020, 7, 12, 14, 0, tzinfo=UTC),
+            origin=HOME,
+            destination="Nashville Office",
+            baseline_seconds=1800,
+            anchor=datetime(2020, 7, 12, 14, 0, tzinfo=UTC),
+        ),
+        DesiredBlock(
+            identity="pre-1",
+            kind="meeting_return",
+            summary="Drive: Office",
+            start=datetime(2020, 7, 12, 16, 30, tzinfo=UTC),
+            end=datetime(2020, 7, 12, 17, 0, tzinfo=UTC),
+            origin="Nashville Office",
+            destination=HOME,
+            baseline_seconds=1800,
+            anchor=datetime(2020, 7, 12, 16, 30, tzinfo=UTC),
+        ),
+    ]
+    result = _plan(extra_desired=extra, postarrival_meetings=[])
+    created = _created(result)
+    assert any(b.identity == "pre-1" and b.kind == "meeting_outbound" for b in created)
+    assert not any(b.identity == "pre-1" and b.kind == "meeting_return" for b in created)
+
+
+def test_protected_outbound_drops_both_meeting_keys():
+    extra = [
+        DesiredBlock(
+            identity="pre-2",
+            kind="meeting_outbound",
+            summary="Drive: Late office",
+            start=GUARD,
+            end=GUARD + timedelta(minutes=30),
+            origin=HOME,
+            destination="Nashville Office",
+            baseline_seconds=1800,
+            anchor=GUARD + timedelta(minutes=30),
+        ),
+        DesiredBlock(
+            identity="pre-2",
+            kind="meeting_return",
+            summary="Drive: Late office",
+            start=READY + timedelta(minutes=15),
+            end=READY + timedelta(minutes=45),
+            origin="Nashville Office",
+            destination=HOME,
+            baseline_seconds=1800,
+            anchor=READY + timedelta(minutes=15),
+        ),
+    ]
+    result = _plan(extra_desired=extra, postarrival_meetings=[])
+    created = _created(result)
+    assert not any(b.identity == "pre-2" for b in created)
+    assert all(h.identity != "pre-2" for h in result.held)
+
+
+# --- scan → meeting_source → composer → reconcile regressions ---------------
+
+
+def _gcal_event(event_id, start, end, location, **extra):
+    event = {
+        "id": event_id,
+        "summary": event_id,
+        "location": location,
+        "start": {"dateTime": start.isoformat(), "timeZone": "America/Denver"},
+        "end": {"dateTime": end.isoformat(), "timeZone": "America/Denver"},
+    }
+    event.update(extra)
+    return event
+
+
+def _covering_unaddressed_schedule():
+    records = _schedule(lodging=False)
+    records[0]["end"] = "2020-07-16"
+    records.extend(
+        [
+            {
+                "type": "Lodging",
+                "summary": "Check-in: Nameless Inn",
+                "start": "2020-07-12T15:00:00Z",
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-out: Nameless Inn",
+                "start": "2020-07-14T15:00:00Z",
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-in: Boulder Lodge",
+                "start": "2020-07-14T18:00:00Z",
+                "location": "Boulder Lodge Address",
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-out: Boulder Lodge",
+                "start": "2020-07-15T15:00:00Z",
+                "location": "Boulder Lodge Address",
+            },
+        ]
+    )
+    return records
+
+
+def _scan_plan(
+    events,
+    *,
+    now=NOW,
+    skip_state=None,
+    current_blocks=(),
+    schedule=None,
+    route=None,
+):
+    """Real scan → meeting_source → composer → reconcile (no injected meetings)."""
+    schedule = list(schedule or _schedule())
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=frozenset({"BNA"}))
+
+    def anchor_for(at):
+        pos = itinerary.position_at(at)
+        return pos.address, pos.detail
+
+    skips = skip_state or {}
+    meetings = scan(
+        events,
+        now=now,
+        home_address=HOME,
+        skip_state=skips,
+        anchor_for=anchor_for,
+        flight_windows=[],
+        flight_summaries=[],
+    )
+    blocks, _skipped, held = meeting_desired_blocks(meetings, route=route or ISSUE_ROUTE)
+    return _plan(
+        extra_desired=blocks,
+        extra_held=held,
+        now=now,
+        schedule=schedule,
+        current_blocks=list(current_blocks),
+        route=route or ISSUE_ROUTE,
+        postarrival_meetings=postarrival_meetings_from(meetings, skip_state=skips, now=now),
+        itinerary=itinerary,
+    )
+
+
+def _created_kinds(result, identity):
+    return {b.kind for b in _created(result) if b.identity == identity}
+
+
+def test_scan_declined_meeting_keeps_airport_to_lodging():
+    result = _scan_plan(
+        [
+            _gcal_event(
+                "declined",
+                MEETING_START,
+                MEETING_END,
+                VENUE,
+                attendees=[{"self": True, "responseStatus": "declined"}],
+            )
+        ]
+    )
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert not _created_kinds(result, "declined")
+
+
+def test_scan_cancelled_meeting_keeps_airport_to_lodging():
+    result = _scan_plan(
+        [_gcal_event("cancelled", MEETING_START, MEETING_END, VENUE, status="cancelled")]
+    )
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert not _created_kinds(result, "cancelled")
+
+
+def test_scan_skipped_meeting_keeps_airport_to_lodging():
+    result = _scan_plan(
+        [_gcal_event("skipme", MEETING_START, MEETING_END, VENUE)],
+        skip_state={"skipme": "2020-08-01T00:00:00+00:00"},
+    )
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert not _created_kinds(result, "skipme")
+
+
+def test_scan_virtual_meeting_does_not_block_real_handoff():
+    result = _scan_plan(
+        [
+            _gcal_event("real", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("zoom", MEETING_START, MEETING_END, "https://zoom.us/j/1"),
+        ]
+    )
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == VENUE
+    assert not _created_kinds(result, "zoom")
+
+
+def test_scan_anchor_meeting_keeps_airport_to_lodging():
+    result = _scan_plan([_gcal_event("hoteldinner", MEETING_START, MEETING_END, CITY)])
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert not _created_kinds(result, "hoteldinner")
+
+
+def test_scan_planner_block_does_not_become_a_handoff():
+    result = _scan_plan(
+        [
+            _gcal_event(
+                "planner",
+                MEETING_START,
+                MEETING_END,
+                VENUE,
+                description="[drive-planner:meeting=mtg-1:dir=outbound]",
+            )
+        ]
+    )
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert not _created_kinds(result, "planner")
+
+
+def test_scan_inflight_past_inperson_meeting_still_hands_off():
+    inflight = datetime(2020, 7, 12, 21, 0, tzinfo=UTC)
+    result = _scan_plan(
+        [_gcal_event("mtg-1", MEETING_START, MEETING_END, VENUE)],
+        now=inflight,
+    )
+    created = _created(result)
+    arrival = next(b for b in created if b.kind == "airport_arrival")
+    assert arrival.destination == VENUE
+    ret = next(b for b in created if b.kind == "meeting_return")
+    assert ret.identity == "mtg-1"
+    assert ret.destination == HOTEL
+    assert not any(b.kind == "meeting_outbound" for b in created)
+
+
+def test_scan_active_skip_on_past_bucket_keeps_airport_to_lodging():
+    inflight = datetime(2020, 7, 12, 21, 0, tzinfo=UTC)
+    result = _scan_plan(
+        [_gcal_event("skippast", MEETING_START, MEETING_END, VENUE)],
+        now=inflight,
+        skip_state={"skippast": "2020-08-01T00:00:00+00:00"},
+    )
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert not _created_kinds(result, "skippast")
+
+
+def test_scan_bridge_next_meeting_suppresses_hotel_return():
+    next_start = MEETING_END + timedelta(minutes=10)
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", next_start, next_start + timedelta(hours=1), VENUE_B),
+        ]
+    )
+    created = _created(result)
+    arrival = next(b for b in created if b.kind == "airport_arrival")
+    assert arrival.destination == VENUE
+    assert not any(b.identity == "A" and b.kind == "meeting_return" for b in created)
+    assert not any(b.origin == VENUE and b.destination == HOTEL for b in created)
+
+
+def test_scan_same_venue_next_meeting_suppresses_hotel_return():
+    next_start = MEETING_END + timedelta(minutes=10)
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", next_start, next_start + timedelta(hours=1), VENUE),
+        ]
+    )
+    created = _created(result)
+    arrival = next(b for b in created if b.kind == "airport_arrival")
+    assert arrival.destination == VENUE
+    assert not any(b.identity == "A" and b.kind == "meeting_return" for b in created)
+
+
+def test_scan_predeparture_protected_return_keeps_outbound():
+    start = datetime(2020, 7, 12, 14, 0, tzinfo=UTC)
+    end = datetime(2020, 7, 12, 16, 30, tzinfo=UTC)
+    result = _scan_plan([_gcal_event("pre", start, end, "Nashville Office")])
+    created = _created(result)
+    assert any(b.identity == "pre" and b.kind == "meeting_outbound" for b in created)
+    assert not any(b.identity == "pre" and b.kind == "meeting_return" for b in created)
+
+
+def test_scan_held_protected_return_is_deleted_past_outbound_is_history():
+    inflight = datetime(2020, 7, 12, 21, 0, tzinfo=UTC)
+    end = datetime(2020, 7, 12, 22, 0, tzinfo=UTC)
+    current = [
+        ParsedBlock(
+            generation=GEN_UNIFIED,
+            event_id="out-stale",
+            identity="late",
+            kind="meeting_outbound",
+            origin=CITY,
+            destination=VENUE,
+            baseline_seconds=1140,
+            anchor=MEETING_START,
+        ),
+        ParsedBlock(
+            generation=GEN_UNIFIED,
+            event_id="ret-future",
+            identity="late",
+            kind="meeting_return",
+            origin=VENUE,
+            destination=HOTEL,
+            baseline_seconds=1440,
+            anchor=end,
+        ),
+    ]
+    result = _scan_plan(
+        [_gcal_event("late", MEETING_START, end, VENUE)],
+        now=inflight,
+        current_blocks=current,
+    )
+    deleted = {d.event_id for d in result.plan.deletes}
+    assert "ret-future" in deleted
+    assert "out-stale" not in deleted
+    assert all(h.identity != "late" for h in result.held)
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+
+
+def test_scan_all_route_failure_does_not_retain_airborne_meeting_block():
+    current = [
+        ParsedBlock(
+            generation=GEN_UNIFIED,
+            event_id="out-stale",
+            identity="mtg-1",
+            kind="meeting_outbound",
+            origin=CITY,
+            destination=VENUE,
+            baseline_seconds=1140,
+            anchor=MEETING_START,
+        )
+    ]
+    result = _scan_plan(
+        [_gcal_event("mtg-1", MEETING_START, MEETING_END, VENUE)],
+        current_blocks=current,
+        route=_route({}, default_minutes=None),
+    )
+    assert all(h.identity != "mtg-1" for h in result.held)
+    assert any(d.event_id == "out-stale" for d in result.plan.deletes)
+    assert not any(b.kind == "airport_arrival" for b in _created(result))
+
+
+def test_scan_return_route_failure_keeps_airport_to_lodging():
+    result = _scan_plan(
+        [_gcal_event("mtg-1", MEETING_START, MEETING_END, VENUE)],
+        route=_route(
+            {("DEN airport", VENUE): 37, ("DEN airport", HOTEL): 37, (VENUE, HOTEL): None}
+        ),
+    )
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert not _created_kinds(result, "mtg-1")
+    assert any("venue-to-lodging route failed" in s for s in result.skipped)
+
+
+def test_scan_covering_unaddressed_stay_does_not_return_to_later_hotel():
+    result = _scan_plan(
+        [_gcal_event("mtg-1", MEETING_START, MEETING_END, VENUE)],
+        schedule=_covering_unaddressed_schedule(),
+        route=_route(
+            {
+                ("DEN airport", VENUE): 37,
+                ("DEN airport", CITY): 37,
+                (VENUE, CITY): 24,
+                (HOME, "BNA airport"): 30,
+            }
+        ),
+    )
+    created = _created(result)
+    arrival = next(b for b in created if b.kind == "airport_arrival")
+    assert arrival.destination == VENUE
+    ret = next(b for b in created if b.kind == "meeting_return")
+    assert ret.destination != "Boulder Lodge Address"
+    assert ret.destination == CITY
