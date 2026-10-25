@@ -36,6 +36,7 @@ from state import (  # noqa: E402
     StateError,
     read_flight_state,
     write_active_flights,
+    write_config,
     write_flight_state,
 )
 
@@ -2308,3 +2309,199 @@ def test_pending_removal_notice_follows_the_next_live_source_result(
             ]
     else:
         assert notices == [removed]
+
+
+# ---------------------------------------------------------------------------
+# #349: _process_flight GPS presence via get_airport + current-location
+# ---------------------------------------------------------------------------
+
+# Live-sampled BNA coordinates from tests/test_byair_client.py BNA_AIRPORT
+# (`byair_get_airport(98)`). Nested get_flight.depAirport fixtures do not
+# carry lat/lon; presence must resolve through get_airport.
+_BNA_AIRPORT = {
+    "id": 98,
+    "name": "Nashville International Airport",
+    "code": "BNA",
+    "lat": 36.125247,
+    "lon": -86.677102,
+}
+_BNA_LAT = 36.125247
+_BNA_LON = -86.677102
+_NASHVILLE_DOWNTOWN_LAT = 36.1627
+_NASHVILLE_DOWNTOWN_LON = -86.7816
+
+
+class _ZeroTravelMaps:
+    def travel_time(self, *, origin, destination):
+        return type("TravelTime", (), {"in_traffic_seconds": 0, "duration_seconds": 0})()
+
+
+def _bna_flight(**overrides) -> dict:
+    raw = _byair_flight(**overrides)
+    raw["depAirport"] = {
+        "id": 98,
+        "code": "BNA",
+        "name": "Nashville International Airport",
+    }
+    return raw
+
+
+def _seed_leave_by_flight(*, last_snapshot: dict | None = None) -> None:
+    markers = _phase_markers()
+    markers["day_before_fired"] = True
+    snapshot = last_snapshot if last_snapshot is not None else _scheduled_snapshot()
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            dep_airport_id=98,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=snapshot,
+            phase_markers=markers,
+        )
+    )
+    write_active_flights([12345])
+    write_config({"home_address": "1 Example Street, Nashville, TN"})
+
+
+def _run_leave_by_cycle(now, *, gps=None, airport=_BNA_AIRPORT, monkeypatch, state_root):
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: _ZeroTravelMaps())
+    if gps is not None:
+        _write_current_location(
+            state_root,
+            latitude=gps[0],
+            longitude=gps[1],
+            captured_at=gps[2],
+        )
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _bna_flight()
+        client.return_value.get_airport.return_value = airport
+        events = precheck._run_cycle(now_utc=now)
+    return events, client.return_value
+
+
+def test_process_flight_fresh_gps_at_airport_stays_silent(state_root: Path, monkeypatch):
+    """Fresh GPS at BNA + documented get_airport coords → no time_to_leave."""
+    _seed_leave_by_flight()
+    now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=UTC)
+    events, byair = _run_leave_by_cycle(
+        now,
+        gps=(_BNA_LAT, _BNA_LON, "2026-05-18T16:40:00Z"),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+    )
+    assert not any(e["event"]["reason"] == "time_to_leave" for e in events)
+    byair.get_airport.assert_called_once_with(98)
+    persisted = must(read_flight_state(12345))
+    assert persisted["last_snapshot"]["dep_lat"] == _BNA_LAT
+    assert persisted["last_snapshot"]["dep_lon"] == _BNA_LON
+
+
+def test_process_flight_cached_airport_coords_skip_get_airport(state_root: Path, monkeypatch):
+    """A later cycle reuses last_snapshot.dep_lat/dep_lon — no second poll."""
+    cached = {
+        **_scheduled_snapshot(),
+        "dep_lat": _BNA_LAT,
+        "dep_lon": _BNA_LON,
+    }
+    _seed_leave_by_flight(last_snapshot=cached)
+    now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=UTC)
+    events, byair = _run_leave_by_cycle(
+        now,
+        gps=(_BNA_LAT, _BNA_LON, "2026-05-18T16:40:00Z"),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+    )
+    assert not any(e["event"]["reason"] == "time_to_leave" for e in events)
+    byair.get_airport.assert_not_called()
+
+
+def test_process_flight_stale_or_absent_location_is_not_proof_away(state_root: Path, monkeypatch):
+    """Stale or missing GPS after leave_by is not proof the owner is away."""
+    _seed_leave_by_flight()
+    now = datetime(2026, 5, 18, 17, 4, 0, tzinfo=UTC)
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: _ZeroTravelMaps())
+    write_config({"home_address": "1 Example Street, Nashville, TN"})
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _bna_flight()
+        client.return_value.get_airport.return_value = _BNA_AIRPORT
+        absent = precheck._run_cycle(now_utc=now)
+    assert not any(e["event"]["reason"] == "time_to_leave" for e in absent)
+    client.return_value.get_airport.assert_not_called()
+
+    _seed_leave_by_flight()
+    _write_current_location(
+        state_root,
+        latitude=_NASHVILLE_DOWNTOWN_LAT,
+        longitude=_NASHVILLE_DOWNTOWN_LON,
+        captured_at="2026-05-18T16:00:00Z",  # 64 min stale at 17:04
+    )
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _bna_flight()
+        client.return_value.get_airport.return_value = _BNA_AIRPORT
+        stale = precheck._run_cycle(now_utc=now)
+    assert not any(e["event"]["reason"] == "time_to_leave" for e in stale)
+
+
+def test_process_flight_fresh_away_late_fires_missed_only_when_predeparture(
+    state_root: Path, monkeypatch
+):
+    """Fresh downtown GPS after leave_by: missed fire while scheduled;
+    empty status and departed stay silent."""
+    now = datetime(2026, 5, 18, 17, 4, 0, tzinfo=UTC)
+    captured = "2026-05-18T17:00:00Z"
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: _ZeroTravelMaps())
+    write_config({"home_address": "1 Example Street, Nashville, TN"})
+    _write_current_location(
+        state_root,
+        latitude=_NASHVILLE_DOWNTOWN_LAT,
+        longitude=_NASHVILLE_DOWNTOWN_LON,
+        captured_at=captured,
+    )
+
+    _seed_leave_by_flight()
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _bna_flight()
+        client.return_value.get_airport.return_value = _BNA_AIRPORT
+        scheduled = precheck._run_cycle(now_utc=now)
+    missed = [e["event"] for e in scheduled if e["event"]["reason"] == "time_to_leave"]
+    assert len(missed) == 1
+    assert missed[0]["missed"] is True
+    client.return_value.get_airport.assert_called_once_with(98)
+
+    _seed_leave_by_flight()
+    empty = _bna_flight()
+    empty["computed_status"] = ""
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = empty
+        client.return_value.get_airport.return_value = _BNA_AIRPORT
+        empty_events = precheck._run_cycle(now_utc=now)
+    assert not any(e["event"]["reason"] == "time_to_leave" for e in empty_events)
+
+    _seed_leave_by_flight()
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _bna_flight(computed_status="departed")
+        client.return_value.get_airport.return_value = _BNA_AIRPORT
+        gone = precheck._run_cycle(now_utc=now)
+    assert not any(e["event"]["reason"] == "time_to_leave" for e in gone)
+
+
+def test_process_flight_get_flight_shape_without_nested_coords_does_not_invent(
+    state_root: Path, monkeypatch
+):
+    """The repository get_flight.depAirport shape (id/name/code only) is not
+    a coordinate source; presence waits for get_airport."""
+    _seed_leave_by_flight()
+    now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=UTC)
+    events, byair = _run_leave_by_cycle(
+        now,
+        gps=(_BNA_LAT, _BNA_LON, "2026-05-18T16:40:00Z"),
+        airport={"id": 98, "code": "BNA", "name": "Nashville International Airport"},
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+    )
+    byair.get_airport.assert_called_once_with(98)
+    persisted = must(read_flight_state(12345))
+    assert persisted["last_snapshot"].get("dep_lat") is None
+    ttl = [e["event"] for e in events if e["event"]["reason"] == "time_to_leave"]
+    assert len(ttl) == 1
+    assert ttl[0]["missed"] is False

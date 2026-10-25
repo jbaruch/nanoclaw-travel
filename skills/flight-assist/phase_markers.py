@@ -19,8 +19,8 @@ Three time-based events:
 - `time_to_leave` — fires when `now + travel_time + buffer ≥
   scheduled_dep_time` (capability 1: traffic-aware leave-by alert),
   staying silent for boarding / taxi / pushback / gone, for fresh GPS
-  at the departure airport, and for a missed leave-by without positive
-  proof the owner is away (#349)
+  at the departure airport, and for a missed leave-by unless the owner
+  is freshly GPS-away and the snapshot is positively pre-departure (#349)
 - `arrival_logistics` — fires at scheduled_arr_time − 15 min
   (capability 6: baggage carousel + Lyft + lounge prompts)
 
@@ -73,7 +73,7 @@ _PRE_DEPARTURE_STATUSES = frozenset({"scheduled", "check_in_open", "boarding"})
 # of `computed_status` and of the #295 boarding window: a taxiing snapshot is
 # already gone-phase for airport-bound prompts (#349).
 _TAXI_OR_PUSHBACK_DETAIL = re.compile(
-    r"\b(?:taxi(?:ing|ed|s)?|push(?:ing)?[\s-]*back|pushback|gate[\s-]*closed)\b",
+    r"\b(?:taxi(?:ing|ed|s)?|push(?:ing|ed)?[\s-]*back|pushback|gate[\s-]*closed)\b",
     re.IGNORECASE,
 )
 # Fresh GPS inside this radius of `depAirport.lat`/`lon` is presence at the
@@ -196,6 +196,7 @@ def check_time_to_leave(
     snapshot: dict | None = None,
     boarding_lead_minutes: int | None = None,
     at_airport: bool | None = None,
+    poll_interval_minutes: int = 0,
 ) -> tuple[bool, dict | None]:
     """Traffic-aware "leave by" gate. Returns (should_fire, event_payload).
 
@@ -225,10 +226,18 @@ def check_time_to_leave(
 
     `at_airport` is the GPS presence verdict from `at_departure_airport`:
     True (fresh fix inside the airport radius) always suppresses; False
-    (fresh fix clearly away) allows a fire, including the missed leave-by
-    after scheduled departure; None (absent, stale, or ambiguous location)
-    is not proof of being away, so a fire at or after scheduled departure
-    stays silent (#349).
+    (fresh fix clearly away) is required for every missed fire; None
+    (absent, stale, or ambiguous location) is not proof of being away
+    (#349).
+
+    `poll_interval_minutes` is the precheck cadence in force for this
+    snapshot (`precheck._interval_for`). The first poll at or after
+    `leave_by`, up to that interval, is the timely notice and may fire
+    without GPS. Later than that is missed: it needs `at_airport is
+    False` and a documented pre-departure status. Empty, missing, or
+    malformed status is not proof the flight has not left, so a missed
+    notice stays silent. Default 0 keeps a pure call's timely window at
+    exact `leave_by`.
 
     `phase_markers["time_to_leave_fired"]` must be False to fire.
     """
@@ -257,12 +266,13 @@ def check_time_to_leave(
     leave_by = dep_dt - travel - buffer
     if now_utc < leave_by:
         return (False, None)
-    missed = now_utc >= dep_dt
-    if missed and at_airport is not False:
-        # After scheduled departure a leave-by notice is the missed case:
-        # only a fresh GPS fix clearly away from the airport is positive
-        # proof the owner is not there. Stale/absent/ambiguous is not.
-        return (False, None)
+    grace = timedelta(minutes=max(poll_interval_minutes, 0))
+    missed = now_utc > leave_by + grace
+    if missed:
+        if at_airport is not False:
+            return (False, None)
+        if not _positively_pre_departure(snapshot):
+            return (False, None)
     return (
         True,
         {
@@ -461,12 +471,25 @@ def _taxi_or_pushback_detail(snapshot: dict) -> bool:
     return _TAXI_OR_PUSHBACK_DETAIL.search(detail) is not None
 
 
-def departure_airport_coords(dep_airport: object) -> tuple[float | None, float | None]:
-    """`lat` / `lon` off an already-fetched byAir airport object, or (None, None).
+def _positively_pre_departure(snapshot: dict | None) -> bool:
+    """True when `computed_status` is a documented pre-departure label.
 
-    Same keys as the live-sampled `BNA_AIRPORT` fixture (`get_airport` payload).
-    Nested `get_flight.depAirport` may omit them; missing coords skip GPS
-    presence this cycle rather than inventing a second poll (#349).
+    Empty, missing, or non-string status is not proof the flight has
+    not left, so a missed leave-by stays silent (#349).
+    """
+    if not snapshot:
+        return False
+    status = snapshot.get("computed_status")
+    return isinstance(status, str) and status in _PRE_DEPARTURE_STATUSES
+
+
+def departure_airport_coords(dep_airport: object) -> tuple[float | None, float | None]:
+    """`lat` / `lon` off a byAir `get_airport` payload, or (None, None).
+
+    Same keys as the live-sampled `BNA_AIRPORT` fixture. Nested
+    `get_flight.depAirport` is not assumed to carry coordinates; the
+    precheck resolves them from `get_airport(depAirport.id)` once per
+    flight and caches `dep_lat` / `dep_lon` on `last_snapshot` (#349).
     """
     if not isinstance(dep_airport, dict):
         return None, None

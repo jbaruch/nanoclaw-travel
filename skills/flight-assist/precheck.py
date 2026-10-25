@@ -935,6 +935,17 @@ def _process_flight(
     raw_flight = byair.get_flight(flight_id=flight_id)
     new_snapshot = _trim_to_snapshot(raw_flight)
     verified_ids.add(flight_id)
+    gps = fresh_live_coordinates(now_utc)
+    dep_lat, dep_lon = _departure_coords_for_presence(
+        prior_snapshot=prior_snapshot,
+        raw_flight=raw_flight,
+        prior_state=prior_state,
+        byair=byair,
+        gps=gps,
+    )
+    if dep_lat is not None and dep_lon is not None:
+        new_snapshot["dep_lat"] = dep_lat
+        new_snapshot["dep_lon"] = dep_lon
 
     events: list[dict] = []
 
@@ -1057,13 +1068,18 @@ def _process_flight(
         now_utc=now_utc,
         time_to_leave_already_fired=phase_markers.get("time_to_leave_fired", False),
     )
-    gps = fresh_live_coordinates(now_utc)
-    dep_lat, dep_lon = departure_airport_coords(raw_flight.get("depAirport"))
     at_airport = at_departure_airport(
         origin_lat=None if gps is None else gps[0],
         origin_lon=None if gps is None else gps[1],
         dep_lat=dep_lat,
         dep_lon=dep_lon,
+    )
+    status = new_snapshot.get("computed_status")
+    interval_minutes = _interval_for(
+        status if isinstance(status, str) else "scheduled",
+        now_utc,
+        _parse_iso8601(scheduled_dep_time) if isinstance(scheduled_dep_time, str) else None,
+        _parse_iso8601(scheduled_arr_time) if isinstance(scheduled_arr_time, str) else None,
     )
     fired, event = check_time_to_leave(
         scheduled_dep_time=scheduled_dep_time,
@@ -1073,6 +1089,7 @@ def _process_flight(
         snapshot=new_snapshot,
         boarding_lead_minutes=boarding_lead_minutes,
         at_airport=at_airport,
+        poll_interval_minutes=interval_minutes,
     )
     if fired and event is not None:
         events.append(event)
@@ -1167,6 +1184,57 @@ def _resolve_time_to_leave_origin(
     residence off-trip, the current lodging on-trip.
     """
     return resolve_live_origin(home_address, now=now_utc)
+
+
+def _departure_coords_for_presence(
+    *,
+    prior_snapshot: dict | None,
+    raw_flight: dict,
+    prior_state: dict | None,
+    byair: ByAirClient,
+    gps: tuple[float, float] | None,
+) -> tuple[float | None, float | None]:
+    """Departure-airport `lat`/`lon` for GPS presence (#349).
+
+    Reuses cached `last_snapshot.dep_lat`/`dep_lon` when both are valid.
+    Otherwise, only when a fresh GPS fix exists this cycle, pays one
+    `byair.get_airport(depAirport.id)` using the documented get_airport
+    coordinate keys. Nested `get_flight.depAirport` is not assumed to
+    carry `lat`/`lon`. Missing or failed lookup skips presence this
+    cycle; a later GPS-present poll retries until coords persist.
+    """
+    if isinstance(prior_snapshot, dict):
+        cached = departure_airport_coords(
+            {"lat": prior_snapshot.get("dep_lat"), "lon": prior_snapshot.get("dep_lon")}
+        )
+        if cached[0] is not None and cached[1] is not None:
+            return cached
+    if gps is None:
+        return None, None
+    airport_id: object = None
+    if prior_state is not None:
+        airport_id = prior_state.get("dep_airport_id")
+    if not isinstance(airport_id, int) or isinstance(airport_id, bool):
+        dep_airport = raw_flight.get("depAirport")
+        airport_id = dep_airport.get("id") if isinstance(dep_airport, dict) else None
+    if not isinstance(airport_id, int) or isinstance(airport_id, bool):
+        return None, None
+    try:
+        payload = byair.get_airport(airport_id)
+    except ByAirError as byair_err:
+        print(
+            f"flight-assist precheck: byAir get_airport({airport_id}) failed: {byair_err}",
+            file=sys.stderr,
+        )
+        return None, None
+    except urllib.error.URLError as transport_err:
+        print(
+            f"flight-assist precheck: byAir get_airport({airport_id}) transport error: "
+            f"{transport_err}",
+            file=sys.stderr,
+        )
+        return None, None
+    return departure_airport_coords(payload)
 
 
 def _maybe_query_travel_time(
@@ -1383,12 +1451,12 @@ def _resolve_boarding_lead_minutes(snapshot: dict) -> int:
 
     Passes whatever lead inputs the snapshot carries to the same resolver
     `calendar_reconcile._resolve_lead` feeds the planner, so the readout window
-    and the boarding calendar block agree on the lead. Today `_trim_to_snapshot`
-    populates only `inbound.aircraft_model`, so the widebody lead resolves via
-    the inbound-aircraft chain and the narrowbody default (30 min) covers the
-    rest. The top-level `aircraft_model` and dep/arr airport coordinates are
-    absent until the precheck stamps them (#55); the resolver reads them as
-    None and they widen the window automatically once present.
+    and the boarding calendar block agree on the lead. `_trim_to_snapshot`
+    populates `inbound.aircraft_model`; `dep_lat`/`dep_lon` arrive when the
+    precheck caches `get_airport` coordinates for GPS presence (#349).
+    `arr_lat`/`arr_lon` and top-level `aircraft_model` stay absent until
+    those byAir fields are confirmed (#55). The resolver reads missing
+    inputs as None and widens the window automatically once present.
     """
     inbound = snapshot.get("inbound") or {}
     return resolve_boarding_lead_minutes(

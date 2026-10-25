@@ -261,17 +261,32 @@ def test_time_to_leave_fires_at_leave_by():
     assert event["missed"] is False
 
 
-def test_time_to_leave_fires_past_leave_by():
-    """After leave_by (user is already late) — still fire."""
+def test_time_to_leave_past_leave_by_requires_away_and_predeparture():
+    """After leave_by the notice is missed: silent without proof the owner
+    is away, fire with missed copy when GPS is clearly away and the flight
+    is still documented as pre-departure (#349)."""
     travel_minutes = 30
     now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=UTC)  # 30 min past leave_by
-    fired, _ = check_time_to_leave(
+    fired_unknown, _ = check_time_to_leave(
         scheduled_dep_time=SCHED_DEP,
         travel_time_seconds=travel_minutes * 60,
         phase_markers=_markers(),
         now_utc=now,
+        snapshot={"computed_status": "scheduled"},
+        at_airport=None,
     )
-    assert fired is True
+    assert fired_unknown is False
+    fired_away, event = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=travel_minutes * 60,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot={"computed_status": "scheduled"},
+        at_airport=False,
+    )
+    assert fired_away is True
+    assert event is not None
+    assert event["missed"] is True
 
 
 def test_time_to_leave_does_not_re_fire_when_marker_set():
@@ -336,16 +351,20 @@ def test_time_to_leave_suppressed_when_really_boarding():
 
 def test_time_to_leave_not_suppressed_by_premature_boarding_label():
     """byAir's early "boarding" label (detail still counting down) is not real
-    boarding — the leave-by alert must still fire."""
+    boarding — the leave-by alert must still fire. This clock is past leave_by,
+    so the fire is missed and needs positive away proof (#349)."""
     now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=UTC)
-    fired, _ = check_time_to_leave(
+    fired, event = check_time_to_leave(
         scheduled_dep_time=SCHED_DEP,
         travel_time_seconds=1800,
         phase_markers=_markers(),
         now_utc=now,
         snapshot=_boarding_snapshot(computed_status_detail="Boarding starts in 35 min"),
+        at_airport=False,
     )
     assert fired is True
+    assert event is not None
+    assert event["missed"] is True
 
 
 def test_time_to_leave_with_lead_ignores_premature_boarding_now_before_window():
@@ -457,6 +476,8 @@ def _ttl(**overrides):
             "computed_status": "check_in_open",
             "computed_status_detail": "Pushing back from the gate",
         },
+        {"computed_status": "scheduled", "computed_status_detail": "Pushed back from the gate"},
+        {"computed_status": "scheduled", "computed_status_detail": "Pushedback past tense"},
         {"computed_status": "scheduled", "computed_status_detail": "Gate closed"},
         {"computed_status": "taxiing", "computed_status_detail": "Taxiing to the runway"},
         {"computed_status": "pushback", "computed_status_detail": "Pushing back"},
@@ -509,11 +530,11 @@ def test_time_to_leave_fresh_gps_at_bna_suppresses_at_leave_by():
 
 
 def test_time_to_leave_fresh_gps_downtown_fires_at_leave_by():
-    """Fresh GPS clearly away (downtown Nashville) at leave_by still fires."""
+    """Fresh GPS clearly away (downtown Nashville) at exact leave_by still fires."""
     now = datetime(2026, 5, 18, 16, 45, 0, tzinfo=UTC)
     fired, event = check_time_to_leave(
         scheduled_dep_time=SCHED_DEP,
-        travel_time_seconds=1800,
+        travel_time_seconds=0,
         phase_markers=_markers(),
         now_utc=now,
         snapshot={"computed_status": "scheduled"},
@@ -525,8 +546,9 @@ def test_time_to_leave_fresh_gps_downtown_fires_at_leave_by():
 
 
 def test_time_to_leave_missed_requires_clearly_away():
-    """After scheduled departure, absent/stale/ambiguous location is not
-    proof of being away — only a fresh off-airport fix may fire."""
+    """A late leave-by (here leave_by+19m) is missed: absent/stale/ambiguous
+    location is not proof of being away — only a fresh off-airport fix may
+    fire, and only while the flight is positively pre-departure."""
     fired_unknown, _ = _ttl(
         travel_time_seconds=1800,
         snapshot={"computed_status": "scheduled"},
@@ -590,6 +612,137 @@ def test_departure_airport_coords_reads_documented_lat_lon():
     assert (lat, lon) == (_BNA_LAT, _BNA_LON)
     assert departure_airport_coords({"id": 98, "code": "BNA"}) == (None, None)
     assert departure_airport_coords(None) == (None, None)
+
+
+def test_time_to_leave_within_precheck_cadence_stays_timely_without_gps():
+    """First poll at leave_by + the in-force 10-min scheduled cadence is still
+    the timely notice; GPS is not required (#349 F2)."""
+    now = datetime(2026, 5, 18, 16, 25, 0, tzinfo=UTC)  # leave_by 16:15 + 10
+    fired, event = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=1800,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot={"computed_status": "scheduled"},
+        poll_interval_minutes=10,
+        at_airport=None,
+    )
+    assert fired is True
+    assert event is not None
+    assert event["missed"] is False
+
+
+def test_time_to_leave_past_precheck_cadence_is_missed():
+    """One second past the cadence window is missed: silent without away
+    proof, missed copy with away + scheduled, silent for empty status
+    (not proof not-departed) and for departed (#349 F2/T1/T4)."""
+    now = datetime(2026, 5, 18, 16, 25, 1, tzinfo=UTC)
+    kwargs = {
+        "scheduled_dep_time": SCHED_DEP,
+        "travel_time_seconds": 1800,
+        "phase_markers": _markers(),
+        "now_utc": now,
+        "poll_interval_minutes": 10,
+    }
+    fired_unknown, _ = check_time_to_leave(
+        snapshot={"computed_status": "scheduled"}, at_airport=None, **kwargs
+    )
+    assert fired_unknown is False
+    fired_away, event = check_time_to_leave(
+        snapshot={"computed_status": "scheduled"}, at_airport=False, **kwargs
+    )
+    assert fired_away is True
+    assert event is not None
+    assert event["missed"] is True
+    fired_empty, _ = check_time_to_leave(
+        snapshot={"computed_status": ""}, at_airport=False, **kwargs
+    )
+    assert fired_empty is False
+    fired_gone, _ = check_time_to_leave(
+        snapshot={"computed_status": "departed"}, at_airport=False, **kwargs
+    )
+    assert fired_gone is False
+
+
+def test_time_to_leave_late_before_scheduled_dep_without_gps_is_silent():
+    """E1: leave_by 16:15, now 16:40 (25 min late), scheduled, at_airport None
+    must not send a timely-looking notice (#349)."""
+    now = datetime(2026, 5, 18, 16, 40, 0, tzinfo=UTC)
+    fired, event = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=1800,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot={"computed_status": "scheduled"},
+        poll_interval_minutes=10,
+        at_airport=None,
+    )
+    assert fired is False
+    assert event is None
+    fired_away, missed_event = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=1800,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot={"computed_status": "scheduled"},
+        poll_interval_minutes=10,
+        at_airport=False,
+    )
+    assert fired_away is True
+    assert missed_event is not None
+    assert missed_event["missed"] is True
+
+
+def test_time_to_leave_delay_flip_late_without_gps_is_silent():
+    """E2: travel 0 leave_by 16:45, now 16:58, scheduled after a delay, no GPS."""
+    now = datetime(2026, 5, 18, 16, 58, 0, tzinfo=UTC)
+    fired, _ = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=0,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot={
+            "computed_status": "scheduled",
+            "dep_time": "2026-05-18T17:45:00+00:00",
+        },
+        poll_interval_minutes=10,
+        at_airport=None,
+    )
+    assert fired is False
+
+
+def test_time_to_leave_premature_boarding_late_without_gps_is_silent():
+    """E3: travel 0 leave_by 16:45, now 16:59, premature boarding countdown."""
+    now = datetime(2026, 5, 18, 16, 59, 0, tzinfo=UTC)
+    fired, _ = check_time_to_leave(
+        scheduled_dep_time=SCHED_DEP,
+        travel_time_seconds=0,
+        phase_markers=_markers(),
+        now_utc=now,
+        snapshot=_boarding_snapshot(computed_status_detail="Boarding starts in 5 min"),
+        boarding_lead_minutes=30,
+        poll_interval_minutes=2,
+        at_airport=None,
+    )
+    assert fired is False
+
+
+def test_time_to_leave_missed_silent_for_empty_or_malformed_status():
+    """Empty/missing/malformed status is not proof the flight has not left."""
+    for snapshot in (
+        {},
+        {"computed_status": ""},
+        {"computed_status": None},
+        {"computed_status": 1},
+        {"computed_status": "  scheduled  "},
+    ):
+        fired, event = _ttl(
+            travel_time_seconds=1800,
+            snapshot=snapshot,
+            at_airport=False,
+        )
+        assert fired is False, f"expected silence for {snapshot!r}"
+        assert event is None
 
 
 def test_is_boarding_or_gone_taxi_detail_ignores_status_and_window():

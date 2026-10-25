@@ -113,7 +113,7 @@ Origin-resolution ladder used by `precheck._resolve_time_to_leave_origin`:
 2. `home_address` from `config.json`
 3. `None` — caller skips the maps query
 
-The same 30-minute window feeds the at-airport presence check for `time_to_leave` (#349): `state.fresh_live_coordinates` returns the fix only when it is fresh, and `phase_markers.at_departure_airport` compares it to `depAirport.lat`/`lon` from the already-fetched flight payload. A stale, future, missing, or coordinate-less reading is not proof the owner is at the airport, and is not proof they are away.
+The same 30-minute window feeds the at-airport presence check for `time_to_leave` (#349): `state.fresh_live_coordinates` returns the fix only when it is fresh, and `phase_markers.at_departure_airport` compares it to `last_snapshot.dep_lat`/`dep_lon`. Those coordinates come from `byair.get_airport(depAirport.id)` once per flight (same `lat`/`lon` keys as the live-sampled BNA payload) and are reused on later cycles. Nested `get_flight.depAirport` is not assumed to carry coordinates. A stale, future, missing, or coordinate-less reading is not proof the owner is at the airport, and is not proof they are away.
 
 A `schema_version` mismatch (host bumped) returns `None` from the reader and the precheck falls back to `home_address`, matching the no-snapshot-on-disk path.
 
@@ -243,7 +243,7 @@ Each entry's fields:
 - `inbound` (object, optional) — Find My Plane data: `aircraft_model`, `registration`, `flew`, `predicted_delay_minutes`
 - `position_lat`, `position_lon` (float, optional) — last known aircraft position
 - `aircraft_model` (string, optional) — byAir's top-level aircraft model. Consumed by the calendar `reconcile` boarding-lead resolver (`boarding_lead.py`), which falls back to `inbound.aircraft_model` when this is absent or empty
-- `dep_lat`, `dep_lon`, `arr_lat`, `arr_lon` (float, optional) — departure/arrival **airport** coordinates (distinct from `position_lat`/`position_lon`, which track the aircraft). The boarding-lead resolver uses them for the transoceanic (TATL/TPAC) check; when any is absent it skips that check and falls back to aircraft size. Populated once the byAir field names for top-level model and airport coordinates are confirmed (#55 runtime facts); until then the resolver runs on `inbound.aircraft_model` and the narrowbody default
+- `dep_lat`, `dep_lon`, `arr_lat`, `arr_lon` (float, optional) — departure/arrival **airport** coordinates (distinct from `position_lat`/`position_lon`, which track the aircraft). The boarding-lead resolver uses them for the transoceanic (TATL/TPAC) check; when any is absent it skips that check and falls back to aircraft size. `dep_lat`/`dep_lon` are populated from `byair.get_airport(depAirport.id)` once per flight when a fresh GPS fix needs them for `time_to_leave` presence (#349), then reused from this snapshot. `arr_lat`/`arr_lon` remain unpopulated until their byAir field names are confirmed (#55 runtime facts)
 
 `phase_markers` booleans — `true` consumes the corresponding gate for this flight. New notification flags are copied from confirmed delivery receipts; a wake alone leaves them false. Existing true flags are consumed legacy attempts and do not prove delivery. `landed_acknowledged` remains the separate user-acknowledgement flag:
 
