@@ -7,6 +7,7 @@
 # that has no place in the published artifact.
 
 # CI / build / test infrastructure
+.herdr/
 .github/
 tests/
 pyproject.toml
