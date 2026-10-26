@@ -49,6 +49,10 @@ from wake_rules import is_real_boarding
 
 DAY_BEFORE_HOURS = 24
 TIME_TO_LEAVE_BUFFER_MINUTES = 15
+# The scheduler's actual two-minute cadence in flight-assist/SKILL.md. A due
+# poll can land on the next tick; this is bounded tick quantization, not an
+# outage extension or a window for a later post-leave-by poll.
+SCHEDULER_TICK_MINUTES = 2
 ARRIVAL_LOGISTICS_LEAD_MINUTES = 15
 # The gate/terminal readout window opens this many minutes before boarding
 # begins (boarding = scheduled_dep − boarding_lead). Gate info earlier than
@@ -236,10 +240,10 @@ def check_time_to_leave(
     one on (`precheck._interval_for` on the PRIOR snapshot; 0 when that
     status is not a documented pre-departure label). The timely notice is
     the first actual poll at or after `leave_by`: `prev_polled_at` is
-    before `leave_by` and `now_utc` is within `prior_poll_interval_minutes`
-    of `leave_by`, so a cadence that tightens or loosens on the new snapshot, an
-    outage gap, or an unrecognised status cannot widen the window. It may
-    fire without GPS. Every other fire is missed: it needs `at_airport is
+    before `leave_by` and `now_utc` is no later than that prior poll's due time
+    plus one declared scheduler tick. A cadence that tightens or loosens on the
+    new snapshot, a longer outage gap, or an unrecognised status cannot widen
+    the window. It may fire without GPS. Every other fire is missed: it needs `at_airport is
     False` and a documented pre-departure status; empty, missing, or
     malformed status is not proof the flight has not left. With no
     `prev_polled_at` (a pure call, or a flight never polled before) the
@@ -273,10 +277,15 @@ def check_time_to_leave(
     if now_utc < leave_by:
         return (False, None)
     first_poll_after_leave_by = prev_polled_at is not None and prev_polled_at < leave_by
-    timely_window = timedelta(
-        minutes=max(prior_poll_interval_minutes, 0) if first_poll_after_leave_by else 0
-    )
-    missed = now_utc > leave_by + timely_window
+    timely_until = leave_by
+    if first_poll_after_leave_by and prior_poll_interval_minutes > 0:
+        assert prev_polled_at is not None
+        timely_until = max(
+            leave_by,
+            prev_polled_at
+            + timedelta(minutes=prior_poll_interval_minutes + SCHEDULER_TICK_MINUTES),
+        )
+    missed = now_utc > timely_until
     if missed:
         if at_airport is not False:
             return (False, None)

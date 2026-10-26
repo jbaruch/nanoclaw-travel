@@ -656,12 +656,12 @@ def test_time_to_leave_cadence_tightening_on_first_poll_stays_timely(snapshot):
 
 
 def test_time_to_leave_past_first_poll_window_is_missed():
-    """One second past the prior cadence is missed: silent without away proof,
+    """Past the prior due time plus the scheduler tick is missed: silent without away proof,
     missed copy with away + scheduled, silent for empty status (not proof
     not-departed) and for departed (#349)."""
     kwargs = {
         "travel_time_seconds": 1800,
-        "now_utc": datetime(2026, 5, 18, 16, 25, 1, tzinfo=UTC),
+        "now_utc": datetime(2026, 5, 18, 16, 26, 1, tzinfo=UTC),
         "prev_polled_at": datetime(2026, 5, 18, 16, 14, 0, tzinfo=UTC),
         "prior_poll_interval_minutes": 10,
     }
@@ -1176,3 +1176,16 @@ def test_zulu_suffixed_iso_string_parses():
     now = datetime(2026, 5, 18, 10, 0, 0, tzinfo=UTC)  # T-7h
     fired, _ = check_day_before(scheduled_dep_time=sched, phase_markers=_markers(), now_utc=now)
     assert fired is True
+
+
+def test_first_due_poll_on_the_next_scheduler_tick_is_timely_without_gps():
+    fired, event = _ttl(
+        travel_time_seconds=1800,  # leave_by16:15
+        now_utc=datetime(2026, 5, 18, 16, 26, tzinfo=UTC),
+        snapshot={"computed_status": "scheduled"},
+        prev_polled_at=datetime(2026, 5, 18, 16, 14, tzinfo=UTC),
+        prior_poll_interval_minutes=10,
+        at_airport=None,
+    )
+    assert fired
+    assert event is not None and event["missed"] is False

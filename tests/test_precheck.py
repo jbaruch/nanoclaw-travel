@@ -3075,3 +3075,80 @@ def test_precheck_real_maps_fallback_fits_the_reserved_aggregate_budget(monkeypa
     assert result.duration_seconds == 60
     assert len(requests) == 4
     assert elapsed["t"] <= precheck._MAPS_CALL_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("initial", [None, "away", "airport"])
+def test_one_location_snapshot_drives_presence_and_routing_when_host_replaces_it(
+    state_root: Path, monkeypatch, initial
+):
+    _seed_leave_by_flight()
+    now = datetime(2026, 5, 18, 17, 4, tzinfo=UTC)
+    old = (
+        (_NASHVILLE_DOWNTOWN_LAT, _NASHVILLE_DOWNTOWN_LON)
+        if initial == "away"
+        else (_BNA_LAT, _BNA_LON)
+    )
+    if initial is not None:
+        _write_current_location(
+            state_root, latitude=old[0], longitude=old[1], captured_at="2026-05-18T17:00:00Z"
+        )
+    maps = _FixedTravelMaps(0)
+    origins: list[str] = []
+    original_query = maps.travel_time
+
+    def query(*, origin, destination):
+        origins.append(origin)
+        return original_query(origin=origin, destination=destination)
+
+    monkeypatch.setattr(maps, "travel_time", query)
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: maps)
+
+    def get_flight(*, flight_id):
+        replacement = (
+            (_BNA_LAT, _BNA_LON)
+            if initial != "airport"
+            else (_NASHVILLE_DOWNTOWN_LAT, _NASHVILLE_DOWNTOWN_LON)
+        )
+        _write_current_location(
+            state_root,
+            latitude=replacement[0],
+            longitude=replacement[1],
+            captured_at="2026-05-18T17:00:00Z",
+        )
+        return _bna_flight()
+
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.side_effect = get_flight
+        client.return_value.get_airport.return_value = _BNA_AIRPORT
+        events = precheck._run_cycle(now_utc=now)
+    expected = f"{old[0]},{old[1]}" if initial is not None else "1 Example Street, Nashville, TN"
+    assert origins == [expected]
+    assert client.return_value.get_airport.call_count == (0 if initial is None else 1)
+    leave_notices = [item for item in events if item["event"]["reason"] == "time_to_leave"]
+    assert bool(leave_notices) == (initial == "away")
+
+
+def test_failed_maps_poll_does_not_make_a_later_missed_notice_timely_without_away_proof(
+    state_root: Path, monkeypatch
+):
+    _seed_leave_by_flight()
+    first = datetime(2026, 5, 18, 16, 46, tzinfo=UTC)
+    maps = _FixedTravelMaps(0)
+    original = maps.travel_time
+    failed = True
+
+    def query(*, origin, destination):
+        nonlocal failed
+        if failed:
+            failed = False
+            raise precheck.MapsError("UNAVAILABLE", "synthetic transient map failure")
+        return original(origin=origin, destination=destination)
+
+    monkeypatch.setattr(maps, "travel_time", query)
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: maps)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _bna_flight()
+        before = precheck._run_cycle(now_utc=first)
+        after = precheck._run_cycle(now_utc=first + timedelta(minutes=10))
+    assert client.return_value.get_flight.call_count == 2
+    assert not any(item["event"]["reason"] == "time_to_leave" for item in before + after)

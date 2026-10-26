@@ -28,6 +28,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 
 import precheck  # noqa: E402
 from operator_tz import READER_TIMEOUT_SECONDS  # noqa: E402
+from phase_markers import SCHEDULER_TICK_MINUTES  # noqa: E402
 
 SKILL_MD = REPO_ROOT / "skills" / "flight-assist" / "SKILL.md"
 
@@ -153,3 +154,9 @@ def test_reader_and_airport_lookup_fit_together_without_skipping_either():
         + precheck._INTERPRETER_TEARDOWN_HEADROOM_SECONDS
         <= precheck._SCRIPT_KILL_BUDGET_SECONDS
     )
+
+
+def test_timely_poll_tick_matches_the_declared_scheduler_cadence():
+    declared = re.search(r'^cadence: "\*/(\d+) \* \* \* \*"$', SKILL_MD.read_text(), re.M)
+    assert declared is not None
+    assert int(declared.group(1)) == SCHEDULER_TICK_MINUTES

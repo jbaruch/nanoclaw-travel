@@ -519,6 +519,8 @@ def _collect_cycle(
     # flight's own poll (see `_CycleOrigin`).
     polled_ids = verified_ids
     forced_ids = delivery.retry_due_ids()
+    # Capture once: routing, presence and its lookup reserve use this same fix.
+    cycle_gps = fresh_live_coordinates(now_utc)
     cycle_origin = _CycleOrigin(
         home_address=config.get("home_address"),
         flight_ids=active_flight_ids,
@@ -526,6 +528,7 @@ def _collect_cycle(
         due=_due_ids(active_flight_ids, now_utc) | forced_ids,
         polled=polled_ids,
         removed=removed_upstream_ids,
+        live_coordinates=cycle_gps,
     )
     # Which flights could spawn the zone reader this cycle: their deadline
     # carries the reader reserve until the reader has run (#312).
@@ -535,7 +538,6 @@ def _collect_cycle(
     # One fix per cycle: the pre-pass below and every flight's presence check
     # read the same answer, so a fix landing mid-cycle cannot add a lookup the
     # deadline did not reserve for.
-    cycle_gps = fresh_live_coordinates(now_utc)
     may_lookup_airport = {
         fid
         for fid in active_flight_ids
@@ -733,7 +735,9 @@ class _CycleOrigin:
         polled: set[int],
         removed: set[int] | frozenset[int] = frozenset(),
         read_state: Callable[[int], dict | None] = read_flight_state,
+        live_coordinates: tuple[float, float] | None = None,
     ):
+        self._gps = live_coordinates
         self._home, self._ids, self._now = home_address, flight_ids, now_utc
         self._due, self._polled, self._read = due, polled, read_state
         self._removed = removed
@@ -755,7 +759,7 @@ class _CycleOrigin:
                 self._resolved = True
                 return None
             home = resolve_effective_home(self._home, now=self._now, transports=transports)
-            self._origin = _resolve_time_to_leave_origin(home_address=home, now_utc=self._now)
+            self._origin = f"{self._gps[0]},{self._gps[1]}" if self._gps is not None else home
             self._resolved = True
         return self._origin
 
