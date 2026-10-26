@@ -637,8 +637,11 @@ class Itinerary:
         A covering stay wins: with an address it is returned; without one this
         returns None so the existing annotated fallback applies. The next
         addressable stay in that period is used only when no stay covers `at`
-        (arrivals before check-in). Never changes `position_at`, never returns a
-        prior trip's lodging, and never falls back to the trip-city centroid.
+        and none has ended yet (arrival before the first check-in), and then only
+        the first upcoming stay, never a later one past an unaddressed stay;
+        between two stays it returns None rather than guess a hotel. Never changes
+        `position_at`, never returns a prior trip's lodging, and never falls
+        back to the trip-city centroid.
         """
         if at.tzinfo is None or at.utcoffset() is None:
             raise ValueError(
@@ -652,10 +655,14 @@ class Itinerary:
             if stay.address is None:
                 return None
             return Position(address=stay.address, source=LODGING, detail=stay.name)
-        upcoming = [stay for stay in period.stays if stay.address is not None and stay.end > at]
+        if any(stay.end <= at for stay in period.stays):
+            return None
+        upcoming = [stay for stay in period.stays if stay.end > at]
         if not upcoming:
             return None
         stay = min(upcoming, key=lambda s: s.start)
+        if stay.address is None:
+            return None
         return Position(address=stay.address, source=LODGING, detail=stay.name)
 
     def _last_checked_out(self, index: int, at: datetime) -> _Stay | None:

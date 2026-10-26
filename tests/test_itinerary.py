@@ -209,6 +209,46 @@ def test_covering_unaddressed_stay_does_not_select_a_later_hotel():
     assert "Nameless Inn" in (position.detail or "")
 
 
+def test_addressable_lodging_in_period_does_not_guess_a_later_hotel_between_stays():
+    """#350: only an arrival before the first check-in may take the next hotel."""
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "Colorado",
+            "start": "2020-07-12",
+            "end": "2020-07-16",
+            "location": "Denver, CO",
+        },
+        {
+            "type": "Flight",
+            "summary": "WN1 BNA to DEN",
+            "start": "2020-07-12T17:20:00Z",
+            "end": "2020-07-12T22:10:00Z",
+        },
+        {"type": "Lodging", "summary": "Check-in: Nameless Inn", "start": "2020-07-12T23:00:00Z"},
+        {"type": "Lodging", "summary": "Check-out: Nameless Inn", "start": "2020-07-13T15:00:00Z"},
+        {
+            "type": "Lodging",
+            "summary": "Check-in: Boulder Lodge",
+            "start": "2020-07-15T18:00:00Z",
+            "location": "Boulder Lodge Address",
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-out: Boulder Lodge",
+            "start": "2020-07-16T15:00:00Z",
+            "location": "Boulder Lodge Address",
+        },
+    ]
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=BNA)
+    gap = _at("2020-07-14T12:00:00Z")
+    assert itinerary.position_at(gap).source == "trip_location"
+    assert itinerary.addressable_lodging_in_period(gap) is None
+    # Landing before the first check-in: that stay has no address, and the hotel
+    # two nights on is not where the operator sleeps tonight.
+    assert itinerary.addressable_lodging_in_period(_at("2020-07-12T22:30:00Z")) is None
+
+
 def test_the_same_flight_from_two_sources_is_one_journey():
     """The feed triplicates segments and byAir tracks the same flight: one
     journey, so no phantom ground period opens between the copies."""

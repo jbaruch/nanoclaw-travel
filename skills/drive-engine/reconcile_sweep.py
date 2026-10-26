@@ -54,7 +54,13 @@ from drive_decision import load_verdicts, mark_asked, prune, record_drive_time  
 from engine import AirportInfo, build_reconcile_plan, itinerary_for  # noqa: E402
 from flight_identity import DEFAULT_IDENTITY_TOLERANCE, Flight, merge_flights  # noqa: E402
 from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
-from itinerary import CANCELLED, AmbiguousTransport, Itinerary, Transport  # noqa: E402
+from itinerary import (  # noqa: E402
+    CANCELLED,
+    TRIP_LOCATION,
+    AmbiguousTransport,
+    Itinerary,
+    Transport,
+)
 from lodging_source import (  # noqa: E402
     context_from_blocks,
     driving_trips,
@@ -374,6 +380,23 @@ def require_placeable(flights: SweepFlights) -> None:
             + "; ".join(flights.blind)
             + " — fix or remove the flight state file; the next sweep plans again"
         )
+
+
+def meeting_anchor(itinerary: Itinerary, at: datetime) -> tuple[str | None, str | None]:
+    """Where a meeting drive starts from or returns to at `at`: `(address, detail)`.
+
+    `position_at` falls back to the trip-city centroid on an arrival day before
+    nominal check-in. When the trip's ground period has addressable lodging that
+    is the anchor instead (#350): the centroid is never a meeting endpoint while
+    a hotel address exists. A covering stay without an address keeps the annotated
+    fallback, and between two stays no later hotel is guessed.
+    """
+    anchor = itinerary.position_at(at)
+    if anchor.source == TRIP_LOCATION:
+        lodging = itinerary.addressable_lodging_in_period(at)
+        if lodging is not None:
+            anchor = lodging
+    return anchor.address, anchor.detail
 
 
 def build_plan(
@@ -1378,8 +1401,7 @@ def _run_sweep() -> dict:
         skips = load_active_skips(now)
 
         def anchor_for(at: datetime) -> tuple[str | None, str | None]:
-            anchor = itinerary.position_at(at)
-            return anchor.address, anchor.detail
+            return meeting_anchor(itinerary, at)
 
         meetings = scan(
             events,

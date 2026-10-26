@@ -29,6 +29,7 @@ from postarrival import (  # noqa: E402
     postarrival_meetings_from,
 )
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
+from reconcile_sweep import meeting_anchor  # noqa: E402
 from scan import scan  # noqa: E402
 
 UTC = UTC
@@ -729,8 +730,7 @@ def _scan_plan(
     itinerary = Itinerary(schedule, home_address=HOME, home_airports=frozenset({"BNA"}))
 
     def anchor_for(at):
-        pos = itinerary.position_at(at)
-        return pos.address, pos.detail
+        return meeting_anchor(itinerary, at)
 
     skips = skip_state or {}
     meetings = scan(
@@ -808,7 +808,7 @@ def test_scan_virtual_meeting_does_not_block_real_handoff():
 
 
 def test_scan_anchor_meeting_keeps_airport_to_lodging():
-    result = _scan_plan([_gcal_event("hoteldinner", MEETING_START, MEETING_END, CITY)])
+    result = _scan_plan([_gcal_event("hoteldinner", MEETING_START, MEETING_END, HOTEL)])
     arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
     assert arrival.destination == HOTEL
     assert not _created_kinds(result, "hoteldinner")
@@ -1231,3 +1231,106 @@ def test_scan_held_outbound_history_stays_distinct_from_future_return():
     deleted = {d.event_id for d in result.plan.deletes}
     assert "ret-future" in deleted
     assert "out-history" not in deleted
+
+
+# --- NEW-2: ordinary arrival-day meeting before check-in never uses the centroid
+
+
+LATE_HOTEL = "Late Hotel Address"
+
+
+def _late_checkin_schedule():
+    records = _schedule(lodging=False)
+    records.extend(
+        [
+            {
+                "type": "Lodging",
+                "summary": "Check-in: Late Hotel",
+                "start": "2020-07-13T02:00:00Z",
+                "location": LATE_HOTEL,
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-out: Late Hotel",
+                "start": "2020-07-14T15:00:00Z",
+                "location": LATE_HOTEL,
+            },
+        ]
+    )
+    return records
+
+
+def _late_checkin_route():
+    return _route(
+        {
+            ("DEN airport", CITY): 37,
+            ("DEN airport", LATE_HOTEL): 37,
+            (CITY, VENUE): 19,
+            (VENUE, CITY): 24,
+            (LATE_HOTEL, VENUE): 19,
+            (VENUE, LATE_HOTEL): 24,
+            (HOME, "BNA airport"): 30,
+        },
+        default_minutes=None,
+    )
+
+
+def test_scan_arrival_day_meeting_before_checkin_uses_addressed_lodging_not_centroid():
+    start = _dt(23, 0)
+    for now in (NOW, INFLIGHT):
+        result = _scan_plan(
+            [_gcal_event("pc", start, start + timedelta(hours=1), VENUE)],
+            schedule=_late_checkin_schedule(),
+            route=_late_checkin_route(),
+            now=now,
+        )
+        legs = [(b.kind, b.origin, b.destination) for b in _created(result) if b.identity == "pc"]
+        assert ("meeting_outbound", LATE_HOTEL, VENUE) in legs
+        assert ("meeting_return", VENUE, LATE_HOTEL) in legs
+        assert all(CITY not in (origin, dest) for _, origin, dest in legs)
+
+
+def test_meeting_anchor_keeps_covering_stay_and_trip_location_without_lodging():
+    covering = Itinerary(_schedule(), home_address=HOME, home_airports=frozenset({"BNA"}))
+    assert meeting_anchor(covering, _dt(23, 0))[0] == HOTEL
+    nameless = Itinerary(
+        _covering_unaddressed_schedule(), home_address=HOME, home_airports=frozenset({"BNA"})
+    )
+    assert meeting_anchor(nameless, _dt(23, 0))[0] == CITY
+    no_lodging = Itinerary(
+        _schedule(lodging=False), home_address=HOME, home_airports=frozenset({"BNA"})
+    )
+    assert meeting_anchor(no_lodging, _dt(23, 0))[0] == CITY
+
+
+def test_meeting_anchor_does_not_pick_a_later_hotel_after_an_unaddressed_stay():
+    schedule = _schedule(lodging=False)
+    schedule[0]["end"] = "2020-07-16"
+    schedule.extend(
+        [
+            {
+                "type": "Lodging",
+                "summary": "Check-in: First Inn",
+                "start": "2020-07-12T15:00:00Z",
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-out: First Inn",
+                "start": "2020-07-13T15:00:00Z",
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-in: Second Inn",
+                "start": "2020-07-15T15:00:00Z",
+                "location": "Second Inn Address",
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-out: Second Inn",
+                "start": "2020-07-16T15:00:00Z",
+                "location": "Second Inn Address",
+            },
+        ]
+    )
+    itinerary = Itinerary(schedule, home_address=HOME, home_airports=frozenset({"BNA"}))
+    assert meeting_anchor(itinerary, _dt(12, 0, day=14))[0] == CITY
