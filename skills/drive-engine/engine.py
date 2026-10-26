@@ -567,6 +567,7 @@ def build_reconcile_plan(
             lodging_lookup=lodging_lookup,
             fallback_lookup=fallback_lookup,
             route=route,
+            current_blocks=current_blocks,
         )
         skipped.extend(post_diags)
 

@@ -18,7 +18,7 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from block_codec import GEN_LEGACY_DP  # noqa: E402
+from block_codec import GEN_LEGACY_DP, GEN_UNIFIED, ParsedBlock  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
 from scan import DEFAULT_TIGHT_GAP_SECONDS  # noqa: E402
 
@@ -239,6 +239,44 @@ def _has_follow_on(
     )
 
 
+def _current_drive_start(block: ParsedBlock) -> datetime | None:
+    """When an existing unified meeting block's drive begins, or None if unknown.
+
+    A return block's anchor is its departure. An outbound block's anchor is the
+    arrival deadline, so its drive began `baseline_seconds` earlier.
+    """
+    if block.anchor is None:
+        return None
+    if block.kind == "meeting_return":
+        return block.anchor
+    if block.kind == "meeting_outbound" and block.baseline_seconds is not None:
+        return block.anchor - timedelta(seconds=block.baseline_seconds)
+    return None
+
+
+def _held_is_unsafe(
+    item: HeldLeg,
+    current_by_key: dict[tuple[str, str], list[ParsedBlock]],
+    guards: Sequence[FlightGuard],
+) -> bool:
+    """Whether the drive a held meeting leg keeps alive begins inside a guard.
+
+    A hold keeps an EXISTING block, so the block's own drive start decides. A
+    return hold's `when` is also its drive start. An outbound hold's `when` is the
+    arrival deadline, never the drive start: a safe outbound that leaves before
+    `guard_start` may arrive inside the guard, and a failed route must not delete
+    it. An outbound hold with no readable block has no known drive start.
+    """
+    starts = [
+        start
+        for block in current_by_key.get(item.key, ())
+        if (start := _current_drive_start(block)) is not None
+    ]
+    if item.kind == "meeting_return" and item.when is not None:
+        starts.append(item.when)
+    return any(_in_protected(start, guards) for start in starts)
+
+
 def compose_postarrival(
     *,
     guards: Sequence[FlightGuard],
@@ -248,13 +286,16 @@ def compose_postarrival(
     lodging_lookup: AddressLookup,
     fallback_lookup: AddressLookup,
     route: RouteFn,
+    current_blocks: Sequence[ParsedBlock] = (),
     max_handoff_drive: timedelta = _MAX_HANDOFF_DRIVE,
 ) -> tuple[list[DesiredBlock], list[HeldLeg], list[str]]:
     """Compose airport and meeting desired blocks around inbound arrivals.
 
     Returns `(desired, held, diagnostics)`. Unsafe meeting keys are removed from
     both desired and held so reconcile deletes a stale airborne or centroid block
-    instead of preserving it under a provider-failure hold.
+    instead of preserving it under a provider-failure hold. `current_blocks` are the
+    calendar's existing blocks: a held leg is judged by the drive start of the
+    block it keeps alive.
     """
     desired_list = list(desired)
     diagnostics: list[str] = []
@@ -339,14 +380,18 @@ def compose_postarrival(
                 "interval — suppressed"
             )
 
-    # Held-only meeting legs (in-flight `past` bucket) never appear as desired
-    # blocks. Mark a held key unsafe when its timestamp falls in a protected
-    # interval, but leave meetings the handoff already rewrote — those own the
-    # post-arrival return, and their stale outbound is already unsafe.
+    # A held meeting leg (in-flight `past` bucket, or a failed route) keeps an
+    # existing block alive. It is unsafe only when that block's drive begins inside
+    # a protected interval; meetings the handoff already rewrote own their
+    # post-arrival return and their stale outbound is already unsafe.
+    current_by_key: dict[tuple[str, str], list[ParsedBlock]] = {}
+    for block in current_blocks:
+        if block.generation == GEN_UNIFIED and block.identity is not None and block.kind:
+            current_by_key.setdefault((block.identity, block.kind), []).append(block)
     for item in held:
         if item.identity in used_meetings or item.kind not in _MEETING_KINDS:
             continue
-        if item.when is None or not _in_protected(item.when, guards):
+        if not _held_is_unsafe(item, current_by_key, guards):
             continue
         if item.kind == "meeting_outbound":
             protected_outbound.add(item.identity)

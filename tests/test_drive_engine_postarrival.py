@@ -1111,3 +1111,123 @@ def test_scan_two_reachable_meetings_still_make_no_automatic_choice():
     arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
     assert arrival.destination == HOTEL
     assert any("2 overlapping meetings; no automatic choice" in s for s in result.skipped)
+
+
+# --- N2: a held leg is judged by the drive start of the block it keeps --------
+
+
+def _outbound_current(event_id, identity, *, anchor, minutes, origin, destination):
+    return ParsedBlock(
+        generation=GEN_UNIFIED,
+        event_id=event_id,
+        identity=identity,
+        kind="meeting_outbound",
+        origin=origin,
+        destination=destination,
+        baseline_seconds=minutes * 60,
+        anchor=anchor,
+    )
+
+
+def test_scan_held_outbound_starting_in_window_is_deleted_when_it_arrives_after_ready():
+    soon_start = _dt(22, 45)
+    current = [
+        _outbound_current(
+            "out-protected",
+            "soon",
+            anchor=soon_start,
+            minutes=30,
+            origin=HOTEL,
+            destination=VENUE_B,
+        )
+    ]
+    result = _scan_plan(
+        [_gcal_event("soon", soon_start, _dt(23, 45), VENUE_B)],
+        current_blocks=current,
+        route=_route(
+            {("DEN airport", HOTEL): 37, (HOTEL, VENUE_B): None, (HOME, "BNA airport"): 30},
+            default_minutes=None,
+        ),
+    )
+    assert any(d.event_id == "out-protected" for d in result.plan.deletes)
+    assert all(h.identity != "soon" for h in result.held)
+    assert not _created_kinds(result, "soon")
+
+
+def test_scan_held_outbound_leaving_before_guard_is_retained_on_route_failure():
+    start, end = _dt(16, 30), _dt(16, 50)
+    ok_route = _route(
+        {
+            (HOME, "Airport Office"): 20,
+            ("Airport Office", HOME): 20,
+            (HOME, "BNA airport"): 30,
+            ("BNA airport", HOME): 30,
+            ("DEN airport", HOTEL): 37,
+        },
+        default_minutes=None,
+    )
+    routed = _scan_plan([_gcal_event("clr", start, end, "Airport Office")], route=ok_route)
+    outbound = [b for b in _created(routed) if b.identity == "clr" and b.kind == "meeting_outbound"]
+    assert len(outbound) == 1 and outbound[0].start < GUARD <= start
+    current = [
+        _outbound_current(
+            "clr-out",
+            "clr",
+            anchor=outbound[0].anchor,
+            minutes=int(outbound[0].baseline_seconds // 60),
+            origin=outbound[0].origin,
+            destination=outbound[0].destination,
+        )
+    ]
+    failed = _scan_plan(
+        [_gcal_event("clr", start, end, "Airport Office")],
+        current_blocks=current,
+        route=_route(
+            {(HOME, "BNA airport"): 30, ("BNA airport", HOME): 30, ("DEN airport", HOTEL): 37},
+            default_minutes=None,
+        ),
+    )
+    assert not any(d.event_id == "clr-out" for d in failed.plan.deletes)
+    assert not any(c.desired.identity == "clr" for c in failed.plan.creates)
+    assert any(h.key == ("clr", "meeting_outbound") for h in failed.held)
+
+
+def test_scan_held_return_starting_in_window_is_deleted_even_without_a_block():
+    inflight_end = _dt(22, 0)
+    result = _scan_plan(
+        [_gcal_event("late", MEETING_START, inflight_end, VENUE)],
+        now=INFLIGHT,
+    )
+    assert all(h.key != ("late", "meeting_return") for h in result.held)
+    assert any("late: drive would start inside a flight interval" in s for s in result.skipped)
+
+
+def test_scan_held_outbound_history_stays_distinct_from_future_return():
+    current = [
+        _outbound_current(
+            "out-history",
+            "late",
+            anchor=MEETING_START,
+            minutes=19,
+            origin=CITY,
+            destination=VENUE,
+        ),
+        ParsedBlock(
+            generation=GEN_UNIFIED,
+            event_id="ret-future",
+            identity="late",
+            kind="meeting_return",
+            origin=VENUE,
+            destination=HOTEL,
+            baseline_seconds=1440,
+            anchor=_dt(22, 0),
+        ),
+    ]
+    result = _scan_plan(
+        [_gcal_event("late", MEETING_START, _dt(22, 0), VENUE)],
+        now=INFLIGHT,
+        current_blocks=current,
+    )
+    deleted = {d.event_id for d in result.plan.deletes}
+    assert "ret-future" in deleted
+    assert "out-history" not in deleted
