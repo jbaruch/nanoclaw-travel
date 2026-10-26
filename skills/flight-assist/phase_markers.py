@@ -196,7 +196,8 @@ def check_time_to_leave(
     snapshot: dict | None = None,
     boarding_lead_minutes: int | None = None,
     at_airport: bool | None = None,
-    poll_interval_minutes: int = 0,
+    prev_polled_at: datetime | None = None,
+    prior_poll_interval_minutes: int = 0,
 ) -> tuple[bool, dict | None]:
     """Traffic-aware "leave by" gate. Returns (should_fire, event_payload).
 
@@ -230,14 +231,19 @@ def check_time_to_leave(
     (absent, stale, or ambiguous location) is not proof of being away
     (#349).
 
-    `poll_interval_minutes` is the precheck cadence in force for this
-    snapshot (`precheck._interval_for`). The first poll at or after
-    `leave_by`, up to that interval, is the timely notice and may fire
-    without GPS. Later than that is missed: it needs `at_airport is
-    False` and a documented pre-departure status. Empty, missing, or
-    malformed status is not proof the flight has not left, so a missed
-    notice stays silent. Default 0 keeps a pure call's timely window at
-    exact `leave_by`.
+    `prev_polled_at` is the last successful poll before this one and
+    `prior_poll_interval_minutes` the cadence that poll scheduled the next
+    one on (`precheck._interval_for` on the PRIOR snapshot; 0 when that
+    status is not a documented pre-departure label). The timely notice is
+    the first actual poll at or after `leave_by`: `prev_polled_at` is
+    before `leave_by` and `now_utc` is within `prior_poll_interval_minutes`
+    of `leave_by`, so a cadence that tightens or loosens on the new snapshot, an
+    outage gap, or an unrecognised status cannot widen the window. It may
+    fire without GPS. Every other fire is missed: it needs `at_airport is
+    False` and a documented pre-departure status; empty, missing, or
+    malformed status is not proof the flight has not left. With no
+    `prev_polled_at` (a pure call, or a flight never polled before) the
+    timely window is the exact `leave_by` instant.
 
     `phase_markers["time_to_leave_fired"]` must be False to fire.
     """
@@ -266,12 +272,15 @@ def check_time_to_leave(
     leave_by = dep_dt - travel - buffer
     if now_utc < leave_by:
         return (False, None)
-    grace = timedelta(minutes=max(poll_interval_minutes, 0))
-    missed = now_utc > leave_by + grace
+    first_poll_after_leave_by = prev_polled_at is not None and prev_polled_at < leave_by
+    timely_window = timedelta(
+        minutes=max(prior_poll_interval_minutes, 0) if first_poll_after_leave_by else 0
+    )
+    missed = now_utc > leave_by + timely_window
     if missed:
         if at_airport is not False:
             return (False, None)
-        if not _positively_pre_departure(snapshot):
+        if not positively_pre_departure(snapshot):
             return (False, None)
     return (
         True,
@@ -471,7 +480,7 @@ def _taxi_or_pushback_detail(snapshot: dict) -> bool:
     return _TAXI_OR_PUSHBACK_DETAIL.search(detail) is not None
 
 
-def _positively_pre_departure(snapshot: dict | None) -> bool:
+def positively_pre_departure(snapshot: dict | None) -> bool:
     """True when `computed_status` is a documented pre-departure label.
 
     Empty, missing, or non-string status is not proof the flight has

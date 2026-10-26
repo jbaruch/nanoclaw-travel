@@ -15,7 +15,7 @@ import sys
 import urllib.error
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -2336,6 +2336,24 @@ class _ZeroTravelMaps:
         return type("TravelTime", (), {"in_traffic_seconds": 0, "duration_seconds": 0})()
 
 
+class _FixedTravelMaps:
+    """Maps stub answering `seconds`; with `clock`, each query costs `cost` s."""
+
+    def __init__(self, seconds: int, *, clock: dict | None = None, cost: float = 0.0):
+        self._seconds = seconds
+        self._clock = clock
+        self._cost = cost
+
+    def travel_time(self, *, origin, destination):
+        if self._clock is not None:
+            self._clock["t"] += self._cost
+        return type(
+            "TravelTime",
+            (),
+            {"in_traffic_seconds": self._seconds, "duration_seconds": self._seconds},
+        )()
+
+
 def _bna_flight(**overrides) -> dict:
     raw = _byair_flight(**overrides)
     raw["depAirport"] = {
@@ -2346,20 +2364,28 @@ def _bna_flight(**overrides) -> dict:
     return raw
 
 
-def _seed_leave_by_flight(*, last_snapshot: dict | None = None) -> None:
+def _seed_leave_by_flight(
+    *,
+    last_snapshot: dict | None = None,
+    last_polled_at: str = "2026-05-18T15:00:00Z",
+    flight_id: int = 12345,
+    active: list[int] | None = None,
+    time_to_leave_fired: bool = False,
+) -> None:
     markers = _phase_markers()
     markers["day_before_fired"] = True
+    markers["time_to_leave_fired"] = time_to_leave_fired
     snapshot = last_snapshot if last_snapshot is not None else _scheduled_snapshot()
     write_flight_state(
         _make_state(
-            flight_id=12345,
+            flight_id=flight_id,
             dep_airport_id=98,
-            last_polled_at="2026-05-18T15:00:00Z",
+            last_polled_at=last_polled_at,
             last_snapshot=snapshot,
             phase_markers=markers,
         )
     )
-    write_active_flights([12345])
+    write_active_flights(active if active is not None else [flight_id])
     write_config({"home_address": "1 Example Street, Nashville, TN"})
 
 
@@ -2442,47 +2468,285 @@ def test_process_flight_stale_or_absent_location_is_not_proof_away(state_root: P
     assert not any(e["event"]["reason"] == "time_to_leave" for e in stale)
 
 
-def test_process_flight_fresh_away_late_fires_missed_only_when_predeparture(
+def _leave_by_events(
+    now: datetime,
+    raw: dict,
+    *,
+    monkeypatch,
+    state_root: Path,
+    travel_seconds: int = 0,
+    gps_captured_at: str | None = None,
+    gps: tuple[float, float] = (_NASHVILLE_DOWNTOWN_LAT, _NASHVILLE_DOWNTOWN_LON),
+) -> tuple[list[dict], MagicMock]:
+    """One real `_run_cycle` over the seeded state; the `time_to_leave` events
+    and the byAir client. Each caller owns its `state_root`, so no earlier
+    delivery can mask this cycle's notice."""
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: _FixedTravelMaps(travel_seconds))
+    if gps_captured_at is not None:
+        _write_current_location(
+            state_root, latitude=gps[0], longitude=gps[1], captured_at=gps_captured_at
+        )
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = raw
+        client.return_value.get_airport.return_value = _BNA_AIRPORT
+        events = precheck._run_cycle(now_utc=now)
+    # A silent result is only evidence when the flight was actually polled.
+    client.return_value.get_flight.assert_called_once()
+    leave_by = [e["event"] for e in events if e["event"]["reason"] == "time_to_leave"]
+    return leave_by, client.return_value
+
+
+def _status_flight(status: str, *, detail: str = "...", dep_time: str | None = None) -> dict:
+    raw = _bna_flight(computed_status=status)
+    raw["computed_status_detail"] = detail
+    if dep_time is not None:
+        raw["depTime"] = dep_time
+    return raw
+
+
+_AWAY_AT_1704 = "2026-05-18T17:00:00Z"
+
+
+def test_process_flight_fresh_away_late_scheduled_fires_missed(state_root: Path, monkeypatch):
+    """Fresh downtown GPS, 19 min after leave_by, documented `scheduled`: the
+    one missed notice, after a single airport-coordinate lookup."""
+    _seed_leave_by_flight()
+    fired, byair = _leave_by_events(
+        datetime(2026, 5, 18, 17, 4, tzinfo=UTC),
+        _status_flight("scheduled"),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        gps_captured_at=_AWAY_AT_1704,
+    )
+    assert [e["missed"] for e in fired] == [True]
+    byair.get_airport.assert_called_once_with(98)
+
+
+@pytest.mark.parametrize("status", ["", "   ", "departed"])
+def test_process_flight_fresh_away_late_non_predeparture_status_is_silent(
+    state_root: Path, monkeypatch, status: str
+):
+    """P9a: empty, whitespace and gone statuses are not proof the flight has
+    not left, so a late fire with clear-away GPS stays silent. Each case runs
+    alone in a fresh state root."""
+    _seed_leave_by_flight()
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 17, 4, tzinfo=UTC),
+        _status_flight(status),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        gps_captured_at=_AWAY_AT_1704,
+    )
+    assert fired == []
+
+
+def test_process_flight_reported_19_minute_seam_stays_silent(state_root: Path, monkeypatch):
+    """P1: the reported incident. Real boarding polls 2 min apart were
+    suppressed after leave_by 16:45 (travel 0); the 17:04 poll arrives with an
+    empty status and no location. It is not the first poll after leave_by and
+    carries neither away proof nor a documented status."""
+    _seed_leave_by_flight(
+        last_snapshot=_boarding_now_snapshot(), last_polled_at="2026-05-18T17:02:00Z"
+    )
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 17, 4, tzinfo=UTC),
+        _status_flight(""),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+    )
+    assert fired == []
+
+
+def test_process_flight_reported_19_minute_seam_with_away_gps_stays_silent(
     state_root: Path, monkeypatch
 ):
-    """Fresh downtown GPS after leave_by: missed fire while scheduled;
-    empty status and departed stay silent."""
-    now = datetime(2026, 5, 18, 17, 4, 0, tzinfo=UTC)
-    captured = "2026-05-18T17:00:00Z"
-    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: _ZeroTravelMaps())
-    write_config({"home_address": "1 Example Street, Nashville, TN"})
-    _write_current_location(
-        state_root,
-        latitude=_NASHVILLE_DOWNTOWN_LAT,
-        longitude=_NASHVILLE_DOWNTOWN_LON,
-        captured_at=captured,
+    """N2c: the same empty-status poll with a fresh clear-away fix is still not
+    proof the flight has not left."""
+    _seed_leave_by_flight(
+        last_snapshot=_boarding_now_snapshot(), last_polled_at="2026-05-18T17:02:00Z"
     )
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 17, 4, tzinfo=UTC),
+        _status_flight(""),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        gps_captured_at=_AWAY_AT_1704,
+    )
+    assert fired == []
 
-    _seed_leave_by_flight()
-    with patch("precheck.ByAirClient.from_env") as client:
-        client.return_value.get_flight.return_value = _bna_flight()
-        client.return_value.get_airport.return_value = _BNA_AIRPORT
-        scheduled = precheck._run_cycle(now_utc=now)
-    missed = [e["event"] for e in scheduled if e["event"]["reason"] == "time_to_leave"]
-    assert len(missed) == 1
-    assert missed[0]["missed"] is True
-    client.return_value.get_airport.assert_called_once_with(98)
 
-    _seed_leave_by_flight()
-    empty = _bna_flight()
-    empty["computed_status"] = ""
-    with patch("precheck.ByAirClient.from_env") as client:
-        client.return_value.get_flight.return_value = empty
-        client.return_value.get_airport.return_value = _BNA_AIRPORT
-        empty_events = precheck._run_cycle(now_utc=now)
-    assert not any(e["event"]["reason"] == "time_to_leave" for e in empty_events)
+def test_process_flight_empty_status_29_minutes_late_stays_silent(state_root: Path, monkeypatch):
+    """P1b: travel 30 min (leave_by 16:15), the 16:44 poll reports an empty
+    status. The 10-minute scheduled cadence bound ended at 16:25."""
+    _seed_leave_by_flight(last_polled_at="2026-05-18T16:34:00Z")
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 16, 44, tzinfo=UTC),
+        _status_flight(""),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        travel_seconds=1800,
+    )
+    assert fired == []
 
-    _seed_leave_by_flight()
-    with patch("precheck.ByAirClient.from_env") as client:
-        client.return_value.get_flight.return_value = _bna_flight(computed_status="departed")
-        client.return_value.get_airport.return_value = _BNA_AIRPORT
-        gone = precheck._run_cycle(now_utc=now)
-    assert not any(e["event"]["reason"] == "time_to_leave" for e in gone)
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(_status_flight("check_in_open"), id="check-in-open"),
+        pytest.param(
+            _status_flight("boarding", detail="Boarding starts in 25 min"),
+            id="premature-boarding",
+        ),
+    ],
+)
+def test_process_flight_first_poll_after_leave_by_fires_when_cadence_tightens(
+    state_root: Path, monkeypatch, raw: dict
+):
+    """P2/P2b: the scheduled poll at 16:08 puts the next one at 16:18, the first
+    after leave_by 16:15. The new snapshot's 2-minute cadence must not turn that
+    poll into a missed one: the owner who has no location still gets the notice."""
+    _seed_leave_by_flight(last_polled_at="2026-05-18T16:08:00Z")
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 16, 18, tzinfo=UTC),
+        raw,
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        travel_seconds=1800,
+    )
+    assert [e["missed"] for e in fired] == [False]
+
+
+def test_process_flight_first_poll_after_leave_by_timely_without_status_flip(
+    state_root: Path, monkeypatch
+):
+    _seed_leave_by_flight(last_polled_at="2026-05-18T16:08:00Z")
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 16, 18, tzinfo=UTC),
+        _status_flight("scheduled"),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        travel_seconds=1800,
+    )
+    assert [e["missed"] for e in fired] == [False]
+
+
+def test_process_flight_flip_out_of_real_boarding_without_gps_is_silent(
+    state_root: Path, monkeypatch
+):
+    """P3/N1: a post-leave_by boarding poll at 16:40 already passed. The 16:42
+    flip back to `scheduled` after a delay is not the first poll after leave_by
+    16:35, and with no location there is no proof of being away."""
+    _seed_leave_by_flight(
+        last_snapshot=_boarding_now_snapshot(), last_polled_at="2026-05-18T16:40:00Z"
+    )
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 16, 42, tzinfo=UTC),
+        _status_flight("scheduled", dep_time="2026-05-18T17:45:00+00:00"),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        travel_seconds=600,
+    )
+    assert fired == []
+
+
+def test_process_flight_flip_out_of_real_boarding_with_away_gps_fires_missed(
+    state_root: Path, monkeypatch
+):
+    """N1b: the same flip with a fresh clear-away fix is a missed notice, not
+    timely copy for a late message."""
+    _seed_leave_by_flight(
+        last_snapshot=_boarding_now_snapshot(), last_polled_at="2026-05-18T16:40:00Z"
+    )
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 16, 42, tzinfo=UTC),
+        _status_flight("scheduled", dep_time="2026-05-18T17:45:00+00:00"),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        travel_seconds=600,
+        gps_captured_at="2026-05-18T16:38:00Z",
+    )
+    assert [e["missed"] for e in fired] == [True]
+
+
+def test_process_flight_loosened_cadence_cannot_widen_the_first_poll_window(
+    state_root: Path, monkeypatch
+):
+    """The prior `check_in_open` poll (2-min cadence) at 16:10 means 16:12 was the
+    next poll; 16:18 after leave_by 16:15 is an outage gap. The new snapshot's
+    10-minute `scheduled` cadence must not admit it as timely."""
+    _seed_leave_by_flight(
+        last_snapshot={**_scheduled_snapshot(), "computed_status": "check_in_open"},
+        last_polled_at="2026-05-18T16:10:00Z",
+    )
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 16, 18, tzinfo=UTC),
+        _status_flight("scheduled"),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        travel_seconds=1800,
+    )
+    assert fired == []
+
+
+def test_process_flight_outage_gap_after_leave_by_needs_away_proof(state_root: Path, monkeypatch):
+    """byAir was unreachable between the 16:00 poll and 16:50: the poll back is
+    long past the cadence that scheduled it (leave_by 16:15)."""
+    _seed_leave_by_flight(last_polled_at="2026-05-18T16:00:00Z")
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 16, 50, tzinfo=UTC),
+        _status_flight("scheduled"),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        travel_seconds=1800,
+    )
+    assert fired == []
+
+
+def test_process_flight_unrecognised_prior_status_has_no_timely_window(
+    state_root: Path, monkeypatch
+):
+    """A prior snapshot with an empty status cannot vouch for any cadence, so
+    16:18 (leave_by 16:15) is missed and silent without location. The poll is
+    due because an unpublished status falls to the ladder's 30-minute default."""
+    _seed_leave_by_flight(
+        last_snapshot={**_scheduled_snapshot(), "computed_status": ""},
+        last_polled_at="2026-05-18T15:48:00Z",
+    )
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 16, 18, tzinfo=UTC),
+        _status_flight("scheduled"),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        travel_seconds=1800,
+    )
+    assert fired == []
+
+
+def test_process_flight_never_polled_flight_is_missed_after_leave_by(state_root: Path, monkeypatch):
+    """sync_tripit seeds `last_polled_at` with no snapshot. The first real poll
+    lands after leave_by: no earlier poll exists to measure a cadence from, so
+    it is a missed notice and needs clear-away location."""
+    markers = _phase_markers()
+    markers["day_before_fired"] = True
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            dep_airport_id=98,
+            last_polled_at="2026-05-18T16:00:00Z",
+            last_snapshot=None,
+            phase_markers=markers,
+        )
+    )
+    write_active_flights([12345])
+    write_config({"home_address": "1 Example Street, Nashville, TN"})
+    fired, _ = _leave_by_events(
+        datetime(2026, 5, 18, 16, 20, tzinfo=UTC),
+        _status_flight("scheduled"),
+        monkeypatch=monkeypatch,
+        state_root=state_root,
+        travel_seconds=1800,
+    )
+    assert fired == []
 
 
 def test_process_flight_get_flight_shape_without_nested_coords_does_not_invent(

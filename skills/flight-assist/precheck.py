@@ -78,6 +78,7 @@ from phase_markers import (  # noqa: E402
     departure_airport_coords,
     gate_assignment_window_open,
     is_boarding_or_gone,
+    positively_pre_departure,
 )
 from state import (  # noqa: E402
     StateError,
@@ -1074,9 +1075,8 @@ def _process_flight(
         dep_lat=dep_lat,
         dep_lon=dep_lon,
     )
-    status = new_snapshot.get("computed_status")
-    interval_minutes = _interval_for(
-        status if isinstance(status, str) else "scheduled",
+    prev_polled_at, prior_interval_minutes = _prior_poll_cadence(
+        prior_state,
         now_utc,
         _parse_iso8601(scheduled_dep_time) if isinstance(scheduled_dep_time, str) else None,
         _parse_iso8601(scheduled_arr_time) if isinstance(scheduled_arr_time, str) else None,
@@ -1089,7 +1089,8 @@ def _process_flight(
         snapshot=new_snapshot,
         boarding_lead_minutes=boarding_lead_minutes,
         at_airport=at_airport,
-        poll_interval_minutes=interval_minutes,
+        prev_polled_at=prev_polled_at,
+        prior_poll_interval_minutes=prior_interval_minutes,
     )
     if fired and event is not None:
         events.append(event)
@@ -1148,6 +1149,41 @@ def _due_for_poll(prior_state: dict | None, now_utc: datetime) -> bool:
     scheduled_arr = _parse_iso8601(prior_state.get("scheduled_arr_time"))
     interval_minutes = _interval_for(status, now_utc, scheduled_dep, scheduled_arr)
     return now_utc - last_polled >= timedelta(minutes=interval_minutes)
+
+
+def _prior_poll_cadence(
+    prior_state: dict | None,
+    now_utc: datetime,
+    scheduled_dep: datetime | None,
+    scheduled_arr: datetime | None,
+) -> tuple[datetime | None, int]:
+    """The last successful poll and the cadence that spaced the next one (#349).
+
+    `check_time_to_leave` treats the first actual poll at or after `leave_by`
+    as the timely notice. Which poll that is comes from the PRIOR state, the
+    same snapshot `_due_for_poll` read to schedule this one: the status the new
+    snapshot reports can tighten or loosen the cadence on the very poll that
+    crosses `leave_by`, and must not move the window.
+
+    `(None, 0)` when nothing has polled successfully yet: a state seeded by
+    sync_tripit carries `last_polled_at` but no snapshot, so the snapshot is the
+    sentinel, as in `_due_for_poll`. The interval is 0 when the prior status is
+    not a documented pre-departure label, so an unrecognised or empty status
+    never widens the window.
+    """
+    if prior_state is None:
+        return None, 0
+    snapshot = prior_state.get("last_snapshot")
+    if not isinstance(snapshot, dict):
+        return None, 0
+    polled_at = _parse_iso8601(prior_state.get("last_polled_at"))
+    if polled_at is None:
+        return None, 0
+    if not positively_pre_departure(snapshot):
+        return polled_at, 0
+    return polled_at, _interval_for(
+        snapshot["computed_status"], now_utc, scheduled_dep, scheduled_arr
+    )
 
 
 def _interval_for(
