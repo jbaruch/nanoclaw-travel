@@ -116,7 +116,7 @@ def test_unverified_flight_is_deferred_and_inactive_or_expired_notices_are_dropp
         assert store.confirm([identity])["stale"] == [identity]
 
 
-@pytest.mark.parametrize("version", [0, 2, True])
+@pytest.mark.parametrize("version", [0, 3, True])
 def test_unsupported_store_is_not_replaced_by_an_empty_record(store_root, version):
     target = store_root / "notifications.json"
     original = json.dumps({"schema_version": version, "sequence": 0, "notices": {}})
@@ -346,3 +346,49 @@ def test_confirmation_cli_refuses_invalid_input_without_consuming_pending_notice
     assert "without resending" in output.err
     with notification_store(now_utc=NOW) as store:
         assert due(store)[0]["notification_id"] == identity
+
+
+def test_v1_migration_preserves_receipts_and_regenerates_pending_leave_notices(store_root):
+    legacy_leave = {"reason": "time_to_leave", "leave_by": "2025-05-18T09:45:00Z"}
+    with notification_store(now_utc=NOW) as store:
+        pending_leave = must(offer(store, legacy_leave))
+        delivered_leave = must(
+            store.offer(43, legacy_leave, prior_poll=None, expires_at=NOW + timedelta(hours=2))
+        )
+        pending_gate = must(offer(store))
+        store.confirm([delivered_leave])
+    path = store_root / "notifications.json"
+    original = json.loads(path.read_text())
+    original["schema_version"] = 1
+    for row in original["notices"].values():
+        row["schema_version"] = 1
+    path.write_text(json.dumps(original))
+    with notification_store(now_utc=NOW) as store:
+        assert store.data["schema_version"] == 2
+        assert store.data["sequence"] == original["sequence"]
+        assert store.confirmed_markers(43) == {"time_to_leave_fired"}
+        assert store.confirmed_markers(42) == set()
+        assert store.confirm([pending_leave]) == {"confirmed": [], "stale": [pending_leave]}
+        assert [
+            row["notification_id"] for row in store.due(active_ids={42, 43}, excluded_ids=set())
+        ] == [pending_gate]
+        replacement = must(offer(store, {**legacy_leave, "missed": True}))
+        assert replacement != pending_leave
+        assert store.confirm([delivered_leave])["confirmed"] == [delivered_leave]
+    upgraded = json.loads(path.read_text())
+    assert upgraded["schema_version"] == 2
+    assert {row["schema_version"] for row in upgraded["notices"].values()} == {2}
+
+
+def test_malformed_v1_rows_are_not_rewritten_during_migration(store_root):
+    with notification_store(now_utc=NOW) as store:
+        offer(store)
+    path = store_root / "notifications.json"
+    original = json.loads(path.read_text())
+    original["schema_version"] = 1
+    raw = json.dumps(original)  # mixed row/root versions are not a valid v1 store
+    path.write_text(raw)
+    with pytest.raises(DeliveryError):
+        with notification_store(now_utc=NOW):
+            pytest.fail("Invalid migration must refuse")
+    assert path.read_text() == raw

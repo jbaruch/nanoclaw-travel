@@ -1,6 +1,6 @@
 """Durable flight notice attempts and confirmed deliveries.
 
-The flight-assist owner alone writes notifications.json (schema 1). Its file
+The flight-assist owner alone writes notifications.json (schema 2). Its file
 lock spans a caller's read/modify/write cycle. Offering a notice persists it
 before the flight snapshot may advance; offering is never a delivery receipt.
 A due notice gets a retry deadline, and only confirm() consumes its exact id.
@@ -24,7 +24,7 @@ from typing import Any
 
 from state import state_dir
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_BYTES = 4 * 1024 * 1024
 MAX_NOTICES = 2048
 MAX_EVENT_BYTES = 8192
@@ -95,10 +95,10 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(_json(value).encode()).hexdigest()
 
 
-def _validate(data: Any) -> dict[str, Any]:
+def _validate(data: Any, *, version: int = SCHEMA_VERSION) -> dict[str, Any]:
     if not isinstance(data, dict) or set(data) != {"schema_version", "sequence", "notices"}:
         raise ValueError("Unsupported notification store shape.")
-    if type(data["schema_version"]) is not int or data["schema_version"] != SCHEMA_VERSION:
+    if type(data["schema_version"]) is not int or data["schema_version"] != version:
         raise ValueError("Unsupported notification store version.")
     if type(data["sequence"]) is not int or data["sequence"] < 0:
         raise ValueError("Invalid notification sequence.")
@@ -110,7 +110,7 @@ def _validate(data: Any) -> dict[str, Any]:
             raise ValueError("Invalid notification key.")
         if not isinstance(row, dict) or set(row) != _ROW_KEYS or row["key"] != key:
             raise ValueError("Invalid notification record.")
-        if type(row["schema_version"]) is not int or row["schema_version"] != SCHEMA_VERSION:
+        if type(row["schema_version"]) is not int or row["schema_version"] != version:
             raise ValueError("Unsupported notification record version.")
         if not isinstance(row["id"], str) or not re.fullmatch(r"[a-f0-9]{32}", row["id"]):
             raise ValueError("Invalid notification id.")
@@ -148,6 +148,21 @@ def _validate(data: Any) -> dict[str, Any]:
                 raise ValueError("Invalid notification timestamp.")
             _time(value)
     return data
+
+
+def _migrate_v1(data: Any) -> dict[str, Any]:
+    """Keep receipt identities; regenerate old pending leave notices from live data."""
+    _validate(data, version=1)
+    upgraded = json.loads(_json(data))
+    upgraded["schema_version"] = SCHEMA_VERSION
+    for key, row in list(upgraded["notices"].items()):
+        if row["event"]["reason"] == "time_to_leave" and row["confirmed_at"] is None:
+            # Version 1 cannot prove the new timely/missed or location gates.
+            # The next precheck may offer a replacement after a live refresh.
+            del upgraded["notices"][key]
+        else:
+            row["schema_version"] = SCHEMA_VERSION
+    return _validate(upgraded)
 
 
 def _dependencies(row: dict) -> set[int]:
@@ -416,6 +431,7 @@ def notification_store(*, now_utc: datetime) -> Iterator[DeliveryStore]:
                 "retry the receipt acknowledgement without resending."
             ) from error
         try:
+            migrated = False
             try:
                 with path.open("rb") as source:
                     raw = source.read(MAX_BYTES + 1)
@@ -425,12 +441,21 @@ def notification_store(*, now_utc: datetime) -> Iterator[DeliveryStore]:
                 try:
                     if len(raw) > MAX_BYTES:
                         raise ValueError("Oversized notification store.")
-                    data = _validate(json.loads(raw))
+                    decoded = json.loads(raw)
+                    migrated = (
+                        isinstance(decoded, dict)
+                        and type(decoded.get("schema_version")) is int
+                        and decoded["schema_version"] == 1
+                    )
+                    data = _migrate_v1(decoded) if migrated else _validate(decoded)
                 except (ValueError, TypeError, KeyError, RecursionError) as error:
                     raise DeliveryError(
                         f"Restore the supported notification store at {path}; "
                         f"do not delete its delivery receipts: {error}"
                     ) from error
-            yield DeliveryStore(path, data, now_utc)
+            store = DeliveryStore(path, data, now_utc)
+            if migrated:
+                store._save(data)
+            yield store
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)

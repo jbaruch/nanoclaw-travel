@@ -2424,8 +2424,10 @@ def test_process_flight_fresh_gps_at_airport_stays_silent(state_root: Path, monk
     assert persisted["last_snapshot"]["dep_lon"] == _BNA_LON
 
 
-def test_process_flight_cached_airport_coords_skip_get_airport(state_root: Path, monkeypatch):
-    """A later cycle reuses last_snapshot.dep_lat/dep_lon — no second poll."""
+def test_process_flight_prior_coords_still_require_a_live_airport_lookup(
+    state_root: Path, monkeypatch
+):
+    """Prior coordinates never replace live airport verification for suppression."""
     cached = {
         **_scheduled_snapshot(),
         "dep_lat": _BNA_LAT,
@@ -2440,7 +2442,7 @@ def test_process_flight_cached_airport_coords_skip_get_airport(state_root: Path,
         state_root=state_root,
     )
     assert not any(e["event"]["reason"] == "time_to_leave" for e in events)
-    byair.get_airport.assert_not_called()
+    byair.get_airport.assert_called_once_with(98)
 
 
 def test_process_flight_stale_or_absent_location_is_not_proof_away(state_root: Path, monkeypatch):
@@ -2839,16 +2841,15 @@ def test_flight_that_may_need_the_airport_lookup_defers_past_its_reserve(
     assert "deferring 1 to next cycle" in capsys.readouterr().err
 
 
-def test_cached_airport_coordinates_keep_the_full_start_budget(state_root: Path, monkeypatch):
-    """The same slow first poll with coordinates already cached: flight 2 needs
-    only get_flight + Maps, so it still starts at 9.9 s and ends at 25.9 s. The
-    lookup reserve must not shrink ordinary cycles."""
+def test_prior_airport_coordinates_keep_the_live_lookup_budget_reserve(
+    state_root: Path, monkeypatch
+):
     _, byair, clock = _budget_cycle(
         state_root, monkeypatch, first_flight_seconds=9.9, second_cached=True
     )
-    assert byair.get_flight.call_count == 2
+    assert byair.get_flight.call_count == 1
     byair.get_airport.assert_not_called()
-    assert clock["t"] == pytest.approx(23.9)
+    assert clock["t"] == pytest.approx(9.9)
     assert clock["t"] <= _kill_limit()
 
 
@@ -3007,3 +3008,44 @@ def test_budget_deferred_flight_runs_before_its_refreshed_predecessor_next_tick(
     assert must(read_flight_state(2))["last_polled_at"] != before
     assert clock["t"] <= _kill_limit()
     assert [e for e in events if e["event"]["reason"] == "time_to_leave"] == []
+
+
+def test_live_departure_airport_identity_replaces_the_prior_airport_for_presence(
+    state_root: Path, monkeypatch
+):
+    cached = {**_scheduled_snapshot(), "dep_lat": _BNA_LAT, "dep_lon": _BNA_LON}
+    _seed_leave_by_flight(last_snapshot=cached)
+    raw = _bna_flight()
+    raw["depAirport"]["id"] = 777
+    now = datetime(2026, 5, 18, 17, 4, tzinfo=UTC)
+    _write_current_location(
+        state_root, latitude=_BNA_LAT, longitude=_BNA_LON, captured_at="2026-05-18T17:00:00Z"
+    )
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: _FixedTravelMaps(0))
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = raw
+        client.return_value.get_airport.return_value = {"lat": 40.0, "lon": -105.0}
+        events = precheck._run_cycle(now_utc=now)
+    client.return_value.get_airport.assert_called_once_with(777)
+    assert [e["event"]["missed"] for e in events if e["event"]["reason"] == "time_to_leave"] == [
+        True
+    ]
+    assert must(read_flight_state(12345))["last_snapshot"]["dep_lat"] == 40.0
+
+
+def test_failed_live_airport_lookup_does_not_turn_prior_coords_into_away_proof(
+    state_root: Path, monkeypatch
+):
+    cached = {**_scheduled_snapshot(), "dep_lat": 40.0, "dep_lon": -105.0}
+    _seed_leave_by_flight(last_snapshot=cached)
+    now = datetime(2026, 5, 18, 17, 4, tzinfo=UTC)
+    _write_current_location(
+        state_root, latitude=_BNA_LAT, longitude=_BNA_LON, captured_at="2026-05-18T17:00:00Z"
+    )
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: _FixedTravelMaps(0))
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _bna_flight()
+        client.return_value.get_airport.side_effect = urllib.error.URLError("fixture unavailable")
+        events = precheck._run_cycle(now_utc=now)
+    client.return_value.get_airport.assert_called_once_with(98)
+    assert not any(e["event"]["reason"] == "time_to_leave" for e in events)

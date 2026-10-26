@@ -181,9 +181,9 @@ _MAPS_CALL_TIMEOUT_SECONDS = 8.0
 # fire its `day_before` this cycle (#312). A cycle whose flights have all fired
 # theirs keeps the full budget.
 #
-# The departure-airport lookup (#349) is a third byAir-bounded call in the same
+# The departure-airport lookup (#349) is an additional byAir-bounded call in the same
 # `_process_flight`, between the poll and the Maps query. It runs only on a flight
-# due to poll whose coordinates are not cached, with a fresh GPS fix, the
+# due to poll with a fresh GPS fix, the
 # `time_to_leave` marker unfired, Maps configured and departure inside
 # `_TIME_TO_LEAVE_QUERY_WINDOW_HOURS`, so `_run_cycle` holds back
 # `_AIRPORT_LOOKUP_RESERVE_SECONDS` from the start deadline of exactly those
@@ -928,8 +928,6 @@ def _may_lookup_airport(
         return True
     if not force and not _due_for_poll(prior_state, now_utc):
         return False
-    if _cached_departure_coords(prior_state.get("last_snapshot")) is not None:
-        return False
     fired = bool((prior_state.get("phase_markers") or {}).get("time_to_leave_fired")) or (
         "time_to_leave_fired" in delivery.confirmed_markers(flight_id)
     )
@@ -1062,9 +1060,7 @@ def _process_flight(
         prior_state["scheduled_dep_time"] if prior_state else raw_flight.get("scheduledDepTime")
     )
     dep_lat, dep_lon = _departure_coords_for_presence(
-        prior_snapshot=prior_snapshot,
         raw_flight=raw_flight,
-        prior_state=prior_state,
         byair=byair,
         gps=gps,
         lookup_wanted=_may_need_airport_lookup(
@@ -1350,49 +1346,25 @@ def _resolve_time_to_leave_origin(
     return resolve_live_origin(home_address, now=now_utc)
 
 
-def _cached_departure_coords(snapshot: object) -> tuple[float, float] | None:
-    """Valid `dep_lat`/`dep_lon` persisted on a snapshot, else None."""
-    if not isinstance(snapshot, dict):
-        return None
-    lat, lon = departure_airport_coords(
-        {"lat": snapshot.get("dep_lat"), "lon": snapshot.get("dep_lon")}
-    )
-    if lat is None or lon is None:
-        return None
-    return lat, lon
-
-
 def _departure_coords_for_presence(
     *,
-    prior_snapshot: dict | None,
     raw_flight: dict,
-    prior_state: dict | None,
     byair: ByAirClient,
     gps: tuple[float, float] | None,
     lookup_wanted: bool,
 ) -> tuple[float | None, float | None]:
     """Departure-airport `lat`/`lon` for GPS presence (#349).
 
-    Reuses cached `last_snapshot.dep_lat`/`dep_lon` when both are valid.
-    Otherwise, only when a fresh GPS fix exists this cycle and
-    `lookup_wanted` (`_may_need_airport_lookup`: a `time_to_leave` could
-    still fire), pays one `byair.get_airport(depAirport.id)` using the
-    documented get_airport coordinate keys. Nested `get_flight.depAirport`
-    is not assumed to carry `lat`/`lon`. Missing or failed lookup skips
-    presence this cycle; a later GPS-present poll retries until coords
-    persist.
+    Only when a fresh GPS fix exists and `lookup_wanted`, resolve coordinates
+    from a fresh `get_airport` call for the live `get_flight.depAirport.id`.
+    Persisted coordinates and the prior flight's airport ID are never authority
+    for suppression. Missing live identity or failed lookup leaves presence
+    unknown. Nested get_flight.depAirport coordinates are not a source.
     """
-    cached = _cached_departure_coords(prior_snapshot)
-    if cached is not None:
-        return cached
     if gps is None or not lookup_wanted:
         return None, None
-    airport_id: object = None
-    if prior_state is not None:
-        airport_id = prior_state.get("dep_airport_id")
-    if not isinstance(airport_id, int) or isinstance(airport_id, bool):
-        dep_airport = raw_flight.get("depAirport")
-        airport_id = dep_airport.get("id") if isinstance(dep_airport, dict) else None
+    dep_airport = raw_flight.get("depAirport")
+    airport_id = dep_airport.get("id") if isinstance(dep_airport, dict) else None
     if not isinstance(airport_id, int) or isinstance(airport_id, bool):
         return None, None
     try:
