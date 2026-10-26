@@ -197,3 +197,102 @@ def test_home_metro_placeholder_routes_meeting_from_current_home(monkeypatch, tm
     assert returning.origin == "42 Example Ave"
     assert returning.destination == "12 Example St"
     assert returning.end == datetime(2026, 9, 11, 19, 40, tzinfo=UTC)
+
+
+def _arrival_day_sweep(monkeypatch, tmp_path, *, meeting_start, meeting_end):
+    """Run `_run_sweep` over a BNA→DEN trip whose hotel checks in after landing."""
+    from datetime import timedelta
+
+    real_meeting_blocks = reconcile_sweep.meeting_desired_blocks
+    real_build_plan = reconcile_sweep.build_plan
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    monkeypatch.setattr(state, "read_config", lambda: {"home_address": "12 Example St"})
+    monkeypatch.setattr(
+        trip_origin,
+        "load_travel_schedule",
+        lambda: [
+            {
+                "type": "Trip",
+                "summary": "Denver",
+                "start": "2026-09-12",
+                "end": "2026-09-14",
+                "location": "Denver, CO",
+            },
+            {
+                "type": "Flight",
+                "uid": "tripit-wn1",
+                "summary": "WN1 BNA to DEN",
+                "start": "2026-09-12T17:20:00Z",
+                "end": "2026-09-12T22:10:00Z",
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-in: Late Hotel",
+                "start": "2026-09-13T02:00:00Z",
+                "location": "Late Hotel Address",
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-out: Late Hotel",
+                "start": "2026-09-14T15:00:00Z",
+                "location": "Late Hotel Address",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        _EmptyFetcher,
+        "fetch_window",
+        lambda self, **_: [
+            {
+                "id": "mtg",
+                "summary": "Keynote",
+                "location": "Conference Center, Denver",
+                "start": {"dateTime": meeting_start.isoformat()},
+                "end": {"dateTime": meeting_end.isoformat()},
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        reconcile_sweep, "make_route", lambda _: lambda origin, dest: timedelta(minutes=30)
+    )
+    monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", real_meeting_blocks)
+    monkeypatch.setattr(reconcile_sweep, "build_plan", real_build_plan)
+    plans = []
+    monkeypatch.setattr(
+        reconcile_sweep,
+        "finish_sweep",
+        lambda plan, *_args, **_kwargs: plans.append(plan) or {"data": {}},
+    )
+    reconcile_sweep._run_sweep()
+    return [create.desired for create in plans[0].creates]
+
+
+def test_sweep_arrival_day_meeting_before_check_in_drives_from_and_to_the_hotel(
+    monkeypatch, tmp_path
+):
+    created = _arrival_day_sweep(
+        monkeypatch,
+        tmp_path,
+        meeting_start=datetime(2026, 9, 13, 0, 30, tzinfo=UTC),
+        meeting_end=datetime(2026, 9, 13, 1, 30, tzinfo=UTC),
+    )
+    legs = {b.kind: b for b in created if b.identity == "mtg"}
+    assert legs["meeting_outbound"].origin == "Late Hotel Address"
+    assert legs["meeting_return"].destination == "Late Hotel Address"
+    assert all("Denver, CO" not in (b.origin, b.destination) for b in legs.values())
+
+
+def test_sweep_ongoing_meeting_after_landing_replaces_the_airport_to_hotel_drive(
+    monkeypatch, tmp_path
+):
+    created = _arrival_day_sweep(
+        monkeypatch,
+        tmp_path,
+        meeting_start=datetime(2026, 9, 12, 20, 30, tzinfo=UTC),
+        meeting_end=datetime(2026, 9, 12, 23, 45, tzinfo=UTC),
+    )
+    arrival = next(b for b in created if b.kind == "airport_arrival")
+    assert arrival.destination == "Conference Center, Denver"
+    ret = next(b for b in created if b.identity == "mtg" and b.kind == "meeting_return")
+    assert ret.destination == "Late Hotel Address"
+    assert not any(b.kind == "meeting_outbound" for b in created)

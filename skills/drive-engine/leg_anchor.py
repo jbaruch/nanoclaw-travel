@@ -191,3 +191,22 @@ def resolve_leg_anchor(
         )
 
     raise ValueError(f"resolve_leg_anchor does not handle leg kind {leg.kind}")
+
+
+def flight_protected_bounds(
+    flight: MergedFlight,
+    *,
+    facts: AirportFacts,
+    overrides: BufferOverrides = _NO_OVERRIDES,
+) -> tuple[datetime, datetime]:
+    """Half-open protected interval `[guard_start, ready_at)` for one flight.
+
+    `guard_start` is `effective_dep − clearance` (the airport-departure deadline).
+    `ready_at` is `effective_arr + post_arrival` (the airport-arrival drive start).
+    A drive may begin at `ready_at`; a drive beginning at `guard_start` may not.
+    Uses the same buffer functions as `resolve_leg_anchor`.
+    """
+    return (
+        flight.effective_dep - _clearance(facts, overrides),
+        _require_arr(flight) + _post_arrival(facts, overrides),
+    )

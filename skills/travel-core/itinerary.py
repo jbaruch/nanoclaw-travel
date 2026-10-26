@@ -631,6 +631,40 @@ class Itinerary:
             return Position(address=left.address, source=LODGING, detail=f"after {left.name}")
         return self._away_fallback(period, at, None)
 
+    def addressable_lodging_in_period(self, at: datetime) -> Position | None:
+        """Addressable lodging of the ground period `at` belongs to (or is flying to).
+
+        A covering stay wins: with an address it is returned; without one this
+        returns None so the existing annotated fallback applies. The next
+        addressable stay in that period is used only when no stay covers `at`
+        and none has ended yet (arrival before the first check-in), and then only
+        the first upcoming stay, never a later one past an unaddressed stay;
+        between two stays it returns None rather than guess a hotel. Never changes
+        `position_at`, never returns a prior trip's lodging, and never falls
+        back to the trip-city centroid.
+        """
+        if at.tzinfo is None or at.utcoffset() is None:
+            raise ValueError(
+                "Itinerary.addressable_lodging_in_period: `at` must be timezone-aware (UTC)"
+            )
+        at = at.astimezone(UTC)
+        period = self._periods[self._period_index(at)]
+        covering = [stay for stay in period.stays if stay.start <= at < stay.end]
+        if covering:
+            stay = max(covering, key=lambda s: s.start)
+            if stay.address is None:
+                return None
+            return Position(address=stay.address, source=LODGING, detail=stay.name)
+        if any(stay.end <= at for stay in period.stays):
+            return None
+        upcoming = [stay for stay in period.stays if stay.end > at]
+        if not upcoming:
+            return None
+        stay = min(upcoming, key=lambda s: s.start)
+        if stay.address is None:
+            return None
+        return Position(address=stay.address, source=LODGING, detail=stay.name)
+
     def _last_checked_out(self, index: int, at: datetime) -> _Stay | None:
         """The lodging last checked out of before `at`, in this away period or the
         away periods before it: between two legs of one journey, and after a

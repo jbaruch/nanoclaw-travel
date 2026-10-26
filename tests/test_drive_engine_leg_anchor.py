@@ -24,6 +24,7 @@ from flight_identity import MergedFlight  # noqa: E402
 from leg_anchor import (  # noqa: E402
     AirportFacts,
     BufferOverrides,
+    flight_protected_bounds,
     resolve_leg_anchor,
 )
 
@@ -85,6 +86,16 @@ def test_departure_uses_live_time_when_present():
 
 
 # --- arrival: depart_after = effective_arr + post_arrival -------------------
+
+
+def test_protected_bounds_match_departure_and_arrival_anchors():
+    f = flight("BNA", "JFK", _dt(9), _dt(11))
+    facts = AirportFacts(dep_flag=US, arr_flag=US, delay_index="low")
+    guard_start, ready_at = flight_protected_bounds(f, facts=facts)
+    dep = resolve_leg_anchor(PlannedLeg(LegKind.AIRPORT_DEPARTURE, to_flight=f), facts=facts)
+    arr = resolve_leg_anchor(PlannedLeg(LegKind.AIRPORT_ARRIVAL, from_flight=f), facts=facts)
+    assert guard_start == dep.anchor == _dt(8)
+    assert ready_at == arr.anchor == _dt(11, 20)
 
 
 def test_arrival_domestic_post_20():
