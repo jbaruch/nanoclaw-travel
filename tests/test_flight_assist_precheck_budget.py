@@ -28,6 +28,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 
 import precheck  # noqa: E402
 from operator_tz import READER_TIMEOUT_SECONDS  # noqa: E402
+from phase_markers import SCHEDULER_TICK_MINUTES  # noqa: E402
 
 SKILL_MD = REPO_ROOT / "skills" / "flight-assist" / "SKILL.md"
 
@@ -119,3 +120,43 @@ def test_budget_leaves_room_for_the_zone_reader_on_a_flight_that_may_spawn_it() 
     assert spawning_deadline + base_worst + READER_TIMEOUT_SECONDS <= (
         precheck._SCRIPT_KILL_BUDGET_SECONDS
     )
+
+
+def test_budget_leaves_room_for_the_airport_lookup_on_a_flight_that_may_need_it():
+    """The departure-airport lookup (#349) is a third bounded byAir call in one
+    `_process_flight`: poll, lookup, Maps, teardown. A flight that may need it
+    starts `_AIRPORT_LOOKUP_RESERVE_SECONDS` earlier, and started at that
+    deadline it returns before the kill."""
+    assert precheck._AIRPORT_LOOKUP_RESERVE_SECONDS >= precheck._BYAIR_CALL_TIMEOUT_SECONDS
+    lookup_deadline = precheck._CYCLE_WALL_CLOCK_BUDGET_SECONDS - (
+        precheck._AIRPORT_LOOKUP_RESERVE_SECONDS
+    )
+    assert lookup_deadline > 0, "the reserve would leave a lookup flight no budget"
+    worst_case = (
+        lookup_deadline
+        + precheck._BYAIR_CALL_TIMEOUT_SECONDS  # get_flight
+        + precheck._BYAIR_CALL_TIMEOUT_SECONDS  # get_airport
+        + precheck._MAPS_CALL_TIMEOUT_SECONDS
+        + precheck._INTERPRETER_TEARDOWN_HEADROOM_SECONDS
+    )
+    assert worst_case <= precheck._SCRIPT_KILL_BUDGET_SECONDS
+
+
+def test_reader_and_airport_lookup_fit_together_without_skipping_either():
+    combined = precheck._READER_RESERVE_SECONDS + precheck._AIRPORT_LOOKUP_RESERVE_SECONDS
+    start_deadline = precheck._CYCLE_WALL_CLOCK_BUDGET_SECONDS - combined
+    assert start_deadline > 0
+    assert (
+        start_deadline
+        + 2 * precheck._BYAIR_CALL_TIMEOUT_SECONDS
+        + precheck._MAPS_CALL_TIMEOUT_SECONDS
+        + READER_TIMEOUT_SECONDS
+        + precheck._INTERPRETER_TEARDOWN_HEADROOM_SECONDS
+        <= precheck._SCRIPT_KILL_BUDGET_SECONDS
+    )
+
+
+def test_timely_poll_tick_matches_the_declared_scheduler_cadence():
+    declared = re.search(r'^cadence: "\*/(\d+) \* \* \* \*"$', SKILL_MD.read_text(), re.M)
+    assert declared is not None
+    assert int(declared.group(1)) == SCHEDULER_TICK_MINUTES

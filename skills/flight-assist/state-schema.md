@@ -89,6 +89,8 @@ Reader contract: `read_sync_health()` returns the zero record for a missing file
 
 ### `current-location.json`
 
+The installed `jbaruch/nanoclaw-host` authority `rules/flight-assist-location.md` owns the producer schema and non-owner reader contract. This consumer never migrates or writes the host snapshot.
+
 Latest known user location. **Owner is the host orchestrator**, not flight-assist — the host writes this file as Telegram live-location updates and message metadata arrive. flight-assist is a non-owner reader per `coding-policy: stateful-artifacts`: it consults the snapshot to resolve the time-to-leave origin (ladder lives in `precheck._resolve_time_to_leave_origin`), validates the documented shape, and returns `None` on any mismatch instead of raising or migrating.
 
 ```json
@@ -112,6 +114,8 @@ Origin-resolution ladder used by `precheck._resolve_time_to_leave_origin`:
 1. Fresh snapshot — `now - captured_at <= 30 min` → formatted `"<latitude>,<longitude>"` for the Distance Matrix API
 2. `home_address` from `config.json`
 3. `None` — caller skips the maps query
+
+The same 30-minute window feeds the at-airport presence check for `time_to_leave` (#349): `state.fresh_live_coordinates` returns the fix only when it is fresh, and `phase_markers.at_departure_airport` compares it to freshly verified byAir departure-airport coordinates. Those coordinates come from `byair.get_airport(depAirport.id)` (same `lat`/`lon` keys as the live-sampled BNA payload), looked up only when a `time_to_leave` could still fire — a fresh fix, Maps configured, the marker unfired, departure inside the 6-hour travel-query window — and refreshed on every qualifying live poll using that response’s current departure-airport ID. Persisted coordinates are diagnostic hints and never suppress a notice without this fresh lookup. Nested `get_flight.depAirport` is not assumed to carry coordinates. A stale, future, missing, or coordinate-less reading is not proof the owner is at the airport, and is not proof they are away.
 
 A `schema_version` mismatch (host bumped) returns `None` from the reader and the precheck falls back to `home_address`, matching the no-snapshot-on-disk path.
 
@@ -241,7 +245,7 @@ Each entry's fields:
 - `inbound` (object, optional) — Find My Plane data: `aircraft_model`, `registration`, `flew`, `predicted_delay_minutes`
 - `position_lat`, `position_lon` (float, optional) — last known aircraft position
 - `aircraft_model` (string, optional) — byAir's top-level aircraft model. Consumed by the calendar `reconcile` boarding-lead resolver (`boarding_lead.py`), which falls back to `inbound.aircraft_model` when this is absent or empty
-- `dep_lat`, `dep_lon`, `arr_lat`, `arr_lon` (float, optional) — departure/arrival **airport** coordinates (distinct from `position_lat`/`position_lon`, which track the aircraft). The boarding-lead resolver uses them for the transoceanic (TATL/TPAC) check; when any is absent it skips that check and falls back to aircraft size. Populated once the byAir field names for top-level model and airport coordinates are confirmed (#55 runtime facts); until then the resolver runs on `inbound.aircraft_model` and the narrowbody default
+- `dep_lat`, `dep_lon`, `arr_lat`, `arr_lon` (float, optional) — departure/arrival **airport** coordinates (distinct from `position_lat`/`position_lon`, which track the aircraft). The boarding-lead resolver uses them for the transoceanic (TATL/TPAC) check; when any is absent it skips that check and falls back to aircraft size. `dep_lat`/`dep_lon` are populated from `byair.get_airport(depAirport.id)` when a fresh GPS fix needs them for a `time_to_leave` that could still fire (#349), and refreshed from the live airport identity on every qualifying poll; persisted coordinates are not used as presence authority. `arr_lat`/`arr_lon` remain unpopulated until their byAir field names are confirmed (#55 runtime facts)
 
 `phase_markers` booleans — `true` consumes the corresponding gate for this flight. New notification flags are copied from confirmed delivery receipts; a wake alone leaves them false. Existing true flags are consumed legacy attempts and do not prove delivery. `landed_acknowledged` remains the separate user-acknowledgement flag:
 
@@ -344,17 +348,17 @@ Tolerance:
 
 `flight-assist` owns `notifications.json` and its `notifications.lock` in the state directory. The owner library is `skills/flight-assist/notification_delivery.py`; only its transaction API writes this artifact. Its schema version is independent of the per-flight family.
 
-All root and notice fields below are required; omitted fields have no defaults in an existing file. A missing file is first-run state with version 1, sequence 0 and an empty notices map. The library owns validation, bounds and retry timing.
+All root and notice fields below are required; omitted fields have no defaults in an existing file. A missing file is first-run state with version 2, sequence 0 and an empty notices map. The library owns validation, bounds and retry timing.
 
 | Root field | Type and meaning |
 |---|---|
-| `schema_version` | Plain integer `1`, never a boolean; independent of the per-flight schema |
+| `schema_version` | Plain integer `2`, never a boolean; independent of the per-flight schema |
 | `sequence` | Nonnegative integer; the owner increments it for each new or replacement observation and retains it when pruning |
 | `notices` | JSON object keyed by the notice's 64-character lowercase hex `key`; empty on first run; at most 2,048 entries |
 
 | Notice field | Type, presence and meaning |
 |---|---|
-| `schema_version` | Plain integer `1`, required on every row |
+| `schema_version` | Plain integer `2`, required on every row |
 | `id` | Required 32-character lowercase hex string; first 32 characters of SHA-256 over the canonical JSON `[sequence, key, event]`; an exact acknowledgement identity, not independent proof of a send |
 | `key` | Required 64-character lowercase SHA-256 hex string matching the map key; hashes `[flight_id, marker]` for a phase, otherwise `[flight_id, prior_poll, event]` |
 | `sequence` | Required positive integer no greater than the root sequence; identifies this observation's insertion or replacement order |
@@ -382,6 +386,11 @@ The precheck persists notices before advancing their flight snapshots. A due att
 
 The model sends the notice with `send_message`, then acknowledges only the IDs covered by that successful send through `skills/flight-assist/scripts/confirm-notifications.py`. The helper sends nothing. A helper failure permits retrying the acknowledgement, not resending the same notice in that turn. The helper cannot independently verify a Telegram receipt; the owner workflow supplies the confirmed-send precondition. Delivery is at least once: a crash after Telegram accepts a send but before acknowledgement can produce a later duplicate.
 
-The new store takes the stateful-artifacts gate-store exception. Unknown versions, malformed records and unreadable files refuse with a repair diagnostic; they never become an empty store. Version 1 has no predecessor. A future owner version must migrate every accepted older version and rewrite it on read. Missing state is first-run state. Readers are the precheck and acknowledgement helper; they use only the owner library.
+The new store takes the stateful-artifacts gate-store exception. Unknown versions, malformed records and unreadable files refuse with a repair diagnostic; they never become an empty store. Version 2 migrates accepted version-1 stores through the owner upgrade below. A future owner version must migrate every accepted older version and rewrite it on read. Missing state is first-run state. Readers are the precheck and acknowledgement helper; they use only the owner library.
 
 The existing per-flight schema remains version 7 with the same fields and gate values. Existing true flags remain consumed legacy attempts; the change creates no synthetic receipts and replays no historical alerts. New flags advance only from confirmed entries in the new store. The flags alone remain insufficient evidence that an old notification was delivered.
+
+
+### Notification store v1 → v2 migration
+
+The owner validates every version-1 root and row before an atomic upgrade under the existing store lock. It stamps root and retained rows with version 2, preserving sequence, exact IDs, retry clocks and every confirmed delivery receipt. Confirmed historical events may retain their version-1 payload without `missed`; they are consumed receipts, never new delivery candidates. Unconfirmed version-1 `time_to_leave` rows are discarded without setting a phase marker. A subsequent live precheck must regenerate them under current status, GPS and timely/missed gates before delivery. Other pending observations retain their identity and retry deadline. Unsupported or malformed versions refuse without replacing the original store.

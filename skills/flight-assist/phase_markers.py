@@ -17,7 +17,10 @@ Three time-based events:
   operator's local date by `day_label()` — the compose renders the label
   verbatim instead of doing date math off a constant (#300).
 - `time_to_leave` — fires when `now + travel_time + buffer ≥
-  scheduled_dep_time` (capability 1: traffic-aware leave-by alert)
+  scheduled_dep_time` (capability 1: traffic-aware leave-by alert),
+  staying silent for boarding / taxi / pushback / gone, for fresh GPS
+  at the departure airport, and for a missed leave-by unless the owner
+  is freshly GPS-away and the snapshot is positively pre-departure (#349)
 - `arrival_logistics` — fires at scheduled_arr_time − 15 min
   (capability 6: baggage carousel + Lyft + lounge prompts)
 
@@ -36,6 +39,8 @@ stdlib-only: `datetime` per `coding-policy: dependency-management`.
 
 from __future__ import annotations
 
+import math
+import re
 import sys
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -44,6 +49,10 @@ from wake_rules import is_real_boarding
 
 DAY_BEFORE_HOURS = 24
 TIME_TO_LEAVE_BUFFER_MINUTES = 15
+# The scheduler's actual two-minute cadence in flight-assist/SKILL.md. A due
+# poll can land on the next tick; this is bounded tick quantization, not an
+# outage extension or a window for a later post-leave-by poll.
+SCHEDULER_TICK_MINUTES = 2
 ARRIVAL_LOGISTICS_LEAD_MINUTES = 15
 # The gate/terminal readout window opens this many minutes before boarding
 # begins (boarding = scheduled_dep − boarding_lead). Gate info earlier than
@@ -59,6 +68,22 @@ GATE_ASSIGNMENT_WINDOW_LEAD_MINUTES = 60
 # while premature, so the label is also held against the planned boarding
 # window (#295) wherever the caller knows the boarding lead.
 _BOARDING_OR_GONE_STATUSES = frozenset({"departed", "en_route", "landed", "cancelled", "diverted"})
+# Documented byAir pre-departure labels. Taxi-out / pushback are described in
+# `computed_status_detail`, not as extra enum values (#349). A status string
+# outside this set (and outside the gone set) is treated as not-pre-departure
+# so an unpublished live value cannot re-open the leave-by gate.
+_PRE_DEPARTURE_STATUSES = frozenset({"scheduled", "check_in_open", "boarding"})
+# Taxi / pushback / gate-closed prose on the documented detail field. Independent
+# of `computed_status` and of the #295 boarding window: a taxiing snapshot is
+# already gone-phase for airport-bound prompts (#349).
+_TAXI_OR_PUSHBACK_DETAIL = re.compile(
+    r"\b(?:taxi(?:ing|ed|s)?|push(?:ing|ed)?[\s-]*back|pushback|gate[\s-]*closed)\b",
+    re.IGNORECASE,
+)
+# Fresh GPS inside this radius of `depAirport.lat`/`lon` is presence at the
+# departure airport. 3 km covers the terminal plus economy lots; downtown
+# Nashville vs the live-sampled BNA fixture is outside it (#349).
+AIRPORT_PRESENCE_RADIUS_KM = 3.0
 
 
 def day_before_due(
@@ -174,6 +199,9 @@ def check_time_to_leave(
     now_utc: datetime,
     snapshot: dict | None = None,
     boarding_lead_minutes: int | None = None,
+    at_airport: bool | None = None,
+    prev_polled_at: datetime | None = None,
+    prior_poll_interval_minutes: int = 0,
 ) -> tuple[bool, dict | None]:
     """Traffic-aware "leave by" gate. Returns (should_fire, event_payload).
 
@@ -188,16 +216,38 @@ def check_time_to_leave(
     decision until traffic data is available.
 
     `snapshot` is the current trimmed byAir snapshot. When `is_boarding_or_gone`
-    reports the flight really boarding or already gone — departed, en_route,
-    landed, cancelled, or diverted (#102 — a delayed flight or a stale travel
-    estimate can push the leave-by moment past boarding), the alert is moot and
-    the gate stays silent rather than waking the agent to say nothing. Defaults
-    to None so callers without a snapshot keep the pre-boarding behavior.
+    reports the flight really boarding, taxiing / pushed back / gate-closed,
+    or already gone — departed, en_route, landed, cancelled, or diverted
+    (#102 / #349 — a delayed flight or a stale travel estimate can push the
+    leave-by moment past boarding), the alert is moot and the gate stays
+    silent rather than waking the agent to say nothing. Defaults to None so
+    callers without a snapshot keep the pre-boarding behavior.
 
     `boarding_lead_minutes` is the flight's resolved boarding lead. When given,
     a "boarding" label before the planned boarding window (`scheduled_dep −
     lead`) is premature and does NOT suppress the alert (#295); None keeps the
-    label-plus-detail predicate alone.
+    label-plus-detail predicate alone. Taxi / pushback detail still suppresses
+    even when that window has slipped (#349).
+
+    `at_airport` is the GPS presence verdict from `at_departure_airport`:
+    True (fresh fix inside the airport radius) always suppresses; False
+    (fresh fix clearly away) is required for every missed fire; None
+    (absent, stale, or ambiguous location) is not proof of being away
+    (#349).
+
+    `prev_polled_at` is the last successful poll before this one and
+    `prior_poll_interval_minutes` the cadence that poll scheduled the next
+    one on (`precheck._interval_for` on the PRIOR snapshot; 0 when that
+    status is not a documented pre-departure label). The timely notice is
+    the first actual poll at or after `leave_by`: `prev_polled_at` is
+    before `leave_by` and `now_utc` is no later than that prior poll's due time
+    plus one declared scheduler tick. A cadence that tightens or loosens on the
+    new snapshot, a longer outage gap, or an unrecognised status cannot widen
+    the window. It may fire without GPS. Every other fire is missed: it needs `at_airport is
+    False` and a documented pre-departure status; empty, missing, or
+    malformed status is not proof the flight has not left. With no
+    `prev_polled_at` (a pure call, or a flight never polled before) the
+    timely window is the exact `leave_by` instant.
 
     `phase_markers["time_to_leave_fired"]` must be False to fire.
     """
@@ -214,6 +264,8 @@ def check_time_to_leave(
     )
     if is_boarding_or_gone(snapshot, boarding_window_open=window_open, at=now_utc):
         return (False, None)
+    if at_airport is True:
+        return (False, None)
     if travel_time_seconds is None:
         return (False, None)
     dep_dt = _parse_iso8601(scheduled_dep_time)
@@ -224,6 +276,21 @@ def check_time_to_leave(
     leave_by = dep_dt - travel - buffer
     if now_utc < leave_by:
         return (False, None)
+    first_poll_after_leave_by = prev_polled_at is not None and prev_polled_at < leave_by
+    timely_until = leave_by
+    if first_poll_after_leave_by and prior_poll_interval_minutes > 0:
+        assert prev_polled_at is not None
+        timely_until = max(
+            leave_by,
+            prev_polled_at
+            + timedelta(minutes=prior_poll_interval_minutes + SCHEDULER_TICK_MINUTES),
+        )
+    missed = now_utc > timely_until
+    if missed:
+        if at_airport is not False:
+            return (False, None)
+        if not positively_pre_departure(snapshot):
+            return (False, None)
     return (
         True,
         {
@@ -231,6 +298,7 @@ def check_time_to_leave(
             "leave_by": leave_by.isoformat(),
             "travel_time_minutes": travel_time_seconds // 60,
             "scheduled_dep_time": scheduled_dep_time,
+            "missed": missed,
         },
     )
 
@@ -383,22 +451,106 @@ def is_boarding_or_gone(
 ) -> bool:
     """True when an airport-bound prompt no longer makes sense for this flight.
 
-    The flight is either really boarding (per `wake_rules.is_real_boarding`,
-    which screens out byAir's premature "boarding" label) or its status has
-    moved past departure (or it won't go). Either way the user is at — or past —
-    the gate, so neither the leave-by gate (#102) nor the gate/terminal readout
-    (#103) should fire.
+    The flight is really boarding (per `wake_rules.is_real_boarding`, which
+    screens out byAir's premature "boarding" label), taxiing / pushed back /
+    gate-closed per `computed_status_detail`, already gone, or carrying a
+    status outside the documented pre-departure set. Either way the user is
+    at — or past — the gate, so neither the leave-by gate (#102 / #349) nor
+    the gate/terminal readout (#103) should fire.
+
+    Taxi / pushback / gate-closed detail is independent of `computed_status`
+    and of the #295 window: a delayed taxi-out that slips the boarding
+    window still suppresses leave-by.
 
     `boarding_window_open` / `at` pass straight through to `is_real_boarding`:
     with both, a "boarding" label polled before the planned boarding window is
     premature and does not count (#295); without, the label-plus-detail
-    predicate alone decides.
+    predicate alone decides. Undocumented status values are not added to a
+    live enum; they are simply not pre-departure.
     """
     if not snapshot:
         return False
     if is_real_boarding(snapshot, boarding_window_open=boarding_window_open, at=at):
         return True
-    return snapshot.get("computed_status") in _BOARDING_OR_GONE_STATUSES
+    if _taxi_or_pushback_detail(snapshot):
+        return True
+    status = snapshot.get("computed_status")
+    if status in _BOARDING_OR_GONE_STATUSES:
+        return True
+    if isinstance(status, str) and status.strip() and status not in _PRE_DEPARTURE_STATUSES:
+        return True
+    return False
+
+
+def _taxi_or_pushback_detail(snapshot: dict) -> bool:
+    detail = snapshot.get("computed_status_detail")
+    if not isinstance(detail, str):
+        return False
+    return _TAXI_OR_PUSHBACK_DETAIL.search(detail) is not None
+
+
+def positively_pre_departure(snapshot: dict | None) -> bool:
+    """True when `computed_status` is a documented pre-departure label.
+
+    Empty, missing, or non-string status is not proof the flight has
+    not left, so a missed leave-by stays silent (#349).
+    """
+    if not snapshot:
+        return False
+    status = snapshot.get("computed_status")
+    return isinstance(status, str) and status in _PRE_DEPARTURE_STATUSES
+
+
+def departure_airport_coords(dep_airport: object) -> tuple[float | None, float | None]:
+    """`lat` / `lon` off a byAir `get_airport` payload, or (None, None).
+
+    Same keys as the live-sampled `BNA_AIRPORT` fixture. Nested
+    `get_flight.depAirport` is not assumed to carry coordinates; the
+    precheck resolves them from `get_airport(depAirport.id)` once per
+    flight and caches `dep_lat` / `dep_lon` on `last_snapshot` (#349).
+    """
+    if not isinstance(dep_airport, dict):
+        return None, None
+    return _as_coordinate(dep_airport.get("lat"), 90.0), _as_coordinate(
+        dep_airport.get("lon"), 180.0
+    )
+
+
+def at_departure_airport(
+    *,
+    origin_lat: float | None,
+    origin_lon: float | None,
+    dep_lat: float | None,
+    dep_lon: float | None,
+) -> bool | None:
+    """Presence of a live GPS fix relative to the departure airport.
+
+    True when the fix is inside `AIRPORT_PRESENCE_RADIUS_KM`. False when it is
+    clearly outside. None when any coordinate is missing — that is ambiguous,
+    not proof of being away (#349).
+    """
+    if origin_lat is None or origin_lon is None or dep_lat is None or dep_lon is None:
+        return None
+    return _haversine_km(origin_lat, origin_lon, dep_lat, dep_lon) <= AIRPORT_PRESENCE_RADIUS_KM
+
+
+def _as_coordinate(value: object, limit: float) -> float | None:
+    """A finite number within ±`limit` as a float, else None."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    if not -limit <= value <= limit or not math.isfinite(value):
+        return None
+    return float(value)
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance between two lat/lon points, in kilometres."""
+    radius_km = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    return 2 * radius_km * math.asin(math.sqrt(a))
 
 
 def _parse_iso8601(value: str | None) -> datetime | None:
