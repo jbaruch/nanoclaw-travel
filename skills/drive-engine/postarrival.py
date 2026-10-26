@@ -199,6 +199,46 @@ def _ongoing(meeting: PostarrivalMeeting, ready_at: datetime) -> bool:
     return meeting.start < ready_at < meeting.end
 
 
+def _unreachable_note(
+    guard: FlightGuard,
+    meeting: PostarrivalMeeting,
+    drive: timedelta | None,
+    max_handoff_drive: timedelta,
+) -> str | None:
+    """Why `meeting` is proven unreachable from `guard`, or None.
+
+    A failed route (`drive` None) proves nothing: reachability is unknown, so the
+    candidate stays in play and the fail-safe applies later.
+    """
+    if drive is None:
+        return None
+    if drive > max_handoff_drive:
+        return f"postarrival {meeting.identity}: airport-to-venue drive exceeds cap"
+    if guard.ready_at + drive >= meeting.end:
+        return (
+            f"postarrival {meeting.identity}: not reachable from {guard.identity} "
+            f"by {guard.ready_at.isoformat()}"
+        )
+    return None
+
+
+def _has_follow_on(
+    meeting: PostarrivalMeeting,
+    meetings: Sequence[PostarrivalMeeting],
+    excluded: frozenset[str],
+    tight_gap_seconds: int,
+) -> bool:
+    """Whether another meeting still follows `meeting` closely enough to bridge it."""
+    return any(
+        other.identity != meeting.identity
+        and other.identity not in excluded
+        and other.location is not None
+        and other.start >= meeting.start
+        and (other.start - meeting.end).total_seconds() <= tight_gap_seconds
+        for other in meetings
+    )
+
+
 def compose_postarrival(
     *,
     guards: Sequence[FlightGuard],
@@ -232,24 +272,48 @@ def compose_postarrival(
             and meeting.location is not None
             and _ongoing(meeting, guard.ready_at)
         ]
-        if len(candidates) > 1:
+        # Proven-unreachable candidates (ended, too far) take the unreachable path
+        # and never count toward ambiguity. A failed route is unknown and stays.
+        in_play: list[tuple[PostarrivalMeeting, timedelta | None]] = []
+        dropped: set[str] = set()
+        for meeting in candidates:
+            assert meeting.location is not None
+            drive = route(guard.airport_point, meeting.location)
+            note = _unreachable_note(guard, meeting, drive, max_handoff_drive)
+            if note is not None:
+                diagnostics.append(note)
+                desired_list = _drop_meeting(desired_list, unsafe, meeting.identity)
+                used_meetings.add(meeting.identity)
+                dropped.add(meeting.identity)
+                continue
+            in_play.append((meeting, drive))
+        if len(in_play) > 1:
             diagnostics.append(
-                f"postarrival {guard.identity}: {len(candidates)} overlapping meetings; "
+                f"postarrival {guard.identity}: {len(in_play)} overlapping meetings; "
                 "no automatic choice"
             )
             continue
-        if not candidates:
+        if not in_play:
             continue
-        meeting = candidates[0]
+        meeting, drive = in_play[0]
+        if meeting.return_suppressed and dropped:
+            # Scan bridged this meeting to a neighbour that is now proven
+            # unreachable; with no real follow-on left the return is owed.
+            meeting = replace(
+                meeting,
+                return_suppressed=_has_follow_on(
+                    meeting, meetings, frozenset(dropped), DEFAULT_TIGHT_GAP_SECONDS
+                ),
+            )
         desired_list, extra_diags = _apply_handoff(
             guard=guard,
             meeting=meeting,
+            drive=drive,
             desired=desired_list,
             unsafe=unsafe,
             lodging_lookup=lodging_lookup,
             fallback_lookup=fallback_lookup,
             route=route,
-            max_handoff_drive=max_handoff_drive,
         )
         diagnostics.extend(extra_diags)
         used_meetings.add(meeting.identity)
@@ -310,29 +374,19 @@ def _apply_handoff(
     *,
     guard: FlightGuard,
     meeting: PostarrivalMeeting,
+    drive: timedelta | None,
     desired: list[DesiredBlock],
     unsafe: set[tuple[str, str]],
     lodging_lookup: AddressLookup,
     fallback_lookup: AddressLookup,
     route: RouteFn,
-    max_handoff_drive: timedelta,
 ) -> tuple[list[DesiredBlock], list[str]]:
+    """Rewrite the arrival to `meeting`; `drive` is its already-screened route."""
     venue = meeting.location
     assert venue is not None
     diagnostics: list[str] = []
-    drive = route(guard.airport_point, venue)
-    if drive is None or drive > max_handoff_drive:
-        diagnostics.append(
-            f"postarrival {meeting.identity}: airport-to-venue route failed"
-            if drive is None
-            else f"postarrival {meeting.identity}: airport-to-venue drive exceeds cap"
-        )
-        return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
-    if guard.ready_at + drive >= meeting.end:
-        diagnostics.append(
-            f"postarrival {meeting.identity}: not reachable from {guard.identity} "
-            f"by {guard.ready_at.isoformat()}"
-        )
+    if drive is None:
+        diagnostics.append(f"postarrival {meeting.identity}: airport-to-venue route failed")
         return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
 
     lodging = lodging_lookup(guard.ready_at)

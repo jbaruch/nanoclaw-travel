@@ -989,3 +989,125 @@ def test_scan_covering_unaddressed_stay_does_not_return_to_later_hotel():
     ret = next(b for b in created if b.kind == "meeting_return")
     assert ret.destination != "Boulder Lodge Address"
     assert ret.destination == CITY
+
+
+# --- N1: reachability is judged per candidate before ambiguity ----------------
+
+NASHVILLE = "Nashville Office"
+INFLIGHT = datetime(2020, 7, 12, 21, 0, tzinfo=UTC)
+
+
+def _far_route():
+    return _route(
+        {
+            ("DEN airport", VENUE): 37,
+            ("DEN airport", HOTEL): 37,
+            (VENUE, HOTEL): 24,
+            (CITY, VENUE): 19,
+            (HOTEL, VENUE): 19,
+            ("DEN airport", NASHVILLE): 17 * 60,
+            (CITY, NASHVILLE): 17 * 60,
+            (HOTEL, NASHVILLE): 17 * 60,
+            (NASHVILLE, CITY): 17 * 60,
+            (NASHVILLE, HOTEL): 17 * 60,
+            (HOME, "BNA airport"): 30,
+        }
+    )
+
+
+def _assert_reachable_meeting_replaces_arrival(result):
+    created = _created(result)
+    arrival = next(b for b in created if b.kind == "airport_arrival")
+    assert arrival.destination == VENUE
+    assert arrival.origin == "DEN airport"
+    ret = next(b for b in created if b.identity == "real" and b.kind == "meeting_return")
+    assert ret.destination == HOTEL
+    assert not any(b.identity == "real" and b.kind == "meeting_outbound" for b in created)
+    assert not _created_kinds(result, "home-weekly")
+    assert all(not (GUARD <= b.start < READY) for b in created)
+
+
+def test_scan_unreachable_far_meeting_does_not_make_reachable_one_ambiguous():
+    for now in (NOW, INFLIGHT):
+        result = _scan_plan(
+            [
+                _gcal_event("real", MEETING_START, MEETING_END, VENUE),
+                _gcal_event("home-weekly", MEETING_START, MEETING_END, NASHVILLE),
+            ],
+            now=now,
+            route=_far_route(),
+        )
+        _assert_reachable_meeting_replaces_arrival(result)
+        assert any("exceeds cap" in s for s in result.skipped)
+        assert not any("no automatic choice" in s for s in result.skipped)
+
+
+def test_scan_unreachable_short_meeting_does_not_make_reachable_one_ambiguous():
+    short_end = datetime(2020, 7, 12, 22, 45, tzinfo=UTC)
+    result = _scan_plan(
+        [
+            _gcal_event("real", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("home-weekly", MEETING_START, short_end, VENUE_B),
+        ]
+    )
+    _assert_reachable_meeting_replaces_arrival(result)
+    assert any("not reachable" in s for s in result.skipped)
+
+
+def test_scan_unreachable_candidate_blocks_are_deleted_not_held():
+    stale = ParsedBlock(
+        generation=GEN_UNIFIED,
+        event_id="ret-weekly",
+        identity="home-weekly",
+        kind="meeting_return",
+        origin=NASHVILLE,
+        destination=HOME,
+        baseline_seconds=600,
+        anchor=MEETING_END,
+    )
+    result = _scan_plan(
+        [
+            _gcal_event("real", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("home-weekly", MEETING_START, MEETING_END, NASHVILLE),
+        ],
+        current_blocks=[stale],
+        route=_far_route(),
+    )
+    assert any(d.event_id == "ret-weekly" for d in result.plan.deletes)
+    assert all(h.identity != "home-weekly" for h in result.held)
+
+
+def test_scan_route_failed_candidate_stays_in_play_and_keeps_failsafe():
+    result = _scan_plan(
+        [
+            _gcal_event("real", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("unknown", MEETING_START, MEETING_END, VENUE_B),
+        ],
+        route=_route(
+            {
+                ("DEN airport", VENUE): 37,
+                ("DEN airport", VENUE_B): None,
+                ("DEN airport", HOTEL): 37,
+                (HOTEL, VENUE_B): None,
+                (VENUE, HOTEL): 24,
+                (HOME, "BNA airport"): 30,
+            },
+            default_minutes=None,
+        ),
+    )
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert not _created_kinds(result, "real")
+    assert any("2 overlapping meetings; no automatic choice" in s for s in result.skipped)
+
+
+def test_scan_two_reachable_meetings_still_make_no_automatic_choice():
+    result = _scan_plan(
+        [
+            _gcal_event("real", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("also", MEETING_START, MEETING_END, VENUE_B),
+        ]
+    )
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert any("2 overlapping meetings; no automatic choice" in s for s in result.skipped)
