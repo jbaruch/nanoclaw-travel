@@ -1334,3 +1334,98 @@ def test_meeting_anchor_does_not_pick_a_later_hotel_after_an_unaddressed_stay():
     )
     itinerary = Itinerary(schedule, home_address=HOME, home_airports=frozenset({"BNA"}))
     assert meeting_anchor(itinerary, _dt(12, 0, day=14))[0] == CITY
+
+
+def test_scan_overlap_ending_before_arrival_does_not_suppress_hotel_return():
+    result = _scan_plan(
+        [
+            _gcal_event("real", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("unreachable", MEETING_START, _dt(22, 45), VENUE_B),
+            _gcal_event("ended", MEETING_START, _dt(21), "Ended Venue"),
+        ]
+    )
+    _assert_reachable_meeting_replaces_arrival(result)
+
+
+def test_scan_dropped_middle_meeting_restores_return_and_rejects_its_bridge():
+    later_start = _dt(23, 55)
+    stale = _outbound_current(
+        "C-out", "C", anchor=later_start, minutes=30, origin=NASHVILLE, destination=VENUE_B
+    )
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(23, 30), NASHVILLE),
+            _gcal_event("C", later_start, later_start + timedelta(hours=1), VENUE_B),
+        ],
+        route=_far_route(),
+        current_blocks=[stale],
+    )
+    created = _created(result)
+    assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in created)
+    assert any(
+        b.identity == "A" and b.kind == "meeting_return" and b.destination == HOTEL for b in created
+    )
+    assert not any(b.identity == "B" for b in created)
+    assert not any(b.identity == "C" and b.kind == "meeting_outbound" for b in created)
+    assert not any(h.identity == "C" and h.kind == "meeting_outbound" for h in result.held)
+    assert any(d.event_id == "C-out" for d in result.plan.deletes)
+
+
+def test_scan_valid_surviving_bridge_after_pruning_still_suppresses_hotel_return():
+    next_start = MEETING_END + timedelta(minutes=10)
+    route = _route(
+        {
+            ("DEN airport", VENUE): 37,
+            ("DEN airport", VENUE_B): 30,
+            ("DEN airport", HOTEL): 37,
+            (VENUE, VENUE_B): 5,
+            (VENUE, HOTEL): 24,
+        }
+    )
+    result = _scan_plan(
+        [
+            _gcal_event("real", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("unreachable", _dt(20), _dt(22, 45), VENUE_B),
+            _gcal_event("next", next_start, next_start + timedelta(hours=1), VENUE_B),
+        ],
+        route=route,
+    )
+    created = _created(result)
+    assert any(
+        b.identity == "next" and b.kind == "meeting_outbound" and b.origin == VENUE for b in created
+    )
+    assert not any(b.identity == "real" and b.kind == "meeting_return" for b in created)
+
+
+def test_scan_valid_held_continuation_after_pruning_keeps_its_existing_block():
+    later_start = _dt(23, 55)
+    current = _outbound_current(
+        "C-out", "C", anchor=later_start, minutes=5, origin=VENUE, destination=VENUE_B
+    )
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(23, 30), NASHVILLE),
+            _gcal_event("C", later_start, later_start + timedelta(hours=1), VENUE_B),
+        ],
+        route=_far_route(),
+        current_blocks=[current],
+    )
+    assert not any(b.identity == "A" and b.kind == "meeting_return" for b in _created(result))
+    assert any(h.identity == "C" and h.kind == "meeting_outbound" for h in result.held)
+    assert not any(d.event_id == "C-out" for d in result.plan.deletes)
+
+
+def test_scan_same_venue_follow_on_after_pruning_still_needs_no_drive():
+    later_start = _dt(23, 55)
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(23, 30), NASHVILLE),
+            _gcal_event("C", later_start, later_start + timedelta(hours=1), VENUE),
+        ],
+        route=_far_route(),
+    )
+    assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in _created(result))
+    assert not any(b.identity == "A" and b.kind == "meeting_return" for b in _created(result))

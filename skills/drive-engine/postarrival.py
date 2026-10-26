@@ -20,7 +20,7 @@ if str(_BUNDLE_DIR) not in sys.path:
 
 from block_codec import GEN_LEGACY_DP, GEN_UNIFIED, ParsedBlock  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
-from scan import DEFAULT_TIGHT_GAP_SECONDS  # noqa: E402
+from scan import DEFAULT_TIGHT_GAP_SECONDS, same_place  # noqa: E402
 
 # Matches engine.MAX_AIRPORT_DRIVE: a longer airport-to-venue is not a real drive.
 _MAX_HANDOFF_DRIVE = timedelta(hours=6)
@@ -222,21 +222,62 @@ def _unreachable_note(
     return None
 
 
-def _has_follow_on(
+def _remaining_continuations(
     meeting: PostarrivalMeeting,
     meetings: Sequence[PostarrivalMeeting],
     excluded: frozenset[str],
     tight_gap_seconds: int,
-) -> bool:
-    """Whether another meeting still follows `meeting` closely enough to bridge it."""
-    return any(
-        other.identity != meeting.identity
-        and other.identity not in excluded
-        and other.location is not None
-        and other.start >= meeting.start
-        and (other.start - meeting.end).total_seconds() <= tight_gap_seconds
-        for other in meetings
-    )
+    desired: Sequence[DesiredBlock],
+    held: Sequence[HeldLeg],
+    current_blocks: Sequence[ParsedBlock],
+) -> tuple[bool, set[tuple[str, str]]]:
+    """Validate the actual surviving path after an unreachable neighbour is dropped.
+
+    A chronological neighbour alone cannot suppress the hotel return. Its
+    inbound must come from the surviving venue and fit the remaining gap, or
+    both meetings must share that venue. A provider-failure hold counts only
+    when the existing block proves the same valid continuation.
+    """
+    continuing = False
+    invalid: set[tuple[str, str]] = set()
+    held_keys = {item.key for item in held}
+    for other in meetings:
+        gap = (other.start - meeting.end).total_seconds()
+        if (
+            other.identity == meeting.identity
+            or other.identity in excluded
+            or other.location is None
+            or not 0 <= gap <= tight_gap_seconds
+        ):
+            continue
+        if same_place(meeting.location, other.location):
+            continuing = True
+            continue
+        key = (other.identity, "meeting_outbound")
+        planned = any(
+            _key(block) == key
+            and same_place(block.origin, meeting.location)
+            and same_place(block.destination, other.location)
+            and meeting.end <= block.start <= block.end <= other.start
+            for block in desired
+        )
+        retained = key in held_keys and any(
+            block.generation == GEN_UNIFIED
+            and (block.identity, block.kind) == key
+            and same_place(block.origin, meeting.location)
+            and same_place(block.destination, other.location)
+            and block.anchor is not None
+            and block.baseline_seconds is not None
+            and block.baseline_seconds >= 0
+            and meeting.end <= block.anchor - timedelta(seconds=block.baseline_seconds)
+            and block.anchor <= other.start
+            for block in current_blocks
+        )
+        if planned or retained:
+            continuing = True
+        else:
+            invalid.add(key)
+    return continuing, invalid
 
 
 def _current_drive_start(block: ParsedBlock) -> datetime | None:
@@ -338,14 +379,20 @@ def compose_postarrival(
             continue
         meeting, drive = in_play[0]
         if meeting.return_suppressed and dropped:
-            # Scan bridged this meeting to a neighbour that is now proven
-            # unreachable; with no real follow-on left the return is owed.
-            meeting = replace(
+            # Scan may have routed a later meeting from the dropped neighbour.
+            # Keep suppression only when a surviving continuation is usable.
+            continuing, invalid = _remaining_continuations(
                 meeting,
-                return_suppressed=_has_follow_on(
-                    meeting, meetings, frozenset(dropped), DEFAULT_TIGHT_GAP_SECONDS
-                ),
+                meetings,
+                frozenset(dropped),
+                DEFAULT_TIGHT_GAP_SECONDS,
+                desired_list,
+                held,
+                current_blocks,
             )
+            unsafe.update(invalid)
+            desired_list = [block for block in desired_list if _key(block) not in invalid]
+            meeting = replace(meeting, return_suppressed=continuing)
         desired_list, extra_diags = _apply_handoff(
             guard=guard,
             meeting=meeting,
