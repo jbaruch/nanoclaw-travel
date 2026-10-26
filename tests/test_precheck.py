@@ -367,7 +367,8 @@ def test_run_cycle_passes_bounded_per_call_timeout_to_maps_client(state_root: Pa
     monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "synthetic-key")
     with patch("precheck.MapsClient.from_env") as mock_maps_from_env:
         precheck._run_cycle(now_utc=datetime(2026, 5, 18, 16, 0, 0, tzinfo=UTC))
-    mock_maps_from_env.assert_called_once_with(timeout=precheck._MAPS_CALL_TIMEOUT_SECONDS)
+    mock_maps_from_env.assert_called_once_with(timeout=precheck._MAPS_HTTP_CALL_TIMEOUT_SECONDS)
+    assert precheck._MAPS_HTTP_CALL_TIMEOUT_SECONDS == 2.0
     assert precheck._MAPS_CALL_TIMEOUT_SECONDS == 8.0
 
 
@@ -3049,3 +3050,28 @@ def test_failed_live_airport_lookup_does_not_turn_prior_coords_into_away_proof(
         events = precheck._run_cycle(now_utc=now)
     client.return_value.get_airport.assert_called_once_with(98)
     assert not any(e["event"]["reason"] == "time_to_leave" for e in events)
+
+
+def test_precheck_real_maps_fallback_fits_the_reserved_aggregate_budget(monkeypatch):
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "synthetic-key")
+    monkeypatch.setenv("TOMTOM_API_KEY", "synthetic-key")
+    elapsed = {"t": 0.0}
+    requests: list[float] = []
+
+    def get_json(url, timeout):
+        requests.append(timeout)
+        elapsed["t"] += timeout
+        if len(requests) == 1:
+            return {"status": "REQUEST_DENIED", "error_message": "synthetic Google failure"}
+        if len(requests) in {2, 3}:
+            return {"results": [{"position": {"lat": 36.0, "lon": -86.0}}]}
+        return {"routes": [{"summary": {"travelTimeInSeconds": 60, "lengthInMeters": 1000}}]}
+
+    with patch("maps_client._get_json", side_effect=get_json):
+        maps = precheck._maybe_maps_client()
+        assert maps is not None
+        result = maps.travel_time("Origin Street", "Destination Airport")
+    assert result.source == "tomtom"
+    assert result.duration_seconds == 60
+    assert len(requests) == 4
+    assert elapsed["t"] <= precheck._MAPS_CALL_TIMEOUT_SECONDS

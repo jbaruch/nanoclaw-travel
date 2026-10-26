@@ -134,12 +134,13 @@ _TIME_TO_LEAVE_QUERY_WINDOW_HOURS = 6
 # out, converting a whole-cycle kill into per-flight retries. Per #28.
 _BYAIR_CALL_TIMEOUT_SECONDS = 6.0
 
-# Per-call timeout for the Maps Distance-Matrix client inside `_process_flight`.
-# Same rationale as byAir's bound (#28): the MapsClient default is 10s, but the
-# poll-loop headroom must reserve for it, so pin it to the byAir bound and derive
-# the headroom from both. Without this, a single slow Maps query stacked on a
-# byAir poll overran the 30s hard-kill — see the headroom note below.
-_MAPS_CALL_TIMEOUT_SECONDS = 8.0
+# MapsClient may make one Google request, then two TomTom geocodes and one
+# TomTom route. Bound each HTTP request and reserve their aggregate, including
+# the fallback chain. The drive-engine's independently configured client keeps
+# its own timeout; only this 30-second precheck uses these shorter requests.
+_MAPS_HTTP_CALL_TIMEOUT_SECONDS = 2.0
+_MAPS_MAX_SERIAL_HTTP_CALLS = 4
+_MAPS_CALL_TIMEOUT_SECONDS = _MAPS_HTTP_CALL_TIMEOUT_SECONDS * _MAPS_MAX_SERIAL_HTTP_CALLS
 
 # Wall-clock budget for the whole poll loop. The agent-runner hard-kills the
 # precheck process at the budget this skill declares for itself —
@@ -1007,7 +1008,7 @@ def _maybe_maps_client() -> MapsClient | None:
     """
     if not os.environ.get("GOOGLE_MAPS_API_KEY"):
         return None
-    return MapsClient.from_env(timeout=_MAPS_CALL_TIMEOUT_SECONDS)
+    return MapsClient.from_env(timeout=_MAPS_HTTP_CALL_TIMEOUT_SECONDS)
 
 
 def _process_flight(
