@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.162 — 2026-10-26
+
 ### Plan post-arrival meeting drives around inbound flights (#350)
 
 The post-arrival handoff and lodging return retain meeting-source’s three-hour plausibility cap and the same confirmed-driving-trip exemption; a long rejected meeting never replaces the ordinary airport-to-lodging drive.
