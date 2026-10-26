@@ -19,6 +19,7 @@ if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
 from block_codec import GEN_LEGACY_DP, GEN_UNIFIED, ParsedBlock  # noqa: E402
+from meeting_source import DEFAULT_MAX_REASONABLE_DRIVE  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
 from scan import DEFAULT_TIGHT_GAP_SECONDS, same_place  # noqa: E402
 
@@ -62,6 +63,7 @@ class PostarrivalMeeting:
     end: datetime
     timezone: str | None = None
     return_suppressed: bool = False
+    driving_to: bool = False
 
 
 def _skip_is_active(skip_state: dict[str, str] | None, identity: str, now: datetime | None) -> bool:
@@ -122,6 +124,7 @@ def postarrival_meetings_from(
     skip_state: dict[str, str] | None = None,
     now: datetime | None = None,
     tight_gap_seconds: int = DEFAULT_TIGHT_GAP_SECONDS,
+    driving_to: frozenset[str] = frozenset(),
 ) -> list[PostarrivalMeeting]:
     """Lift scan results that are eligible in-person meeting intents.
 
@@ -165,6 +168,7 @@ def postarrival_meetings_from(
                 end=end,
                 timezone=getattr(meeting, "timezone", None),
                 return_suppressed=return_suppressed,
+                driving_to=identity in driving_to,
             )
         )
     return out
@@ -214,6 +218,11 @@ def _unreachable_note(
         return None
     if drive > max_handoff_drive:
         return f"postarrival {meeting.identity}: airport-to-venue drive exceeds cap"
+    if drive > DEFAULT_MAX_REASONABLE_DRIVE and not meeting.driving_to:
+        return (
+            f"postarrival {meeting.identity}: airport-to-venue drive "
+            "implausible — suppressed (away?)"
+        )
     if guard.ready_at + drive >= meeting.end:
         return (
             f"postarrival {meeting.identity}: not reachable from {guard.identity} "
@@ -487,6 +496,17 @@ def _apply_handoff(
     ret_drive = route(venue, return_dest) if need_return and return_dest is not None else None
     if need_return and (ret_drive is None or return_dest is None):
         diagnostics.append(f"postarrival {meeting.identity}: venue-to-lodging route failed")
+        return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
+
+    if (
+        ret_drive is not None
+        and ret_drive > DEFAULT_MAX_REASONABLE_DRIVE
+        and not meeting.driving_to
+    ):
+        diagnostics.append(
+            f"postarrival {meeting.identity}: venue-to-lodging drive "
+            "implausible — suppressed (away?)"
+        )
         return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
 
     rewritten: list[DesiredBlock] = []

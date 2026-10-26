@@ -1412,7 +1412,6 @@ def _run_sweep() -> dict:
             flight_windows=[],
             flight_summaries=[],
         )
-        postarrival_meetings = postarrival_meetings_from(meetings, skip_state=skips, now=now)
         # A trip the operator DRIVES to is resolved before the meeting side, so
         # that trip's own events are spared the away-suppression: with a
         # check-in stamped after the first event the anchor resolves home, the
@@ -1436,10 +1435,14 @@ def _run_sweep() -> dict:
         # stderr).
         operator = read_operator_tz()
         operator_zone = operator.tz if operator is not None else None
+        presence = _trip_presence(driving, meetings, route=route)
+        postarrival_meetings = postarrival_meetings_from(
+            meetings, skip_state=skips, now=now, driving_to=frozenset(presence)
+        )
         meeting_blocks, meeting_skipped, meeting_held = meeting_desired_blocks(
             meetings,
             route=route,
-            driving_to=_trip_presence(driving, meetings, route=route),
+            driving_to=presence,
             display_tz=operator.tz if operator is not None else None,
         )
     else:

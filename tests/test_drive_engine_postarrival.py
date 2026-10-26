@@ -9,6 +9,7 @@ reachable meeting replaces airport-to-lodging; lodging wins over the trip city.
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -1429,3 +1430,45 @@ def test_scan_same_venue_follow_on_after_pruning_still_needs_no_drive():
     )
     assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in _created(result))
     assert not any(b.identity == "A" and b.kind == "meeting_return" for b in _created(result))
+
+
+def test_long_airport_to_meeting_handoff_keeps_ordinary_airport_to_lodging():
+    meeting = _meeting(end=_dt(5, day=13))
+    result = _plan(
+        postarrival_meetings=[meeting],
+        route=_route({("DEN airport", VENUE): 240, ("DEN airport", HOTEL): 37}),
+    )
+    assert any(b.kind == "airport_arrival" and b.destination == HOTEL for b in _created(result))
+    assert not any(
+        b.identity == meeting.identity and b.kind in {"meeting_outbound", "meeting_return"}
+        for b in _created(result)
+    )
+    assert any("implausible" in note for note in result.skipped)
+
+
+def test_long_venue_to_lodging_return_does_not_replace_the_arrival():
+    result = _plan(
+        route=_route({("DEN airport", VENUE): 37, ("DEN airport", HOTEL): 37, (VENUE, HOTEL): 240})
+    )
+    assert any(b.kind == "airport_arrival" and b.destination == HOTEL for b in _created(result))
+    assert not _created_kinds(result, "mtg-1")
+    assert any("venue-to-lodging drive implausible" in note for note in result.skipped)
+
+
+def test_confirmed_driving_trip_preserves_the_meeting_plausibility_exemption():
+    meeting = replace(_meeting(end=_dt(5, day=13)), driving_to=True)
+    result = _plan(
+        postarrival_meetings=[meeting],
+        route=_route({("DEN airport", VENUE): 240, (VENUE, HOTEL): 240}),
+    )
+    assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in _created(result))
+    assert any(b.kind == "meeting_return" and b.destination == HOTEL for b in _created(result))
+
+
+def test_scan_lift_carries_only_confirmed_driving_trip_membership():
+    meetings = scan(
+        [_gcal_event("drive", MEETING_START, MEETING_END, VENUE)], now=NOW, home_address=HOME
+    )
+    assert not postarrival_meetings_from(meetings)[0].driving_to
+    assert postarrival_meetings_from(meetings, driving_to=frozenset({"drive"}))[0].driving_to
+    assert not postarrival_meetings_from(meetings, driving_to=frozenset({"other"}))[0].driving_to
