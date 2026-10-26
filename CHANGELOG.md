@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.163 — 2026-10-26
+
 ### Suppress time_to_leave after taxi-out and at-airport GPS (#349)
 
 Notification-store schema 2 migrates valid v1 records under the existing lock, preserving confirmed delivery identities and non-leave retry clocks. Pending v1 leave notices are dropped without consuming the phase so a fresh poll must regenerate them under current timely/missed and location gates.
