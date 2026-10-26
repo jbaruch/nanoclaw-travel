@@ -228,3 +228,18 @@ def test_a_flight_byair_no_longer_tracks_never_moves_the_origin(monkeypatch):
     )
     origin()
     assert [t.origin for t in seen] == ["LGA"]
+
+
+def test_fresh_cycle_location_wins_over_an_unplaceable_flight(capsys):
+    origin = precheck._CycleOrigin(
+        home_address="12 Example St",
+        flight_ids=[1],
+        now_utc=_at("2025-11-02T12:00:00Z"),
+        due=set(),
+        polled=set(),
+        read_state=lambda _id: _record(dep_time="2025-11-02T23:00:00Z"),
+        live_coordinates=(36.125, -86.5),
+    )
+    assert origin() == "36.125,-86.5"
+    assert origin() == "36.125,-86.5"
+    assert capsys.readouterr().err == ""

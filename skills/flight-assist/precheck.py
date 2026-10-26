@@ -711,7 +711,8 @@ class UnplaceableFlight(ValueError):
 class _CycleOrigin:
     """One cycle's time-to-leave origin, resolved on first use and then fixed.
 
-    Trip-aware (#122, #335): "home" is the itinerary's position: the static
+    A captured fresh GPS fix wins before itinerary resolution. Without that
+    fix, the fallback is trip-aware (#122, #335): "home" is the itinerary's position: the static
     residence at home, the current lodging or trip city away. It is read with
     byAir's flights as well as TripIt's, so a trip only byAir tracks still moves
     the operator. None away with nothing resolvable disables routing via the
@@ -723,7 +724,8 @@ class _CycleOrigin:
     TripIt's copy of it, if any, books it. A flight not due keeps the snapshot
     its cadence vouches for. A flight byAir no longer tracks (`removed`, a 404
     this cycle) is left out too. A flight whose movement does not read
-    (`UnplaceableFlight`) leaves no origin: routing waits for the next cycle."""
+    (`UnplaceableFlight`) leaves no fallback origin: routing without GPS waits
+    for the next cycle."""
 
     def __init__(
         self,
@@ -746,6 +748,10 @@ class _CycleOrigin:
 
     def __call__(self, fresh: dict[int, dict] | None = None) -> str | None:
         if not self._resolved:
+            if self._gps is not None:
+                self._origin = f"{self._gps[0]},{self._gps[1]}"
+                self._resolved = True
+                return self._origin
             fresh = fresh or {}
             unverified = self._due - self._polled - set(fresh)
             try:
@@ -759,7 +765,7 @@ class _CycleOrigin:
                 self._resolved = True
                 return None
             home = resolve_effective_home(self._home, now=self._now, transports=transports)
-            self._origin = f"{self._gps[0]},{self._gps[1]}" if self._gps is not None else home
+            self._origin = home
             self._resolved = True
         return self._origin
 
