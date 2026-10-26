@@ -2749,6 +2749,189 @@ def test_process_flight_never_polled_flight_is_missed_after_leave_by(state_root:
     assert fired == []
 
 
+# --- #349: the airport lookup is a third bounded call inside one flight ---
+
+_BUDGET_NOW = datetime(2026, 5, 18, 16, 45, tzinfo=UTC)
+_FRESH_AT_BNA = "2026-05-18T16:40:00Z"
+
+
+def _kill_limit() -> float:
+    return precheck._SCRIPT_KILL_BUDGET_SECONDS - precheck._INTERPRETER_TEARDOWN_HEADROOM_SECONDS
+
+
+def _budget_cycle(
+    state_root: Path,
+    monkeypatch,
+    *,
+    first_flight_seconds: float,
+    second_cached: bool,
+    gps: bool = True,
+    gps_captured_at: str = _FRESH_AT_BNA,
+    now: datetime = _BUDGET_NOW,
+    last_polled_at: str = "2026-05-18T15:00:00Z",
+    second_time_to_leave_fired: bool = False,
+    maps_configured: bool = True,
+) -> tuple[list[dict], MagicMock, dict]:
+    """Flight 1 polls slowly; flight 2 is due and may need the airport lookup.
+
+    Every byAir call and the Maps query advance one injected clock, so the
+    cycle's elapsed time is the simulated wall clock the 30 s kill compares to.
+    Flight 1 already fired its `time_to_leave`, so it never asks for a lookup.
+    """
+    clock = {"t": 0.0}
+    cached = {**_scheduled_snapshot(), "dep_lat": _BNA_LAT, "dep_lon": _BNA_LON}
+    _seed_leave_by_flight(
+        flight_id=1,
+        last_snapshot=cached,
+        last_polled_at=last_polled_at,
+        time_to_leave_fired=True,
+        active=[1, 2],
+    )
+    _seed_leave_by_flight(
+        flight_id=2,
+        last_snapshot=cached if second_cached else None,
+        last_polled_at=last_polled_at,
+        time_to_leave_fired=second_time_to_leave_fired,
+        active=[1, 2],
+    )
+    if gps:
+        _write_current_location(
+            state_root, latitude=_BNA_LAT, longitude=_BNA_LON, captured_at=gps_captured_at
+        )
+
+    def get_flight(*, flight_id):
+        clock["t"] += first_flight_seconds if flight_id == 1 else 8.0
+        return _bna_flight(flight_id=flight_id)
+
+    def get_airport(airport_id):
+        clock["t"] += 8.0
+        return _BNA_AIRPORT
+
+    maps = _FixedTravelMaps(0, clock=clock, cost=8.0) if maps_configured else None
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: maps)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.side_effect = get_flight
+        client.return_value.get_airport.side_effect = get_airport
+        events = precheck._run_cycle(now_utc=now, monotonic=lambda: clock["t"])
+    return events, client.return_value, clock
+
+
+def test_flight_that_may_need_the_airport_lookup_defers_past_its_reserve(
+    state_root: Path, monkeypatch, capsys
+):
+    """P4: flight 1's slow poll ends at 9.9 s. Flight 2 is due with a fresh fix and
+    no cached coordinates, so it may pay get_flight + get_airport + Maps (24 s)
+    and would end at 33.9 s, past the 30 s kill. It defers to the next cycle
+    instead; its state is untouched and no alert is derived from the skipped
+    presence check."""
+    events, byair, clock = _budget_cycle(
+        state_root, monkeypatch, first_flight_seconds=9.9, second_cached=False
+    )
+    assert byair.get_flight.call_count == 1
+    byair.get_airport.assert_not_called()
+    assert clock["t"] <= _kill_limit()
+    assert [e for e in events if e["event"]["reason"] == "time_to_leave"] == []
+    assert must(read_flight_state(2))["last_polled_at"] == "2026-05-18T15:00:00Z"
+    assert "deferring 1 to next cycle" in capsys.readouterr().err
+
+
+def test_cached_airport_coordinates_keep_the_full_start_budget(state_root: Path, monkeypatch):
+    """The same slow first poll with coordinates already cached: flight 2 needs
+    only get_flight + Maps, so it still starts at 9.9 s and ends at 25.9 s. The
+    lookup reserve must not shrink ordinary cycles."""
+    _, byair, clock = _budget_cycle(
+        state_root, monkeypatch, first_flight_seconds=9.9, second_cached=True
+    )
+    assert byair.get_flight.call_count == 2
+    byair.get_airport.assert_not_called()
+    assert clock["t"] == pytest.approx(25.9)
+    assert clock["t"] <= _kill_limit()
+
+
+def test_flight_with_budget_left_looks_up_the_airport_and_stays_silent_there(
+    state_root: Path, monkeypatch
+):
+    """Flight 1 ends at 1 s, inside the lookup flight's reduced start deadline.
+    Flight 2 pays all three calls (25 s, inside the kill) and the fresh fix at
+    BNA suppresses the alert: the reserve defers a flight, it never skips the
+    lookup and lets a presence-less alert through."""
+    events, byair, clock = _budget_cycle(
+        state_root, monkeypatch, first_flight_seconds=1.0, second_cached=False
+    )
+    assert byair.get_flight.call_count == 2
+    byair.get_airport.assert_called_once_with(98)
+    assert clock["t"] == pytest.approx(25.0)
+    assert clock["t"] <= _kill_limit()
+    assert [e for e in events if e["event"]["reason"] == "time_to_leave"] == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param({"second_time_to_leave_fired": True}, id="marker-already-fired"),
+        pytest.param(
+            {
+                "now": datetime(2026, 5, 18, 10, 0, tzinfo=UTC),
+                "gps_captured_at": "2026-05-18T09:55:00Z",
+                "last_polled_at": "2026-05-18T09:00:00Z",
+            },
+            id="departure-beyond-the-travel-query-window",
+        ),
+        pytest.param({"maps_configured": False}, id="maps-not-configured"),
+        pytest.param({"gps": False}, id="no-fresh-fix"),
+    ],
+)
+def test_airport_lookup_is_not_made_when_no_time_to_leave_can_fire(
+    state_root: Path, monkeypatch, case: dict
+):
+    """Outside the marker / window / fresh-fix / Maps gates the alert is silent
+    whatever presence says, so the lookup is neither made nor reserved for:
+    flight 2 starts at 9.9 s and polls."""
+    _, byair, _ = _budget_cycle(
+        state_root, monkeypatch, first_flight_seconds=9.9, second_cached=False, **case
+    )
+    assert byair.get_flight.call_count == 2
+    byair.get_airport.assert_not_called()
+
+
+def test_flight_needing_both_the_reader_and_the_lookup_is_not_starved(
+    state_root: Path, monkeypatch
+):
+    """Both reserves (5 s + 8 s) exceed the 10 s start budget, so no deadline can
+    hold both back. The flight must still poll: it keeps the airport lookup,
+    which presence safety needs, and labels its day_before with the explicit
+    date instead of spawning the zone reader."""
+    markers = _phase_markers()  # day_before not fired yet: the reader may spawn
+    write_flight_state(
+        _make_state(
+            flight_id=12345,
+            dep_airport_id=98,
+            last_polled_at="2026-05-18T15:00:00Z",
+            last_snapshot=_scheduled_snapshot(),
+            phase_markers=markers,
+        )
+    )
+    write_active_flights([12345])
+    write_config({"home_address": "1 Example Street, Nashville, TN"})
+    _write_current_location(
+        state_root, latitude=_BNA_LAT, longitude=_BNA_LON, captured_at=_FRESH_AT_BNA
+    )
+    monkeypatch.setattr(precheck, "_maybe_maps_client", lambda: _FixedTravelMaps(0))
+    reader = _CountingReader(_CHICAGO)
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _bna_flight()
+        client.return_value.get_airport.return_value = _BNA_AIRPORT
+        events = precheck._run_cycle(
+            now_utc=_BUDGET_NOW, monotonic=lambda: 0.0, operator_tz_reader=reader
+        )
+    assert reader.calls == 0
+    client.return_value.get_airport.assert_called_once_with(98)
+    day_before = _day_before_events(events)
+    assert [e["day_label_tz"] for e in day_before] == [None]
+    assert [e["event"] for e in events if e["event"]["reason"] == "time_to_leave"] == []
+    assert must(read_flight_state(12345))["last_polled_at"] != "2026-05-18T15:00:00Z"
+
+
 def test_process_flight_get_flight_shape_without_nested_coords_does_not_invent(
     state_root: Path, monkeypatch
 ):

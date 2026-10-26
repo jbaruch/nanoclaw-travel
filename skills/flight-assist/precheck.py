@@ -178,6 +178,18 @@ _MAPS_CALL_TIMEOUT_SECONDS = 8.0
 # start deadline only while the reader has not run yet AND that flight could
 # fire its `day_before` this cycle (#312). A cycle whose flights have all fired
 # theirs keeps the full budget.
+#
+# The departure-airport lookup (#349) is a third byAir-bounded call in the same
+# `_process_flight`, between the poll and the Maps query. It runs only on a flight
+# due to poll whose coordinates are not cached, with a fresh GPS fix, the
+# `time_to_leave` marker unfired, Maps configured and departure inside
+# `_TIME_TO_LEAVE_QUERY_WINDOW_HOURS`, so `_run_cycle` holds back
+# `_AIRPORT_LOOKUP_RESERVE_SECONDS` from the start deadline of exactly those
+# flights and leaves ordinary cycles their full budget. The reserve defers a
+# flight, never the lookup: a lookup skipped near the kill would turn fresh
+# at-airport GPS into permission to alert. When the reader and the lookup could
+# both run, their reserves cannot both fit, so the flight keeps the lookup and
+# labels its `day_before` with the explicit date, as with no zone.
 _SCRIPT_KILL_BUDGET_SECONDS = 30.0
 _INTERPRETER_TEARDOWN_HEADROOM_SECONDS = 4.0
 _CYCLE_POLL_HEADROOM_SECONDS = (
@@ -187,6 +199,7 @@ _CYCLE_POLL_HEADROOM_SECONDS = (
 )
 _CYCLE_WALL_CLOCK_BUDGET_SECONDS = _SCRIPT_KILL_BUDGET_SECONDS - _CYCLE_POLL_HEADROOM_SECONDS
 _READER_RESERVE_SECONDS = READER_TIMEOUT_SECONDS
+_AIRPORT_LOOKUP_RESERVE_SECONDS = _BYAIR_CALL_TIMEOUT_SECONDS
 
 
 def main() -> int:
@@ -517,13 +530,38 @@ def _collect_cycle(
     may_spawn_reader = {
         fid for fid in active_flight_ids if _may_spawn_reader(fid, now_utc, force=fid in forced_ids)
     }
+    # One fix per cycle: the pre-pass below and every flight's presence check
+    # read the same answer, so a fix landing mid-cycle cannot add a lookup the
+    # deadline did not reserve for.
+    cycle_gps = fresh_live_coordinates(now_utc)
+    may_lookup_airport = {
+        fid
+        for fid in active_flight_ids
+        if _may_lookup_airport(
+            fid,
+            now_utc,
+            force=fid in forced_ids,
+            gps=cycle_gps,
+            maps_configured=maps is not None,
+            delivery=delivery,
+        )
+    }
     poll_deadline = monotonic() + _CYCLE_WALL_CLOCK_BUDGET_SECONDS
     for index, flight_id in enumerate(active_flight_ids):
-        reserve = (
+        lookup_reserve = _AIRPORT_LOOKUP_RESERVE_SECONDS if flight_id in may_lookup_airport else 0.0
+        reader_reserve = (
             _READER_RESERVE_SECONDS
             if flight_id in may_spawn_reader and not resolve_operator_tz.resolved
             else 0.0
         )
+        flight_operator_tz = resolve_operator_tz
+        if lookup_reserve + reader_reserve >= _CYCLE_WALL_CLOCK_BUDGET_SECONDS:
+            # Both calls cannot be held back from one start deadline. Keep the
+            # lookup, which presence safety needs, and skip the reader: with no
+            # zone the `day_before` label is the explicit date.
+            reader_reserve = 0.0
+            flight_operator_tz = _no_operator_tz
+        reserve = lookup_reserve + reader_reserve
         if monotonic() >= poll_deadline - reserve:
             # Budget elapsed. Defer this flight and every flight after it
             # to the next cycle rather than risk the agent-runner's 30s
@@ -548,7 +586,8 @@ def _collect_cycle(
                 byair=byair,
                 maps=maps,
                 time_to_leave_origin=cycle_origin,
-                resolve_operator_tz=resolve_operator_tz,
+                resolve_operator_tz=flight_operator_tz,
+                resolve_gps=lambda: cycle_gps,
                 delivery=delivery,
                 force=flight_id in forced_ids,
                 verified_ids=verified_ids,
@@ -825,6 +864,76 @@ def _may_spawn_reader(flight_id: int, now_utc: datetime, *, force: bool = False)
     )
 
 
+def _no_operator_tz() -> None:
+    """The zone resolver of a flight that must not spawn the reader this cycle."""
+    return None
+
+
+def _may_need_airport_lookup(
+    *,
+    gps_fresh: bool,
+    maps_configured: bool,
+    time_to_leave_fired: bool,
+    scheduled_dep_time: str | None,
+    now_utc: datetime,
+) -> bool:
+    """Whether a `time_to_leave` could fire, so airport coordinates are worth a call.
+
+    Mirrors the gates `_maybe_query_travel_time` and `check_time_to_leave` apply
+    before presence can matter: a fresh fix to compare, Maps configured, the
+    marker unfired, and departure inside the travel-query window. Outside them
+    the gate stays silent whatever the presence verdict is, so skipping the
+    lookup there changes no alert (#349).
+    """
+    if not gps_fresh or not maps_configured or time_to_leave_fired:
+        return False
+    dep_dt = _parse_iso8601(scheduled_dep_time)
+    if dep_dt is None:
+        return False
+    return dep_dt - now_utc <= timedelta(hours=_TIME_TO_LEAVE_QUERY_WINDOW_HOURS)
+
+
+def _may_lookup_airport(
+    flight_id: int,
+    now_utc: datetime,
+    *,
+    force: bool,
+    gps: tuple[float, float] | None,
+    maps_configured: bool,
+    delivery: DeliveryStore,
+) -> bool:
+    """Whether processing this flight this cycle could call `get_airport`.
+
+    Same inputs as `_process_flight`, behind the same `_due_for_poll` gate, so
+    the pre-pass reserve and the in-flight lookup agree. A flight with no state
+    is first seen this cycle: its departure is unknown until byAir answers, so
+    it may. So may a flight whose record does not read; the record still fails
+    loudly at its own turn to poll (#312 `_may_spawn_reader`).
+    """
+    if gps is None or not maps_configured:
+        return False
+    try:
+        prior_state = read_flight_state(flight_id)
+    except (StateError, OSError):
+        return True
+    if prior_state is None:
+        return True
+    if not force and not _due_for_poll(prior_state, now_utc):
+        return False
+    if _cached_departure_coords(prior_state.get("last_snapshot")) is not None:
+        return False
+    fired = bool((prior_state.get("phase_markers") or {}).get("time_to_leave_fired")) or (
+        "time_to_leave_fired" in delivery.confirmed_markers(flight_id)
+    )
+    return _may_need_airport_lookup(
+        gps_fresh=True,
+        maps_configured=True,
+        time_to_leave_fired=fired,
+        scheduled_dep_time=prior_state.get("scheduled_dep_time"),
+        now_utc=now_utc,
+    )
+
+
 def _check_connection_risks(
     *,
     active_flight_ids: list[int],
@@ -906,6 +1015,7 @@ def _process_flight(
     verified_ids: set[int],
     force: bool = False,
     resolve_operator_tz: Callable[[], str | None] = lambda: None,
+    resolve_gps: Callable[[], tuple[float, float] | None] | None = None,
 ) -> list[dict]:
     """Process a single flight: cadence-gate, fetch, diff, emit events.
 
@@ -920,6 +1030,9 @@ def _process_flight(
     says the `day_before` fires this cycle, so the reader subprocess never
     runs for a flight that is not about to be labelled. The default (no
     zone) is the standalone-call shape and yields the explicit-date label.
+
+    `resolve_gps` is `_run_cycle`'s once-per-cycle fresh fix, the one its
+    airport-lookup reserve was sized from; the default reads it here.
     """
     prior_state = read_flight_state(flight_id)
     prior_snapshot = prior_state.get("last_snapshot") if prior_state else None
@@ -936,13 +1049,23 @@ def _process_flight(
     raw_flight = byair.get_flight(flight_id=flight_id)
     new_snapshot = _trim_to_snapshot(raw_flight)
     verified_ids.add(flight_id)
-    gps = fresh_live_coordinates(now_utc)
+    gps = resolve_gps() if resolve_gps is not None else fresh_live_coordinates(now_utc)
+    scheduled_dep_time = (
+        prior_state["scheduled_dep_time"] if prior_state else raw_flight.get("scheduledDepTime")
+    )
     dep_lat, dep_lon = _departure_coords_for_presence(
         prior_snapshot=prior_snapshot,
         raw_flight=raw_flight,
         prior_state=prior_state,
         byair=byair,
         gps=gps,
+        lookup_wanted=_may_need_airport_lookup(
+            gps_fresh=gps is not None,
+            maps_configured=maps is not None,
+            time_to_leave_fired=bool(phase_markers.get("time_to_leave_fired", False)),
+            scheduled_dep_time=scheduled_dep_time,
+            now_utc=now_utc,
+        ),
     )
     if dep_lat is not None and dep_lon is not None:
         new_snapshot["dep_lat"] = dep_lat
@@ -951,12 +1074,9 @@ def _process_flight(
     events: list[dict] = []
 
     # Scheduled departure lives at the top level of the flight-state
-    # record, not inside the snapshot shape — resolve it before the
-    # wake-rule call so first-cycle schedule-slip detection (#46) can
+    # record, not inside the snapshot shape — resolved above, before the
+    # wake-rule call, so first-cycle schedule-slip detection (#46) can
     # compare the fresh dep_time against it.
-    scheduled_dep_time = (
-        prior_state["scheduled_dep_time"] if prior_state else raw_flight.get("scheduledDepTime")
-    )
     scheduled_arr_time = (
         prior_state["scheduled_arr_time"] if prior_state else raw_flight.get("scheduledArrTime")
     )
@@ -1222,6 +1342,18 @@ def _resolve_time_to_leave_origin(
     return resolve_live_origin(home_address, now=now_utc)
 
 
+def _cached_departure_coords(snapshot: object) -> tuple[float, float] | None:
+    """Valid `dep_lat`/`dep_lon` persisted on a snapshot, else None."""
+    if not isinstance(snapshot, dict):
+        return None
+    lat, lon = departure_airport_coords(
+        {"lat": snapshot.get("dep_lat"), "lon": snapshot.get("dep_lon")}
+    )
+    if lat is None or lon is None:
+        return None
+    return lat, lon
+
+
 def _departure_coords_for_presence(
     *,
     prior_snapshot: dict | None,
@@ -1229,23 +1361,23 @@ def _departure_coords_for_presence(
     prior_state: dict | None,
     byair: ByAirClient,
     gps: tuple[float, float] | None,
+    lookup_wanted: bool,
 ) -> tuple[float | None, float | None]:
     """Departure-airport `lat`/`lon` for GPS presence (#349).
 
     Reuses cached `last_snapshot.dep_lat`/`dep_lon` when both are valid.
-    Otherwise, only when a fresh GPS fix exists this cycle, pays one
-    `byair.get_airport(depAirport.id)` using the documented get_airport
-    coordinate keys. Nested `get_flight.depAirport` is not assumed to
-    carry `lat`/`lon`. Missing or failed lookup skips presence this
-    cycle; a later GPS-present poll retries until coords persist.
+    Otherwise, only when a fresh GPS fix exists this cycle and
+    `lookup_wanted` (`_may_need_airport_lookup`: a `time_to_leave` could
+    still fire), pays one `byair.get_airport(depAirport.id)` using the
+    documented get_airport coordinate keys. Nested `get_flight.depAirport`
+    is not assumed to carry `lat`/`lon`. Missing or failed lookup skips
+    presence this cycle; a later GPS-present poll retries until coords
+    persist.
     """
-    if isinstance(prior_snapshot, dict):
-        cached = departure_airport_coords(
-            {"lat": prior_snapshot.get("dep_lat"), "lon": prior_snapshot.get("dep_lon")}
-        )
-        if cached[0] is not None and cached[1] is not None:
-            return cached
-    if gps is None:
+    cached = _cached_departure_coords(prior_snapshot)
+    if cached is not None:
+        return cached
+    if gps is None or not lookup_wanted:
         return None, None
     airport_id: object = None
     if prior_state is not None:

@@ -119,3 +119,32 @@ def test_budget_leaves_room_for_the_zone_reader_on_a_flight_that_may_spawn_it() 
     assert spawning_deadline + base_worst + READER_TIMEOUT_SECONDS <= (
         precheck._SCRIPT_KILL_BUDGET_SECONDS
     )
+
+
+def test_budget_leaves_room_for_the_airport_lookup_on_a_flight_that_may_need_it():
+    """The departure-airport lookup (#349) is a third bounded byAir call in one
+    `_process_flight`: poll, lookup, Maps, teardown. A flight that may need it
+    starts `_AIRPORT_LOOKUP_RESERVE_SECONDS` earlier, and started at that
+    deadline it returns before the kill."""
+    assert precheck._AIRPORT_LOOKUP_RESERVE_SECONDS >= precheck._BYAIR_CALL_TIMEOUT_SECONDS
+    lookup_deadline = precheck._CYCLE_WALL_CLOCK_BUDGET_SECONDS - (
+        precheck._AIRPORT_LOOKUP_RESERVE_SECONDS
+    )
+    assert lookup_deadline > 0, "the reserve would leave a lookup flight no budget"
+    worst_case = (
+        lookup_deadline
+        + precheck._BYAIR_CALL_TIMEOUT_SECONDS  # get_flight
+        + precheck._BYAIR_CALL_TIMEOUT_SECONDS  # get_airport
+        + precheck._MAPS_CALL_TIMEOUT_SECONDS
+        + precheck._INTERPRETER_TEARDOWN_HEADROOM_SECONDS
+    )
+    assert worst_case <= precheck._SCRIPT_KILL_BUDGET_SECONDS
+
+
+def test_reader_and_airport_lookup_reserves_cannot_both_be_held_back():
+    """If both reserves fit the cycle budget, `_run_cycle` may add them; if they
+    do not, it must drop the reader's (the explicit-date label) instead of
+    deferring the flight forever. Pin which regime the constants are in so a
+    change to a timeout is a deliberate edit of that rule."""
+    combined = precheck._READER_RESERVE_SECONDS + precheck._AIRPORT_LOOKUP_RESERVE_SECONDS
+    assert combined >= precheck._CYCLE_WALL_CLOCK_BUDGET_SECONDS
