@@ -141,10 +141,15 @@ def test_budget_leaves_room_for_the_airport_lookup_on_a_flight_that_may_need_it(
     assert worst_case <= precheck._SCRIPT_KILL_BUDGET_SECONDS
 
 
-def test_reader_and_airport_lookup_reserves_cannot_both_be_held_back():
-    """If both reserves fit the cycle budget, `_run_cycle` may add them; if they
-    do not, it must drop the reader's (the explicit-date label) instead of
-    deferring the flight forever. Pin which regime the constants are in so a
-    change to a timeout is a deliberate edit of that rule."""
+def test_reader_and_airport_lookup_fit_together_without_skipping_either():
     combined = precheck._READER_RESERVE_SECONDS + precheck._AIRPORT_LOOKUP_RESERVE_SECONDS
-    assert combined >= precheck._CYCLE_WALL_CLOCK_BUDGET_SECONDS
+    start_deadline = precheck._CYCLE_WALL_CLOCK_BUDGET_SECONDS - combined
+    assert start_deadline > 0
+    assert (
+        start_deadline
+        + 2 * precheck._BYAIR_CALL_TIMEOUT_SECONDS
+        + precheck._MAPS_CALL_TIMEOUT_SECONDS
+        + READER_TIMEOUT_SECONDS
+        + precheck._INTERPRETER_TEARDOWN_HEADROOM_SECONDS
+        <= precheck._SCRIPT_KILL_BUDGET_SECONDS
+    )

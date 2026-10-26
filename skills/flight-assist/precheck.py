@@ -127,10 +127,12 @@ _TIME_TO_LEAVE_QUERY_WINDOW_HOURS = 6
 # Per-call timeout for the byAir HTTP client inside `_run_cycle`. The outer
 # `execFile` budget in agent-runner is 30s; a single slow byAir response at
 # the client's default 30s timeout would race that budget and surface as
-# `precheck-error: execfile-error`. 8s allows several slow calls to fail-fast
+# `precheck-error: execfile-error`. 6s allows the poll and airport lookup
+# plus Maps (8s), the operator-zone reader (5s) and teardown (4s) to fit
+# the same 30s budget. Slow calls fail-fast
 # into the URLError transient-transport branch before the outer budget runs
 # out, converting a whole-cycle kill into per-flight retries. Per #28.
-_BYAIR_CALL_TIMEOUT_SECONDS = 8.0
+_BYAIR_CALL_TIMEOUT_SECONDS = 6.0
 
 # Per-call timeout for the Maps Distance-Matrix client inside `_process_flight`.
 # Same rationale as byAir's bound (#28): the MapsClient default is 10s, but the
@@ -187,9 +189,8 @@ _MAPS_CALL_TIMEOUT_SECONDS = 8.0
 # `_AIRPORT_LOOKUP_RESERVE_SECONDS` from the start deadline of exactly those
 # flights and leaves ordinary cycles their full budget. The reserve defers a
 # flight, never the lookup: a lookup skipped near the kill would turn fresh
-# at-airport GPS into permission to alert. When the reader and the lookup could
-# both run, their reserves cannot both fit, so the flight keeps the lookup and
-# labels its `day_before` with the explicit date, as with no zone.
+# at-airport GPS into permission to alert. The per-call bounds leave room for
+# both the lookup and the real operator-zone reader in one flight.
 _SCRIPT_KILL_BUDGET_SECONDS = 30.0
 _INTERPRETER_TEARDOWN_HEADROOM_SECONDS = 4.0
 _CYCLE_POLL_HEADROOM_SECONDS = (
@@ -546,21 +547,17 @@ def _collect_cycle(
             delivery=delivery,
         )
     }
+    # A successfully polled predecessor must not consume the next tick's
+    # lookup window ahead of a flight deferred on the previous tick.
+    poll_order = _oldest_poll_first(active_flight_ids)
     poll_deadline = monotonic() + _CYCLE_WALL_CLOCK_BUDGET_SECONDS
-    for index, flight_id in enumerate(active_flight_ids):
+    for index, flight_id in enumerate(poll_order):
         lookup_reserve = _AIRPORT_LOOKUP_RESERVE_SECONDS if flight_id in may_lookup_airport else 0.0
         reader_reserve = (
             _READER_RESERVE_SECONDS
             if flight_id in may_spawn_reader and not resolve_operator_tz.resolved
             else 0.0
         )
-        flight_operator_tz = resolve_operator_tz
-        if lookup_reserve + reader_reserve >= _CYCLE_WALL_CLOCK_BUDGET_SECONDS:
-            # Both calls cannot be held back from one start deadline. Keep the
-            # lookup, which presence safety needs, and skip the reader: with no
-            # zone the `day_before` label is the explicit date.
-            reader_reserve = 0.0
-            flight_operator_tz = _no_operator_tz
         reserve = lookup_reserve + reader_reserve
         if monotonic() >= poll_deadline - reserve:
             # Budget elapsed. Defer this flight and every flight after it
@@ -569,7 +566,7 @@ def _collect_cycle(
             # (we never call `_process_flight`), so the cadence gate retries
             # them next tick — the same degraded-poll contract as the
             # transient-transport branch below. Per #36.
-            remaining = active_flight_ids[index:]
+            remaining = poll_order[index:]
             deferred_ids.update(remaining)
             print(
                 f"flight-assist precheck: wall-clock budget "
@@ -586,7 +583,7 @@ def _collect_cycle(
                 byair=byair,
                 maps=maps,
                 time_to_leave_origin=cycle_origin,
-                resolve_operator_tz=flight_operator_tz,
+                resolve_operator_tz=resolve_operator_tz,
                 resolve_gps=lambda: cycle_gps,
                 delivery=delivery,
                 force=flight_id in forced_ids,
@@ -864,9 +861,20 @@ def _may_spawn_reader(flight_id: int, now_utc: datetime, *, force: bool = False)
     )
 
 
-def _no_operator_tz() -> None:
-    """The zone resolver of a flight that must not spawn the reader this cycle."""
-    return None
+def _oldest_poll_first(flight_ids: list[int]) -> list[int]:
+    """Order known successful polls by age, keeping unreadable/new records in place."""
+    observed: dict[int, datetime] = {}
+    for flight_id in flight_ids:
+        try:
+            prior = read_flight_state(flight_id)
+        except (StateError, OSError):
+            # The normal poll path reports this failure at its original slot.
+            continue
+        last_polled = _parse_iso8601(prior.get("last_polled_at")) if prior else None
+        if last_polled is not None:
+            observed[flight_id] = last_polled
+    known = iter(sorted(observed, key=lambda fid: observed[fid]))
+    return [next(known) if fid in observed else fid for fid in flight_ids]
 
 
 def _may_need_airport_lookup(
