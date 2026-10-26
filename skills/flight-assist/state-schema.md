@@ -89,6 +89,8 @@ Reader contract: `read_sync_health()` returns the zero record for a missing file
 
 ### `current-location.json`
 
+The installed `jbaruch/nanoclaw-host` authority `rules/flight-assist-location.md` owns the producer schema and non-owner reader contract. This consumer never migrates or writes the host snapshot.
+
 Latest known user location. **Owner is the host orchestrator**, not flight-assist — the host writes this file as Telegram live-location updates and message metadata arrive. flight-assist is a non-owner reader per `coding-policy: stateful-artifacts`: it consults the snapshot to resolve the time-to-leave origin (ladder lives in `precheck._resolve_time_to_leave_origin`), validates the documented shape, and returns `None` on any mismatch instead of raising or migrating.
 
 ```json
@@ -243,7 +245,7 @@ Each entry's fields:
 - `inbound` (object, optional) — Find My Plane data: `aircraft_model`, `registration`, `flew`, `predicted_delay_minutes`
 - `position_lat`, `position_lon` (float, optional) — last known aircraft position
 - `aircraft_model` (string, optional) — byAir's top-level aircraft model. Consumed by the calendar `reconcile` boarding-lead resolver (`boarding_lead.py`), which falls back to `inbound.aircraft_model` when this is absent or empty
-- `dep_lat`, `dep_lon`, `arr_lat`, `arr_lon` (float, optional) — departure/arrival **airport** coordinates (distinct from `position_lat`/`position_lon`, which track the aircraft). The boarding-lead resolver uses them for the transoceanic (TATL/TPAC) check; when any is absent it skips that check and falls back to aircraft size. `dep_lat`/`dep_lon` are populated from `byair.get_airport(depAirport.id)` when a fresh GPS fix needs them for a `time_to_leave` that could still fire (#349), then reused from this snapshot. `arr_lat`/`arr_lon` remain unpopulated until their byAir field names are confirmed (#55 runtime facts)
+- `dep_lat`, `dep_lon`, `arr_lat`, `arr_lon` (float, optional) — departure/arrival **airport** coordinates (distinct from `position_lat`/`position_lon`, which track the aircraft). The boarding-lead resolver uses them for the transoceanic (TATL/TPAC) check; when any is absent it skips that check and falls back to aircraft size. `dep_lat`/`dep_lon` are populated from `byair.get_airport(depAirport.id)` when a fresh GPS fix needs them for a `time_to_leave` that could still fire (#349), and refreshed from the live airport identity on every qualifying poll; persisted coordinates are not used as presence authority. `arr_lat`/`arr_lon` remain unpopulated until their byAir field names are confirmed (#55 runtime facts)
 
 `phase_markers` booleans — `true` consumes the corresponding gate for this flight. New notification flags are copied from confirmed delivery receipts; a wake alone leaves them false. Existing true flags are consumed legacy attempts and do not prove delivery. `landed_acknowledged` remains the separate user-acknowledgement flag:
 
