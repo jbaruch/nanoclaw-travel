@@ -348,19 +348,19 @@ Tolerance:
 
 `flight-assist` owns `notifications.json` and its `notifications.lock` in the state directory. The owner library is `skills/flight-assist/notification_delivery.py`; only its transaction API writes this artifact. Its schema version is independent of the per-flight family.
 
-All root and notice fields below are required; omitted fields have no defaults in an existing file. A missing file is first-run state with version 2, sequence 0 and an empty notices map. The library owns validation, bounds and retry timing.
+All root and notice fields below are required; omitted fields have no defaults in an existing file. A missing file is first-run state with version 3, sequence 0 and an empty notices map. The library owns validation, bounds and retry timing.
 
 | Root field | Type and meaning |
 |---|---|
-| `schema_version` | Plain integer `2`, never a boolean; independent of the per-flight schema |
+| `schema_version` | Plain integer `3`, never a boolean; independent of the per-flight schema |
 | `sequence` | Nonnegative integer; the owner increments it for each new or replacement observation and retains it when pruning |
-| `notices` | JSON object keyed by the notice's 64-character lowercase hex `key`; empty on first run; at most 2,048 entries |
+| `notices` | JSON object keyed by the notice's 64-character lowercase hex `notice_digest`; empty on first run; at most 2,048 entries |
 
 | Notice field | Type, presence and meaning |
 |---|---|
-| `schema_version` | Plain integer `2`, required on every row |
-| `id` | Required 32-character lowercase hex string; first 32 characters of SHA-256 over the canonical JSON `[sequence, key, event]`; an exact acknowledgement identity, not independent proof of a send |
-| `key` | Required 64-character lowercase SHA-256 hex string matching the map key; hashes `[flight_id, marker]` for a phase, otherwise `[flight_id, prior_poll, event]` |
+| `schema_version` | Plain integer `3`, required on every row |
+| `id` | Required 32-character lowercase hex string; first 32 characters of SHA-256 over the canonical JSON `[sequence, notice_digest, event]`; an exact acknowledgement identity, not independent proof of a send |
+| `notice_digest` | Required 64-character lowercase SHA-256 hex string matching the map key; hashes `[flight_id, marker]` for a phase, otherwise `[flight_id, prior_poll, event]`. This is a derived notification identity. The explicit name prevents generic secret scanners from classifying the former `key` field as an API credential. |
 | `sequence` | Required positive integer no greater than the root sequence; identifies this observation's insertion or replacement order |
 | `prior_poll` | Required string or null; opaque source-poll identity used verbatim in delta deduplication, normally a `last_polled_at` RFC 3339 value. Single-flight events use the prior snapshot's poll; derived connection events use the downstream record's current poll. Null means no source-poll identity was available, including a first observation; it is not interpreted as a clock |
 | `flight_id` | Required integer or null; byAir flight ID for flight-specific observations. Null denotes an observation without an associated flight; the current poll owner offers flight IDs only |
@@ -386,7 +386,7 @@ The precheck persists notices before advancing their flight snapshots. A due att
 
 The model sends the notice with `send_message`, then acknowledges only the IDs covered by that successful send through `skills/flight-assist/scripts/confirm-notifications.py`. The helper sends nothing. A helper failure permits retrying the acknowledgement, not resending the same notice in that turn. The helper cannot independently verify a Telegram receipt; the owner workflow supplies the confirmed-send precondition. Delivery is at least once: a crash after Telegram accepts a send but before acknowledgement can produce a later duplicate.
 
-The new store takes the stateful-artifacts gate-store exception. Unknown versions, malformed records and unreadable files refuse with a repair diagnostic; they never become an empty store. Version 2 migrates accepted version-1 stores through the owner upgrade below. A future owner version must migrate every accepted older version and rewrite it on read. Missing state is first-run state. Readers are the precheck and acknowledgement helper; they use only the owner library.
+The store takes the stateful-artifacts gate-store exception. Unknown versions, malformed records and unreadable files refuse with a repair diagnostic; they never become an empty store. The owner accepts versions 1 and 2 through the explicit upgrades below, then writes version 3 on read under the existing lock. A future owner version must migrate every accepted older version and rewrite it on read. Missing state is first-run state. Readers are the precheck and acknowledgement helper; they use only the owner library from the same installed bundle. Older owners refuse version 3 and require the updated bundle; they must not clear its receipts.
 
 The existing per-flight schema remains version 7 with the same fields and gate values. Existing true flags remain consumed legacy attempts; the change creates no synthetic receipts and replays no historical alerts. New flags advance only from confirmed entries in the new store. The flags alone remain insufficient evidence that an old notification was delivered.
 
@@ -394,3 +394,7 @@ The existing per-flight schema remains version 7 with the same fields and gate v
 ### Notification store v1 → v2 migration
 
 The owner validates every version-1 root and row before an atomic upgrade under the existing store lock. It stamps root and retained rows with version 2, preserving sequence, exact IDs, retry clocks and every confirmed delivery receipt. Confirmed historical events may retain their version-1 payload without `missed`; they are consumed receipts, never new delivery candidates. Unconfirmed version-1 `time_to_leave` rows are discarded without setting a phase marker. A subsequent live precheck must regenerate them under current status, GPS and timely/missed gates before delivery. Other pending observations retain their identity and retry deadline. Unsupported or malformed versions refuse without replacing the original store.
+
+### Notification store v2 → v3 migration
+
+After complete version-2 validation, the owner renames only each row's `key` field to `notice_digest` and stamps the root and rows with version 3. Map keys, digest bytes, IDs, sequence, event payloads, markers, poll identities, expiry times, retry deadlines and confirmations remain unchanged. Migration invokes no delivery, acknowledgement, due selection or pruning. A version-1 store first receives the existing v1→v2 transformation and then this rename; the chain is written once through the owner's private temporary file and atomic replacement while holding `notifications.lock`. Invalid, mixed or future shapes and failed replacements preserve the original journal. Secret scanner rules and allowlists are unchanged.

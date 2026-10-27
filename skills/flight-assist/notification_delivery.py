@@ -1,6 +1,6 @@
 """Durable flight notice attempts and confirmed deliveries.
 
-The flight-assist owner alone writes notifications.json (schema 2). Its file
+The flight-assist owner alone writes notifications.json (schema 3). Its file
 lock spans a caller's read/modify/write cycle. Offering a notice persists it
 before the flight snapshot may advance; offering is never a delivery receipt.
 A due notice gets a retry deadline, and only confirm() consumes its exact id.
@@ -24,7 +24,7 @@ from typing import Any
 
 from state import state_dir
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 MAX_BYTES = 4 * 1024 * 1024
 MAX_NOTICES = 2048
 MAX_EVENT_BYTES = 8192
@@ -47,7 +47,7 @@ MUTABLE_OBSERVATION_REASONS = frozenset(
         "gate_change",
     }
 )
-_ROW_KEYS = frozenset(
+_LEGACY_ROW_KEYS = frozenset(
     {
         "schema_version",
         "id",
@@ -62,6 +62,7 @@ _ROW_KEYS = frozenset(
         "confirmed_at",
     }
 )
+_ROW_KEYS = (_LEGACY_ROW_KEYS - {"key"}) | {"notice_digest"}
 
 
 class DeliveryError(Exception):
@@ -96,6 +97,10 @@ def _digest(value: Any) -> str:
 
 
 def _validate(data: Any, *, version: int = SCHEMA_VERSION) -> dict[str, Any]:
+    if type(version) is not int or version not in (1, 2, 3):
+        raise ValueError("Unsupported notification validator version.")
+    row_keys = _ROW_KEYS if version == 3 else _LEGACY_ROW_KEYS
+    digest_field = "notice_digest" if version == 3 else "key"
     if not isinstance(data, dict) or set(data) != {"schema_version", "sequence", "notices"}:
         raise ValueError("Unsupported notification store shape.")
     if type(data["schema_version"]) is not int or data["schema_version"] != version:
@@ -108,7 +113,7 @@ def _validate(data: Any, *, version: int = SCHEMA_VERSION) -> dict[str, Any]:
     for key, row in data["notices"].items():
         if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9]{64}", key):
             raise ValueError("Invalid notification key.")
-        if not isinstance(row, dict) or set(row) != _ROW_KEYS or row["key"] != key:
+        if not isinstance(row, dict) or set(row) != row_keys or row[digest_field] != key:
             raise ValueError("Invalid notification record.")
         if type(row["schema_version"]) is not int or row["schema_version"] != version:
             raise ValueError("Unsupported notification record version.")
@@ -150,19 +155,30 @@ def _validate(data: Any, *, version: int = SCHEMA_VERSION) -> dict[str, Any]:
     return data
 
 
-def _migrate_v1(data: Any) -> dict[str, Any]:
+def _migrate_v1_to_v2(data: Any) -> dict[str, Any]:
     """Keep receipt identities; regenerate old pending leave notices from live data."""
     _validate(data, version=1)
     upgraded = json.loads(_json(data))
-    upgraded["schema_version"] = SCHEMA_VERSION
+    upgraded["schema_version"] = 2
     for key, row in list(upgraded["notices"].items()):
         if row["event"]["reason"] == "time_to_leave" and row["confirmed_at"] is None:
             # Version 1 cannot prove the new timely/missed or location gates.
             # The next precheck may offer a replacement after a live refresh.
             del upgraded["notices"][key]
         else:
-            row["schema_version"] = SCHEMA_VERSION
-    return _validate(upgraded)
+            row["schema_version"] = 2
+    return _validate(upgraded, version=2)
+
+
+def _migrate_v2_to_v3(data: Any) -> dict[str, Any]:
+    """Name the derived digest explicitly without changing receipt identities."""
+    _validate(data, version=2)
+    upgraded = json.loads(_json(data))
+    upgraded["schema_version"] = 3
+    for row in upgraded["notices"].values():
+        row["schema_version"] = 3
+        row["notice_digest"] = row.pop("key")
+    return _validate(upgraded, version=3)
 
 
 def _dependencies(row: dict) -> set[int]:
@@ -241,15 +257,15 @@ class DeliveryStore:
                 "and the active-flight index before retrying; do not erase receipts."
             )
         updated = json.loads(_json(self.data))
-        if previous is not None and previous["key"] != key:
-            del updated["notices"][previous["key"]]
+        if previous is not None and previous["notice_digest"] != key:
+            del updated["notices"][previous["notice_digest"]]
         sequence = updated["sequence"] + 1
         identity = _digest([sequence, key, event])[:32]
         updated["sequence"] = sequence
         updated["notices"][key] = {
             "schema_version": SCHEMA_VERSION,
             "id": identity,
-            "key": key,
+            "notice_digest": key,
             "sequence": sequence,
             "prior_poll": prior_poll,
             "flight_id": flight_id,
@@ -445,9 +461,14 @@ def notification_store(*, now_utc: datetime) -> Iterator[DeliveryStore]:
                     migrated = (
                         isinstance(decoded, dict)
                         and type(decoded.get("schema_version")) is int
-                        and decoded["schema_version"] == 1
+                        and decoded["schema_version"] in (1, 2)
                     )
-                    data = _migrate_v1(decoded) if migrated else _validate(decoded)
+                    if migrated:
+                        if decoded["schema_version"] == 1:
+                            decoded = _migrate_v1_to_v2(decoded)
+                        data = _migrate_v2_to_v3(decoded)
+                    else:
+                        data = _validate(decoded)
                 except (ValueError, TypeError, KeyError, RecursionError) as error:
                     raise DeliveryError(
                         f"Restore the supported notification store at {path}; "
