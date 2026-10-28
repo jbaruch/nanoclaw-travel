@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.2.166 — 2026-10-28
+
 ### Avoid invented meeting drives at conferences (#356)
 
 Explicit attendance dates, timezone and exact conference/venue labels suppress on-site meeting anchor drives without depending on hotel bookings or a static meeting-ID list. New booth meetings match only whole approved location labels or exact spaced-dash components; city/title substrings never establish attendance. Real bridges to outside venues remain. The private owner intake validates and atomically records planner inputs; absent data makes no attendance claim and malformed/unknown schemas stop the sweep before calendar writes.
