@@ -66,6 +66,7 @@ def _stub_live_clients(monkeypatch, reader, state_dir: Path) -> dict:
     # sweep's lodging side prunes the decision store on every run, so point
     # both at a throwaway directory, never the deployed state (#312).
     monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(state_dir))
 
     # The sweep reads `datetime.now(timezone.utc)` for its windows (policy
     # review on #311: freeze it, whatever the assertions read).

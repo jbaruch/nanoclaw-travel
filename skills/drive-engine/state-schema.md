@@ -16,10 +16,10 @@ Each on-disk file has one owner module that owns its schema (only it migrates `s
 
 ## State Directory
 
-- Production: `/workspace/state/drive-planner/`
-- Tests override via the `DRIVE_PLANNER_STATE_DIR` environment variable
+- New attendance input: `/workspace/state/drive-engine/`; tests use `DRIVE_ENGINE_STATE_DIR`.
+- Legacy stores below: `/workspace/state/drive-planner/`; tests use `DRIVE_PLANNER_STATE_DIR`.
 
-These files share this directory (`airport_facts_cache.py` and `drive_decision.py` reuse `skip_state.state_dir` as the single source of truth). The `drive-planner` name is deployed state, not a live reference — the store predates the #181 fold and renaming it would strand the skips already on disk. Rename only behind a migration.
+The legacy files share this directory (`airport_facts_cache.py` and `drive_decision.py` reuse `skip_state.state_dir` as the single source of truth). The `drive-planner` name is deployed state, not a live reference — the store predates the #181 fold and renaming it would strand the skips already on disk. Rename only behind a migration.
 
 ## Files
 

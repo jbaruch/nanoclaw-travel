@@ -205,7 +205,7 @@ def test_real_external_bridges_and_return_survive_onsite_neighbor():
 
 
 def test_store_upsert_missing_future_and_cli(tmp_path, monkeypatch):
-    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(tmp_path))
     assert load_attendances() == ()
     record_attendance(_row())
     record_attendance(_row(id="other", starts_on="2020-08-01", ends_on="2020-08-02"))
@@ -280,7 +280,7 @@ def test_missing_or_nonstring_native_ids_never_establish_presence():
 
 
 def test_withdrawn_labels_and_symlinked_store(tmp_path, monkeypatch):
-    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(tmp_path))
     record_attendance(_row())
     record_attendance(_row(venue_locations=[]))
     assert not load_attendances()[0].covers("native", LABEL, NOW, NOW + timedelta(hours=1))
@@ -336,3 +336,127 @@ def test_onsite_neighbor_keeps_postarrival_external_return_suppressed():
     assert len(lifted) == 1
     assert lifted[0].identity == "external"
     assert lifted[0].return_suppressed is True
+
+
+def test_new_store_namespace_does_not_adopt_legacy_file(tmp_path, monkeypatch):
+    legacy, current = tmp_path / "legacy", tmp_path / "engine"
+    legacy.mkdir()
+    (legacy / "conference-attendance.json").write_bytes(_payload(_row()))
+    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(legacy))
+    monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(current))
+    assert load_attendances() == ()
+    record_attendance(_row())
+    assert (current / "conference-attendance.json").is_file()
+    assert (legacy / "conference-attendance.json").read_bytes() == _payload(_row())
+
+
+def test_writer_verifies_numeric_owner_and_modes_on_new_and_replaced_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(tmp_path / "engine"))
+    for row in (_row(), _row(venue_locations=["Replacement Label"])):
+        record_attendance(row)
+        for name, mode in (
+            ("", 0o700),
+            (".conference-attendance.lock", 0o600),
+            ("conference-attendance.json", 0o600),
+        ):
+            info = (tmp_path / "engine" / name).stat()
+            assert (info.st_uid, info.st_gid) == (os.geteuid(), os.getegid())
+            assert info.st_mode & 0o777 == mode
+        assert load_attendances() == (parse_attendance(row),)
+
+
+def test_root_writer_refuses_before_creating_any_state(tmp_path, monkeypatch):
+    import conference_attendance as owner
+
+    directory = tmp_path / "engine"
+    monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(directory))
+    monkeypatch.setattr(owner.os, "geteuid", lambda: 0)
+    with pytest.raises(AttendanceError, match="Refusing root"):
+        record_attendance(_row())
+    assert not directory.exists()
+
+
+def test_lock_mode_and_multiply_linked_state_are_refused_without_overwrite(tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(tmp_path))
+    lock = tmp_path / ".conference-attendance.lock"
+    lock.touch(mode=0o644)
+    with pytest.raises(AttendanceError, match="ownership/mode/type"):
+        record_attendance(_row())
+    assert not (tmp_path / "conference-attendance.json").exists()
+    lock.chmod(0o600)
+    record_attendance(_row())
+    path = tmp_path / "conference-attendance.json"
+    original = path.read_bytes()
+    os.link(path, tmp_path / "hardlink")
+    with pytest.raises(AttendanceError):
+        record_attendance(_row(venue_locations=["Changed"]))
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("fault", ["mode", "uid", "gid"])
+def test_final_reopened_descriptor_mismatch_never_reports_success(tmp_path, monkeypatch, fault):
+    import conference_attendance as owner
+
+    monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(tmp_path))
+    record_attendance(_row())
+    real_replace, real_fstat = owner.os.replace, owner.os.fstat
+    replaced = False
+
+    def replace(*args, **kwargs):
+        nonlocal replaced
+        real_replace(*args, **kwargs)
+        replaced = True
+        if fault == "mode":
+            (tmp_path / "conference-attendance.json").chmod(0o644)
+
+    def fstat(fd):
+        info = real_fstat(fd)
+        final = (tmp_path / "conference-attendance.json").stat()
+        if replaced and info.st_ino == final.st_ino and fault in {"uid", "gid"}:
+            values = list(info)
+            values[4 if fault == "uid" else 5] += 1
+            return os.stat_result(values)
+        return info
+
+    monkeypatch.setattr(owner.os, "replace", replace)
+    monkeypatch.setattr(owner.os, "fstat", fstat)
+    with pytest.raises(AttendanceError, match="ownership/mode/type"):
+        record_attendance(_row(venue_locations=["Updated"]))
+    assert not list(tmp_path.glob(".conference-attendance.*[0-9a-f]"))
+
+
+def test_cli_diagnostics_distinguish_input_state_permission_and_write_failure(
+    tmp_path, monkeypatch, capsys
+):
+    import io
+
+    import record_attendance as cli
+
+    monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.sys, "argv", ["record_attendance.py"])
+
+    def invoke(raw):
+        monkeypatch.setattr(cli.sys, "stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8"))
+        assert cli.main() == 1
+        output = capsys.readouterr()
+        assert json.loads(output.out)["recorded"] is False
+        assert "private-value" not in output.out + output.err
+        return output.err
+
+    assert "phase=request_decode" in invoke(b"private-value")
+    path = tmp_path / "conference-attendance.json"
+    path.write_bytes(b"private-value")
+    path.chmod(0o600)
+    assert "phase=state_upsert" in invoke(_payload(_row()))
+    assert path.read_bytes() == b"private-value"
+    for failure, expected in (
+        (PermissionError(13, "private-value"), "errno=13"),
+        (OSError(5, "private-value"), "errno=5"),
+        (RuntimeError("private-value"), "cause=RuntimeError"),
+    ):
+
+        def fail(_row, problem=failure):
+            raise problem
+
+        monkeypatch.setattr(cli, "record_attendance", fail)
+        assert expected in invoke(_payload(_row()))

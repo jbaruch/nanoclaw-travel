@@ -1,6 +1,6 @@
 # Conference attendance planner input
 
-Owner: `jbaruch/nanoclaw-travel` drive-engine, module `conference_attendance.py`. Fixed artifact: `/workspace/state/drive-planner/conference-attendance.json`. `DRIVE_PLANNER_STATE_DIR` is the existing development/test override. No other skill writes this artifact directly.
+Owner: `jbaruch/nanoclaw-travel` drive-engine, module `conference_attendance.py`. Fixed artifact: `/workspace/state/drive-engine/conference-attendance.json`. `DRIVE_ENGINE_STATE_DIR` is the existing development/test override. No other skill writes this artifact directly.
 
 ## Grounding and intake
 
@@ -29,9 +29,11 @@ The checkout equivalent is `python3 skills/drive-engine/record_attendance.py`; n
 
 All fields are required and unknown fields are refused. `id` is a stable owner-selected occurrence identifier, at most 300 characters, not a fabricated calendar ID. Dates are canonical ISO dates, inclusive, with start no later than end; `9999-12-31` is refused to keep the exclusive end boundary representable. The timezone must resolve through `zoneinfo`. Labels are bounded literal strings, at most 1,000 characters each, with no controls or invalid Unicode; normalized duplicates are refused. At most 64 labels fit one row. An empty label list explicitly withdraws that occurrence's matching without deleting its record. Never select a city-only label; a city never proves conference attendance.
 
-The writer upserts that ID, preserving every other row. Reuse the same ID to correct dates/labels or withdraw a row. Writes hold the separate `.conference-attendance.lock`, validate prior state, write a private temporary file, fsync and atomically replace. New state/lock files have mode 0600. The full stored envelope carries the same schema and an array of at most 128 uniquely identified rows, bounded to 256 KiB. Missing state starts empty. Duplicate JSON keys, corrupt/unknown schemas, unreadable/nonregular/symlinked state or invalid rows stop read and write; no fallback resets the file. Version 1 is initial, with no older migration. A later owner version must supply its migration before accepting older input.
+Before host-invoked intake, the host operator resolves current runtime `HOST_UID`/`HOST_GID` and checks the container's effective user. Run the utility as that normalized agent identity. The utility takes no caller UID/GID flags or identity environment overrides; it reads `os.geteuid()`/`os.getegid()` and refuses root. It verifies held directory/lock/temporary/final descriptors against that identity, directory mode 0700 and file modes 0600, refuses symlinks/multiple links/special files and device changes, and verifies final replacement identity and exact readback. A root-level execution is not acceptance evidence.
 
-Success stdout is `{"schema_version":1,"recorded":true,"id":"..."}`, exit 0. Failure stdout is schema 1 with `recorded:false` and a fixed repair diagnostic, plus stderr and nonzero exit. The CLI accepts bounded UTF-8 JSON stdin only and never echoes labels or source data on failure.
+The writer upserts that ID, preserving every other row. Reuse the same ID to correct dates/labels or withdraw a row. Writes hold the separate `.conference-attendance.lock`, validate prior state, write a private temporary file, fsync and atomically replace. New state/lock files have mode 0600. The full stored envelope carries the same schema and an array of at most 128 uniquely identified rows, bounded to 256 KiB. Missing state starts empty. Duplicate JSON keys, corrupt/unknown schemas, unreadable/nonregular/symlinked state or invalid rows stop read and write; no fallback resets the file. Version 1 is initial and was never installed under the legacy drive-planner namespace, with no older migration. A later owner version must supply its migration before accepting older input.
+
+Success stdout is `{"schema_version":1,"recorded":true,"id":"..."}`, exit 0. Failure stdout is schema 1 with `recorded:false` and a fixed repair diagnostic, plus stderr and nonzero exit. Stderr identifies `request_decode` versus `state_upsert`, the exception category, fixed owner validation cause or numeric filesystem errno and a repair action. It never prints raw exception text, input values or private filenames. The CLI accepts bounded UTF-8 JSON stdin only and never echoes labels or source data on failure.
 
 ## Sweep matching
 

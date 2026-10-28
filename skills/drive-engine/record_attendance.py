@@ -10,10 +10,11 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from conference_attendance import MAX_BYTES, decode_store, record_attendance  # noqa: E402
+from conference_attendance import MAX_BYTES, AttendanceError, decode_store, record_attendance  # noqa: E402
 
 
 def main() -> int:
+    phase = "request_decode"
     try:
         if len(sys.argv) != 1:
             raise ValueError("no arguments")
@@ -22,6 +23,7 @@ def main() -> int:
         if len(rows) != 1:
             raise ValueError("one row required")
         row = rows[0]
+        phase = "state_upsert"
         record_attendance(
             {
                 "id": row.id,
@@ -33,7 +35,7 @@ def main() -> int:
         )
     # outer-boundary-process-contract: the skill consumes structured stdout;
     # emit a fixed error plus stderr, as a traceback would break its JSON contract.
-    except Exception:
+    except Exception as exc:
         print(
             json.dumps(
                 {
@@ -43,8 +45,17 @@ def main() -> int:
                 }
             )
         )
+        if isinstance(exc, AttendanceError):
+            cause = str(exc)  # Fixed owner messages contain no input values or paths.
+        elif isinstance(exc, OSError):
+            cause = f"filesystem errno={exc.errno}; verify agent access and storage health"
+        elif isinstance(exc, ValueError):
+            cause = "invalid intake envelope; provide exactly one row and no arguments"
+        else:
+            cause = "unexpected owner failure; inspect the installed utility before retrying"
         print(
-            "Attendance intake failed; verify the documented input and owner state", file=sys.stderr
+            f"Attendance intake failed phase={phase} cause={type(exc).__name__}: {cause}",
+            file=sys.stderr,
         )
         return 1
     print(json.dumps({"schema_version": 1, "recorded": True, "id": row.id}))

@@ -9,22 +9,20 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import secrets
 import stat
-import sys
-import tempfile
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-_BUNDLE_DIR = Path(__file__).resolve().parent
-if str(_BUNDLE_DIR) not in sys.path:
-    sys.path.insert(0, str(_BUNDLE_DIR))
-
-from skip_state import state_dir  # noqa: E402
-
 MAX_BYTES = 256 * 1024
 _FILENAME = "conference-attendance.json"
+
+
+def state_dir() -> Path:
+    """New drive-engine state; legacy drive-planner stores stay in their namespace."""
+    return Path(os.environ.get("DRIVE_ENGINE_STATE_DIR", "/workspace/state/drive-engine"))
 
 
 class AttendanceError(ValueError):
@@ -143,51 +141,158 @@ def decode_store(raw: bytes) -> tuple[Attendance, ...]:
     return parsed
 
 
-def load_attendances() -> tuple[Attendance, ...]:
-    path = state_dir() / _FILENAME
+def _identity() -> tuple[int, int]:
+    """Host callers resolve runtime config first; this is its effective agent user."""
+    identity = os.geteuid(), os.getegid()
+    if identity[0] == 0:
+        raise AttendanceError(
+            "Refusing root writer; invoke as the runtime's normalized agent UID/GID"
+        )
+    return identity
+
+
+def _verify(info, identity, mode: int, *, directory: bool = False, device=None) -> None:
+    kind_ok = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    if (
+        not kind_ok
+        or (not directory and info.st_nlink != 1)
+        or (info.st_uid, info.st_gid) != identity
+        or stat.S_IMODE(info.st_mode) != mode
+        or (device is not None and info.st_dev != device)
+    ):
+        raise AttendanceError(
+            "Attendance ownership/mode/type mismatch; repair only the verified agent path"
+        )
+
+
+def _read_at(directory_fd: int, identity=None) -> tuple[Attendance, ...]:
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(_FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
     except FileNotFoundError:
         return ()
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise AttendanceError("Attendance store is not a regular file; repair its owner path")
+        info = os.fstat(fd)
+        if identity is not None:
+            _verify(info, identity, 0o600, device=os.fstat(directory_fd).st_dev)
+        elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise AttendanceError(
+                "Attendance store is not a single-link regular file; repair its owner path"
+            )
         with os.fdopen(fd, "rb", closefd=False) as handle:
             return decode_store(handle.read(MAX_BYTES + 1))
     finally:
         os.close(fd)
 
 
+def load_attendances() -> tuple[Attendance, ...]:
+    try:
+        directory_fd = os.open(state_dir(), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return ()
+    try:
+        return _read_at(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def record_attendance(value: object) -> Attendance:
-    """Upsert one grounded row, preserving every other row under a private lock."""
+    """Upsert one grounded row under a verified directory/lock; never run as root."""
     row = parse_attendance(value)
+    identity = _identity()
     directory = state_dir()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(
-        directory / ".conference-attendance.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
-    )
+    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise AttendanceError("Attendance lock is not a regular file; repair its owner path")
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        prior = load_attendances()  # Unknown/corrupt data is never overwritten.
-        rows = [asdict(item) for item in prior if item.id != row.id] + [asdict(row)]
-        raw = json.dumps({"schema_version": 1, "attendances": rows}, ensure_ascii=False).encode(
-            "utf-8"
+        directory_info = os.fstat(directory_fd)
+        _verify(directory_info, identity, 0o700, directory=True)
+        lock_name = ".conference-attendance.lock"
+        lock_fd = os.open(
+            lock_name,
+            os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK,
+            0o600,
+            dir_fd=directory_fd,
         )
-        decode_store(raw)
-        tmp_fd, tmp = tempfile.mkstemp(dir=directory, prefix=".conference-attendance.")
         try:
-            with os.fdopen(tmp_fd, "wb") as handle:
-                handle.write(raw)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, directory / _FILENAME)
+            _verify(os.fstat(lock_fd), identity, 0o600, device=directory_info.st_dev)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            prior = _read_at(directory_fd, identity)  # Never overwrite unknown/corrupt data.
+            rows = [asdict(item) for item in prior if item.id != row.id] + [asdict(row)]
+            raw = json.dumps({"schema_version": 1, "attendances": rows}, ensure_ascii=False).encode(
+                "utf-8"
+            )
+            decode_store(raw)
+            # Exclusive creation and rename both use the held directory, not a
+            # pathname re-resolution between validation and the private write.
+            tmp = ".conference-attendance." + secrets.token_hex(16)
+            tmp_fd = os.open(
+                tmp,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            temporary_exists = True
+            written = None
+            try:
+                written = os.fstat(tmp_fd)
+                _verify(written, identity, 0o600, device=directory_info.st_dev)
+                with os.fdopen(tmp_fd, "wb", closefd=False) as handle:
+                    handle.write(raw)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp, _FILENAME, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+                temporary_exists = False
+                os.fsync(directory_fd)
+                final_fd = os.open(
+                    _FILENAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd
+                )
+                try:
+                    final = os.fstat(final_fd)
+                    _verify(final, identity, 0o600, device=directory_info.st_dev)
+                    if (final.st_dev, final.st_ino) != (written.st_dev, written.st_ino):
+                        raise AttendanceError(
+                            "Attendance replacement changed; inspect concurrent writers"
+                        )
+                    with os.fdopen(final_fd, "rb", closefd=False) as handle:
+                        if handle.read(MAX_BYTES + 1) != raw:
+                            raise AttendanceError(
+                                "Attendance readback differs; inspect concurrent writers"
+                            )
+                    _verify(os.fstat(final_fd), identity, 0o600, device=directory_info.st_dev)
+                finally:
+                    os.close(final_fd)
+                actual_dir = directory.stat(follow_symlinks=False)
+                lock = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
+                if (actual_dir.st_dev, actual_dir.st_ino) != (
+                    directory_info.st_dev,
+                    directory_info.st_ino,
+                ) or (lock.st_dev, lock.st_ino) != (
+                    os.fstat(lock_fd).st_dev,
+                    os.fstat(lock_fd).st_ino,
+                ):
+                    raise AttendanceError(
+                        "Attendance directory/lock changed; inspect concurrent writers"
+                    )
+                _verify(os.fstat(lock_fd), identity, 0o600, device=directory_info.st_dev)
+                _verify(
+                    os.fstat(directory_fd),
+                    identity,
+                    0o700,
+                    directory=True,
+                    device=directory_info.st_dev,
+                )
+            finally:
+                os.close(tmp_fd)
+                if temporary_exists and written is not None:
+                    temporary = os.stat(tmp, dir_fd=directory_fd, follow_symlinks=False)
+                    if (temporary.st_dev, temporary.st_ino) != (written.st_dev, written.st_ino):
+                        raise AttendanceError(
+                            "Attendance temporary changed; inspect concurrent writers"
+                        )
+                    os.unlink(tmp, dir_fd=directory_fd)
         finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
+            os.close(lock_fd)
     finally:
-        os.close(fd)
+        os.close(directory_fd)
     return row
 
 
