@@ -387,15 +387,17 @@ def meeting_anchor(itinerary: Itinerary, at: datetime) -> tuple[str | None, str 
 
     `position_at` falls back to the trip-city centroid on an arrival day before
     nominal check-in. When the trip's ground period has addressable lodging that
-    is the anchor instead (#350): the centroid is never a meeting endpoint while
-    a hotel address exists. A covering stay without an address keeps the annotated
-    fallback, and between two stays no later hotel is guessed.
+    is the anchor instead (#350). With no addressable lodging the meeting anchor
+    is unresolved (#356): a trip's city describes the trip, not a place to drive
+    from. Between stays no later hotel is guessed. The general itinerary fallback
+    remains available to its other consumers.
     """
     anchor = itinerary.position_at(at)
     if anchor.source == TRIP_LOCATION:
         lodging = itinerary.addressable_lodging_in_period(at)
-        if lodging is not None:
-            anchor = lodging
+        if lodging is None:
+            return None, "trip has no addressable lodging — meeting anchor unresolved"
+        anchor = lodging
     return anchor.address, anchor.detail
 
 
@@ -1245,6 +1247,7 @@ def _run_sweep() -> dict:
     from airport_drive_inputs import airport_context
     from byair_client import ByAirClient, ByAirError
     from calendar_reconcile import _find_events_args, _items
+    from conference_attendance import load_attendances
     from fetch_events import CalendarFetcher
     from google_calendar_client import GoogleCalendarClient
     from home_address import HomeAddressError, read_current_home
@@ -1385,6 +1388,7 @@ def _run_sweep() -> dict:
     meeting_held: list[HeldLeg] = []
     operator_zone: str | None = None
     postarrival_meetings: list[PostarrivalMeeting] = []
+    attendances = load_attendances()
     if home:
         fetcher = CalendarFetcher()
         events = exclude_drive_block_events(
@@ -1411,6 +1415,7 @@ def _run_sweep() -> dict:
             anchor_for=anchor_for,
             flight_windows=[],
             flight_summaries=[],
+            attendances=attendances,
         )
         # A trip the operator DRIVES to is resolved before the meeting side, so
         # that trip's own events are spared the away-suppression: with a

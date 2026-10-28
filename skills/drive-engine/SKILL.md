@@ -50,3 +50,7 @@ Reply in one message. Finish here.
 ## Step 3 — Flag a block that looks wrong
 
 Run this when a block looks like an engine bug — a drive for a meeting you are travelling away from, a wrong-timezone block, a missing drive for a real trip. Send one message via `mcp__nanoclaw__send_message` naming the block's summary and leg identity (e.g. `meeting_outbound mtg123` or `airport_departure BNA-STN-...`) and what looks wrong, so it can be fixed in code. Never edit the calendar by hand to compensate. Finish here.
+
+## Step 4 — Record grounded conference attendance
+
+Run this when the owner confirms attendance or the existing travel intake has actual owner/trip/calendar evidence for the conference days and venue labels. Read [attendance-contract.md](attendance-contract.md) in full, select only those grounded dates and exact location labels, and invoke its owner intake. Record no attendance from a city or title guess. Do not call a provider or change calendar events in this step. Finish here.

@@ -19,7 +19,7 @@ if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
 from block_codec import GEN_LEGACY_DP, GEN_UNIFIED, ParsedBlock  # noqa: E402
-from meeting_source import DEFAULT_MAX_REASONABLE_DRIVE  # noqa: E402
+from meeting_source import DEFAULT_MAX_REASONABLE_DRIVE, MIN_MEETING_DRIVE  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
 from scan import DEFAULT_TIGHT_GAP_SECONDS, same_place  # noqa: E402
 
@@ -149,6 +149,10 @@ def postarrival_meetings_from(
 
     out: list[PostarrivalMeeting] = []
     for meeting in eligible:
+        if getattr(meeting, "attendance_id", None) is not None:
+            # Keep on-site events as physical neighbors above, but never
+            # regenerate their suppressed airport-to-meeting/return drives.
+            continue
         identity = getattr(meeting, "meeting_id", None)
         start = getattr(meeting, "start", None)
         end = getattr(meeting, "end", None)
@@ -497,6 +501,12 @@ def _apply_handoff(
     if need_return and (ret_drive is None or return_dest is None):
         diagnostics.append(f"postarrival {meeting.identity}: venue-to-lodging route failed")
         return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
+
+    if ret_drive is not None and ret_drive <= MIN_MEETING_DRIVE:
+        need_return = False
+        diagnostics.append(
+            f"postarrival {meeting.identity}: return at or below one minute — no drive"
+        )
 
     if (
         ret_drive is not None

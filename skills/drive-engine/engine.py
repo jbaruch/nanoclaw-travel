@@ -49,7 +49,7 @@ from block_codec import canonical_flight_key, leg_identity  # noqa: E402
 from chain import LegKind, plan_chain_legs  # noqa: E402
 from chain_builder import build_pair_contexts, group_into_chains  # noqa: E402
 from flight_identity import Flight, MergedFlight, merge_flights  # noqa: E402
-from itinerary import CANCELLED, DIVERTED, Itinerary, Transport  # noqa: E402
+from itinerary import CANCELLED, DIVERTED, TRIP_LOCATION, Itinerary, Transport  # noqa: E402
 from leg_anchor import (  # noqa: E402
     AirportFacts,
     BufferOverrides,
@@ -557,7 +557,10 @@ def build_reconcile_plan(
             return pos.address if pos is not None else None
 
         def fallback_lookup(at: datetime) -> str | None:
-            return itinerary.position_at(at).address
+            # This fallback is a MEETING return, not the ordinary airport leg.
+            # A trip city cannot supply a drivable meeting endpoint (#356).
+            position = itinerary.position_at(at)
+            return None if position.source == TRIP_LOCATION else position.address
 
         desired, held, post_diags = compose_postarrival(
             guards=guards,

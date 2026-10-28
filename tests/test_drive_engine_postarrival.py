@@ -309,17 +309,18 @@ def test_handoff_and_return_avoid_trip_city_when_lodging_exists():
     assert ret.destination == HOTEL
 
 
-# --- case 5: no lodging keeps trip-location fallback -------------------------
+# --- case 5: no lodging cannot supply a meeting return endpoint --------------
 
 
-def test_no_lodging_keeps_trip_location_on_return():
+def test_no_lodging_does_not_invent_a_trip_city_meeting_return():
     result = _plan(schedule=_schedule(lodging=False))
     created = _created(result)
     arrival = next(b for b in created if b.kind == "airport_arrival")
-    ret = next(b for b in created if b.kind == "meeting_return")
+    # The ordinary airport fallback stays owned by the airport planner; the
+    # meeting composer cannot borrow the city as a return destination.
     assert arrival.origin == "DEN airport"
-    assert arrival.destination == VENUE
-    assert ret.destination == CITY
+    assert arrival.destination == CITY
+    assert not any(b.kind in {"meeting_outbound", "meeting_return"} for b in created)
 
 
 # --- case 6: existing bad unified blocks -------------------------------------
@@ -986,10 +987,8 @@ def test_scan_covering_unaddressed_stay_does_not_return_to_later_hotel():
     )
     created = _created(result)
     arrival = next(b for b in created if b.kind == "airport_arrival")
-    assert arrival.destination == VENUE
-    ret = next(b for b in created if b.kind == "meeting_return")
-    assert ret.destination != "Boulder Lodge Address"
-    assert ret.destination == CITY
+    assert arrival.destination == CITY
+    assert not any(b.kind == "meeting_return" for b in created)
 
 
 # --- N1: reachability is judged per candidate before ambiguity ----------------
@@ -1291,17 +1290,17 @@ def test_scan_arrival_day_meeting_before_checkin_uses_addressed_lodging_not_cent
         assert all(CITY not in (origin, dest) for _, origin, dest in legs)
 
 
-def test_meeting_anchor_keeps_covering_stay_and_trip_location_without_lodging():
+def test_meeting_anchor_keeps_covering_stay_but_refuses_trip_city_without_lodging():
     covering = Itinerary(_schedule(), home_address=HOME, home_airports=frozenset({"BNA"}))
     assert meeting_anchor(covering, _dt(23, 0))[0] == HOTEL
     nameless = Itinerary(
         _covering_unaddressed_schedule(), home_address=HOME, home_airports=frozenset({"BNA"})
     )
-    assert meeting_anchor(nameless, _dt(23, 0))[0] == CITY
+    assert meeting_anchor(nameless, _dt(23, 0))[0] is None
     no_lodging = Itinerary(
         _schedule(lodging=False), home_address=HOME, home_airports=frozenset({"BNA"})
     )
-    assert meeting_anchor(no_lodging, _dt(23, 0))[0] == CITY
+    assert meeting_anchor(no_lodging, _dt(23, 0))[0] is None
 
 
 def test_meeting_anchor_does_not_pick_a_later_hotel_after_an_unaddressed_stay():
@@ -1334,7 +1333,7 @@ def test_meeting_anchor_does_not_pick_a_later_hotel_after_an_unaddressed_stay():
         ]
     )
     itinerary = Itinerary(schedule, home_address=HOME, home_airports=frozenset({"BNA"}))
-    assert meeting_anchor(itinerary, _dt(12, 0, day=14))[0] == CITY
+    assert meeting_anchor(itinerary, _dt(12, 0, day=14))[0] is None
 
 
 def test_scan_overlap_ending_before_arrival_does_not_suppress_hotel_return():
@@ -1472,3 +1471,11 @@ def test_scan_lift_carries_only_confirmed_driving_trip_membership():
     assert not postarrival_meetings_from(meetings)[0].driving_to
     assert postarrival_meetings_from(meetings, driving_to=frozenset({"drive"}))[0].driving_to
     assert not postarrival_meetings_from(meetings, driving_to=frozenset({"other"}))[0].driving_to
+
+
+def test_postarrival_does_not_recreate_a_one_minute_meeting_return():
+    result = _plan(
+        route=_route({("DEN airport", VENUE): 37, ("DEN airport", HOTEL): 37, (VENUE, HOTEL): 1})
+    )
+    assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in _created(result))
+    assert not any(b.kind == "meeting_return" for b in _created(result))
