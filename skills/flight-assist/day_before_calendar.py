@@ -27,6 +27,7 @@ stdlib-only per `coding-policy: dependency-management`.
 
 from __future__ import annotations
 
+import re
 import sys
 from datetime import date, datetime, timedelta, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -38,9 +39,15 @@ CONFLICT_MARGIN = timedelta(hours=3)
 
 _DISPLAY_FORMAT = "%a %b %d, %H:%M"
 # https://github.com/jbaruch/nanoclaw-travel/issues/354 defines this closed
-# nine-cue substring contract. It does not classify broader intent or negation.
+# nine-cue whole-phrase contract. It does not classify broader intent or negation.
 _WINDOW_DESCRIPTION_CUES = ("open window", "stop by", "drop in", "drop by", "at your convenience")
 _WINDOW_TITLE_CUES = ("sound check", "soundcheck", "tech check", "stage check")
+_WINDOW_DESCRIPTION_PATTERN = re.compile(
+    r"(?<!\w)(?:" + "|".join(re.escape(cue) for cue in _WINDOW_DESCRIPTION_CUES) + r")(?!\w)"
+)
+_WINDOW_TITLE_PATTERN = re.compile(
+    r"(?<!\w)(?:" + "|".join(re.escape(cue) for cue in _WINDOW_TITLE_CUES) + r")(?!\w)"
+)
 
 
 def _window_event(event: dict) -> bool:
@@ -48,8 +55,8 @@ def _window_event(event: dict) -> bool:
     description, title = event.get("description"), event.get("summary")
     return (
         isinstance(description, str)
-        and any(cue in description.casefold() for cue in _WINDOW_DESCRIPTION_CUES)
-    ) or (isinstance(title, str) and any(cue in title.casefold() for cue in _WINDOW_TITLE_CUES))
+        and _WINDOW_DESCRIPTION_PATTERN.search(description.casefold()) is not None
+    ) or (isinstance(title, str) and _WINDOW_TITLE_PATTERN.search(title.casefold()) is not None)
 
 
 def _parse_instant(raw: object) -> datetime | None:

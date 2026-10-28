@@ -542,6 +542,36 @@ def test_each_title_window_cue_ignores_a_reachable_start(summary):
     assert listed == []
 
 
+@pytest.mark.parametrize(
+    ("summary", "description"),
+    [
+        ("Fintech check-in", ""),
+        ("Backstage check-in", ""),
+        ("Planning meeting", "backdrop installed"),
+        ("Planning meeting", "drop information"),
+        ("Planning meeting", "drop  in"),
+        ("Tech\tcheck", ""),
+    ],
+)
+def test_embedded_words_and_different_spacing_remain_ordinary_meetings(summary, description):
+    listed, _ = calendar_conflicts(
+        [_drop_in(summary=summary, description=description)],
+        window=conflict_window(_WINDOW_STATE),
+        zone=None,
+    )
+    assert len(listed) == 1
+    assert listed[0]["window"] is False
+
+
+def test_whole_configured_phrase_still_matches_inside_a_longer_description():
+    listed, _ = calendar_conflicts(
+        [_drop_in(description="Bus stop by the venue.")],
+        window=conflict_window(_WINDOW_STATE),
+        zone=None,
+    )
+    assert listed == []
+
+
 def test_script_uses_the_published_effective_arrival_for_window_reachability(capsys):
     client = FakeCalendar(items=[_drop_in()])
     state = {
