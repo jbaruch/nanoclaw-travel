@@ -370,7 +370,7 @@ All root and notice fields below are required; omitted fields have no defaults i
 | `retry_at` | Required timezone-aware RFC 3339 string or null; null means no attempt has been emitted and the observation is immediately eligible subject to freshness/expiry. Emitting an attempt sets now plus 300 seconds; an unexpired replacement retains that deadline |
 | `confirmed_at` | Required timezone-aware RFC 3339 string or null; null means no acknowledged successful send. Exact-ID acknowledgement sets the owner's confirmation clock; repeated acknowledgement preserves the original value |
 
-Canonical JSON uses sorted keys, compact separators and UTF-8 without nonfinite numbers. The whole file is bounded to 4 MiB. The store validates row shape, identity binding, timestamp formats and bounds; event consumers follow the referenced per-reason payload contract.
+Canonical JSON uses sorted keys, compact separators and UTF-8 without nonfinite numbers. Legacy versions 1 and 2 are bounded to 4,194,304 bytes; schema 3 is bounded to 4,214,784 bytes, including the fixed rename allowance documented below. The store validates row shape, identity binding, timestamp formats and bounds; event consumers follow the referenced per-reason payload contract.
 
 | Event reason | `marker` value |
 |---|---|
