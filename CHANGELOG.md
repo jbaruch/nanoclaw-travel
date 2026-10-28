@@ -4,7 +4,7 @@
 
 Explicit attendance dates, timezone and exact conference/venue labels suppress on-site meeting anchor drives without depending on hotel bookings or a static meeting-ID list. New booth meetings match only whole approved location labels or exact spaced-dash components; city/title substrings never establish attendance. Real bridges to outside venues remain. The private owner intake validates and atomically records planner inputs; absent data makes no attendance claim and malformed/unknown schemas stop the sweep before calendar writes.
 
-Meeting anchors no longer borrow a trip-city centroid when lodging is missing. Routed meeting legs at or below one minute produce no block or added-drive notice, including returns regenerated after landing. Ordinary airport fallback and flight guards remain intact.
+Meeting anchors no longer borrow a trip-city centroid when lodging is missing. Routed meeting legs at or below one minute produce no block or added-drive notice, including meeting handoffs and returns regenerated after landing. A no-drive arrival handoff retains the genuine later hotel return. Ordinary airport fallback and flight guards remain intact.
 
 
 ## 0.2.165 — 2026-10-28

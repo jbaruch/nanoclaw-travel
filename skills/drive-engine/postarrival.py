@@ -519,6 +519,12 @@ def _apply_handoff(
         )
         return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
 
+    no_arrival_drive = drive <= MIN_MEETING_DRIVE
+    if no_arrival_drive:
+        unsafe.add((guard.identity, "airport_arrival"))
+        diagnostics.append(
+            f"postarrival {meeting.identity}: arrival at or below one minute — no drive"
+        )
     rewritten: list[DesiredBlock] = []
     found_return = False
     for block in desired:
@@ -526,6 +532,8 @@ def _apply_handoff(
             unsafe.add(_key(block))
             continue
         if block.kind == "airport_arrival" and block.identity == guard.identity:
+            if no_arrival_drive:
+                continue
             rewritten.append(
                 replace(
                     block,

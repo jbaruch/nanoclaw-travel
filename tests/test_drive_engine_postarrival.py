@@ -13,6 +13,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
@@ -1479,3 +1481,21 @@ def test_postarrival_does_not_recreate_a_one_minute_meeting_return():
     )
     assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in _created(result))
     assert not any(b.kind == "meeting_return" for b in _created(result))
+
+
+@pytest.mark.parametrize("minutes", [0, 1])
+def test_tiny_airport_meeting_handoff_keeps_only_genuine_hotel_return(minutes):
+    result = _plan(
+        route=_route(
+            {("DEN airport", VENUE): minutes, ("DEN airport", HOTEL): 37, (VENUE, HOTEL): 24}
+        )
+    )
+    created = _created(result)
+    assert not any(b.kind == "airport_arrival" for b in created)
+    assert not any(b.kind == "meeting_outbound" for b in created)
+    returns = [b for b in created if b.kind == "meeting_return"]
+    assert len(returns) == 1
+    assert returns[0].origin == VENUE
+    assert returns[0].destination == HOTEL
+    assert returns[0].baseline_seconds == 24 * 60
+    assert returns[0].start == MEETING_END
