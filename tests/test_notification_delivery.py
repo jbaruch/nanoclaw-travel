@@ -494,3 +494,75 @@ def test_current_notice_rows_refuse_a_legacy_key_field(store_root):
         with notification_store(now_utc=NOW):
             pytest.fail("Mixed current and legacy fields must refuse")
     assert path.read_text() == raw
+
+
+def near_limit_v2_store():
+    """An owner-valid canonical v2 journal just below its original 4MiB bound."""
+    import notification_delivery as owner
+
+    def build(width):
+        notices = {}
+        for index in range(1, 513):
+            event = {"reason": "delay", "detail": "x" * width}
+            digest = owner._digest([index, None, event])
+            notices[digest] = {
+                "schema_version": 2,
+                "id": owner._digest([index, digest, event])[:32],
+                "key": digest,
+                "sequence": index,
+                "prior_poll": None,
+                "flight_id": index,
+                "event": event,
+                "marker": None,
+                "expires_at": (NOW + timedelta(hours=2)).isoformat(),
+                "retry_at": (NOW + timedelta(minutes=5)).isoformat(),
+                "confirmed_at": NOW.isoformat() if index % 2 == 0 else None,
+            }
+        return {"schema_version": 2, "sequence": 512, "notices": notices}
+
+    low, high = 0, 8100
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(owner._json(build(middle)).encode()) <= 4 * 1024 * 1024:
+            low = middle
+        else:
+            high = middle - 1
+    legacy = build(low)
+    owner._validate(legacy, version=2)
+    return legacy, owner._json(legacy).encode()
+
+
+def test_near_limit_v2_rename_preserves_receipts_and_retry_state_across_restart(store_root):
+    import notification_delivery as owner
+
+    legacy, original = near_limit_v2_store()
+    assert len(original) <= 4 * 1024 * 1024
+    assert len(original) + 10 * len(legacy["notices"]) > 4 * 1024 * 1024
+    target = store_root / "notifications.json"
+    target.write_bytes(original)
+    expected = json.loads(original)
+    expected["schema_version"] = 3
+    for row in expected["notices"].values():
+        row["schema_version"] = 3
+        row["notice_digest"] = row.pop("key")
+    with notification_store(now_utc=NOW + timedelta(minutes=1)) as store:
+        assert store.data == expected
+        assert store.due(active_ids=set(range(1, 513)), excluded_ids=set()) == []
+        confirmed = next(row["id"] for row in expected["notices"].values() if row["confirmed_at"])
+        assert store.confirm([confirmed])["confirmed"] == [confirmed]
+    assert 4 * 1024 * 1024 < target.stat().st_size <= owner.MAX_BYTES
+    with notification_store(now_utc=NOW + timedelta(minutes=2)) as store:
+        assert store.data == expected
+    assert json.loads(target.read_bytes()) == expected
+
+
+def test_legacy_admission_keeps_its_original_byte_limit_after_current_growth(store_root):
+    legacy = {"schema_version": 2, "sequence": 0, "notices": {}}
+    original = json.dumps(legacy).encode()
+    original += b" " * (4 * 1024 * 1024 + 1 - len(original))
+    target = store_root / "notifications.json"
+    target.write_bytes(original)
+    with pytest.raises(DeliveryError):
+        with notification_store(now_utc=NOW):
+            pytest.fail("Larger current budget cannot admit oversized legacy state")
+    assert target.read_bytes() == original

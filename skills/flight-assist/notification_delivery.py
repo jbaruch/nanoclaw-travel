@@ -25,8 +25,11 @@ from typing import Any
 from state import state_dir
 
 SCHEMA_VERSION = 3
-MAX_BYTES = 4 * 1024 * 1024
+LEGACY_MAX_BYTES = 4 * 1024 * 1024
 MAX_NOTICES = 2048
+# The v2->v3 rename adds exactly ten ASCII bytes per row. Preserve every
+# owner-produced near-limit legacy journal without unbounded current growth.
+MAX_BYTES = LEGACY_MAX_BYTES + 10 * MAX_NOTICES
 MAX_EVENT_BYTES = 8192
 RETRY_SECONDS = 300
 PHASE_BY_REASON = {
@@ -458,6 +461,13 @@ def notification_store(*, now_utc: datetime) -> Iterator[DeliveryStore]:
                     if len(raw) > MAX_BYTES:
                         raise ValueError("Oversized notification store.")
                     decoded = json.loads(raw)
+                    if (
+                        isinstance(decoded, dict)
+                        and type(decoded.get("schema_version")) is int
+                        and decoded["schema_version"] in (1, 2)
+                        and len(raw) > LEGACY_MAX_BYTES
+                    ):
+                        raise ValueError("Oversized legacy notification store.")
                     migrated = (
                         isinstance(decoded, dict)
                         and type(decoded.get("schema_version")) is int
