@@ -460,3 +460,54 @@ def test_cli_diagnostics_distinguish_input_state_permission_and_write_failure(
 
         monkeypatch.setattr(cli, "record_attendance", fail)
         assert expected in invoke(_payload(_row()))
+
+
+@pytest.mark.parametrize("character", ["\x7f", "\x85", "\u200d", "\ud800", "\u0378"])
+@pytest.mark.parametrize("field", ["id", "venue_locations"])
+def test_persisted_controls_and_invalid_unicode_are_refused(character, field):
+    value = "bad" + character
+    changes = {field: [value] if field == "venue_locations" else value}
+    with pytest.raises(AttendanceError):
+        parse_attendance(_row(**changes))
+
+
+@pytest.mark.parametrize("attended", [False, True])
+def test_ongoing_attendance_removes_phantom_return_but_preserves_drive_history(attended):
+    from block_codec import GEN_UNIFIED, ParsedBlock
+
+    start, end = NOW - timedelta(hours=1), NOW + timedelta(hours=1)
+    meetings = scan(
+        [_event(start=start, end=end)],
+        now=NOW,
+        home_address="Hotel",
+        attendances=(parse_attendance(_row()),) if attended else (),
+    )
+    desired, _, held = meeting_desired_blocks(meetings, route=lambda _o, _d: timedelta(minutes=20))
+    current = [
+        ParsedBlock(
+            generation=GEN_UNIFIED,
+            event_id="historic-out",
+            identity="native-m1",
+            kind="meeting_outbound",
+            baseline_seconds=1200,
+            anchor=start,
+            origin="Hotel",
+            destination=LABEL,
+        ),
+        ParsedBlock(
+            generation=GEN_UNIFIED,
+            event_id="phantom-return",
+            identity="native-m1",
+            kind="meeting_return",
+            baseline_seconds=1200,
+            anchor=end,
+            origin=LABEL,
+            destination="Hotel",
+        ),
+    ]
+    plan = plan_reconcile(desired, current, held=frozenset(h.key for h in held), now=NOW)
+    assert plan.creates == plan.updates == ()
+    assert [operation.event_id for operation in plan.deletes] == (
+        ["phantom-return"] if attended else []
+    )
+    assert len(held) == (0 if attended else 2)

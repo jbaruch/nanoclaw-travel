@@ -9,8 +9,10 @@ The owner or existing travel intake selects actual attendance dates, IANA zone a
 Invoke the co-shipped owner from the installed skill directory:
 
 ```bash
-python3 /home/node/.claude/skills/tessl__drive-engine/record_attendance.py < /tmp/attendance.json
+python3 /home/node/.claude/skills/tessl__drive-engine/record_attendance.py
 ```
+
+Supply the grounded JSON envelope directly on process stdin; never use a shared predictable temporary pathname. If a host command runner needs a file, exclusively create an agent-owned mode-0600 file in an agent-owned mode-0700 directory, verify it without following links, and hold that descriptor through the invocation. The host still resolves and verifies the runtime identity before invoking the writer.
 
 The checkout equivalent is `python3 skills/drive-engine/record_attendance.py`; no other arguments are accepted. The input is one schema-1 envelope with exactly one attendance:
 

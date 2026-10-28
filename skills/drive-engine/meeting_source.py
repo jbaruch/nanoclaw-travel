@@ -219,7 +219,10 @@ def meeting_desired_blocks(
     held: list[HeldLeg] = []
 
     for meeting in meetings:
-        if _legs_unknowable(meeting):
+        # Recorded attendance is positive no-anchor-drive evidence even for
+        # an ongoing/past event. Do not retain a phantom future return through
+        # the generic past-event hold; reconcile still preserves drive history.
+        if _legs_unknowable(meeting) and getattr(meeting, "attendance_id", None) is None:
             for kind in ("meeting_outbound", "meeting_return"):
                 held.append(
                     HeldLeg(

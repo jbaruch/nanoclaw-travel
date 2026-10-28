@@ -11,6 +11,7 @@ import json
 import os
 import secrets
 import stat
+import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -42,7 +43,7 @@ class Attendance:
             not isinstance(identity, str)
             or not identity.strip()
             or len(identity) > 1024
-            or any(ord(char) < 32 or 0xD800 <= ord(char) <= 0xDFFF for char in identity)
+            or _invalid_text(identity)
         ):
             return False
         if not isinstance(location, str):
@@ -68,10 +69,14 @@ class Attendance:
         )
 
 
+def _invalid_text(value: str) -> bool:
+    return any(unicodedata.category(char) in {"Cc", "Cf", "Cs", "Cn"} for char in value)
+
+
 def _literal(value: object, limit: int) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise AttendanceError("Invalid attendance text; supply bounded nonempty literals")
-    if any(ord(char) < 32 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
+    if _invalid_text(value):
         raise AttendanceError(
             "Invalid attendance text; remove control or invalid Unicode characters"
         )
