@@ -77,6 +77,10 @@ RouteFn = Callable[[str, str], "timedelta | None"]
 # on a trip elsewhere). Mirrors drive-planner's MAX_REASONABLE_DRIVE_SECONDS.
 DEFAULT_MAX_REASONABLE_DRIVE = timedelta(hours=3)
 
+# A zero or at-most-one-minute route is not a useful calendar drive (#356).
+# Treat it as a definitive no-drive, so an earlier bogus block is not retained.
+MIN_MEETING_DRIVE = timedelta(minutes=1)
+
 # scan directions → unified meeting leg kinds (distinct so reconcile keys uniquely).
 _DIRECTION_KIND = {
     "outbound": "meeting_outbound",
@@ -215,7 +219,10 @@ def meeting_desired_blocks(
     held: list[HeldLeg] = []
 
     for meeting in meetings:
-        if _legs_unknowable(meeting):
+        # Recorded attendance is positive no-anchor-drive evidence even for
+        # an ongoing/past event. Do not retain a phantom future return through
+        # the generic past-event hold; reconcile still preserves drive history.
+        if _legs_unknowable(meeting) and getattr(meeting, "attendance_id", None) is None:
             for kind in ("meeting_outbound", "meeting_return"):
                 held.append(
                     HeldLeg(
@@ -256,6 +263,9 @@ def meeting_desired_blocks(
             drive = route(origin, destination)
             if drive is None:
                 _hold(skipped, held, meeting, leg, kind, f"{tag}: route failed")
+                continue
+            if drive <= MIN_MEETING_DRIVE:
+                skipped.append(f"{tag}: route at or below one minute — no drive")
                 continue
             if drive > max_reasonable_drive and meeting.meeting_id not in presence:
                 minutes = int(drive.total_seconds() // 60)

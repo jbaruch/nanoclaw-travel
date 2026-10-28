@@ -6,6 +6,7 @@ Documents the on-disk state files the drive-engine skill reads and writes. Per `
 
 Each on-disk file has one owner module that owns its schema (only it migrates `schema_version`):
 
+- `conference-attendance.json` — owned by `conference_attendance.py`; `record_attendance.py` is its intake writer, and the sweep reads it through `load_attendances`. The full schema, grounding and matching contract lives in [attendance-contract.md](attendance-contract.md).
 - `skip-state.json` — owned by `skip_state.py`. Writer and reader are co-bundled and go through the owner API: the skip action (`skip_drive.py`) writes via `add_skip`, the sweep (`reconcile_sweep.py`) reads via `load_active_skips`. No skill rewrites the file directly.
 - `airport-facts.json` — owned by `airport_facts_cache.py`. The sweep (`reconcile_sweep.py`) both reads (`load_static_facts`) and writes (`store_static_facts`) through the owner API (#211).
 - `unplanned-notices.v1.json` — owned by `skills/drive-engine/unplanned_notices.py`. The sweep (`skills/drive-engine/reconcile_sweep.py`) reads and writes it through `due_notices` (#334).
@@ -15,10 +16,10 @@ Each on-disk file has one owner module that owns its schema (only it migrates `s
 
 ## State Directory
 
-- Production: `/workspace/state/drive-planner/`
-- Tests override via the `DRIVE_PLANNER_STATE_DIR` environment variable
+- New attendance input: `/workspace/state/drive-engine/`; tests use `DRIVE_ENGINE_STATE_DIR`.
+- Legacy stores below: `/workspace/state/drive-planner/`; tests use `DRIVE_PLANNER_STATE_DIR`.
 
-All three files share this directory (`airport_facts_cache.py` and `drive_decision.py` reuse `skip_state.state_dir` as the single source of truth). The `drive-planner` name is deployed state, not a live reference — the store predates the #181 fold and renaming it would strand the skips already on disk. Rename only behind a migration.
+The legacy files share this directory (`airport_facts_cache.py` and `drive_decision.py` reuse `skip_state.state_dir` as the single source of truth). The `drive-planner` name is deployed state, not a live reference — the store predates the #181 fold and renaming it would strand the skips already on disk. Rename only behind a migration.
 
 ## Files
 

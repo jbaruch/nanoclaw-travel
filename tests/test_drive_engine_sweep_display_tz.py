@@ -66,6 +66,7 @@ def _stub_live_clients(monkeypatch, reader, state_dir: Path) -> dict:
     # sweep's lodging side prunes the decision store on every run, so point
     # both at a throwaway directory, never the deployed state (#312).
     monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(state_dir))
 
     # The sweep reads `datetime.now(timezone.utc)` for its windows (policy
     # review on #311: freeze it, whatever the assertions read).
@@ -296,3 +297,60 @@ def test_sweep_ongoing_meeting_after_landing_replaces_the_airport_to_hotel_drive
     ret = next(b for b in created if b.identity == "mtg" and b.kind == "meeting_return")
     assert ret.destination == "Late Hotel Address"
     assert not any(b.kind == "meeting_outbound" for b in created)
+
+
+def test_sweep_reads_owned_attendance_before_meeting_planning(monkeypatch, tmp_path):
+    from conference_attendance import record_attendance
+
+    real_meeting_blocks = reconcile_sweep.meeting_desired_blocks
+    real_build_plan = reconcile_sweep.build_plan
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    record_attendance(
+        {
+            "id": "conference",
+            "starts_on": "2026-09-11",
+            "ends_on": "2026-09-11",
+            "time_zone": "UTC",
+            "venue_locations": ["ExampleConf Denver"],
+        }
+    )
+    monkeypatch.setattr(
+        _EmptyFetcher,
+        "fetch_window",
+        lambda self, **_: [
+            {
+                "id": "native-new-meeting",
+                "summary": "Meeting",
+                "location": "New Booth - ExampleConf Denver",
+                "start": {"dateTime": "2026-09-11T18:00:00Z"},
+                "end": {"dateTime": "2026-09-11T19:00:00Z"},
+            }
+        ],
+    )
+    calls = []
+    monkeypatch.setattr(reconcile_sweep, "make_route", lambda _: lambda o, d: calls.append((o, d)))
+    monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", real_meeting_blocks)
+    monkeypatch.setattr(reconcile_sweep, "build_plan", real_build_plan)
+    plans = []
+    monkeypatch.setattr(
+        reconcile_sweep, "finish_sweep", lambda plan, *_a, **_kw: plans.append(plan) or {"data": {}}
+    )
+    reconcile_sweep._run_sweep()
+    assert calls == []
+    assert plans[0].creates == ()
+
+
+def test_unknown_attendance_schema_stops_sweep_before_apply(monkeypatch, tmp_path):
+    import pytest
+    from conference_attendance import AttendanceError
+
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    path = tmp_path / "conference-attendance.json"
+    raw = '{"schema_version":2,"attendances":[]}'
+    path.write_text(raw)
+    calls = []
+    monkeypatch.setattr(reconcile_sweep, "finish_sweep", lambda *_a, **_kw: calls.append("apply"))
+    with pytest.raises(AttendanceError):
+        reconcile_sweep._run_sweep()
+    assert calls == []
+    assert path.read_text() == raw

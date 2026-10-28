@@ -84,6 +84,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from conference_attendance import Attendance, attendance_for
+
 # A meeting whose start is at or before `now` is in the past and is never
 # planned (lombot #28). A small grace window keeps a meeting that started a
 # minute ago — while the user is en route — out of the `past` bucket.
@@ -218,6 +220,7 @@ class MeetingClass:
     legs: tuple[TransitLeg, ...] = ()
     present_directions: tuple[str, ...] = ()
     timezone: str | None = None  # IANA tz of the meeting, for the block's CREATE
+    attendance_id: str | None = None  # explicit owner-planned presence (#356)
 
 
 @dataclass
@@ -234,6 +237,7 @@ class _Event:
     declined: bool  # the operator's own RSVP is "declined"
     cancelled: bool  # event-level status == "cancelled"
     timezone: str | None  # IANA name from start.timeZone, for the block's CREATE
+    attendance_id: str | None = None
 
 
 def _normalize_location(location: object) -> str | None:
@@ -614,6 +618,7 @@ def scan(
     anchor_for: Callable[[datetime], tuple[str | None, str | None]] | None = None,
     flight_windows: list[tuple[datetime, datetime]] | None = None,
     flight_summaries: list[str] | None = None,
+    attendances: tuple[Attendance, ...] = (),
 ) -> list[MeetingClass]:
     """Classify every event into a transit bucket.
 
@@ -643,6 +648,9 @@ def scan(
             and `anchor_note=note` so the caller surfaces them instead of
             routing from home. Defaults to a constant `(home_address, None)`
             — the pre-#122 behavior.
+        attendances: validated owner planner inputs from conference_attendance.
+            Exact labels and local dates suppress anchor legs, while real bridges
+            to/from outside venues remain. No summary/city inference.
         flight_windows: known TripIt flight (start, end) UTC spans (#85). An
             event overlapping one is air travel — bucketed `filtered` and
             excluded as a routing neighbour, so a flight's airport location
@@ -685,6 +693,13 @@ def scan(
     windows = tuple(flight_windows or ())
     scheduled_codes = frozenset().union(*(flight_codes(s) for s in (flight_summaries or ())))
     parsed = [_parse_event(raw) for raw in events]
+    for raw, event in zip(events, parsed, strict=True):
+        # No fabricated/coerced identifier may turn a malformed event into an
+        # attendance observation. The ID still comes from the native projection.
+        identity = raw.get("id") if isinstance(raw, dict) else None
+        event.attendance_id = attendance_for(
+            attendances, identity, event.location, event.start, event.end
+        )
 
     # Pass 1: every meeting referenced by ANY planner marker is "handled"
     # (lombot #50 — ANY marker, not both directions). Record which
@@ -748,6 +763,7 @@ def _make_class(
         legs=legs,
         present_directions=present_directions,
         timezone=event.timezone,
+        attendance_id=event.attendance_id,
     )
 
 
@@ -879,7 +895,9 @@ def _classify_transit(
     # --- inbound side: how do we get TO this meeting? ---
     prev_gap = _gap_seconds(prev_event, event)
     if prev_event is not None and prev_gap is not None and prev_gap <= tight_gap_seconds:
-        if _same_venue(prev_event.location, event.location):
+        if _same_venue(prev_event.location, event.location) or (
+            event.attendance_id is not None and event.attendance_id == prev_event.attendance_id
+        ):
             # Same venue, tight gap: you never left — no inbound leg.
             is_back_to_back = True
         else:
@@ -895,7 +913,7 @@ def _classify_transit(
                     gap_seconds=prev_gap,
                 )
             )
-    else:
+    elif event.attendance_id is None:
         legs.append(
             TransitLeg(
                 direction="outbound",
@@ -912,7 +930,7 @@ def _classify_transit(
     # bridge leg in (lombot #14/#7) — either way you don't drive back.
     next_gap = _gap_seconds(event, next_event)
     skip_return = next_event is not None and next_gap is not None and next_gap <= tight_gap_seconds
-    if not skip_return:
+    if not skip_return and event.attendance_id is None:
         legs.append(
             TransitLeg(
                 direction="return",
@@ -923,7 +941,9 @@ def _classify_transit(
             )
         )
 
-    if is_bridge:
+    if event.attendance_id is not None and not is_bridge:
+        bucket, reason = "back_to_back", "on-site during recorded conference attendance — no drive"
+    elif is_bridge:
         bucket, reason = "bridge", "tight gap to a different venue"
     elif is_back_to_back:
         bucket, reason = "back_to_back", "tight gap to the same venue"
