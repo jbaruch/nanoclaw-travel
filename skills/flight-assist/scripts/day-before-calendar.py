@@ -15,7 +15,7 @@ Usage:
 Stdout (single-line JSON):
     {"flight_id": N, "tz": "<iana>" | null,
      "window_start": "<ISO>", "window_end": "<ISO>",
-     "events": [{"summary", "location", "all_day", "start", "end", "display"}],
+     "events": [{"summary", "location", "all_day", "start", "end", "display", "window"}],
      "skipped_declined_or_cancelled": N}
     {"error": "no_state"}   — the flight has no state on disk (exit 1)
     {"error": "gateway"}    — the OneCLI gateway is not authenticating (exit 1)
@@ -28,6 +28,10 @@ Stdout (single-line JSON):
 `tz` is the zone the times were rendered in: null when the operator's zone is
 unavailable or does not resolve, and `start` / `end` then keep each event's
 own offset. Exit 2 on usage errors.
+
+`window` marks a flexible drop-in event. Reachable windows are omitted; listed
+windows have already closed by effective flight arrival. This reader has no
+venue-specific ground-duration input and makes no extra route/provider call.
 
 Every fixable error names on stderr what to fix and the command to rerun.
 Nothing retries on its own: `day_before` fires once per flight, so a check

@@ -1,5 +1,9 @@
 # Changelog
 
+### Judge day-before drop-in windows by closing time (#354)
+
+The day-before calendar reader recognizes explicit window wording and check-session titles, marks listed events with `window`, and keeps a window as a conflict only when it has closed by the flight's effective arrival. A 13:30–16:45 window remains reachable after a 15:10 landing; a 17:00 landing misses it. The reader owns no venue-specific ground-duration input and uses arrival without inventing routing time. Ordinary meeting overlap, declined/cancelled filtering and operator-local rendering remain. The compose treats a listed window as a closing deadline and never asks for its “real” start.
+
 ## 0.2.166 — 2026-10-28
 
 ### Avoid invented meeting drives at conferences (#356)

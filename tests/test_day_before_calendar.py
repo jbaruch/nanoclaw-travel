@@ -472,3 +472,132 @@ def test_script_usage_errors_exit_2(capsys):
     assert script.main(["day-before-calendar.py"]) == 2
     assert script.main(["day-before-calendar.py", "DL1144"]) == 2
     assert "flight_id must be an int" in capsys.readouterr().err
+
+
+# --- flexible drop-in windows (#354) -----------------------------------------
+
+_WINDOW_STATE = {
+    "flight_id": 354,
+    "scheduled_dep_time": "2024-01-15T09:00:00-06:00",
+    "scheduled_arr_time": "2024-01-15T15:10:00-06:00",
+    "last_snapshot": {"dep_time": None, "arr_time": None},
+}
+
+
+def _drop_in(
+    *, summary="Crew availability", description="OPEN WINDOW: stop by at your convenience"
+):
+    return {
+        **_event(summary, "2024-01-15T13:30:00-06:00", "2024-01-15T16:45:00-06:00"),
+        "description": description,
+    }
+
+
+def test_drop_in_remains_reachable_after_its_start():
+    listed, skipped = calendar_conflicts(
+        [_drop_in()], window=conflict_window(_WINDOW_STATE), zone=ZoneInfo(CHICAGO)
+    )
+    assert listed == []
+    assert skipped == 0
+
+
+def test_drop_in_is_a_conflict_when_landing_after_it_closes():
+    state = {**_WINDOW_STATE, "scheduled_arr_time": "2024-01-15T17:00:00-06:00"}
+    listed, skipped = calendar_conflicts(
+        [_drop_in()], window=conflict_window(state), zone=ZoneInfo(CHICAGO)
+    )
+    assert len(listed) == 1
+    assert listed[0]["window"] is True
+    assert listed[0]["end"] == "2024-01-15T16:45:00-06:00"
+    assert skipped == 0
+
+
+def test_normal_meeting_keeps_the_existing_overlap_behavior():
+    listed, _ = calendar_conflicts(
+        [_drop_in(summary="Planning meeting", description="Discuss the agenda")],
+        window=conflict_window(_WINDOW_STATE),
+        zone=ZoneInfo(CHICAGO),
+    )
+    assert len(listed) == 1
+    assert listed[0]["window"] is False
+
+
+@pytest.mark.parametrize(
+    "description", ["OPEN WINDOW", "Stop By", "DROP IN", "Drop By", "At Your Convenience"]
+)
+def test_each_description_window_cue_ignores_a_reachable_start(description):
+    listed, _ = calendar_conflicts(
+        [_drop_in(description=description)], window=conflict_window(_WINDOW_STATE), zone=None
+    )
+    assert listed == []
+
+
+@pytest.mark.parametrize("summary", ["Sound check", "SOUNDCHECK", "Tech Check", "STAGE CHECK"])
+def test_each_title_window_cue_ignores_a_reachable_start(summary):
+    listed, _ = calendar_conflicts(
+        [_drop_in(summary=summary, description="")],
+        window=conflict_window(_WINDOW_STATE),
+        zone=None,
+    )
+    assert listed == []
+
+
+def test_script_uses_the_published_effective_arrival_for_window_reachability(capsys):
+    client = FakeCalendar(items=[_drop_in()])
+    state = {
+        **_WINDOW_STATE,
+        "last_snapshot": {"dep_time": None, "arr_time": "2024-01-15T17:00:00-06:00"},
+    }
+    code, payload, _ = _run(capsys, client=client, state=state)
+    assert code == 0
+    assert payload["events"][0]["window"] is True
+
+
+def test_arriving_at_the_exclusive_window_end_still_conflicts():
+    state = {**_WINDOW_STATE, "scheduled_arr_time": "2024-01-15T16:45:00-06:00"}
+    listed, _ = calendar_conflicts([_drop_in()], window=conflict_window(state), zone=None)
+    assert len(listed) == 1
+    assert listed[0]["window"] is True
+
+
+def test_equivalent_offsets_compare_instants_not_local_clock_labels():
+    event = _drop_in()
+    event["start"] = {"dateTime": "2024-01-15T19:30:00Z"}
+    event["end"] = {"dateTime": "2024-01-15T22:45:00Z"}
+    listed, _ = calendar_conflicts([event], window=conflict_window(_WINDOW_STATE), zone=None)
+    assert listed == []
+
+
+@pytest.mark.parametrize("description", [None, 7, ["open window"], {"text": "stop by"}])
+def test_nonstrings_cannot_invent_a_window_from_description(description):
+    listed, _ = calendar_conflicts(
+        [_drop_in(description=description)], window=conflict_window(_WINDOW_STATE), zone=None
+    )
+    assert listed[0]["window"] is False
+
+
+def test_nonstrings_cannot_invent_a_window_from_title():
+    event = _drop_in(description="Discuss the agenda")
+    event["summary"] = ["tech check"]
+    listed, _ = calendar_conflicts(
+        [event],
+        window=conflict_window(_WINDOW_STATE),
+        zone=None,
+    )
+    assert listed[0]["window"] is False
+
+
+def test_script_omits_the_quoted_reachable_window_and_keeps_an_ordinary_meeting(capsys):
+    description = "You'll have a 3-hour and 15-minute open window to stop by at your convenience."
+    client = FakeCalendar(
+        items=[
+            _drop_in(description=description),
+            _drop_in(summary="Planning meeting", description="Discuss the agenda"),
+        ]
+    )
+    code, payload, _ = _run(capsys, client=client, state=_WINDOW_STATE)
+    assert code == 0
+    assert [event["summary"] for event in payload["events"]] == ["Planning meeting"]
+    assert payload["events"][0]["window"] is False
+    assert "description" not in payload["events"][0]
+    assert payload["skipped_declined_or_cancelled"] == 0

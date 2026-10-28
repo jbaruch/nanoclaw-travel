@@ -1,7 +1,7 @@
 """Calendar events around a flight, for the day-before sanity check (#300).
 
 The `day_before` compose lists the operator's calendar events near a flight.
-Two parts of that are fixed predicates, not judgment, so they live here rather
+These decisions are fixed predicates, not judgment, so they live here rather
 than in the skill prose (`coding-policy: script-delegation`):
 
 - Which events count. An event the operator declined (their own attendee row
@@ -12,6 +12,8 @@ than in the skill prose (`coding-policy: script-delegation`):
   come home from a trip still carrying a `+02:00` offset while labelled
   `America/Chicago` (#300, #301): the instant is right, the offset is not the
   clock the operator is reading.
+- Whether a flexible drop-in window is still reachable. Its closing instant,
+  rather than its opening, is compared with the flight's effective arrival.
 
 The window is `CONFLICT_MARGIN` either side of the flight's effective
 departure and arrival: byAir truth when published, else scheduled — the same
@@ -35,6 +37,17 @@ from calendar_reconcile import _effective_times
 CONFLICT_MARGIN = timedelta(hours=3)
 
 _DISPLAY_FORMAT = "%a %b %d, %H:%M"
+_WINDOW_DESCRIPTION_CUES = ("open window", "stop by", "drop in", "drop by", "at your convenience")
+_WINDOW_TITLE_CUES = ("sound check", "soundcheck", "tech check", "stage check")
+
+
+def _window_event(event: dict) -> bool:
+    """Owner-requested literal window cues (#354), without title/time guesses."""
+    description, title = event.get("description"), event.get("summary")
+    return (
+        isinstance(description, str)
+        and any(cue in description.casefold() for cue in _WINDOW_DESCRIPTION_CUES)
+    ) or (isinstance(title, str) and any(cue in title.casefold() for cue in _WINDOW_TITLE_CUES))
 
 
 def _parse_instant(raw: object) -> datetime | None:
@@ -150,13 +163,20 @@ def calendar_conflicts(
     Returns `(conflicts, skipped)`. A conflict is an event overlapping `window`
     that the operator has not declined and its organizer has not cancelled,
     ordered by start. Each is `{"summary", "location", "all_day", "start",
-    "end", "display"}`: `start` / `end` are ISO instants on the operator's
+    "end", "display", "window"}`: `start` / `end` are ISO instants on the operator's
     clock (`zone`, from `resolve_zone`), or on the event's own offset when
     `zone` is None; `display` is the human form (`Thu Sep 10, 18:00–20:10`, or
     the date for an all-day event), with the event's own UTC offset appended
     when `zone` is None (`Thu Sep 10, 18:00–20:10 (UTC-05:00)`). An all-day
     event's days are read in `zone`, else in the window's own offset. An event
     whose times do not parse is left out — there is no instant to place it by.
+
+    Flexible windows count only when they close at or before effective arrival;
+    reaching an exclusive Calendar end leaves no open time. Their opening is
+    never an arrival deadline. `window` must come from `conflict_window`: its
+    closing margin is removed to recover that flight's effective arrival. This
+    reader owns no venue ground-duration input, so it uses arrival rather than
+    inventing travel time; CONFLICT_MARGIN is query scope, never ground time.
     """
     window_start, window_end = window
     date_zone = zone or window_start.tzinfo
@@ -174,6 +194,9 @@ def calendar_conflicts(
             continue
         if event.get("status") == "cancelled" or _self_declined(event.get("attendees")):
             skipped += 1
+            continue
+        flexible = _window_event(event)
+        if flexible and ends > window_end - CONFLICT_MARGIN:
             continue
         if all_day:
             display = begins.date().strftime("%a %b %d") + " (all day)"
@@ -198,6 +221,7 @@ def calendar_conflicts(
                     "start": start_out,
                     "end": end_out,
                     "display": display,
+                    "window": flexible,
                 },
             )
         )
