@@ -37,6 +37,8 @@ from calendar_reconcile import _effective_times
 CONFLICT_MARGIN = timedelta(hours=3)
 
 _DISPLAY_FORMAT = "%a %b %d, %H:%M"
+# https://github.com/jbaruch/nanoclaw-travel/issues/354 defines this closed
+# nine-cue substring contract. It does not classify broader intent or negation.
 _WINDOW_DESCRIPTION_CUES = ("open window", "stop by", "drop in", "drop by", "at your convenience")
 _WINDOW_TITLE_CUES = ("sound check", "soundcheck", "tech check", "stage check")
 
