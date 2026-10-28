@@ -1,5 +1,11 @@
 # Changelog
 
+### Keep notification digests compatible with nightly backup (#355)
+
+Notification-store schema 3 names its derived identity `notice_digest`. The former `key` label made the maintained backup scanner classify two SHA-256 notice identities as API credentials and refuse the nightly snapshot. The owner validates and migrates schema 2 under its existing lock, preserving map keys, exact notice IDs, confirmed receipts and pending retry deadlines. Schema 1 keeps its existing pending-leave migration before the rename. Invalid or future journals and failed replacements preserve the original bytes; scanner rules and allowlists remain intact.
+
+The current store reserves at most 20,480 extra bytes for the field rename, keeping valid near-limit legacy journals readable across migration and restart. Legacy admission stays capped at 4 MiB; event and notice-count bounds remain intact.
+
 ## 0.2.163 — 2026-10-26
 
 ### Suppress time_to_leave after taxi-out and at-airport GPS (#349)

@@ -116,7 +116,7 @@ def test_unverified_flight_is_deferred_and_inactive_or_expired_notices_are_dropp
         assert store.confirm([identity])["stale"] == [identity]
 
 
-@pytest.mark.parametrize("version", [0, 3, True])
+@pytest.mark.parametrize("version", [0, 4, True])
 def test_unsupported_store_is_not_replaced_by_an_empty_record(store_root, version):
     target = store_root / "notifications.json"
     original = json.dumps({"schema_version": version, "sequence": 0, "notices": {}})
@@ -362,9 +362,11 @@ def test_v1_migration_preserves_receipts_and_regenerates_pending_leave_notices(s
     original["schema_version"] = 1
     for row in original["notices"].values():
         row["schema_version"] = 1
+        if "notice_digest" in row:
+            row["key"] = row.pop("notice_digest")
     path.write_text(json.dumps(original))
     with notification_store(now_utc=NOW) as store:
-        assert store.data["schema_version"] == 2
+        assert store.data["schema_version"] == 3
         assert store.data["sequence"] == original["sequence"]
         assert store.confirmed_markers(43) == {"time_to_leave_fired"}
         assert store.confirmed_markers(42) == set()
@@ -376,8 +378,8 @@ def test_v1_migration_preserves_receipts_and_regenerates_pending_leave_notices(s
         assert replacement != pending_leave
         assert store.confirm([delivered_leave])["confirmed"] == [delivered_leave]
     upgraded = json.loads(path.read_text())
-    assert upgraded["schema_version"] == 2
-    assert {row["schema_version"] for row in upgraded["notices"].values()} == {2}
+    assert upgraded["schema_version"] == 3
+    assert {row["schema_version"] for row in upgraded["notices"].values()} == {3}
 
 
 def test_malformed_v1_rows_are_not_rewritten_during_migration(store_root):
@@ -392,3 +394,175 @@ def test_malformed_v1_rows_are_not_rewritten_during_migration(store_root):
         with notification_store(now_utc=NOW):
             pytest.fail("Invalid migration must refuse")
     assert path.read_text() == raw
+
+
+def legacy_v2_store(store_root):
+    """A confirmed phase and a pending attempted observation share one flight."""
+    with notification_store(now_utc=NOW) as store:
+        confirmed = must(offer(store))
+        store.confirm([confirmed])
+        pending = must(offer(store, {"reason": "delay", "minutes": 15}))
+        assert [row["notification_id"] for row in due(store)] == [pending]
+    path = store_root / "notifications.json"
+    legacy = json.loads(path.read_text())
+    legacy["schema_version"] = 2
+    for row in legacy["notices"].values():
+        row["schema_version"] = 2
+        if "notice_digest" in row:
+            row["key"] = row.pop("notice_digest")
+    path.write_text(json.dumps(legacy, sort_keys=True, separators=(",", ":")))
+    return path, legacy, confirmed, pending
+
+
+def test_v2_migration_keeps_receipts_ids_and_pending_retry_deadlines(store_root):
+    path, legacy, confirmed, pending = legacy_v2_store(store_root)
+    expected = json.loads(json.dumps(legacy))
+    expected["schema_version"] = 3
+    for row in expected["notices"].values():
+        row["schema_version"] = 3
+        row["notice_digest"] = row.pop("key")
+
+    with notification_store(now_utc=NOW + timedelta(minutes=1)) as store:
+        assert store.data == expected
+        assert due(store) == []
+        assert store.confirmed_markers(42) == {"gate_assignment_fired"}
+        assert store.confirm([confirmed])["confirmed"] == [confirmed]
+    assert json.loads(path.read_text()) == expected
+    assert path.stat().st_mode & 0o777 == 0o600
+
+    with notification_store(now_utc=NOW + timedelta(minutes=5)) as store:
+        assert [row["notification_id"] for row in due(store)] == [pending]
+        assert store.confirmed_markers(42) == {"gate_assignment_fired"}
+        assert offer(store) is None
+
+
+@pytest.mark.parametrize("mutation", ["mixed_fields", "mixed_version", "wrong_digest", "future"])
+def test_invalid_v2_or_future_notice_store_preserves_original_bytes(store_root, mutation):
+    path, legacy, _, _ = legacy_v2_store(store_root)
+    row = next(iter(legacy["notices"].values()))
+    if mutation == "mixed_fields":
+        row["notice_digest"] = row["key"]
+    elif mutation == "mixed_version":
+        row["schema_version"] = 3
+    elif mutation == "wrong_digest":
+        row["key"] = "0" * 64
+    else:
+        legacy["schema_version"] = 4
+        for notice in legacy["notices"].values():
+            notice["schema_version"] = 4
+    raw = json.dumps(legacy)
+    path.write_text(raw)
+    with pytest.raises(DeliveryError):
+        with notification_store(now_utc=NOW):
+            pytest.fail("Malformed or future state must refuse")
+    assert path.read_text() == raw
+
+
+def test_failed_v2_atomic_replacement_retains_bytes_and_can_retry(store_root, monkeypatch):
+    import notification_delivery
+
+    path, _, confirmed, pending = legacy_v2_store(store_root)
+    original = path.read_bytes()
+    replace = notification_delivery.os.replace
+
+    def refuse_replace(*_args):
+        raise PermissionError("Synthetic replacement refusal")
+
+    monkeypatch.setattr(notification_delivery.os, "replace", refuse_replace)
+    with pytest.raises(PermissionError):
+        with notification_store(now_utc=NOW):
+            pytest.fail("Failed replacement must not publish a store")
+    assert path.read_bytes() == original
+    assert not list(store_root.glob(".notifications-*"))
+    monkeypatch.setattr(notification_delivery.os, "replace", replace)
+    with notification_store(now_utc=NOW + timedelta(minutes=5)) as store:
+        assert store.data["schema_version"] == 3
+        assert store.confirm([confirmed])["confirmed"] == [confirmed]
+        assert [row["notification_id"] for row in due(store)] == [pending]
+
+
+def test_current_notice_rows_refuse_a_legacy_key_field(store_root):
+    with notification_store(now_utc=NOW) as store:
+        offer(store)
+    path = store_root / "notifications.json"
+    data = json.loads(path.read_text())
+    row = next(iter(data["notices"].values()))
+    row["key"] = row["notice_digest"]
+    raw = json.dumps(data)
+    path.write_text(raw)
+    with pytest.raises(DeliveryError):
+        with notification_store(now_utc=NOW):
+            pytest.fail("Mixed current and legacy fields must refuse")
+    assert path.read_text() == raw
+
+
+def near_limit_v2_store():
+    """An owner-valid canonical v2 journal just below its original 4MiB bound."""
+    import notification_delivery as owner
+
+    def build(width):
+        notices = {}
+        for index in range(1, 513):
+            event = {"reason": "delay", "detail": "x" * width}
+            digest = owner._digest([index, None, event])
+            notices[digest] = {
+                "schema_version": 2,
+                "id": owner._digest([index, digest, event])[:32],
+                "key": digest,
+                "sequence": index,
+                "prior_poll": None,
+                "flight_id": index,
+                "event": event,
+                "marker": None,
+                "expires_at": (NOW + timedelta(hours=2)).isoformat(),
+                "retry_at": (NOW + timedelta(minutes=5)).isoformat(),
+                "confirmed_at": NOW.isoformat() if index % 2 == 0 else None,
+            }
+        return {"schema_version": 2, "sequence": 512, "notices": notices}
+
+    low, high = 0, 8100
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(owner._json(build(middle)).encode()) <= 4 * 1024 * 1024:
+            low = middle
+        else:
+            high = middle - 1
+    legacy = build(low)
+    owner._validate(legacy, version=2)
+    return legacy, owner._json(legacy).encode()
+
+
+def test_near_limit_v2_rename_preserves_receipts_and_retry_state_across_restart(store_root):
+    import notification_delivery as owner
+
+    legacy, original = near_limit_v2_store()
+    assert len(original) <= 4 * 1024 * 1024
+    assert len(original) + 10 * len(legacy["notices"]) > 4 * 1024 * 1024
+    target = store_root / "notifications.json"
+    target.write_bytes(original)
+    expected = json.loads(original)
+    expected["schema_version"] = 3
+    for row in expected["notices"].values():
+        row["schema_version"] = 3
+        row["notice_digest"] = row.pop("key")
+    with notification_store(now_utc=NOW + timedelta(minutes=1)) as store:
+        assert store.data == expected
+        assert store.due(active_ids=set(range(1, 513)), excluded_ids=set()) == []
+        confirmed = next(row["id"] for row in expected["notices"].values() if row["confirmed_at"])
+        assert store.confirm([confirmed])["confirmed"] == [confirmed]
+    assert 4 * 1024 * 1024 < target.stat().st_size <= owner.MAX_BYTES
+    with notification_store(now_utc=NOW + timedelta(minutes=2)) as store:
+        assert store.data == expected
+    assert json.loads(target.read_bytes()) == expected
+
+
+def test_legacy_admission_keeps_its_original_byte_limit_after_current_growth(store_root):
+    legacy = {"schema_version": 2, "sequence": 0, "notices": {}}
+    original = json.dumps(legacy).encode()
+    original += b" " * (4 * 1024 * 1024 + 1 - len(original))
+    target = store_root / "notifications.json"
+    target.write_bytes(original)
+    with pytest.raises(DeliveryError):
+        with notification_store(now_utc=NOW):
+            pytest.fail("Larger current budget cannot admit oversized legacy state")
+    assert target.read_bytes() == original
