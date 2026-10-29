@@ -146,6 +146,7 @@ def make_route(
     maps,
     *,
     cache: dict[tuple[str, str], timedelta | None] | None = None,
+    distances: dict[tuple[str, str], float] | None = None,
 ) -> RouteFn:
     """A memoizing `route(origin, destination) -> timedelta | None`.
 
@@ -192,6 +193,11 @@ def make_route(
             tt.in_traffic_seconds if tt.in_traffic_seconds is not None else tt.duration_seconds
         )
         result = timedelta(seconds=seconds)
+        if distances is not None:
+            from ev_charging import finite
+
+            if finite(tt.distance_meters, 0, 100000000):
+                distances[key] = tt.distance_meters / 1000
         memo[key] = result
         return result
 
@@ -419,6 +425,10 @@ def build_plan(
     held: list[HeldLeg] | None = None,
     itinerary: Itinerary | None = None,
     postarrival_meetings: list[PostarrivalMeeting] | None = None,
+    adjust_drives: Callable[
+        [list[DesiredBlock], list[tuple[datetime, datetime]]], list[DesiredBlock]
+    ]
+    | None = None,
 ) -> PlanResult:
     """Assemble the combined (airport + meeting + lodging) reconcile plan.
 
@@ -459,6 +469,7 @@ def build_plan(
         extra_held=list(held or []) + retained,
         managed_legacy=_MANAGED_LEGACY,
         postarrival_meetings=postarrival_meetings,
+        adjust_drives=adjust_drives,
     )
     plan = replace(
         result.plan,
@@ -577,6 +588,86 @@ def _on_path(name: str) -> None:
         sys.path.insert(0, str(target))
 
 
+def _ev_adjuster(config, route, distances, now, busy_windows=()):
+    """One read-only Tesla adapter for this complete sweep, never a state writer."""
+    from ev_charging import DestinationCharge, PlanningOptions, adjust_charging
+    from tesla_planning import TeslaPlanning
+
+    preferences = config.get("ev_planning")
+    options = PlanningOptions()
+    charges = []
+    if preferences is not None:
+        from ev_preferences import validate_ev_preferences
+
+        validate_ev_preferences(preferences)
+        options = PlanningOptions(
+            stop_minutes=preferences["stop_minutes"],
+            reserve_percent=preferences["reserve_percent"],
+            cold_fraction=preferences["cold_allowance_percent"] / 100,
+            highway_fraction=preferences["highway_allowance_percent"] / 100,
+        )
+        charges = [
+            DestinationCharge(
+                value["vehicle"],
+                value["destination"],
+                datetime.fromisoformat(value["available_at"].replace("Z", "+00:00")),
+                value["energy_kwh"],
+            )
+            for value in preferences["destination_charges"]
+        ]
+
+    def adjust(blocks, windows):
+        if not blocks:
+            return blocks
+        provider = TeslaPlanning(now=now, configured=preferences is not None)
+        selected = {}
+        for block in blocks:
+            selector = None
+            if preferences is not None:
+                driver = preferences["event_drivers"].get(block.identity)
+                event_vehicle = preferences["event_vehicles"].get(block.identity)
+                person_vehicle = preferences["person_vehicles"].get(driver)
+                if event_vehicle and person_vehicle and event_vehicle != person_vehicle:
+                    provider.unavailable()
+                    continue
+                selector = event_vehicle or person_vehicle or preferences["default_vehicle"]
+                if driver and not person_vehicle and not event_vehicle:
+                    provider.unavailable()
+                    continue
+            vehicle = provider.vehicle(selector)
+            if vehicle is not None:
+                selected[(block.identity, block.kind)] = vehicle
+
+        def distance(block):
+            key = (block.origin, block.destination)
+            if key not in distances:
+                # Airport builders route by coordinates but display a native
+                # airport label. Resolve that exact displayed route normally;
+                # the existing primary-only text-airport guard still applies.
+                route(*key)
+            return distances.get(key)
+
+        grounded_charges = []
+        for charge in charges:
+            canonical = provider.vehicle(charge.vehicle)
+            if canonical in selected.values():
+                grounded_charges.append(replace(charge, vehicle=canonical))
+        return adjust_charging(
+            blocks,
+            vehicles=selected,
+            distance_km=distance,
+            estimate=provider.estimate,
+            now=now,
+            options=options,
+            destination_charges=grounded_charges,
+            navigation=provider.navigation(),
+            protected_windows=[*windows, *busy_windows],
+            unavailable=provider.unavailable,
+        )
+
+    return adjust
+
+
 def _event_end(event: dict) -> datetime | None:
     end = event.get("end")
     raw = end.get("dateTime") if isinstance(end, dict) else None
@@ -656,7 +747,16 @@ def _group_meeting_adds(legs: list[dict]) -> list[dict]:
         if cur is None or leg["anchor"] < cur["anchor"]:
             by_identity[leg["identity"]] = leg
     ordered = sorted(by_identity.values(), key=lambda leg: leg["anchor"])
-    return [{"meeting": leg["meeting"], "when": leg["when"]} for leg in ordered]
+    result = [{"meeting": leg["meeting"], "when": leg["when"]} for leg in ordered]
+    for item, leg in zip(result, ordered, strict=True):
+        notes = dict.fromkeys(
+            entry["charging"]
+            for entry in legs
+            if entry["identity"] == leg["identity"] and entry.get("charging")
+        )
+        if notes:
+            item["charging"] = "; ".join(notes)
+    return result
 
 
 def _dedup_material(updates: list[dict]) -> list[dict]:
@@ -669,7 +769,7 @@ def _dedup_material(updates: list[dict]) -> list[dict]:
         if cur is None or u["minutes"] > cur["minutes"]:
             by_identity[u["identity"]] = u
     ordered = sorted(by_identity.values(), key=lambda u: u["anchor"])
-    return [
+    result = [
         {
             "meeting": u["meeting"],
             "minutes": u["minutes"],
@@ -678,6 +778,15 @@ def _dedup_material(updates: list[dict]) -> list[dict]:
         }
         for u in ordered
     ]
+    for item, update in zip(result, ordered, strict=True):
+        notes = dict.fromkeys(
+            entry["charging"]
+            for entry in updates
+            if entry["identity"] == update["identity"] and entry.get("charging")
+        )
+        if notes:
+            item["charging"] = "; ".join(notes)
+    return result
 
 
 def render_notification(
@@ -713,12 +822,16 @@ def render_notification(
             f"Traffic: leave {u['minutes']} min {u['direction']} "
             f"for your {u['meeting']} at {u['when']}"
         )
+        if u.get("charging"):
+            lines[-1] += f" — {u['charging']}"
     if len(added_meeting_drives) == 1:
         d = added_meeting_drives[0]
         lines.append(
             f"Added a drive for {d['meeting']} at {d['when']} — "
             "reply 'skip' if you're not driving to it."
         )
+        if d.get("charging"):
+            lines[-1] += f" {d['charging']}."
     elif added_meeting_drives:
         lines.append(
             "Added drives — reply 'skip 1', 'skip 2', or e.g. 'skip 1 and 2' "
@@ -726,6 +839,8 @@ def render_notification(
         )
         for i, d in enumerate(added_meeting_drives, start=1):
             lines.append(f"{i}. {d['meeting']} at {d['when']}")
+            if d.get("charging"):
+                lines[-1] += f" — {d['charging']}"
     lines.extend(drive_or_fly_questions or [])
     lines.extend(unplanned or [])
     return "\n".join(lines) if lines else None
@@ -1291,7 +1406,8 @@ def _run_sweep() -> dict:
     # legs share it, so a repeated (origin, destination) pair costs one provider
     # round trip, not one per leg. Bounded by the maps client's per-call timeout,
     # not a routing deadline (#211).
-    route = make_route(maps)
+    route_distances: dict[tuple[str, str], float] = {}
+    route = make_route(maps, distances=route_distances)
 
     # --- flight sources: byAir records + TripIt segments (R2 union) ---
     records = [
@@ -1388,6 +1504,7 @@ def _run_sweep() -> dict:
     meeting_held: list[HeldLeg] = []
     operator_zone: str | None = None
     postarrival_meetings: list[PostarrivalMeeting] = []
+    busy_windows: list[tuple[datetime, datetime]] = []
     attendances = load_attendances()
     if home:
         fetcher = CalendarFetcher()
@@ -1417,6 +1534,15 @@ def _run_sweep() -> dict:
             flight_summaries=[],
             attendances=attendances,
         )
+        busy_windows = [
+            (meeting.start, meeting.end)
+            for meeting in meetings
+            if isinstance(meeting.start, datetime)
+            and isinstance(meeting.end, datetime)
+            and meeting.start.tzinfo is not None
+            and meeting.end.tzinfo is not None
+            and meeting.end > meeting.start
+        ]
         # A trip the operator DRIVES to is resolved before the meeting side, so
         # that trip's own events are spared the away-suppression: with a
         # check-in stamped after the first event the anchor resolves home, the
@@ -1514,6 +1640,7 @@ def _run_sweep() -> dict:
         held=meeting_held + lodging_held,
         itinerary=itinerary,
         postarrival_meetings=postarrival_meetings,
+        adjust_drives=_ev_adjuster(config, route, route_distances, now, busy_windows),
     )
 
     skipped = list(result.skipped) + list(meeting_skipped) + list(lodging_skipped)

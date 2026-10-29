@@ -1,0 +1,155 @@
+"""The existing configuration owner retains/validates additive EV preferences."""
+
+from __future__ import annotations
+
+import copy
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/flight-assist"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/drive-engine"))
+from ev_preferences import validate_ev_preferences  # noqa: E402
+from state import STATE_SCHEMA_VERSION, StateError, read_config, state_dir, write_config  # noqa: E402
+
+
+def preferences():
+    return {
+        "schema_version": 1,
+        "stop_minutes": 30,
+        "reserve_percent": 10,
+        "cold_allowance_percent": 20,
+        "highway_allowance_percent": 10,
+        "default_vehicle": None,
+        "event_vehicles": {"event": "Car"},
+        "person_vehicles": {"Driver": "Other"},
+        "event_drivers": {},
+        "destination_charges": [
+            {
+                "schema_version": 1,
+                "vehicle": "Car",
+                "destination": "Venue",
+                "available_at": "2020-07-13T20:00:00Z",
+                "energy_kwh": 40,
+                "source": "Owner confirmed venue charging, message native-42",
+            }
+        ],
+    }
+
+
+def test_existing_config_owner_round_trip_and_additive_v7_migration(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    path = state_dir() / "config.json"
+    path.write_text(json.dumps({"schema_version": 7, "home_address": "Home"}))
+    assert read_config() == {"schema_version": STATE_SCHEMA_VERSION, "home_address": "Home"}
+    assert json.loads(path.read_text())["schema_version"] == STATE_SCHEMA_VERSION
+    write_config({"home_address": "Home", "ev_planning": preferences()})
+    current = read_config()
+    assert current is not None and current["ev_planning"] == preferences()
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"schema_version": True},
+        {"schema_version": 2},
+        {"stop_minutes": True},
+        {"stop_minutes": 0},
+        {"reserve_percent": 51},
+        {"reserve_percent": 10.5},
+        {"highway_allowance_percent": float("nan")},
+        {"cold_allowance_percent": -1},
+        {"default_vehicle": " "},
+        {"default_vehicle": "Car\nOther"},
+        {"event_vehicles": {"event": 2}},
+        {"event_drivers": []},
+        {"person_vehicles": {"Driver": ""}},
+        {"extra": True},
+    ],
+)
+def test_invalid_preferences_preserve_existing_config(tmp_path, monkeypatch, changes):
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    write_config({"home_address": "Home"})
+    path = state_dir() / "config.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        write_config({"ev_planning": {**preferences(), **changes}})
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"source": ""},
+        {"energy_kwh": float("inf")},
+        {"energy_kwh": -1},
+        {"vehicle": ""},
+        {"destination": ""},
+        {"schema_version": 2},
+        {"available_at": "2020-07-13T20:00:00"},
+    ],
+)
+def test_destination_charge_requires_complete_grounding(changes):
+    value = preferences()
+    value["destination_charges"][0].update(changes)
+    with pytest.raises(ValueError):
+        validate_ev_preferences(value)
+
+
+def test_same_charge_cannot_be_counted_twice():
+    value = preferences()
+    value["destination_charges"].append(copy.deepcopy(value["destination_charges"][0]))
+    with pytest.raises(ValueError, match="Duplicate"):
+        validate_ev_preferences(value)
+
+
+def test_corrupt_present_preferences_are_observable_not_silent_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    value = preferences()
+    value["schema_version"] = 99
+    path = state_dir() / "config.json"
+    path.write_text(json.dumps({"schema_version": STATE_SCHEMA_VERSION, "ev_planning": value}))
+    before = path.read_bytes()
+    with pytest.raises(StateError, match="preserve"):
+        read_config()
+    assert path.read_bytes() == before
+
+
+def test_bad_old_config_is_preserved_before_migration(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    path = state_dir() / "config.json"
+    path.write_text('{"schema_version":7,"ev_planning":{"schema_version":99}}')
+    before = path.read_bytes()
+    with pytest.raises(StateError):
+        read_config()
+    assert path.read_bytes() == before
+
+
+def test_intake_preserves_other_config_and_calls_no_provider(tmp_path, monkeypatch, capsys):
+    import stat
+
+    import configure_ev
+
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    write_config({"home_address": "Home", "min_transfer_minutes": 90})
+    assert configure_ev.main([json.dumps(preferences())]) == 0
+    assert json.loads(capsys.readouterr().out) == {"schema_version": 1, "recorded": True}
+    config = read_config()
+    assert config is not None
+    assert config["home_address"] == "Home" and config["min_transfer_minutes"] == 90
+    assert config["ev_planning"] == preferences()
+    assert stat.S_IMODE((state_dir() / "config.json").stat().st_mode) == 0o600
+
+
+def test_intake_duplicate_json_does_not_change_config(tmp_path, monkeypatch, capsys):
+    import configure_ev
+
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    write_config({"home_address": "Home"})
+    path = state_dir() / "config.json"
+    before = path.read_bytes()
+    assert configure_ev.main(['{"schema_version":1,"schema_version":99}']) == 1
+    assert path.read_bytes() == before
+    assert json.loads(capsys.readouterr().out)["recorded"] is False

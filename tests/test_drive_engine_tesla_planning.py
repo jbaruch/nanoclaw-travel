@@ -1,0 +1,208 @@
+"""Installed-provider boundaries and real bounded synthetic CLI processes only."""
+
+from __future__ import annotations
+
+import json
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "skills/drive-engine"))
+import tesla_planning as owner  # noqa: E402
+
+NOW = datetime(2020, 7, 13, tzinfo=UTC)
+
+
+def provider(tmp_path, monkeypatch):
+    mount = tmp_path / "skills"
+    for skill, files in (
+        (
+            "tessie-ops",
+            (
+                "tessie-read.py",
+                "tessie_cli.py",
+                "tessie_core.py",
+                "tessie_actions.py",
+                "tessie_policy.py",
+                "tessie_native.py",
+            ),
+        ),
+        ("tessie-charge", ("tessie-charge.py", "charge_ipc.py")),
+    ):
+        directory = mount / f"tessl__{skill}" / "scripts"
+        directory.mkdir(parents=True)
+        for name in files:
+            (directory / name).write_text("# synthetic provider target\n")
+    monkeypatch.setattr(owner, "MOUNT", mount)
+    return mount
+
+
+def state(alias="Car"):
+    return {
+        "kind": "state",
+        "vehicle": {"alias": alias},
+        "data": {
+            "drive_state": {
+                "timestamp": NOW.timestamp() * 1000,
+                "active_route_destination": "Venue",
+                "active_route_minutes_to_arrival": 123,
+                "active_route_energy_at_arrival": 17,
+            }
+        },
+    }
+
+
+def sample(**changes):
+    return {
+        "schema_version": 1,
+        "vehicle": "Car",
+        "usable_capacity_kwh": 75,
+        "measured_kwh_per_km": 0.18,
+        "measured_at": NOW.isoformat(),
+        "expected_departure_percent": 90,
+        "estimate": {},
+        "forecast_only": True,
+        **changes,
+    }
+
+
+def test_actual_cli_json_runner_and_nonzero_refusal(tmp_path):
+    script = tmp_path / "fixture.py"
+    script.write_text("import json; print(json.dumps({'schema_version': 1}))\n")
+    assert owner.run_json([sys.executable, str(script)]) == {"schema_version": 1}
+    script.write_text("print('private provider error'); raise SystemExit(4)\n")
+    with pytest.raises(owner.PlanningUnavailable, match="unavailable"):
+        owner.run_json([sys.executable, str(script)])
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "print('[]')",
+        "print('not JSON')",
+        'print(\'{"a":1,"a":2}\')',
+        "import os; os.write(1,b'\\xff')",
+    ],
+)
+def test_real_process_invalid_output_never_supplies_estimate(tmp_path, body):
+    script = tmp_path / "fixture.py"
+    script.write_text(body)
+    with pytest.raises(owner.PlanningUnavailable):
+        owner.run_json([sys.executable, str(script)])
+
+
+def test_real_child_oversized_output_is_bounded_and_retired(tmp_path, monkeypatch):
+    monkeypatch.setattr(owner, "MAX_OUTPUT", 1024)
+    script = tmp_path / "fixture.py"
+    script.write_text("import os; os.write(1, b'x'*65536)\n")
+    with pytest.raises(owner.PlanningUnavailable):
+        owner.run_json([sys.executable, str(script)])
+
+
+def test_fixed_readonly_argv_and_one_sample_per_identical_request(tmp_path, monkeypatch):
+    provider(tmp_path, monkeypatch)
+    calls = []
+
+    def run(argv):
+        calls.append(argv)
+        return state() if argv[2] == "state" else sample()
+
+    api = owner.TeslaPlanning(now=NOW, run=run)
+    assert api.vehicle("Car; literal") == "Car"
+    departure = NOW + timedelta(hours=2)
+    measured = api.estimate("Car", 395, departure)
+    assert measured is not None and measured.capacity_kwh == 75
+    assert api.estimate("Car", 395, departure) is measured
+    assert len(calls) == 2
+    assert calls[0][2:] == ["state", "--include-location", "--vehicle=Car; literal"]
+    assert calls[1][2:] == [
+        "estimate",
+        "--vehicle=Car",
+        "--distance-km",
+        "395",
+        "--departure",
+        departure.isoformat(),
+    ]
+    assert api.navigation()[0].vehicle == "Car"
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"schema_version": True},
+        {"schema_version": 2},
+        {"vehicle": "Other"},
+        {"forecast_only": False},
+        {"expected_departure_percent": None},
+        {"usable_capacity_kwh": 0},
+        {"measured_kwh_per_km": float("nan")},
+        {"measured_at": "unknown"},
+    ],
+)
+def test_bad_estimate_no_cache_admission_and_fixed_observable_hold(
+    tmp_path, monkeypatch, capsys, changes
+):
+    provider(tmp_path, monkeypatch)
+    calls = []
+
+    def run(argv):
+        calls.append(argv)
+        return sample(**changes)
+
+    api = owner.TeslaPlanning(now=NOW, run=run)
+    assert api.estimate("Car", 395, NOW) is None
+    assert api.estimate("Car", 395, NOW) is None
+    assert len(calls) == 1  # absent sample memoized; no retry into another answer
+    diagnostic = capsys.readouterr().err
+    assert "Legacy drive timing retained" in diagnostic
+    assert "nan" not in diagnostic and "unknown" not in diagnostic
+
+
+def test_partial_native_mount_never_falls_back_to_a_different_install(tmp_path, monkeypatch):
+    mount = provider(tmp_path, monkeypatch)
+    (mount / "tessl__tessie-charge/scripts/charge_ipc.py").unlink()
+    called = []
+    api = owner.TeslaPlanning(now=NOW, configured=True, run=lambda argv: called.append(argv))
+    assert api.vehicle("Car") is None
+    assert called == []
+
+
+def test_linked_provider_target_refused_before_execution(tmp_path, monkeypatch):
+    mount = provider(tmp_path, monkeypatch)
+    target = mount / "tessl__tessie-charge/scripts/charge_ipc.py"
+    target.unlink()
+    target.symlink_to(mount / "tessl__tessie-ops/scripts/tessie_native.py")
+    with pytest.raises(owner.PlanningUnavailable):
+        owner.provider_scripts()
+
+
+def test_ambiguous_vehicle_refusal_does_not_select_another_vehicle(tmp_path, monkeypatch):
+    provider(tmp_path, monkeypatch)
+    calls = []
+
+    def run(argv):
+        calls.append(argv)
+        raise owner.PlanningUnavailable("synthetic ambiguous fleet")
+
+    api = owner.TeslaPlanning(now=NOW, run=run)
+    assert api.vehicle(None) is None
+    assert api.vehicle(None) is None
+    assert len(calls) == 1
+
+
+def test_normal_source_clone_manifest_identity_and_complete_closure(tmp_path, monkeypatch):
+    mount = provider(tmp_path, monkeypatch)
+    clone = tmp_path / "plugin"
+    (clone / ".tessl-plugin").mkdir(parents=True)
+    (clone / ".tessl-plugin/plugin.json").write_text(json.dumps({"name": "jbaruch/nanoclaw-tesla"}))
+    (clone / "skills").mkdir()
+    for name in ("tessie-ops", "tessie-charge"):
+        (mount / f"tessl__{name}").rename(clone / "skills" / name)
+    monkeypatch.setattr(owner, "CLONE_PROVIDER", clone)
+    assert owner.provider_scripts()[1] == clone / "skills/tessie-charge/scripts/tessie-charge.py"
+    (clone / ".tessl-plugin/plugin.json").write_text(json.dumps({"name": "impostor"}))
+    with pytest.raises(owner.PlanningUnavailable):
+        owner.provider_scripts()

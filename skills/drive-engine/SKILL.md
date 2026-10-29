@@ -1,6 +1,6 @@
 ---
 name: drive-engine
-description: The unified drive-block engine. Manages the travel-time / driving blocks on your primary calendar — drives to your flights, to your in-person meetings, and to a trip you drive to rather than fly. Use when the user asks about drive blocks, driving time, commute or travel-time blocks on their calendar, or drives to the airport, to a meeting, or to a hotel; when the operator replies to a drive notification to skip a meeting drive ('skip', 'skip 2 and 3'); when the operator says whether a trip is a drive or a flight ('drive', 'fly'); when the operator reports a drive block that looks wrong or missing; or to record confirmed conference-attendance dates and exact venue labels from grounded travel intake. Also runs on its own schedule.
+description: The unified drive-block engine. Manages the travel-time / driving blocks on your primary calendar — drives to your flights, to your in-person meetings, and to a trip you drive to rather than fly. Use when the user asks about drive blocks, driving time, commute or travel-time blocks on their calendar, or drives to the airport, to a meeting, or to a hotel; when the operator replies to a drive notification to skip a meeting drive ('skip', 'skip 2 and 3'); when the operator says whether a trip is a drive or a flight ('drive', 'fly'); when the operator reports a drive block that looks wrong or missing; to configure EV stop-time planning from grounded vehicle/charging inputs; or to record confirmed conference-attendance dates and exact venue labels from grounded travel intake. Also runs on its own schedule.
 cadence: "*/30 * * * *"
 # agentModel renewal: no scanner tracks this pin. Re-check it on each new Claude model release and bump it in its own PR.
 agentModel: "claude-haiku-5-5"
@@ -54,3 +54,13 @@ Run this when a block looks like an engine bug — a drive for a meeting you are
 ## Step 4 — Record grounded conference attendance
 
 Run this when the owner confirms attendance or the existing travel intake has actual owner/trip/calendar evidence for the conference days and venue labels. Read [attendance-contract.md](attendance-contract.md) in full, select only those grounded dates and exact location labels, and invoke its owner intake. Record no attendance from a city or title guess. Do not call a provider or change calendar events in this step. Finish here.
+
+## Step 5 — Configure grounded EV drive planning
+
+Read [ev-planning-contract.md](ev-planning-contract.md) in full. Resolve only owner-confirmed vehicle/driver selectors and charging evidence. Invoke its intake with one complete literal preference object:
+
+```bash
+python3 /home/node/.claude/skills/tessl__drive-engine/configure_ev.py '<complete schema-1 preference JSON from the contract>'
+```
+
+Report its `recorded` result. This records planning inputs and grants no vehicle operation or enrollment. Finish here.

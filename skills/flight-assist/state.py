@@ -5,7 +5,7 @@ deltas between byAir snapshots. State lives under
 `/workspace/state/flight-assist/` in production; tests override the
 directory via the `FLIGHT_ASSIST_STATE_DIR` environment variable.
 
-Files written (all JSON, all carry `schema_version: 7` at the top level):
+Files written (all JSON, all carry `schema_version: 8` at the top level):
 
     config.json                       — home_address, etc. (set via /setup)
     active-flights.json               — list of currently-tracked flight_ids
@@ -64,7 +64,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-STATE_SCHEMA_VERSION = 7
+STATE_SCHEMA_VERSION = 8
 
 _DEFAULT_STATE_DIR = "/workspace/state/flight-assist"
 _STATE_DIR_ENV = "FLIGHT_ASSIST_STATE_DIR"
@@ -284,6 +284,17 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
         # no shape to backfill on migration — the next precheck poll repopulates
         # it. Config and active-flights files only get a schema_version bump.
         version = 7
+    if version == 7:
+        # v8 adds optional EV planner preferences to config. Absence retains
+        # legacy routing; no vehicle authority or default mapping is inferred.
+        if path.name == CONFIG_FILE and "ev_planning" in payload:
+            from ev_preferences import validate_ev_preferences
+
+            try:
+                validate_ev_preferences(payload["ev_planning"])
+            except ValueError as exc:
+                raise StateError("Inspect EV planner preferences; preserve config.") from exc
+        version = 8
     if version != STATE_SCHEMA_VERSION:
         # Unknown older version: refuse to silently pass through. The
         # branches above are the authoritative list of known upgrade
@@ -301,7 +312,17 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
 
 def read_config() -> dict | None:
     """Return the plugin-wide config (home_address, etc.) or None if not set."""
-    return _read_json_with_version(state_dir() / CONFIG_FILE)
+    result = _read_json_with_version(state_dir() / CONFIG_FILE)
+    if result is not None and "ev_planning" in result:
+        from ev_preferences import validate_ev_preferences
+
+        try:
+            validate_ev_preferences(result["ev_planning"])
+        except ValueError as exc:
+            raise StateError(
+                "Inspect EV planning preferences; preserve the existing config."
+            ) from exc
+    return result
 
 
 def read_current_location() -> dict | None:
@@ -460,6 +481,7 @@ def resolve_live_origin(home_address: str | None, *, now: datetime) -> str | Non
 
 
 _CONFIG_OPTIONAL_FIELDS: dict[str, type] = {
+    "ev_planning": dict,
     "home_address": str,
     "min_transfer_minutes": int,
     # Calendar reconciliation (#55). The flight ("Flighty Flights") calendar
@@ -547,6 +569,10 @@ def write_config(config: dict) -> None:
         # reject at the write surface.
         if key in _CONFIG_NON_NEGATIVE_INT_FIELDS and value < 0:
             raise ValueError(f"write_config: field '{key}' is {value}, expected non-negative int")
+        if key == "ev_planning":
+            from ev_preferences import validate_ev_preferences
+
+            validate_ev_preferences(value)
     payload = {**config, "schema_version": STATE_SCHEMA_VERSION}
     _atomic_write_json(state_dir() / CONFIG_FILE, payload)
 

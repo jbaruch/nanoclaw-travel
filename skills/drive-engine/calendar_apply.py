@@ -168,7 +168,8 @@ def _human_description(desired: DesiredBlock) -> str:
     (the meeting/flight name) and the `location` (the destination) with the one
     detail neither shows — where the drive starts.
     """
-    return f"{desired.origin} → {desired.destination}"
+    route = f"{desired.origin} → {desired.destination}"
+    return route if desired.charging_note is None else f"{route}\n{desired.charging_note}"
 
 
 def _desired_extended_properties(desired: DesiredBlock) -> dict:
@@ -332,6 +333,9 @@ def apply_plan(
                     "anchor": u.desired.anchor.isoformat(),
                 }
             )
+            if u.desired.charging_note is not None:
+                side = "Return" if u.desired.kind.endswith("return") else "Outbound"
+                result.material_updates[-1]["charging"] = f"{side}: {u.desired.charging_note}"
 
     for c in plan.creates:
         if c.desired.start < creation_clock():
@@ -359,6 +363,9 @@ def apply_plan(
                     "anchor": c.desired.anchor.isoformat(),
                 }
             )
+            if c.desired.charging_note is not None:
+                side = "Return" if c.desired.kind.endswith("return") else "Outbound"
+                result.added_meeting_legs[-1]["charging"] = f"{side}: {c.desired.charging_note}"
 
     for cv in plan.converts:
         if cv.desired.start < creation_clock():

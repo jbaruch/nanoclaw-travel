@@ -73,6 +73,8 @@ class DesiredBlock:
     # patch: a fallback zone (the reader was unavailable) must not flap every
     # block back and forth whenever the reader flickers.
     zone_from_operator: bool = False
+    charging_note: str | None = None
+    earliest_start: datetime | None = None
 
 
 def legacy_keys_for_airport_leg(

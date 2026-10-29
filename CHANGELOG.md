@@ -1,5 +1,9 @@
 # Changelog
 
+### Include measured EV charging time in drives (#339)
+
+Long drive plans add configurable charging-stop time before the existing combined reconcile, moving arrive-by departures earlier and extending depart-after returns. Remaining energy is carried between connected legs of the same selected native vehicle; only grounded destination charging replenishes it. The supported Tesla estimate supplies measured weighted consumption and capacity, with explicit highway/cold allowances rather than a highway-only measurement claim. Fresh exact-vehicle/destination car navigation can refine the day-of estimate. Missing, ambiguous or invalid provider inputs retain legacy blocks with configured gaps reported in diagnostics. Flight-assist config 8 adds validated non-authorizing planner preferences; prior fields and all flight gates are preserved. Compatible Tesla13 transport publication and Root native acceptance remain release holds.
+
 ## 0.2.169 — 2026-10-29
 
 ### Declare the Tesla provider for trusted source review (#339)

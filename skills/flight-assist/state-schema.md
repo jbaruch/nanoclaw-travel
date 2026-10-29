@@ -19,7 +19,7 @@ Plugin-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
   "min_transfer_minutes": 45,
   "byair_calendar_name": "Flighty Flights",
@@ -29,7 +29,7 @@ Plugin-wide configuration set during install via the `/setup` flow.
 
 Fields:
 
-- `schema_version` (int, required) — currently `7`
+- `schema_version` (int, required) — currently `8`
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
 - `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in plugin terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in plugin code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)
@@ -46,14 +46,14 @@ Index of currently-tracked flight IDs. Refreshed daily by the sync-tripit script
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "flight_ids": [12345, 67890, 11111]
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `7`
+- `schema_version` (int, required) — currently `8`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
 ### `sync-health.json` — sync failure counters (#326)
@@ -135,7 +135,7 @@ Per-flight state record. One file per tracked flight.
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "flight_id": 12345,
   "code": "AA2414",
   "ownership": "mine",
@@ -202,7 +202,7 @@ Per-flight state record. One file per tracked flight.
 
 Top-level fields:
 
-- `schema_version` (int, required) — `7`
+- `schema_version` (int, required) — `8`
 - `flight_id` (int, required) — byAir's flight identifier
 - `code` (string, required) — the **marketing** flight designator like `"AA2414"` / `"DL4908"` — what the operator booked and recognizes. Seeded by `sync_tripit` from byAir `list_trips` (whose top-level `code` is the marketing designator) and preserved across polls: the precheck poll uses byAir `get_flight`, whose top-level `code` is the **operating** designator for a codeshare (e.g. `9E4908`, Endeavor operating DL4908), so the poll never overwrites this field. `sync_tripit` also refreshes it from `list_trips` on every retained flight each daily run, healing records a pre-fix poll may have poisoned with the operating designator (#159 Bug 1)
 - `ownership` (string, required) — `"mine"` or `"friend"`
@@ -388,7 +388,7 @@ The model sends the notice with `send_message`, then acknowledges only the IDs c
 
 The store takes the stateful-artifacts gate-store exception. Unknown versions, malformed records and unreadable files refuse with a repair diagnostic; they never become an empty store. The owner accepts versions 1 and 2 through the explicit upgrades below, then writes version 3 on read under the existing lock. A future owner version must migrate every accepted older version and rewrite it on read. Missing state is first-run state. Readers are the precheck and acknowledgement helper; they use only the owner library from the same installed bundle. Older owners refuse version 3 and require the updated bundle; they must not clear its receipts.
 
-The existing per-flight schema remains version 7 with the same fields and gate values. Existing true flags remain consumed legacy attempts; the change creates no synthetic receipts and replays no historical alerts. New flags advance only from confirmed entries in the new store. The flags alone remain insufficient evidence that an old notification was delivered.
+The existing per-flight schema is version 8 with the same fields and gate values. Existing true flags remain consumed legacy attempts; the change creates no synthetic receipts and replays no historical alerts. New flags advance only from confirmed entries in the new store. The flags alone remain insufficient evidence that an old notification was delivered.
 
 
 ### Notification store v1 → v2 migration
@@ -400,3 +400,7 @@ The owner validates every version-1 root and row before an atomic upgrade under 
 After complete version-2 validation, the owner renames only each row's `key` field to `notice_digest` and stamps the root and rows with version 3. Map keys, digest bytes, IDs, sequence, event payloads, markers, poll identities, expiry times, retry deadlines and confirmations remain unchanged. Migration invokes no delivery, acknowledgement, due selection or pruning. A version-1 store first receives the existing v1→v2 transformation and then this rename; the chain is written once through the owner's private temporary file and atomic replacement while holding `notifications.lock`. Invalid, mixed or future shapes and failed replacements preserve the original journal. Secret scanner rules and allowlists are unchanged.
 
 Legacy versions 1 and 2 retain their 4,194,304-byte admission limit. Version 3 permits at most 4,214,784 bytes: the legacy budget plus exactly ten renamed-field bytes for each of the existing 2,048 allowed rows. This bounded 20,480-byte allowance lets near-limit valid legacy stores migrate and reopen without changing receipts or retry state. The collection and per-event limits remain unchanged; oversized legacy files still refuse without replacement.
+
+### v7 → v8
+
+Config gains optional `ev_planning` owned by `ev_preferences.py`; read [the EV planning contract](../drive-engine/ev-planning-contract.md) for its nested schema-1 fields and grounding. Old config, active-flight index and per-flight fields are preserved; absence adds no mapping, estimate or vehicle authority. All owner readers/writers co-ship.

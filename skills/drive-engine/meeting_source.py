@@ -325,6 +325,11 @@ def meeting_desired_blocks(
                     anchor=anchor,
                     timezone=display_tz or getattr(meeting, "timezone", None),
                     zone_from_operator=bool(display_tz),
+                    earliest_start=(
+                        leg.arrive_by - timedelta(seconds=gap)
+                        if isinstance(gap, int) and leg.arrive_by is not None
+                        else None
+                    ),
                     legacy_keys=frozenset({(GEN_LEGACY_DP, meeting.meeting_id, leg.direction)}),
                 )
             )

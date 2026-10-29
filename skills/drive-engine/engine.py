@@ -316,6 +316,7 @@ def _build_transfer(
             baseline_seconds=int(drive.total_seconds()),
             anchor=leg.window_start,
             window_end=leg.window_end,
+            earliest_start=leg.window_start,
             timezone=leg.timezone,
         ),
         None,
@@ -394,6 +395,10 @@ def build_reconcile_plan(
     extra_held: list[HeldLeg] | None = None,
     managed_legacy: frozenset[str] | None = None,
     postarrival_meetings: list[PostarrivalMeeting] | None = None,
+    adjust_drives: Callable[
+        [list[DesiredBlock], list[tuple[datetime, datetime]]], list[DesiredBlock]
+    ]
+    | None = None,
 ) -> EngineResult:
     """Run the full engine pipeline and return the reconcile plan + diagnostics.
 
@@ -573,6 +578,9 @@ def build_reconcile_plan(
             current_blocks=current_blocks,
         )
         skipped.extend(post_diags)
+
+    if adjust_drives is not None:
+        desired = adjust_drives(desired, [(guard.guard_start, guard.ready_at) for guard in guards])
 
     held_keys = frozenset(leg.key for leg in held)
     if managed_legacy is None:
