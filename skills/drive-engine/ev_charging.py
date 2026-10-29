@@ -142,15 +142,17 @@ def adjust_charging(
     destination_charges: Sequence[DestinationCharge] = (),
     navigation: Sequence[Navigation] = (),
     protected_windows: Sequence[tuple[datetime, datetime]] = (),
-    unavailable: Callable[[], None] | None = None,
+    unavailable: Callable[[frozenset[tuple[str, str]]], None] | None = None,
 ) -> list[DesiredBlock]:
-    """Return adjusted blocks; incomplete vehicle chains retain ORIGINAL objects.
+    """Return adjusted blocks; ungrounded dependent legs retain ORIGINAL objects.
 
     Every later leg consumes the prior leg's remaining energy. Independently
     forecasted return percentages never replenish it. Only exact positive
     destination-charge evidence can add energy between connected legs. Missing
     distance, measurement, vehicle or route continuity keeps the whole vehicle
-    chain unchanged instead of producing a partially optimistic round trip.
+    dependent chain unchanged instead of producing an optimistic return battery.
+    Out-of-horizon legs remain unchanged without suppressing nearer drives.
+    Disconnected endpoints do not replenish the same vehicle's remaining energy.
 
     A bounded fixed-point pass forecasts the first leg at its actual earlier
     leave-by, rather than counting charging that would occur after it must leave.
@@ -161,12 +163,57 @@ def adjust_charging(
     if now.tzinfo is None or len(original) > MAX_LEGS:
         return original
     grouped: dict[str, list[tuple[int, DesiredBlock]]] = {}
+    eligible_keys = {
+        (vehicles.get((block.identity, block.kind)), block.identity, block.kind)
+        for block in original
+        if isinstance(vehicles.get((block.identity, block.kind)), str)
+        and vehicles.get((block.identity, block.kind))
+        and block.end > now
+        and block.start <= now + FORECAST_HORIZON
+    }
+    return_predecessors = {
+        "meeting_return": "meeting_outbound",
+        "lodging_return": "lodging_outbound",
+        "airport_arrival": "airport_departure",
+    }
+    unknown_from: dict[str, datetime] = {}
     for index, block in enumerate(original):
         vehicle = vehicles.get((block.identity, block.kind))
-        if isinstance(vehicle, str) and vehicle.strip() and block.end > now:
+        if (
+            isinstance(vehicle, str)
+            and vehicle.strip()
+            and block.end > now
+            and block.start <= now + FORECAST_HORIZON
+        ):
             grouped.setdefault(vehicle, []).append((index, block))
+            predecessor = return_predecessors.get(block.kind)
+            native_remaining = any(
+                route.matches(block, vehicle, now)
+                and route.arrival_percent >= options.reserve_percent
+                for route in navigation
+            )
+            if (
+                predecessor
+                and (vehicle, block.identity, predecessor) not in eligible_keys
+                and not native_remaining
+            ):
+                # A completed, missing or unresolved outbound is NOT a new
+                # full departure battery. Its return and downstream use of
+                # that vehicle remain legacy until cumulative inputs exist.
+                unknown_from[vehicle] = min(unknown_from.get(vehicle, block.start), block.start)
     for vehicle, chain in grouped.items():
         chain.sort(key=lambda item: (item[1].start, item[1].end, item[0]))
+        if vehicle in unknown_from:
+            ungrounded = frozenset(
+                (block.identity, block.kind)
+                for _, block in chain
+                if block.start >= unknown_from[vehicle]
+            )
+            chain = [item for item in chain if item[1].start < unknown_from[vehicle]]
+            if unavailable is not None:
+                unavailable(ungrounded)
+        if not chain:
+            continue
         planned = _vehicle_chain(
             chain,
             vehicle,
@@ -182,7 +229,7 @@ def adjust_charging(
             for (index, _), block in zip(chain, planned, strict=True):
                 original[index] = block
         elif unavailable is not None:
-            unavailable()
+            unavailable(frozenset((block.identity, block.kind) for _, block in chain))
     return original
 
 
@@ -199,10 +246,7 @@ def _vehicle_chain(
             or block.end.tzinfo is None
             or block.end <= block.start
             or block.start > now + FORECAST_HORIZON
-            or (
-                prior is not None
-                and (prior.end > block.start or place(prior.destination) != place(block.origin))
-            )
+            or (prior is not None and prior.end > block.start)
         ):
             return None
         distances.append(float(distance))
@@ -227,6 +271,7 @@ def _vehicle_chain(
                     if (
                         index not in used_charges
                         and charge.vehicle == vehicle
+                        and place(previous.destination) == place(block.origin)
                         and place(charge.destination) == place(block.origin)
                         and charge.available_at.tzinfo is not None
                         and previous.end <= charge.available_at <= block.start

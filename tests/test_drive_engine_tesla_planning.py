@@ -206,3 +206,80 @@ def test_normal_source_clone_manifest_identity_and_complete_closure(tmp_path, mo
     (clone / ".tessl-plugin/plugin.json").write_text(json.dumps({"name": "impostor"}))
     with pytest.raises(owner.PlanningUnavailable):
         owner.provider_scripts()
+
+
+def test_horizon_and_unrelated_charge_rows_do_not_start_extra_provider_reads(monkeypatch):
+    from dataclasses import replace
+
+    sys.path.insert(0, str(ROOT / "skills/flight-assist"))
+    from ev_charging import EnergySample
+    from reconcile import DesiredBlock
+    from reconcile_sweep import _ev_adjuster
+
+    calls = []
+
+    class Provider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def vehicle(self, selector):
+            calls.append(selector)
+            return "Car"
+
+        def estimate(self, *_args):
+            return EnergySample("Car", 75, 0.18, NOW, 90)
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            raise AssertionError("Complete near-term synthetic inputs must remain usable")
+
+    monkeypatch.setattr(owner, "TeslaPlanning", Provider)
+    block = DesiredBlock(
+        "meeting",
+        "meeting_outbound",
+        "Drive",
+        NOW + timedelta(hours=9),
+        NOW + timedelta(hours=12),
+        "Home",
+        "Venue",
+        10800,
+        NOW + timedelta(hours=12),
+    )
+    far = replace(
+        block,
+        identity="far-flight",
+        kind="airport_departure",
+        start=NOW + timedelta(days=30),
+        end=NOW + timedelta(days=30, hours=3),
+    )
+    preferences = {
+        "schema_version": 1,
+        "stop_minutes": 30,
+        "reserve_percent": 10,
+        "cold_allowance_percent": 0,
+        "highway_allowance_percent": 0,
+        "default_vehicle": "Car",
+        "event_vehicles": {},
+        "person_vehicles": {},
+        "event_drivers": {},
+        "destination_charges": [
+            {
+                "schema_version": 1,
+                "vehicle": "Irrelevant",
+                "destination": "Other venue",
+                "available_at": (NOW + timedelta(hours=10)).isoformat(),
+                "energy_kwh": 20,
+                "source": "Unrelated grounded owner message",
+            }
+        ],
+    }
+    adjust = _ev_adjuster(
+        {"ev_planning": preferences}, lambda *_: None, {("Home", "Venue"): 395}, NOW
+    )
+    result, held = adjust([block, far], [], [])
+    assert held == []
+    assert result[0].start == block.start - timedelta(minutes=30)
+    assert result[1] is far
+    assert calls == ["Car"]

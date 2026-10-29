@@ -396,7 +396,8 @@ def build_reconcile_plan(
     managed_legacy: frozenset[str] | None = None,
     postarrival_meetings: list[PostarrivalMeeting] | None = None,
     adjust_drives: Callable[
-        [list[DesiredBlock], list[tuple[datetime, datetime]]], list[DesiredBlock]
+        [list[DesiredBlock], list[tuple[datetime, datetime]], list[ParsedBlock]],
+        tuple[list[DesiredBlock], list[HeldLeg]],
     ]
     | None = None,
 ) -> EngineResult:
@@ -580,7 +581,10 @@ def build_reconcile_plan(
         skipped.extend(post_diags)
 
     if adjust_drives is not None:
-        desired = adjust_drives(desired, [(guard.guard_start, guard.ready_at) for guard in guards])
+        desired, charging_held = adjust_drives(
+            desired, [(guard.guard_start, guard.ready_at) for guard in guards], current_blocks
+        )
+        held.extend(charging_held)
 
     held_keys = frozenset(leg.key for leg in held)
     if managed_legacy is None:

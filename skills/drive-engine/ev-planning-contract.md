@@ -42,15 +42,30 @@ remain separate. Rated range, station power and charger availability are never
 substitutes. Stop count is a minimum assuming full usable recharges; configured
 duration is an allowance, not a charger itinerary or charging-speed promise.
 
-The planner carries remaining energy through connected chronological legs of
+The planner carries remaining energy through chronological admitted legs of
 the same exact native vehicle. It never reads a fresh return-leg forecast as a
 full battery. Missing distance, unknown forecast, route/vehicle ambiguity,
-disconnected legs, invalid measurements or newly introduced overlap retains that
-vehicle's original legacy blocks. Configured missing/ambiguous data emits an
+invalid measurements or newly introduced overlap retains the affected dependent
+legacy blocks. Out-of-horizon legs remain unchanged without suppressing nearer
+drives. Disconnected endpoints never replenish the same vehicle's energy. A
+return with no selected, still-accounted outbound holds that return and later
+dependent vehicle legs; a fresh exact active route's measured arrival energy
+may supply independent remaining-route evidence. Configured missing/ambiguous data emits an
 actionable stderr diagnostic; it does not silently become a successful EV plan.
+When a fetched owned block already displays an EV allowance, unavailable inputs
+use the existing non-announcing `HeldLeg` path and retain that block. A new drive
+without EV data keeps the legacy plan; no unknown forecast shortens a retained
+allowance.
 Short drives with sufficient energy retain their original objects and output.
 The forecast is reevaluated at an earlier calculated departure within its finite
 read-only bound; unstable forecasts retain legacy timing.
+
+The existing Calendar description string renders an `EV planning:` human line.
+Reconciliation compares that rendered presentation independently of ordinary
+traffic jitter, including adding/removing the minimum configured allowance.
+Identical presentation keeps the existing traffic tolerance and remains a no-op.
+The description grants no vehicle authority. Private `dengine_` schema 1 and its
+fields/meaning remain unchanged; no new persisted machine field is introduced.
 
 Only a positive destination-charge input adds intervening energy. A hotel,
 conference, multi-day gap or nearby charger does not imply charging. Bind evidence

@@ -34,7 +34,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from block_codec import GEN_LEGACY_FADRIVE, GEN_UNIFIED, ParsedBlock
+from block_codec import (
+    EV_PRESENTATION_PREFIX,
+    GEN_LEGACY_FADRIVE,
+    GEN_UNIFIED,
+    ParsedBlock,
+    human_description,
+)
 
 # Legacy directions ↔ unified leg kinds, for building a desired leg's legacy keys.
 _KIND_TO_LEGACY_DIRECTION = {
@@ -255,6 +261,18 @@ def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:
     (traffic grew) moves the block's leave-by and must trigger an update; a
     sub-tolerance change is routing jitter, not signal, and is ignored so the
     live writer doesn't churn a recreate every sweep (#164)."""
+    had_ev_note = (
+        isinstance(current.description, str)
+        and f"\n{EV_PRESENTATION_PREFIX}" in current.description
+    )
+    if desired.charging_note is not None or had_ev_note:
+        # Add/change/remove a known EV allowance even when its minute-sized
+        # duration is below the ordinary traffic jitter threshold. Repeated
+        # identical renders remain a no-op; schema-1 private state is unchanged.
+        if current.description != human_description(
+            desired.origin, desired.destination, desired.charging_note
+        ):
+            return True
     if (
         current.anchor != desired.anchor
         or current.origin != desired.origin

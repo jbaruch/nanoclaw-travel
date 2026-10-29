@@ -47,6 +47,14 @@ UNIFIED_BLOCK_SCHEMA_VERSION = 1
 GEN_UNIFIED = "unified"
 GEN_LEGACY_FADRIVE = "legacy_fadrive"
 GEN_LEGACY_DP = "legacy_dp"
+EV_PRESENTATION_PREFIX = "EV planning: "
+
+
+def human_description(origin: str, destination: str, charging_note: str | None = None) -> str:
+    """Existing Calendar description string; presentation, never vehicle authority."""
+    route = f"{origin} → {destination}"
+    return route if charging_note is None else f"{route}\n{EV_PRESENTATION_PREFIX}{charging_note}"
+
 
 # --- alert values -----------------------------------------------------------
 
@@ -202,6 +210,9 @@ class ParsedBlock:
     # The event's own `start.timeZone`, read for unified blocks only (#309): the
     # zone the block is displayed in, which reconcile compares to the operator's.
     timezone: str | None = None
+    # Existing native Calendar presentation, not a new private state field.
+    # Compare EV renders independently of traffic baseline jitter.
+    description: str | None = field(default=None, compare=False)
 
 
 def _event_start_timezone(event: object) -> str | None:
@@ -309,7 +320,11 @@ def parse_block(event: object) -> ParsedBlock | None:
     if private is not None:
         extended = _parse_extended_block(private, eid)
         if extended is not None:
-            return replace(extended, timezone=_event_start_timezone(event))
+            return replace(
+                extended,
+                timezone=_event_start_timezone(event),
+                description=_event_description(event),
+            )
 
     desc = _event_description(event)
     if desc is None:

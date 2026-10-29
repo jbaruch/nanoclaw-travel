@@ -426,7 +426,8 @@ def build_plan(
     itinerary: Itinerary | None = None,
     postarrival_meetings: list[PostarrivalMeeting] | None = None,
     adjust_drives: Callable[
-        [list[DesiredBlock], list[tuple[datetime, datetime]]], list[DesiredBlock]
+        [list[DesiredBlock], list[tuple[datetime, datetime]], list[ParsedBlock]],
+        tuple[list[DesiredBlock], list[HeldLeg]],
     ]
     | None = None,
 ) -> PlanResult:
@@ -590,7 +591,7 @@ def _on_path(name: str) -> None:
 
 def _ev_adjuster(config, route, distances, now, busy_windows=()):
     """One read-only Tesla adapter for this complete sweep, never a state writer."""
-    from ev_charging import DestinationCharge, PlanningOptions, adjust_charging
+    from ev_charging import FORECAST_HORIZON, DestinationCharge, PlanningOptions, adjust_charging
     from tesla_planning import TeslaPlanning
 
     preferences = config.get("ev_planning")
@@ -616,12 +617,17 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
             for value in preferences["destination_charges"]
         ]
 
-    def adjust(blocks, windows):
+    def adjust(blocks, windows, current):
         if not blocks:
-            return blocks
+            return blocks, []
         provider = TeslaPlanning(now=now, configured=preferences is not None)
         selected = {}
+        resolved_selectors = {}
+        unavailable_keys = set()
         for block in blocks:
+            if block.end <= now or block.start > now + FORECAST_HORIZON:
+                unavailable_keys.add((block.identity, block.kind))
+                continue
             selector = None
             if preferences is not None:
                 driver = preferences["event_drivers"].get(block.identity)
@@ -629,14 +635,19 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
                 person_vehicle = preferences["person_vehicles"].get(driver)
                 if event_vehicle and person_vehicle and event_vehicle != person_vehicle:
                     provider.unavailable()
+                    unavailable_keys.add((block.identity, block.kind))
                     continue
                 selector = event_vehicle or person_vehicle or preferences["default_vehicle"]
                 if driver and not person_vehicle and not event_vehicle:
                     provider.unavailable()
+                    unavailable_keys.add((block.identity, block.kind))
                     continue
             vehicle = provider.vehicle(selector)
             if vehicle is not None:
                 selected[(block.identity, block.kind)] = vehicle
+                resolved_selectors[selector] = vehicle
+            else:
+                unavailable_keys.add((block.identity, block.kind))
 
         def distance(block):
             key = (block.origin, block.destination)
@@ -649,10 +660,21 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
 
         grounded_charges = []
         for charge in charges:
-            canonical = provider.vehicle(charge.vehicle)
+            if not now <= charge.available_at <= now + FORECAST_HORIZON:
+                continue
+            # Reuse only identities grounded by actual admitted leg selection.
+            # An unrelated/stale charge row causes no new provider read.
+            canonical = resolved_selectors.get(charge.vehicle)
+            if canonical is None and charge.vehicle in selected.values():
+                canonical = charge.vehicle
             if canonical in selected.values():
                 grounded_charges.append(replace(charge, vehicle=canonical))
-        return adjust_charging(
+
+        def unavailable(keys):
+            unavailable_keys.update(keys)
+            provider.unavailable()
+
+        adjusted = adjust_charging(
             blocks,
             vehicles=selected,
             distance_km=distance,
@@ -662,8 +684,32 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
             destination_charges=grounded_charges,
             navigation=provider.navigation(),
             protected_windows=[*windows, *busy_windows],
-            unavailable=provider.unavailable,
+            unavailable=unavailable,
         )
+        from block_codec import EV_PRESENTATION_PREFIX
+
+        retained = {
+            (block.identity, block.kind)
+            for block in current
+            if isinstance(block.description, str)
+            and f"\n{EV_PRESENTATION_PREFIX}" in block.description
+            and (block.identity, block.kind) in unavailable_keys
+        }
+        if retained:
+            provider.unavailable()
+        held = [
+            HeldLeg(
+                block.identity,
+                block.kind,
+                block.summary,
+                block.anchor,
+                "EV inputs unavailable; retaining the existing owned charging allowance",
+                announce=False,
+            )
+            for block in blocks
+            if (block.identity, block.kind) in retained
+        ]
+        return [block for block in adjusted if (block.identity, block.kind) not in retained], held
 
     return adjust
 

@@ -123,8 +123,8 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
     The block is rendered in its local timezone (`desired.timezone`) so it shows
     the correct local time. Machine state (leg identity + the fields the recheck
     reads back) rides in `extendedProperties.private`, a machine-only field, and
-    the `description` carries only the operator-facing route line (#178 writer
-    flip). It squatted in the description only because the retired Composio toolkit
+    the `description` carries operator-facing route and optional EV allowance (#178
+    writer flip). State squatted in the description only because the retired Composio toolkit
     exposed no writable `extendedProperties`; the native API does, and the reader
     has read both since the dual-read step, so a block written this way round-trips
     and a still-description-carried block created before the flip is read by the
@@ -168,8 +168,9 @@ def _human_description(desired: DesiredBlock) -> str:
     (the meeting/flight name) and the `location` (the destination) with the one
     detail neither shows — where the drive starts.
     """
-    route = f"{desired.origin} → {desired.destination}"
-    return route if desired.charging_note is None else f"{route}\n{desired.charging_note}"
+    from block_codec import human_description
+
+    return human_description(desired.origin, desired.destination, desired.charging_note)
 
 
 def _desired_extended_properties(desired: DesiredBlock) -> dict:

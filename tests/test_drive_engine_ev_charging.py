@@ -139,11 +139,72 @@ def test_unknown_distance_keeps_original(km):
     assert run([out], km=km)[0] is out
 
 
-def test_different_destination_cannot_consume_another_vehicle_trip_forecast():
+def test_disconnected_route_does_not_reset_the_same_vehicles_energy_forecast():
     out = leg()
     back = leg("meeting_return", origin="Other city", destination="Home", hour=15)
-    result = run([out, back])
+    result = run([out, back], km=200)
+    assert result[0] is out
+    assert result[1].end == back.end + timedelta(minutes=30)
+
+
+def test_far_future_airport_leg_does_not_disable_near_long_meeting_drive():
+    out = leg()
+    airport = replace(
+        leg("airport_departure", origin="Home", destination="Airport", hour=24 * 30),
+        identity="flight",
+    )
+    result = run([out, airport])
+    assert result[0].start == out.start - timedelta(minutes=30)
+    assert result[1] is airport
+
+
+def test_disconnected_airport_leg_does_not_disable_first_grounded_drive():
+    out = leg()
+    airport = replace(
+        leg("airport_arrival", origin="Far airport", destination="Hotel", hour=24),
+        identity="flight",
+    )
+    result = run([out, airport])
+    assert result[0].start == out.start - timedelta(minutes=30)
+
+
+def test_completed_outbound_cannot_rebase_a_future_return_to_a_full_forecast():
+    out = replace(leg(), start=NOW - timedelta(hours=4), end=NOW - timedelta(hours=1))
+    back = leg("meeting_return", origin="Venue", destination="Home", hour=15)
+    result = run([out, back], km=395)
     assert result[0] is out and result[1] is back
+
+
+def test_unresolved_outbound_cannot_be_omitted_before_default_vehicle_return():
+    out = leg()
+    back = leg("meeting_return", origin="Venue", destination="Home", hour=15)
+    result = run([out, back], km=395, vehicles={(back.identity, back.kind): "Car"})
+    assert result[0] is out and result[1] is back
+
+
+def test_other_vehicles_outbound_is_not_cumulative_provenance_for_return():
+    out = leg()
+    back = leg("meeting_return", origin="Venue", destination="Home", hour=15)
+    result = run(
+        [out, back],
+        km=395,
+        vehicles={
+            (out.identity, out.kind): "Other",
+            (back.identity, back.kind): "Car",
+        },
+    )
+    assert result[1] is back
+
+
+def test_missing_outbound_holds_return_without_erasing_independent_prior_drive():
+    earlier = leg()
+    back = replace(
+        leg("meeting_return", origin="Other venue", destination="Home", hour=15),
+        identity="unknown-outbound",
+    )
+    result = run([earlier, back])
+    assert result[0].start == earlier.start - timedelta(minutes=30)
+    assert result[1] is back
 
 
 def test_no_vehicle_selection_never_guesses():
@@ -250,7 +311,7 @@ def test_new_charging_overlap_with_flight_window_retains_original_and_reports_ga
         now=NOW,
         options=PlanningOptions(cold_fraction=0, highway_fraction=0),
         protected_windows=[(out.start - timedelta(hours=1), out.start)],
-        unavailable=lambda: held.append(True),
+        unavailable=lambda _keys: held.append(True),
     )
     assert result[0] is out and held == [True]
 
