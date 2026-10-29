@@ -322,7 +322,8 @@ def _parse_extended_block(private: dict, event_id: str | None) -> ParsedBlock | 
     )
 
 
-def _event_bounds(event: object) -> tuple[datetime, datetime] | None:
+def event_bounds(event: object) -> tuple[datetime, datetime] | None:
+    """Complete positive timed Calendar bounds, without guessing a timezone."""
     if not isinstance(event, dict):
         return None
     values = []
@@ -351,7 +352,7 @@ def parse_block(event: object) -> ParsedBlock | None:
     if private is not None:
         extended = _parse_extended_block(private, eid)
         if extended is not None:
-            bounds = _event_bounds(event)
+            bounds = event_bounds(event)
             return replace(
                 extended,
                 timezone=_event_start_timezone(event),

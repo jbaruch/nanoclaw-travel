@@ -451,3 +451,113 @@ def test_roundtrip_material_notices_keep_departure_and_arrival_polarity_separate
     assert len(payload["material_updates"]) == 2
     assert "leave 30 min sooner" in payload["message"]
     assert "arrive 30 min later" in payload["message"]
+
+
+def test_airport_arrival_material_notice_uses_depart_after_side_label():
+    from reconcile_sweep import build_sweep_payload
+
+    prior = replace(
+        base(), kind="airport_arrival", start=NOW + timedelta(hours=1), end=NOW + timedelta(hours=2)
+    )
+    changed = replace(
+        prior, end=prior.end + timedelta(minutes=30), charging_note="1 charging stop, ~30 min"
+    )
+    current = parse_block({"id": "arrival", **build_create_args(prior, calendar_id="primary")})
+    assert current is not None
+    payload = build_sweep_payload(
+        apply_plan(plan_reconcile([changed], [current], now=NOW), calendar=Calendar(), now=NOW), []
+    )["data"]
+    assert payload["material_updates"][0]["timing"] == "arrival"
+    assert "arrive 30 min later" in payload["message"]
+    assert "Outbound" not in payload["message"]
+
+
+def test_leg_bound_reports_unavailable_before_adapter_provider_reads(monkeypatch, capsys):
+    import tesla_planning
+    from ev_charging import MAX_LEGS, adjust_charging
+    from reconcile_sweep import _ev_adjuster
+
+    blocks = [replace(base(), identity=str(index)) for index in range(MAX_LEGS + 1)]
+    notices = []
+    result = adjust_charging(
+        blocks,
+        vehicles={},
+        distance_km=lambda _: None,
+        estimate=lambda *_: None,
+        now=NOW,
+        unavailable=notices.append,
+    )
+    assert all(a is b for a, b in zip(result, blocks, strict=True))
+    assert notices == [frozenset((block.identity, block.kind) for block in blocks)]
+
+    class Provider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def vehicle(self, _selector):
+            raise AssertionError("No provider reads past planning bound")
+
+        def estimate(self, *_args):
+            raise AssertionError("No forecast past planning bound")
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            notices.append("fixed diagnostic")
+
+    monkeypatch.setattr(tesla_planning, "TeslaPlanning", Provider)
+    adjusted, held = _ev_adjuster({}, lambda *_: None, {}, NOW)(blocks, [], [])
+    assert not held and len(adjusted) == len(blocks)
+    assert "leg limit exceeded" in capsys.readouterr().err
+
+
+def test_bound_hold_preserves_existing_ev_allowance_and_exact_limit_is_accepted(monkeypatch):
+    import tesla_planning
+    from ev_charging import MAX_LEGS, adjust_charging
+    from reconcile_sweep import _ev_adjuster
+
+    blocks = [replace(base(), identity=str(i)) for i in range(MAX_LEGS + 1)]
+    notified = []
+    assert (
+        adjust_charging(
+            blocks[:MAX_LEGS],
+            vehicles={},
+            distance_km=lambda _: None,
+            estimate=lambda *_: None,
+            now=NOW,
+            unavailable=notified.append,
+        )
+        == blocks[:MAX_LEGS]
+    )
+    assert not notified
+
+    class Provider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def vehicle(self, _selector):
+            raise AssertionError("No native read past bound")
+
+        def estimate(self, *_args):
+            raise AssertionError("No forecast past bound")
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            pass
+
+    monkeypatch.setattr(tesla_planning, "TeslaPlanning", Provider)
+    existing = replace(
+        blocks[0],
+        charging_note="1 charging stop, ~30 min",
+        start=blocks[0].start - timedelta(minutes=30),
+    )
+    current = parse_block({"id": "retain", **build_create_args(existing, calendar_id="primary")})
+    assert current is not None
+    adjusted, held = _ev_adjuster({}, lambda *_: None, {}, NOW)(blocks, [], [current])
+    assert len(adjusted) == MAX_LEGS
+    assert [(item.identity, item.kind, item.announce) for item in held] == [
+        ("0", "meeting_outbound", False)
+    ]

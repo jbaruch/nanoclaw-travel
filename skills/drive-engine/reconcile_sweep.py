@@ -597,6 +597,7 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
     """One read-only Tesla adapter for this complete sweep, never a state writer."""
     from ev_charging import (
         FORECAST_HORIZON,
+        MAX_LEGS,
         DestinationCharge,
         EnergyGap,
         PlanningOptions,
@@ -634,7 +635,7 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
         selected = {}
         resolved_selectors = {}
         unavailable_keys = set()
-        for block in blocks:
+        for block in blocks if len(blocks) <= MAX_LEGS and busy_windows is not None else ():
             if block.end <= now or block.start > now + FORECAST_HORIZON:
                 unavailable_keys.add((block.identity, block.kind))
                 continue
@@ -738,21 +739,38 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
 
         def unavailable(keys):
             unavailable_keys.update(keys)
-            provider.unavailable()
+            if len(blocks) > MAX_LEGS:
+                print(
+                    "[drive-engine] EV planning leg limit exceeded. Narrow the planning window "
+                    "before EV changes; legacy drive timing retained.",
+                    file=sys.stderr,
+                )
+            elif busy_windows is None:
+                print(
+                    "[drive-engine] EV protected Calendar windows unavailable. Restore "
+                    "the complete event read before EV changes; legacy drive timing retained.",
+                    file=sys.stderr,
+                )
+            else:
+                provider.unavailable()
 
-        adjusted = adjust_charging(
-            blocks,
-            vehicles=selected,
-            distance_km=distance,
-            estimate=provider.estimate,
-            now=now,
-            options=options,
-            destination_charges=grounded_charges,
-            navigation=provider.navigation(),
-            protected_windows=[*windows, *busy_windows],
-            energy_gaps=gaps,
-            unavailable=unavailable,
-        )
+        if busy_windows is None:
+            unavailable(frozenset((block.identity, block.kind) for block in blocks))
+            adjusted = list(blocks)
+        else:
+            adjusted = adjust_charging(
+                blocks,
+                vehicles=selected,
+                distance_km=distance,
+                estimate=provider.estimate,
+                now=now,
+                options=options,
+                destination_charges=grounded_charges,
+                navigation=provider.navigation(),
+                protected_windows=[*windows, *busy_windows],
+                energy_gaps=gaps,
+                unavailable=unavailable,
+            )
         retained = {
             (block.identity, block.kind)
             for block in current
@@ -1476,6 +1494,33 @@ def _plan_lodging_legs(
     return blocks, skipped, questions, kept, held
 
 
+def _calendar_busy_windows(events: list) -> list[tuple[datetime, datetime]] | None:
+    """Timed native event bounds; malformed active bounds remain unknown."""
+    from block_codec import event_bounds
+
+    windows = []
+    for event in events:
+        if not isinstance(event, dict):
+            return None
+        if event.get("status") == "cancelled":
+            continue
+        start, end = event.get("start"), event.get("end")
+        if (
+            isinstance(start, dict)
+            and isinstance(end, dict)
+            and "date" in start
+            and "date" in end
+            and "dateTime" not in start
+            and "dateTime" not in end
+        ):
+            continue  # existing meeting policy does not make all-day entries timed windows
+        bounds = event_bounds(event)
+        if bounds is None:
+            return None
+        windows.append(bounds)
+    return windows
+
+
 def _run_sweep() -> dict:
     """Run the live unified reconcile and return the stdout payload.
 
@@ -1497,7 +1542,7 @@ def _run_sweep() -> dict:
     from calendar_reconcile import _find_events_args, _items
     from conference_attendance import load_attendances
     from fetch_events import CalendarFetcher
-    from google_calendar_client import GoogleCalendarClient
+    from google_calendar_client import GoogleCalendarClient, GoogleCalendarError
     from home_address import HomeAddressError, read_current_home
     from maps_client import MapsClient
     from operator_tz import read_operator_tz
@@ -1641,21 +1686,24 @@ def _run_sweep() -> dict:
     meeting_held: list[HeldLeg] = []
     operator_zone: str | None = None
     postarrival_meetings: list[PostarrivalMeeting] = []
-    busy_windows: list[tuple[datetime, datetime]] = []
     attendances = load_attendances()
-    if home:
-        fetcher = CalendarFetcher()
+    try:
         events = exclude_drive_block_events(
-            fetcher.fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
+            CalendarFetcher().fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
         )
-        # Drop flight events by identity only (R5 — never by time overlap, so a
-        # ground meeting overlapping a redeye window survives). scan then runs
-        # with an EMPTY flight context, since masking already happened here.
+    except (GoogleCalendarError, urllib.error.URLError):
+        if home:
+            raise  # preserve the established meeting-side failure behavior
+        events = []
+        busy_windows = None
+    else:
         events = [
             e
             for e in events
             if not (isinstance(e, dict) and is_flight_event(e.get("summary"), known_codes))
         ]
+        busy_windows = _calendar_busy_windows(events)
+    if home:
         skips = load_active_skips(now)
 
         def anchor_for(at: datetime) -> tuple[str | None, str | None]:
@@ -1671,15 +1719,6 @@ def _run_sweep() -> dict:
             flight_summaries=[],
             attendances=attendances,
         )
-        busy_windows = [
-            (meeting.start, meeting.end)
-            for meeting in meetings
-            if isinstance(meeting.start, datetime)
-            and isinstance(meeting.end, datetime)
-            and meeting.start.tzinfo is not None
-            and meeting.end.tzinfo is not None
-            and meeting.end > meeting.start
-        ]
         # A trip the operator DRIVES to is resolved before the meeting side, so
         # that trip's own events are spared the away-suppression: with a
         # check-in stamped after the first event the anchor resolves home, the

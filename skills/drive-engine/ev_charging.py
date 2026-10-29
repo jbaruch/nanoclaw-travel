@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
-from reconcile import DesiredBlock
+from reconcile import DEPART_AFTER_KINDS, DesiredBlock
 
 
 @dataclass(frozen=True)
@@ -130,7 +130,7 @@ Estimate = Callable[[str, float, datetime], EnergySample | None]
 def _shift(block: DesiredBlock, extra: timedelta, note: str) -> DesiredBlock:
     # Return/arrival drives start after a preceding event; all other drives
     # arrive by their anchor. This preserves their existing scheduling contract.
-    after = block.kind in {"meeting_return", "airport_arrival", "lodging_return"}
+    after = block.kind in DEPART_AFTER_KINDS
     return replace(
         block,
         start=block.start if after else block.start - extra,
@@ -170,6 +170,8 @@ def adjust_charging(
     original = list(blocks)
     options = options or PlanningOptions()
     if now.tzinfo is None or len(original) > MAX_LEGS:
+        if unavailable is not None:
+            unavailable(frozenset((block.identity, block.kind) for block in original))
         return original
     grouped: dict[str, list[tuple[int, DesiredBlock]]] = {}
     eligible_keys = {

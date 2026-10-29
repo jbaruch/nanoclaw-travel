@@ -21,6 +21,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
@@ -477,3 +479,102 @@ def test_invalid_ev_preferences_hold_drive_sweep_before_clients(monkeypatch, tmp
     with pytest.raises(ValueError, match="schema 1"):
         reconcile_sweep._run_sweep()
     assert calls == []
+
+
+@pytest.mark.parametrize("case", ["busy", "clear", "malformed", "fetch_failure"])
+def test_no_home_sweep_protects_busy_events_from_airport_charging_extension(
+    monkeypatch, tmp_path, capsys, case
+):
+    from datetime import timedelta
+
+    import home_address
+    import tesla_planning
+    from ev_charging import EnergySample
+    from reconcile import DesiredBlock
+
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    monkeypatch.setattr(state, "read_config", lambda: {})
+    monkeypatch.setattr(home_address, "read_current_home", lambda: None)
+    now = _FrozenDatetime.now(UTC)
+
+    def fetch(_self, **_kwargs):
+        if case == "fetch_failure":
+            raise google_calendar_client.GoogleCalendarError("synthetic event fetch unavailable")
+        if case == "clear":
+            return []
+        event = {
+            "id": "busy",
+            "summary": "Appointment",
+            "start": {"dateTime": (now + timedelta(hours=3, minutes=10)).isoformat()},
+            "end": {"dateTime": (now + timedelta(hours=3, minutes=20)).isoformat()},
+        }
+        if case == "malformed":
+            event.pop("end")
+        return [event]
+
+    monkeypatch.setattr(_EmptyFetcher, "fetch_window", fetch)
+
+    class Provider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def vehicle(self, _selector):
+            assert case in {"busy", "clear"}, "No provider reads with unknown protected windows"
+            return "Car"
+
+        def estimate(self, *_args):
+            return EnergySample("Car", 75, 0.18, now, 90)
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            pass
+
+    monkeypatch.setattr(tesla_planning, "TeslaPlanning", Provider)
+    dep = DesiredBlock(
+        "flight",
+        "airport_departure",
+        "Drive",
+        now + timedelta(minutes=30),
+        now + timedelta(hours=1),
+        "Hotel",
+        "AAA",
+        1800,
+        now + timedelta(hours=1),
+    )
+    arr = DesiredBlock(
+        "flight",
+        "airport_arrival",
+        "Drive",
+        now + timedelta(hours=2),
+        now + timedelta(hours=3),
+        "BBB",
+        "Hotel",
+        3600,
+        now + timedelta(hours=2),
+    )
+    actual_adjuster = reconcile_sweep._ev_adjuster
+
+    def adjusted(config, route, distances, clock, busy_windows=()):
+        return actual_adjuster(
+            config, route, {("Hotel", "AAA"): 10, ("BBB", "Hotel"): 395}, clock, busy_windows
+        )
+
+    monkeypatch.setattr(reconcile_sweep, "_ev_adjuster", adjusted)
+    seen = []
+
+    def build(**arguments):
+        result, _ = arguments["adjust_drives"]([dep, arr], [], [])
+        seen.append(result)
+        return SimpleNamespace(plan=ReconcilePlan(), skipped=(), held=(), origin_sources=())
+
+    monkeypatch.setattr(reconcile_sweep, "build_plan", build)
+    reconcile_sweep._run_sweep()
+    assert len(seen) == 1
+    if case == "clear":
+        assert seen[0][1].end == arr.end + timedelta(minutes=30)
+    else:
+        assert seen[0][1] is arr
+    if case in {"malformed", "fetch_failure"}:
+        assert "protected Calendar windows unavailable" in capsys.readouterr().err

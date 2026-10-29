@@ -38,7 +38,12 @@ if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
 from block_codec import build_extended_properties  # noqa: E402
-from reconcile import DesiredBlock, ReconcilePlan, material_update_delta  # noqa: E402
+from reconcile import (  # noqa: E402
+    DEPART_AFTER_KINDS,
+    DesiredBlock,
+    ReconcilePlan,
+    material_update_delta,
+)
 
 # A drive block's human summary is "Drive: <meeting/leg>". Stripping the prefix
 # recovers the name the operator recognizes for a notification.
@@ -339,14 +344,14 @@ def apply_plan(
                 }
             )
             if u.prior_effective_seconds is not None:
-                after = u.desired.kind in {"meeting_return", "airport_arrival", "lodging_return"}
+                after = u.desired.kind in DEPART_AFTER_KINDS
                 result.material_updates[-1]["timing"] = "arrival" if after else "departure"
                 if after:
                     result.material_updates[-1]["direction"] = (
                         "later" if direction == "sooner" else "sooner"
                     )
             if u.desired.charging_note is not None:
-                side = "Return" if u.desired.kind.endswith("return") else "Outbound"
+                side = "Return" if u.desired.kind in DEPART_AFTER_KINDS else "Outbound"
                 result.material_updates[-1]["charging"] = f"{side}: {u.desired.charging_note}"
 
     for c in plan.creates:
@@ -376,7 +381,7 @@ def apply_plan(
                 }
             )
             if c.desired.charging_note is not None:
-                side = "Return" if c.desired.kind.endswith("return") else "Outbound"
+                side = "Return" if c.desired.kind in DEPART_AFTER_KINDS else "Outbound"
                 result.added_meeting_legs[-1]["charging"] = f"{side}: {c.desired.charging_note}"
 
     for cv in plan.converts:

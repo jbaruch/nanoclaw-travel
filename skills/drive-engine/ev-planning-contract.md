@@ -83,6 +83,10 @@ When a fetched owned block already displays an EV allowance, unavailable inputs
 use the existing non-announcing `HeldLeg` path and retain that block. A new drive
 without EV data keeps the legacy plan; no unknown forecast shortens a retained
 allowance.
+Timed protected Calendar windows are read independently of home/meeting routing.
+Unavailable or malformed active windows hold EV adjustment before provider reads;
+ordinary legacy planning remains available. An excessive complete leg set also
+reports its bound before provider reads and retains existing EV allowances.
 Short drives with sufficient energy retain their original objects and output.
 The forecast is reevaluated at an earlier calculated departure within its finite
 read-only bound; unstable forecasts retain legacy timing.

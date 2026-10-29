@@ -55,6 +55,9 @@ _KIND_TO_LEGACY_DIRECTION = {
 _DEFAULT_MANAGED_LEGACY = frozenset({GEN_LEGACY_FADRIVE})
 
 
+DEPART_AFTER_KINDS = frozenset({"meeting_return", "airport_arrival", "lodging_return"})
+
+
 @dataclass(frozen=True)
 class DesiredBlock:
     """One drive block the engine wants to exist. `legacy_keys` are the
