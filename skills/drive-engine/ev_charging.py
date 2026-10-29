@@ -217,13 +217,17 @@ def adjust_charging(
         segment: list[tuple[int, DesiredBlock]] = []
         unknown_index = 0
         grounded = True
+        last_unknown: datetime | None = None
         ungrounded = set()
         for item in chain:
             _, block = item
             crossed_unknown = False
-            while unknown_index < len(starts) and starts[unknown_index] <= block.start:
+            overlapped_unknown = False
+            while unknown_index < len(starts) and starts[unknown_index] < block.end:
                 grounded = False
                 crossed_unknown = True
+                overlapped_unknown |= starts[unknown_index] > block.start
+                last_unknown = starts[unknown_index]
                 unknown_index += 1
             predecessor = return_predecessors.get(block.kind)
             if predecessor and (vehicle, block.identity, predecessor) not in eligible_keys:
@@ -232,8 +236,9 @@ def adjust_charging(
             if crossed_unknown and segment:
                 segments.append(segment)
                 segment = []
-            if any(
+            if not overlapped_unknown and any(
                 route.matches(block, vehicle, now)
+                and (last_unknown is None or route.observed_at >= last_unknown)
                 and route.arrival_percent >= options.reserve_percent
                 for route in navigation
             ):
@@ -261,7 +266,21 @@ def adjust_charging(
                 protected_windows,
             )
             if planned is not None:
-                for (index, _), block in zip(segment, planned, strict=True):
+                # An earlier departure produced by charging/navigation also
+                # cannot cross a possible drive that the original span avoided.
+                crossed = next(
+                    (
+                        index
+                        for index, block in enumerate(planned)
+                        if any(block.start < start < block.end for start in starts)
+                    ),
+                    len(planned),
+                )
+                if crossed < len(planned) and unavailable is not None:
+                    unavailable(
+                        frozenset((block.identity, block.kind) for _, block in segment[crossed:])
+                    )
+                for (index, _), block in zip(segment[:crossed], planned[:crossed], strict=True):
                     original[index] = block
             elif unavailable is not None:
                 unavailable(frozenset((block.identity, block.kind) for _, block in segment))

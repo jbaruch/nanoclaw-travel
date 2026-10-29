@@ -35,11 +35,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from block_codec import (
-    EV_PRESENTATION_PREFIX,
     GEN_LEGACY_FADRIVE,
     GEN_UNIFIED,
     ParsedBlock,
     human_description,
+    parse_ev_note,
 )
 
 # Legacy directions ↔ unified leg kinds, for building a desired leg's legacy keys.
@@ -266,8 +266,7 @@ def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:
     sub-tolerance change is routing jitter, not signal, and is ignored so the
     live writer doesn't churn a recreate every sweep (#164)."""
     had_ev_note = (
-        isinstance(current.description, str)
-        and f"\n{EV_PRESENTATION_PREFIX}" in current.description
+        parse_ev_note(current.description, current.origin, current.destination) is not None
     )
     if desired.charging_note is not None or had_ev_note:
         # Add/change/remove a known EV allowance even when its minute-sized
@@ -365,9 +364,9 @@ def plan_reconcile(
             # G1: keep the first, delete every extra sharing this identity.
             keep = matches[0]
             if _needs_update(keep, d):
-                has_ev = d.charging_note is not None or (
-                    isinstance(keep.description, str)
-                    and f"\n{EV_PRESENTATION_PREFIX}" in keep.description
+                has_ev = (
+                    d.charging_note is not None
+                    or parse_ev_note(keep.description, keep.origin, keep.destination) is not None
                 )
                 updates.append(
                     Update(

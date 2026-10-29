@@ -718,13 +718,12 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
             energy_gaps=gaps,
             unavailable=unavailable,
         )
-        from block_codec import EV_PRESENTATION_PREFIX
+        from block_codec import parse_ev_note
 
         retained = {
             (block.identity, block.kind)
             for block in current
-            if isinstance(block.description, str)
-            and f"\n{EV_PRESENTATION_PREFIX}" in block.description
+            if parse_ev_note(block.description, block.origin, block.destination) is not None
             and (block.identity, block.kind) in unavailable_keys
         }
         if retained:

@@ -413,3 +413,52 @@ def test_exact_fresh_navigation_can_ground_after_an_unselected_drive():
     assert result[0] is unknown
     assert result[1].charging_note == "Car navigation ETA"
     assert result[2].charging_note == "1 charging stop, ~30 min"
+
+
+def test_unselected_drive_start_inside_selected_span_holds_it_and_dependents():
+    earlier = leg()
+    crossing = replace(leg(hour=13), identity="crossing")
+    ambiguous = replace(leg(hour=14), identity="ambiguous")
+    later = replace(leg(hour=18), identity="later")
+    result = run(
+        [earlier, crossing, ambiguous, later],
+        vehicles={(block.identity, block.kind): "Car" for block in [earlier, crossing, later]},
+    )
+    assert result[0].charging_note is not None
+    assert result[1] is crossing and result[2] is ambiguous and result[3] is later
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_held_gap_inside_selected_span_never_admits_it_even_with_matching_nav(native):
+    from ev_charging import EnergyGap
+
+    block = leg(hour=0)
+    nav = Navigation("Car", "Venue", NOW, 180, 40)
+    following = replace(leg(hour=4), identity="later")
+    result = adjust_charging(
+        [block, following],
+        vehicles={(item.identity, item.kind): "Car" for item in [block, following]},
+        distance_km=lambda _: 395,
+        estimate=lambda *_: EnergySample("Car", 75, 0.18, NOW, 90),
+        now=NOW,
+        energy_gaps=[EnergyGap(NOW + timedelta(hours=1), "Car")],
+        navigation=[nav] if native else (),
+    )
+    assert result[0] is block and result[1] is following
+
+
+def test_navigation_observed_before_a_future_energy_gap_cannot_reopen_it():
+    from ev_charging import EnergyGap
+
+    block = replace(leg(hour=0), start=NOW + timedelta(minutes=2))
+    nav = Navigation("Car", "Venue", NOW, 25, 40)
+    result = adjust_charging(
+        [block],
+        vehicles={(block.identity, block.kind): "Car"},
+        distance_km=lambda _: 395,
+        estimate=lambda *_: EnergySample("Car", 75, 0.18, NOW, 90),
+        now=NOW,
+        navigation=[nav],
+        energy_gaps=[EnergyGap(NOW + timedelta(minutes=1), "Car")],
+    )
+    assert result[0] is block

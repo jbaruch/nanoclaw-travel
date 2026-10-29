@@ -56,6 +56,20 @@ def human_description(origin: str, destination: str, charging_note: str | None =
     return route if charging_note is None else f"{route}\n{EV_PRESENTATION_PREFIX}{charging_note}"
 
 
+def parse_ev_note(description: object, origin: object, destination: object) -> str | None:
+    """Only the optional final line after the complete exact route is an EV note."""
+    if not all(isinstance(value, str) for value in (description, origin, destination)):
+        return None
+    assert isinstance(description, str)
+    prefix = f"{origin} → {destination}\n{EV_PRESENTATION_PREFIX}"
+    if not description.startswith(prefix):
+        return None
+    note = description[len(prefix) :]
+    if not note or note != note.strip() or "\n" in note or "\r" in note:
+        return None
+    return note
+
+
 # --- alert values -----------------------------------------------------------
 
 ALERT_GROWTH = "growth"

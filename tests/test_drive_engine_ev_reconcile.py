@@ -226,7 +226,7 @@ def test_navigation_span_change_updates_without_redefining_route_baseline():
     assert patch["end"]["dateTime"] == desired.end.isoformat()
 
 
-@pytest.mark.parametrize("gap_start", [None, NOW + timedelta(minutes=1)])
+@pytest.mark.parametrize("gap_start", [None, NOW - timedelta(minutes=1)])
 def test_held_energy_gap_requires_independent_exact_active_route(gap_start):
     from ev_charging import EnergyGap, EnergySample, Navigation, PlanningOptions, adjust_charging
 
@@ -249,3 +249,63 @@ def test_held_energy_gap_requires_independent_exact_active_route(gap_start):
     assert adjusted([wrong]) is block
     exact = replace(wrong, vehicle="Car")
     assert adjusted([exact]).charging_note == "Car navigation ETA"
+
+
+def test_ev_prefix_inside_a_route_endpoint_does_not_hold_legacy_update(monkeypatch):
+    import tesla_planning
+    from reconcile_sweep import _ev_adjuster, build_plan
+
+    class Provider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def vehicle(self, _selector):
+            return None
+
+        def estimate(self, *_args):
+            raise AssertionError("Unavailable provider")
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            pass
+
+    monkeypatch.setattr(tesla_planning, "TeslaPlanning", Provider)
+    prior = replace(base(), origin="Home\nEV planning: source endpoint")
+    desired = replace(
+        prior,
+        anchor=prior.anchor + timedelta(hours=1),
+        start=prior.start + timedelta(hours=1),
+        end=prior.end + timedelta(hours=1),
+    )
+    current = parse_block({"id": "owned-legacy", **build_create_args(prior, calendar_id="primary")})
+    assert current is not None
+    result = build_plan(
+        flight_records=[],
+        resolve_airport=lambda _: None,
+        meeting_blocks=[desired],
+        current_blocks=[current],
+        route=lambda *_: None,
+        now=NOW,
+        home_address="Home",
+        adjust_drives=_ev_adjuster({}, lambda *_: None, {}, NOW),
+    )
+    assert not result.held
+    assert len(result.plan.updates) == 1
+    assert result.plan.updates[0].desired is desired
+
+
+@pytest.mark.parametrize(
+    "origin,destination",
+    [("Home\nEV planning: endpoint", "Venue"), ("Home", "Venue\nEV planning: endpoint")],
+)
+def test_ev_suffix_parser_preserves_genuine_allowance_after_colliding_route(origin, destination):
+    from block_codec import human_description, parse_ev_note
+
+    route = human_description(origin, destination)
+    assert parse_ev_note(route, origin, destination) is None
+    note = "1 charging stop, ~30 min"
+    assert parse_ev_note(human_description(origin, destination, note), origin, destination) == note
+    assert parse_ev_note(route + "\nEV planning: ", origin, destination) is None
+    assert parse_ev_note(route + "\nEV planning: " + note + "\nextra", origin, destination) is None
