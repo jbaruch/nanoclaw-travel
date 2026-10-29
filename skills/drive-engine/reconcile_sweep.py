@@ -1432,6 +1432,10 @@ def _run_sweep() -> dict:
 
     now = datetime.now(UTC)
     config = read_config() or {}
+    if "ev_planning" in config:
+        from ev_preferences import validate_ev_preferences
+
+        validate_ev_preferences(config["ev_planning"])
     # Home resolution (#162): the flight-assist config may have no home_address
     # key (a fresh cutover never provisioned it), so fall back to the canonical
     # user_profile current_home — the same source the retired drive-planner read.

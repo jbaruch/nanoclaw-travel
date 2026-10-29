@@ -12,7 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/flight-assist"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/drive-engine"))
 from ev_preferences import validate_ev_preferences  # noqa: E402
-from state import STATE_SCHEMA_VERSION, StateError, read_config, state_dir, write_config  # noqa: E402
+from state import STATE_SCHEMA_VERSION, read_config, state_dir, write_config  # noqa: E402
 
 
 def preferences():
@@ -105,26 +105,28 @@ def test_same_charge_cannot_be_counted_twice():
         validate_ev_preferences(value)
 
 
-def test_corrupt_present_preferences_are_observable_not_silent_empty(tmp_path, monkeypatch):
+def test_shared_reader_preserves_unknown_preferences_without_interpreting_them(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
     value = preferences()
     value["schema_version"] = 99
     path = state_dir() / "config.json"
     path.write_text(json.dumps({"schema_version": STATE_SCHEMA_VERSION, "ev_planning": value}))
     before = path.read_bytes()
-    with pytest.raises(StateError, match="preserve"):
-        read_config()
+    result = read_config()
+    assert result is not None and result["ev_planning"] == value
     assert path.read_bytes() == before
 
 
-def test_bad_old_config_is_preserved_before_migration(tmp_path, monkeypatch):
+def test_root_migration_preserves_unknown_nested_ev_fields_for_their_reader(tmp_path, monkeypatch):
     monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
     path = state_dir() / "config.json"
     path.write_text('{"schema_version":7,"ev_planning":{"schema_version":99}}')
-    before = path.read_bytes()
-    with pytest.raises(StateError):
-        read_config()
-    assert path.read_bytes() == before
+    assert read_config() == {
+        "schema_version": STATE_SCHEMA_VERSION,
+        "ev_planning": {"schema_version": 99},
+    }
 
 
 def test_intake_preserves_other_config_and_calls_no_provider(tmp_path, monkeypatch, capsys):
@@ -187,3 +189,16 @@ def test_intake_usage_error_has_no_json_result_or_config_write(tmp_path, monkeyp
     result = capsys.readouterr()
     assert result.out == "" and "Supply one" in result.err
     assert not (state_dir() / "config.json").exists()
+
+
+def test_intake_still_refuses_unknown_existing_ev_schema_without_downgrade(tmp_path, monkeypatch):
+    import configure_ev
+
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    path = state_dir() / "config.json"
+    path.write_text(
+        json.dumps({"schema_version": STATE_SCHEMA_VERSION, "ev_planning": {"schema_version": 99}})
+    )
+    before = path.read_bytes()
+    assert configure_ev.main([json.dumps(preferences())]) == 1
+    assert path.read_bytes() == before

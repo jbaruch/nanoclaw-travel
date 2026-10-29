@@ -456,3 +456,24 @@ def test_live_sweep_uses_route_distance_and_measured_ev_time_before_single_recon
     assert selectors == ["Car", "Car"]
     assert len(routes) == 2  # distance and duration share the actual maps results
     assert departures[-1][2] == out.start
+
+
+def test_invalid_ev_preferences_hold_drive_sweep_before_clients(monkeypatch, tmp_path):
+    import pytest
+
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    monkeypatch.setattr(
+        state,
+        "read_config",
+        lambda: {
+            "home_address": "Home",
+            "ev_planning": {"schema_version": 99},
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        maps_client.MapsClient, "from_env", classmethod(lambda cls, **_: calls.append("maps"))
+    )
+    with pytest.raises(ValueError, match="schema 1"):
+        reconcile_sweep._run_sweep()
+    assert calls == []

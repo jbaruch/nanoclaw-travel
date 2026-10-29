@@ -302,7 +302,7 @@ Per-flight state: `last_snapshot` gains the resolved airport slice (`dep_airport
 
 ### v7 → v8
 
-Config gains optional `ev_planning` owned by `ev_preferences.py`; read [the EV planning contract](../drive-engine/ev-planning-contract.md) for its nested schema-1 fields and grounding. Old config, active-flight index and per-flight fields are preserved; absence adds no mapping, estimate or vehicle authority. All owner readers/writers co-ship.
+Config gains optional `ev_planning` owned by `ev_preferences.py`; read [the EV planning contract](../drive-engine/ev-planning-contract.md) for its nested schema-1 fields and grounding. Old config, active-flight index and per-flight fields are preserved; absence adds no mapping, estimate or vehicle authority. All owner readers/writers co-ship. The shared config reader carries EV input without interpreting it; drive-engine and its preference intake validate it strictly. An invalid/future nested preference does not interrupt flight-alert polling or get silently downgraded.
 
 ## Bump Procedure
 

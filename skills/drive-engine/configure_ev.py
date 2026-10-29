@@ -47,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
             # The owner read may migrate an older config before the preference
             # write. That replacement must stay private even if the latter fails.
             current = read_config() or {}
+            if "ev_planning" in current:
+                validate_ev_preferences(current["ev_planning"])
             write_config({**current, "ev_planning": preferences})
         finally:
             os.umask(old_mask)

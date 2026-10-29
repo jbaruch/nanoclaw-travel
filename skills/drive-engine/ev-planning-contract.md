@@ -134,8 +134,11 @@ ambiguous fleets remain unchanged.
 `config.json` stays under its existing flight-assist owner. Version 7→8 preserves
 every existing field and only adds optional input support. Config, flight and
 active-index writer/readers co-ship; no cross-plugin writer flip occurs. Unknown
-versions preserve the existing owner refusal. Present malformed EV config refuses
-before apply; no silent reset, rewrite or substitution occurs.
+root versions preserve the existing owner refusal. The shared reader carries
+optional EV preferences unchanged; non-EV flight consumers do not interpret them.
+The drive sweep and preference intake validate EV input strictly before using it.
+Malformed/future EV input holds drive apply or preference replacement without
+interrupting flight-alert polling or downgrading the nested record.
 
 ## Delivery and acceptance
 

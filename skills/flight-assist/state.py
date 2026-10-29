@@ -287,13 +287,6 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
     if version == 7:
         # v8 adds optional EV planner preferences to config. Absence retains
         # legacy routing; no vehicle authority or default mapping is inferred.
-        if path.name == CONFIG_FILE and "ev_planning" in payload:
-            from ev_preferences import validate_ev_preferences
-
-            try:
-                validate_ev_preferences(payload["ev_planning"])
-            except ValueError as exc:
-                raise StateError("Inspect EV planner preferences; preserve config.") from exc
         version = 8
     if version != STATE_SCHEMA_VERSION:
         # Unknown older version: refuse to silently pass through. The
@@ -311,18 +304,13 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
 
 
 def read_config() -> dict | None:
-    """Return the plugin-wide config (home_address, etc.) or None if not set."""
-    result = _read_json_with_version(state_dir() / CONFIG_FILE)
-    if result is not None and "ev_planning" in result:
-        from ev_preferences import validate_ev_preferences
+    """Read shared config without interpreting another consumer's preferences.
 
-        try:
-            validate_ev_preferences(result["ev_planning"])
-        except ValueError as exc:
-            raise StateError(
-                "Inspect EV planning preferences; preserve the existing config."
-            ) from exc
-    return result
+    Drive-engine and its intake validate optional EV input before using it.
+    A malformed/future nested EV record cannot interrupt flight alert polling.
+    The root owner schema/version checks remain strict and unchanged.
+    """
+    return _read_json_with_version(state_dir() / CONFIG_FILE)
 
 
 def read_current_location() -> dict | None:
