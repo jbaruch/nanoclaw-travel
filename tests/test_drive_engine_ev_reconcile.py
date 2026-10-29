@@ -561,3 +561,80 @@ def test_bound_hold_preserves_existing_ev_allowance_and_exact_limit_is_accepted(
     assert [(item.identity, item.kind, item.announce) for item in held] == [
         ("0", "meeting_outbound", False)
     ]
+
+
+@pytest.mark.parametrize("retained", [False, True])
+def test_missing_outbound_later_return_fences_preceding_extension(monkeypatch, retained):
+    import tesla_planning
+    from ev_charging import EnergySample
+    from reconcile_sweep import _ev_adjuster
+
+    class Provider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def vehicle(self, _selector):
+            return "Car"
+
+        def estimate(self, *_args):
+            return EnergySample("Car", 75, 0.18, NOW, 90)
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            pass
+
+    monkeypatch.setattr(tesla_planning, "TeslaPlanning", Provider)
+    outbound = replace(
+        base(),
+        identity="first",
+        start=NOW + timedelta(minutes=30),
+        end=NOW + timedelta(hours=1),
+        origin="Home",
+        destination="First",
+        baseline_seconds=1800,
+    )
+    returned = replace(
+        base(),
+        identity="first",
+        kind="meeting_return",
+        start=NOW + timedelta(hours=2),
+        end=NOW + timedelta(hours=3),
+        origin="First",
+        destination="Home",
+        anchor=NOW + timedelta(hours=2),
+    )
+    actual_start = NOW + timedelta(hours=3, minutes=10)
+    desired_start = NOW + timedelta(hours=4) if retained else actual_start
+    later = replace(
+        base(),
+        identity="later",
+        kind="lodging_return",
+        start=desired_start,
+        end=desired_start + timedelta(hours=1),
+        anchor=desired_start,
+    )
+    current = []
+    if retained:
+        prior = replace(
+            later,
+            start=actual_start,
+            end=actual_start + timedelta(minutes=90),
+            anchor=actual_start,
+            charging_note="1 charging stop, ~30 min",
+        )
+        parsed = parse_block(
+            {"id": "old-return", **build_create_args(prior, calendar_id="primary")}
+        )
+        assert parsed is not None
+        current = [parsed]
+    adjusted, held = _ev_adjuster(
+        {}, lambda *_: None, {("Home", "First"): 10, ("First", "Home"): 395}, NOW
+    )([outbound, returned, later], [], current)
+    assert adjusted[1] is returned
+    assert returned.charging_note is None
+    if retained:
+        assert [(entry.identity, entry.kind) for entry in held] == [("later", "lodging_return")]
+    else:
+        assert adjusted[2] is later and not held

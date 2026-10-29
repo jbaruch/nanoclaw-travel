@@ -151,6 +151,7 @@ def adjust_charging(
     navigation: Sequence[Navigation] = (),
     protected_windows: Sequence[tuple[datetime, datetime]] = (),
     energy_gaps: Sequence[EnergyGap] = (),
+    retained_starts: Mapping[tuple[str, str], datetime] | None = None,
     unavailable: Callable[[frozenset[tuple[str, str]]], None] | None = None,
 ) -> list[DesiredBlock]:
     """Return adjusted blocks; ungrounded dependent legs retain ORIGINAL objects.
@@ -169,6 +170,7 @@ def adjust_charging(
     """
     original = list(blocks)
     options = options or PlanningOptions()
+    retained_starts = retained_starts or {}
     if now.tzinfo is None or len(original) > MAX_LEGS:
         if unavailable is not None:
             unavailable(frozenset((block.identity, block.kind) for block in original))
@@ -221,6 +223,7 @@ def adjust_charging(
         grounded = True
         last_unknown: datetime | None = None
         ungrounded = set()
+        discovered_starts = []
         for item in chain:
             _, block = item
             crossed_unknown = False
@@ -250,7 +253,18 @@ def adjust_charging(
             if grounded:
                 segment.append(item)
             else:
-                ungrounded.add((block.identity, block.kind))
+                key = (block.identity, block.kind)
+                effective_start = min(block.start, retained_starts.get(key, block.start))
+                discovered_starts.append(effective_start)
+                last_unknown = (
+                    max(last_unknown, effective_start)
+                    if last_unknown is not None
+                    else effective_start
+                )
+                ungrounded.add(key)
+        # Later missing predecessors can expose a retained start before their
+        # route-only start. Earlier segments must see those newly found fences.
+        starts = sorted([*starts, *discovered_starts])
         if segment:
             segments.append(segment)
         if ungrounded and unavailable is not None:

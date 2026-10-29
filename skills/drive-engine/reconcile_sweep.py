@@ -700,6 +700,18 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
                 selector if selector in selected.values() else None
             )
 
+        retained_starts = {}
+        for block in current:
+            if (
+                parse_ev_note(block.description, block.origin, block.destination) is not None
+                and block.identity is not None
+                and block.kind is not None
+                and (block.end is None or block.end > now)
+            ):
+                key = (block.identity, block.kind)
+                start = block.start or now
+                retained_starts[key] = min(retained_starts.get(key, start), start)
+
         gaps = []
         desired_keys = {(block.identity, block.kind) for block in blocks}
         for leg in held:
@@ -769,6 +781,7 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
                 navigation=provider.navigation(),
                 protected_windows=[*windows, *busy_windows],
                 energy_gaps=gaps,
+                retained_starts=retained_starts,
                 unavailable=unavailable,
             )
         retained = {
