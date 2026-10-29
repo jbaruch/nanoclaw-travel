@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import sys
 import types
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -835,3 +836,62 @@ def test_a_delay_past_the_booked_arrival_with_no_live_arrival_fails_the_sweep():
     assert flights.flights == []
     with pytest.raises(reconcile_sweep.FlightsUnplaceable):
         reconcile_sweep.require_placeable(flights)
+
+
+@pytest.mark.parametrize("kind", ["airport_arrival", "airport_transfer"])
+def test_airport_failed_hold_uses_actual_depart_after_or_window_start(kind):
+    flights = [replace(_flight(), trip_id=99)]
+    info = _info(
+        BNA=(36.12, -86.68), SFO=(37.62, -122.38), OAK=(37.72, -122.22), LAX=(33.94, -118.4)
+    )
+    if kind == "airport_transfer":
+        flights.append(
+            Flight(
+                dep_airport="OAK",
+                arr_airport="LAX",
+                scheduled_dep=datetime(2025, 10, 22, 22, tzinfo=UTC),
+                scheduled_arr=datetime(2025, 10, 23, 0, tzinfo=UTC),
+                source=BYAIR,
+                byair_flight_id=2,
+                trip_id=99,
+            )
+        )
+    planned = _plan(lambda *_: timedelta(minutes=40), current=[], flights=flights, info=info)
+    wanted = next(item.desired for item in planned.plan.creates if item.desired.kind == kind)
+    failed = _plan(lambda *_: None, current=[], flights=flights, info=info)
+    hold = next(item for item in failed.held if item.kind == kind)
+    assert hold.not_before == (
+        wanted.earliest_start if kind == "airport_transfer" else wanted.start
+    )
+
+
+def test_lodging_failed_return_hold_keeps_known_depart_after():
+    trip = _trip()
+    _, _, _, held = lodging_desired_blocks(
+        [trip], route=lambda *_: None, home_address=HOME, verdicts={}, now=NOW
+    )
+    returned = next(item for item in held if item.kind == KIND_RETURN)
+    assert returned.not_before == trip.check_out
+
+
+def test_unreadable_flight_hold_uses_retained_native_start():
+    from block_codec import parse_block
+    from calendar_apply import build_create_args
+
+    desired = DesiredBlock(
+        "flight",
+        "airport_arrival",
+        "Drive",
+        NOW + timedelta(hours=5),
+        NOW + timedelta(hours=6),
+        "Airport",
+        "Home",
+        3600,
+        NOW + timedelta(hours=5),
+    )
+    current = parse_block(
+        {"id": "native-arrival", **build_create_args(desired, calendar_id="primary")}
+    )
+    assert current is not None
+    held = reconcile_sweep._unreadable_flight_holds([("unreadable", None)], [current])
+    assert len(held) == 1 and held[0].not_before == desired.start

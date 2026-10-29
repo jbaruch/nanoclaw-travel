@@ -47,6 +47,28 @@ UNIFIED_BLOCK_SCHEMA_VERSION = 1
 GEN_UNIFIED = "unified"
 GEN_LEGACY_FADRIVE = "legacy_fadrive"
 GEN_LEGACY_DP = "legacy_dp"
+EV_PRESENTATION_PREFIX = "EV planning: "
+
+
+def human_description(origin: str, destination: str, charging_note: str | None = None) -> str:
+    """Existing Calendar description string; presentation, never vehicle authority."""
+    route = f"{origin} → {destination}"
+    return route if charging_note is None else f"{route}\n{EV_PRESENTATION_PREFIX}{charging_note}"
+
+
+def parse_ev_note(description: object, origin: object, destination: object) -> str | None:
+    """Only the optional final line after the complete exact route is an EV note."""
+    if not all(isinstance(value, str) for value in (description, origin, destination)):
+        return None
+    assert isinstance(description, str)
+    prefix = f"{origin} → {destination}\n{EV_PRESENTATION_PREFIX}"
+    if not description.startswith(prefix):
+        return None
+    note = description[len(prefix) :]
+    if not note or note != note.strip() or "\n" in note or "\r" in note:
+        return None
+    return note
+
 
 # --- alert values -----------------------------------------------------------
 
@@ -202,6 +224,12 @@ class ParsedBlock:
     # The event's own `start.timeZone`, read for unified blocks only (#309): the
     # zone the block is displayed in, which reconcile compares to the operator's.
     timezone: str | None = None
+    # Existing native Calendar presentation, not a new private state field.
+    # Compare EV renders independently of traffic baseline jitter.
+    description: str | None = field(default=None, compare=False)
+    duration_seconds: int | None = field(default=None, compare=False)
+    start: datetime | None = field(default=None, compare=False)
+    end: datetime | None = field(default=None, compare=False)
 
 
 def _event_start_timezone(event: object) -> str | None:
@@ -294,6 +322,21 @@ def _parse_extended_block(private: dict, event_id: str | None) -> ParsedBlock | 
     )
 
 
+def event_bounds(event: object) -> tuple[datetime, datetime] | None:
+    """Complete positive timed Calendar bounds, without guessing a timezone."""
+    if not isinstance(event, dict):
+        return None
+    values = []
+    for name in ("start", "end"):
+        bound = event.get(name)
+        instant = _parse_dt(bound.get("dateTime")) if isinstance(bound, dict) else None
+        if instant is None or instant.tzinfo is None:
+            return None
+        values.append(instant)
+    seconds = int((values[1] - values[0]).total_seconds())
+    return (values[0], values[1]) if seconds > 0 else None
+
+
 def parse_block(event: object) -> ParsedBlock | None:
     """Read a drive block off a calendar event; extendedProperties + legacy (#178, R4).
 
@@ -309,7 +352,15 @@ def parse_block(event: object) -> ParsedBlock | None:
     if private is not None:
         extended = _parse_extended_block(private, eid)
         if extended is not None:
-            return replace(extended, timezone=_event_start_timezone(event))
+            bounds = event_bounds(event)
+            return replace(
+                extended,
+                timezone=_event_start_timezone(event),
+                description=_event_description(event),
+                duration_seconds=int((bounds[1] - bounds[0]).total_seconds()) if bounds else None,
+                start=bounds[0] if bounds else None,
+                end=bounds[1] if bounds else None,
+            )
 
     desc = _event_description(event)
     if desc is None:

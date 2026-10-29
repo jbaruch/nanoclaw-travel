@@ -339,6 +339,22 @@ def test_no_active_flights_yields_no_events(state_root: Path):
     assert events == []
 
 
+def test_optional_invalid_ev_preferences_do_not_stop_flight_alert_polling(state_root: Path):
+    write_active_flights([12345])
+    write_config({"home_address": "Home"})
+    path = state_root / "config.json"
+    payload = json.loads(path.read_text())
+    payload["ev_planning"] = {"schema_version": 99}
+    path.write_text(json.dumps(payload))
+    with patch("precheck.ByAirClient.from_env") as client:
+        client.return_value.get_flight.return_value = _byair_flight(flight_id=12345)
+        events = precheck._run_cycle(
+            now_utc=datetime(2026, 5, 18, 16, tzinfo=UTC), operator_tz_reader=lambda: None
+        )
+    assert client.return_value.get_flight.call_count == 1
+    assert "day_before" in [event["event"]["reason"] for event in events]
+
+
 def test_run_cycle_passes_bounded_per_call_timeout_to_byair_client(state_root: Path):
     """`_run_cycle` must instantiate ByAirClient with the bounded per-call timeout.
 

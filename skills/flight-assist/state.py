@@ -5,7 +5,7 @@ deltas between byAir snapshots. State lives under
 `/workspace/state/flight-assist/` in production; tests override the
 directory via the `FLIGHT_ASSIST_STATE_DIR` environment variable.
 
-Files written (all JSON, all carry `schema_version: 7` at the top level):
+Files written (all JSON, all carry `schema_version: 8` at the top level):
 
     config.json                       — home_address, etc. (set via /setup)
     active-flights.json               — list of currently-tracked flight_ids
@@ -61,10 +61,12 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-STATE_SCHEMA_VERSION = 7
+STATE_SCHEMA_VERSION = 8
 
 _DEFAULT_STATE_DIR = "/workspace/state/flight-assist"
 _STATE_DIR_ENV = "FLIGHT_ASSIST_STATE_DIR"
@@ -137,9 +139,15 @@ def _atomic_write_json(path: Path, payload: dict) -> None:
     documented atomic for files on the same drive.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, separators=(",", ":"), sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    descriptor, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    tmp = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _read_json_with_version(path: Path, *, migrate: bool = True) -> dict | None:
@@ -284,6 +292,10 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
         # no shape to backfill on migration — the next precheck poll repopulates
         # it. Config and active-flights files only get a schema_version bump.
         version = 7
+    if version == 7:
+        # v8 adds optional EV planner preferences to config. Absence retains
+        # legacy routing; no vehicle authority or default mapping is inferred.
+        version = 8
     if version != STATE_SCHEMA_VERSION:
         # Unknown older version: refuse to silently pass through. The
         # branches above are the authoritative list of known upgrade
@@ -300,7 +312,12 @@ def _migrate(payload: dict, *, from_version: int, path: Path) -> dict:
 
 
 def read_config() -> dict | None:
-    """Return the plugin-wide config (home_address, etc.) or None if not set."""
+    """Read shared config without interpreting another consumer's preferences.
+
+    Drive-engine and its intake validate optional EV input before using it.
+    A malformed/future nested EV record cannot interrupt flight alert polling.
+    The root owner schema/version checks remain strict and unchanged.
+    """
     return _read_json_with_version(state_dir() / CONFIG_FILE)
 
 
@@ -460,6 +477,7 @@ def resolve_live_origin(home_address: str | None, *, now: datetime) -> str | Non
 
 
 _CONFIG_OPTIONAL_FIELDS: dict[str, type] = {
+    "ev_planning": dict,
     "home_address": str,
     "min_transfer_minutes": int,
     # Calendar reconciliation (#55). The flight ("Flighty Flights") calendar
@@ -531,6 +549,29 @@ def write_config(config: dict) -> None:
                 f"for the documented config shape, and bump the schema before "
                 f"introducing new fields"
             )
+        if key == "ev_planning":
+            from ev_preferences import validate_ev_preferences
+
+            try:
+                validate_ev_preferences(value)
+            except ValueError:
+                # Other config owners carry this optional record opaquely.
+                # They may preserve an unchanged unsupported/bad value, but
+                # cannot introduce or modify one. EV intake validates strictly.
+                previous = _read_json_with_version(state_dir() / CONFIG_FILE, migrate=False)
+                if (
+                    previous is None
+                    or "ev_planning" not in previous
+                    or json.dumps(previous["ev_planning"], sort_keys=True)
+                    != json.dumps(value, sort_keys=True)
+                ):
+                    raise
+                print(
+                    "[flight-assist] Existing EV preferences preserved unchanged. Inspect or "
+                    "update their owner schema before EV planning; other config fields can update.",
+                    file=sys.stderr,
+                )
+            continue
         expected_type = _CONFIG_OPTIONAL_FIELDS[key]
         if expected_type is int and isinstance(value, bool):
             raise ValueError(f"write_config: field '{key}' is bool {value!r}, expected int")

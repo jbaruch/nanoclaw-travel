@@ -280,10 +280,9 @@ def _remaining_continuations(
             and same_place(block.origin, meeting.location)
             and same_place(block.destination, other.location)
             and block.anchor is not None
-            and block.baseline_seconds is not None
-            and block.baseline_seconds >= 0
-            and meeting.end <= block.anchor - timedelta(seconds=block.baseline_seconds)
-            and block.anchor <= other.start
+            and (native_start := _current_drive_start(block)) is not None
+            and meeting.end <= native_start
+            and (block.end or block.anchor) <= other.start
             for block in current_blocks
         )
         if planned or retained:
@@ -296,15 +295,20 @@ def _remaining_continuations(
 def _current_drive_start(block: ParsedBlock) -> datetime | None:
     """When an existing unified meeting block's drive begins, or None if unknown.
 
-    A return block's anchor is its departure. An outbound block's anchor is the
-    arrival deadline, so its drive began `baseline_seconds` earlier.
+    Prefer complete native Calendar bounds. Older projections may use their
+    native span, then the route baseline. EV time never redefines that baseline.
     """
+    if block.start is not None:
+        return block.start
     if block.anchor is None:
         return None
     if block.kind == "meeting_return":
         return block.anchor
-    if block.kind == "meeting_outbound" and block.baseline_seconds is not None:
-        return block.anchor - timedelta(seconds=block.baseline_seconds)
+    duration = (
+        block.duration_seconds if block.duration_seconds is not None else block.baseline_seconds
+    )
+    if block.kind == "meeting_outbound" and duration is not None and duration >= 0:
+        return block.anchor - timedelta(seconds=duration)
     return None
 
 

@@ -51,6 +51,20 @@ def test_overwrites_existing_home_address(tmp_path: Path):
     assert config["home_address"] == "new address"
 
 
+@pytest.mark.parametrize("ev_input", [{"schema_version": 99, "future_field": "retained"}, ["bad"]])
+def test_unrelated_home_update_preserves_opaque_ev_preferences(tmp_path: Path, ev_input):
+    root = tmp_path / "state" / "flight-assist"
+    root.mkdir(parents=True)
+    path = root / "config.json"
+    path.write_text(
+        json.dumps({"schema_version": 8, "home_address": "Old", "ev_planning": ev_input})
+    )
+    code, stdout, _ = _run(["New home"], state_dir=root)
+    assert code == 0
+    assert json.loads(stdout)["home_address"] == "New home"
+    assert json.loads(path.read_text())["ev_planning"] == ev_input
+
+
 def test_missing_argument_exits_2(tmp_path: Path):
     state = tmp_path / "state" / "flight-assist"
     state.mkdir(parents=True)
@@ -83,3 +97,43 @@ def test_accepts_varied_address_formats(tmp_path: Path, address: str):
     assert code == 0
     payload = json.loads(stdout.strip())
     assert payload["home_address"] == address
+
+
+def test_home_update_preserves_existing_nonfinite_ev_input_without_traceback(tmp_path: Path):
+    root = tmp_path / "state" / "flight-assist"
+    root.mkdir(parents=True)
+    path = root / "config.json"
+    path.write_text(
+        '{"schema_version":8,"home_address":"Old","ev_planning":{"schema_version":99,"future":NaN}}'
+    )
+    code, stdout, stderr = _run(["New home"], state_dir=root)
+    assert code == 0
+    assert json.loads(stdout)["home_address"] == "New home"
+    assert json.dumps(json.loads(path.read_text())["ev_planning"], sort_keys=True) == (
+        '{"future": NaN, "schema_version": 99}'
+    )
+    assert "Traceback" not in stderr
+    assert "preserved unchanged" in stderr
+
+
+@pytest.mark.parametrize("mask", [0o000, 0o022])
+def test_unrelated_config_writer_replaces_private_config_with_mode600(tmp_path, mask):
+    import os
+    import stat
+
+    root = tmp_path / "state"
+    root.mkdir()
+    path = root / "config.json"
+    path.write_text('{"schema_version":8,"home_address":"Old","ev_planning":{"schema_version":99}}')
+    path.chmod(0o600)
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "New"],
+        env={"FLIGHT_ASSIST_STATE_DIR": str(root), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        preexec_fn=lambda: os.umask(mask),
+    )
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert json.loads(path.read_text())["ev_planning"] == {"schema_version": 99}

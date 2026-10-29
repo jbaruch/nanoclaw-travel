@@ -161,6 +161,12 @@ def _hold(skipped: list[str], held: list[HeldLeg], meeting, leg, kind: str, reas
             summary=f"Drive: {meeting.summary}",
             when=leg.arrive_by or leg.depart_after,
             reason=reason,
+            not_before=leg.depart_after
+            or (
+                leg.arrive_by - timedelta(seconds=leg.gap_seconds)
+                if isinstance(leg.gap_seconds, int) and leg.arrive_by is not None
+                else None
+            ),
         )
     )
 
@@ -236,6 +242,7 @@ def meeting_desired_blocks(
                         ),
                         reason=f"meeting {meeting.meeting_id}: {meeting.reason}",
                         announce=False,
+                        not_before=meeting.end if kind == "meeting_return" else None,
                     )
                 )
             continue
@@ -325,6 +332,11 @@ def meeting_desired_blocks(
                     anchor=anchor,
                     timezone=display_tz or getattr(meeting, "timezone", None),
                     zone_from_operator=bool(display_tz),
+                    earliest_start=(
+                        leg.arrive_by - timedelta(seconds=gap)
+                        if isinstance(gap, int) and leg.arrive_by is not None
+                        else None
+                    ),
                     legacy_keys=frozenset({(GEN_LEGACY_DP, meeting.meeting_id, leg.direction)}),
                 )
             )

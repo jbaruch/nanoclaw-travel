@@ -34,7 +34,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from block_codec import GEN_LEGACY_FADRIVE, GEN_UNIFIED, ParsedBlock
+from block_codec import (
+    GEN_LEGACY_FADRIVE,
+    GEN_UNIFIED,
+    ParsedBlock,
+    human_description,
+    parse_ev_note,
+)
 
 # Legacy directions ↔ unified leg kinds, for building a desired leg's legacy keys.
 _KIND_TO_LEGACY_DIRECTION = {
@@ -47,6 +53,9 @@ _KIND_TO_LEGACY_DIRECTION = {
 # (`reconcile_sweep._MANAGED_LEGACY`): the retired engines' blocks are left for the
 # operator to clean up.
 _DEFAULT_MANAGED_LEGACY = frozenset({GEN_LEGACY_FADRIVE})
+
+
+DEPART_AFTER_KINDS = frozenset({"meeting_return", "airport_arrival", "lodging_return"})
 
 
 @dataclass(frozen=True)
@@ -73,6 +82,8 @@ class DesiredBlock:
     # patch: a fallback zone (the reader was unavailable) must not flap every
     # block back and forth whenever the reader flickers.
     zone_from_operator: bool = False
+    charging_note: str | None = None
+    earliest_start: datetime | None = None
 
 
 def legacy_keys_for_airport_leg(
@@ -109,6 +120,8 @@ class HeldLeg:
     when: datetime | None
     reason: str
     announce: bool = True
+    # Source-proved earliest departure; None never invents a route duration.
+    not_before: datetime | None = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -127,6 +140,8 @@ class Update:
     # The matched block's prior routed drive duration, so the apply layer can tell
     # a material traffic change (worth alerting the operator) from routine jitter.
     prior_baseline_seconds: int | None = None
+    # Native Calendar span for EV notices, separate from persisted route seconds.
+    prior_effective_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -253,6 +268,23 @@ def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:
     (traffic grew) moves the block's leave-by and must trigger an update; a
     sub-tolerance change is routing jitter, not signal, and is ignored so the
     live writer doesn't churn a recreate every sweep (#164)."""
+    had_ev_note = (
+        parse_ev_note(current.description, current.origin, current.destination) is not None
+    )
+    if desired.charging_note is not None or had_ev_note:
+        # Add/change/remove a known EV allowance even when its minute-sized
+        # duration is below the ordinary traffic jitter threshold. Repeated
+        # identical renders remain a no-op; schema-1 private state is unchanged.
+        if current.description != human_description(
+            desired.origin, desired.destination, desired.charging_note
+        ):
+            return True
+        if (
+            current.duration_seconds is None
+            or abs(current.duration_seconds - int((desired.end - desired.start).total_seconds()))
+            >= _BASELINE_SHIFT_TOLERANCE_SECONDS
+        ):
+            return True
     if (
         current.anchor != desired.anchor
         or current.origin != desired.origin
@@ -335,7 +367,18 @@ def plan_reconcile(
             # G1: keep the first, delete every extra sharing this identity.
             keep = matches[0]
             if _needs_update(keep, d):
-                updates.append(Update(keep.event_id, d, keep.baseline_seconds))
+                has_ev = (
+                    d.charging_note is not None
+                    or parse_ev_note(keep.description, keep.origin, keep.destination) is not None
+                )
+                updates.append(
+                    Update(
+                        keep.event_id,
+                        d,
+                        keep.baseline_seconds,
+                        keep.duration_seconds if has_ev else None,
+                    )
+                )
             for extra in matches[1:]:
                 deletes.append(Delete(extra.event_id, "duplicate identity"))
             continue

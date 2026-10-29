@@ -65,6 +65,21 @@ class FakeCalendar:
         pass
 
 
+def test_applied_roundtrip_notice_preserves_each_legs_charging_time():
+    outbound = replace(_desired(kind="meeting_outbound"), charging_note="1 charging stop, ~30 min")
+    returning = replace(_desired(), charging_note="1 charging stop, ~30 min")
+    result = apply_plan(
+        ReconcilePlan(creates=(Create(outbound), Create(returning))),
+        calendar=FakeCalendar(),
+        now=_dt(0),
+        creation_clock=lambda: _dt(0),
+    )
+    payload = build_sweep_payload(result, [])
+    message = payload["data"]["message"]
+    assert "Outbound: 1 charging stop, ~30 min" in message
+    assert "Return: 1 charging stop, ~30 min" in message
+
+
 # --- material_update_delta --------------------------------------------------
 #
 # Alerting now needs three things at once: the drive is IMMINENT (within the

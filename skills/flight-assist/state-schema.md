@@ -19,17 +19,29 @@ Plugin-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
   "min_transfer_minutes": 45,
   "byair_calendar_name": "Flighty Flights",
-  "byair_calendar_id": "c_abc123@group.calendar.google.com"
+  "byair_calendar_id": "c_abc123@group.calendar.google.com",
+  "ev_planning": {
+    "schema_version": 1,
+    "stop_minutes": 30,
+    "reserve_percent": 10,
+    "cold_allowance_percent": 20,
+    "highway_allowance_percent": 10,
+    "default_vehicle": null,
+    "event_vehicles": {},
+    "person_vehicles": {},
+    "event_drivers": {},
+    "destination_charges": []
+  }
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `7`
+- `schema_version` (int, required) — currently `8`
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
 - `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in plugin terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in plugin code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)
@@ -40,20 +52,50 @@ Fields:
 - `airport_post_arrival_intl_us_minutes` (int, optional, non-negative) — same, international arrival INTO the US; overrides `airport_lead.POST_ARRIVAL_INTL_TO_US_MINUTES` (40)
 - `airport_post_arrival_intl_abroad_minutes` (int, optional, non-negative) — same, international arrival abroad; overrides `airport_lead.POST_ARRIVAL_INTL_ABROAD_MINUTES` (60). The byAir `delay.index` nudge (low/med/high → +0/+15/+30) stays an `airport_lead` constant, not a config field
 
+- `ev_planning` (object, optional) — non-authorizing planning preferences owned by this skill's `ev_preferences.py`. Absence supplies no selector or charging evidence. The complete nested schema follows.
+
+#### Optional `ev_planning` schema 1
+
+Accepted records contain exactly these fields; no extra fields are admitted:
+
+| Field | Type and bounds |
+| --- | --- |
+| `schema_version` | Plain integer `1` |
+| `stop_minutes` | Plain integer 1–240 |
+| `reserve_percent` | Plain integer 0–50 |
+| `cold_allowance_percent`, `highway_allowance_percent` | Finite numbers 0–200, excluding booleans |
+| `default_vehicle` | Null or exact native alias/VIN, at most 100 characters |
+| `event_vehicles` | At most 1,000 native event/drive IDs (512 characters) mapped to literal vehicle selectors (100 characters) |
+| `person_vehicles` | At most 100 grounded driver labels (254 characters) mapped to literal selectors (100 characters) |
+| `event_drivers` | At most 1,000 event/drive IDs (512 characters) mapped to confirmed driver labels (254 characters) |
+| `destination_charges` | At most 100 evidence records in the shape below |
+
+All identifiers are nonempty, trimmed strings without control, format, surrogate, line-separator or paragraph-separator characters. Event IDs and driver labels are literal inputs; attendees never infer a driver. Selectors request a vehicle from the protected native provider and grant no role, enrollment or access.
+
+Each destination-charge record has exactly `schema_version:1`, `vehicle` (100 characters), `destination` (2,000 characters), `available_at` (zoned ISO instant, 50 characters), `energy_kwh` (finite number 0.001–1,000, excluding booleans), and `source` (1,000-character owner-message or native-observation reference). Duplicate vehicle/normalized-destination/instant records refuse. Evidence must bind the selected vehicle, actual destination, time and energy; lodging or a charger name supplies no energy by itself.
+
+Owner reader/writer contract:
+
+- `state.py:read_config` preserves optional EV values opaquely, including unsupported nested schemas or malformed/non-finite values already accepted by the existing JSON reader. Flight alerts and unrelated config consumers do not interpret them.
+- `ev_preferences.py:validate_ev_preferences`, the drive sweep and `drive-engine/configure_ev.py` validate the complete nested record before use or intake. Unknown/malformed records hold EV use and replacement with a fixed diagnostic; they never reset or downgrade stored preferences.
+- `state.py:write_config` accepts a valid new EV record. An unrelated config update may carry an existing invalid record only when its serialized typed value is unchanged, with an actionable diagnostic. New or modified invalid EV input refuses without replacement.
+- All owner entry points, including migration, set-home and calendar reconciliation, atomically replace state through an exclusive same-directory temporary file with mode `0600` established before writing private bytes. Replacement failure preserves the previous file and cleans only that temporary file.
+- Config 7→8 migration preserves all prior fields and makes no mapping/measurement claim. Main root-version rules and all existing flight gates remain; shared optional input does not interrupt flight polling.
+
 ### `active-flights.json`
 
 Index of currently-tracked flight IDs. Refreshed daily by the sync-tripit script.
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "flight_ids": [12345, 67890, 11111]
 }
 ```
 
 Fields:
 
-- `schema_version` (int, required) — currently `7`
+- `schema_version` (int, required) — currently `8`
 - `flight_ids` (list of int, required) — every flight the precheck should poll
 
 ### `sync-health.json` — sync failure counters (#326)
@@ -135,7 +177,7 @@ Per-flight state record. One file per tracked flight.
 
 ```json
 {
-  "schema_version": 7,
+  "schema_version": 8,
   "flight_id": 12345,
   "code": "AA2414",
   "ownership": "mine",
@@ -202,7 +244,7 @@ Per-flight state record. One file per tracked flight.
 
 Top-level fields:
 
-- `schema_version` (int, required) — `7`
+- `schema_version` (int, required) — `8`
 - `flight_id` (int, required) — byAir's flight identifier
 - `code` (string, required) — the **marketing** flight designator like `"AA2414"` / `"DL4908"` — what the operator booked and recognizes. Seeded by `sync_tripit` from byAir `list_trips` (whose top-level `code` is the marketing designator) and preserved across polls: the precheck poll uses byAir `get_flight`, whose top-level `code` is the **operating** designator for a codeshare (e.g. `9E4908`, Endeavor operating DL4908), so the poll never overwrites this field. `sync_tripit` also refreshes it from `list_trips` on every retained flight each daily run, healing records a pre-fix poll may have poisoned with the operating designator (#159 Bug 1)
 - `ownership` (string, required) — `"mine"` or `"friend"`
@@ -263,7 +305,7 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Today `STATE_SCHEMA_VERSION` is `7`.
+Today `STATE_SCHEMA_VERSION` is `8`.
 
 `state.py`'s owner-side read helpers (`read_config`, `read_active_flights`, `read_flight_state`) enforce these rules on `schema_version`:
 
@@ -299,6 +341,10 @@ Per-flight state: `phase_markers` gains `gate_assignment_fired: false`. The owne
 ### v6 → v7
 
 Per-flight state: `last_snapshot` gains the resolved airport slice (`dep_airport_code`, `dep_airport_name`, `arr_airport_code`, `arr_airport_name`) and its `code` is realigned to the marketing designator (#159). `last_snapshot` is a byair-owned, rebuilt-each-poll slice whose fields are all optional and absent-tolerant, so there is no shape to backfill on migration — the owner-side `state.py:_migrate` only bumps the `schema_version`, and the next precheck poll repopulates the snapshot. Config and active-flights files have no shape change at v7 — they receive a schema_version bump only.
+
+### v7 → v8
+
+Config gains optional `ev_planning` owned by `ev_preferences.py`; its complete nested schema-1 shape and preservation contract are defined under `config.json` above. Old config, active-flight index and per-flight fields are preserved; absence adds no mapping, estimate or vehicle authority. All owner readers/writers co-ship. The shared config reader carries EV input without interpreting it; drive-engine and its preference intake validate it strictly. An invalid/future nested preference does not interrupt flight-alert polling or get silently downgraded.
 
 ## Bump Procedure
 
@@ -388,7 +434,7 @@ The model sends the notice with `send_message`, then acknowledges only the IDs c
 
 The store takes the stateful-artifacts gate-store exception. Unknown versions, malformed records and unreadable files refuse with a repair diagnostic; they never become an empty store. The owner accepts versions 1 and 2 through the explicit upgrades below, then writes version 3 on read under the existing lock. A future owner version must migrate every accepted older version and rewrite it on read. Missing state is first-run state. Readers are the precheck and acknowledgement helper; they use only the owner library from the same installed bundle. Older owners refuse version 3 and require the updated bundle; they must not clear its receipts.
 
-The existing per-flight schema remains version 7 with the same fields and gate values. Existing true flags remain consumed legacy attempts; the change creates no synthetic receipts and replays no historical alerts. New flags advance only from confirmed entries in the new store. The flags alone remain insufficient evidence that an old notification was delivered.
+The existing per-flight schema is version 8 with the same fields and gate values. Existing true flags remain consumed legacy attempts; the change creates no synthetic receipts and replays no historical alerts. New flags advance only from confirmed entries in the new store. The flags alone remain insufficient evidence that an old notification was delivered.
 
 
 ### Notification store v1 → v2 migration

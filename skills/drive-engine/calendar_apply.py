@@ -38,7 +38,12 @@ if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
 from block_codec import build_extended_properties  # noqa: E402
-from reconcile import DesiredBlock, ReconcilePlan, material_update_delta  # noqa: E402
+from reconcile import (  # noqa: E402
+    DEPART_AFTER_KINDS,
+    DesiredBlock,
+    ReconcilePlan,
+    material_update_delta,
+)
 
 # A drive block's human summary is "Drive: <meeting/leg>". Stripping the prefix
 # recovers the name the operator recognizes for a notification.
@@ -123,8 +128,8 @@ def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
     The block is rendered in its local timezone (`desired.timezone`) so it shows
     the correct local time. Machine state (leg identity + the fields the recheck
     reads back) rides in `extendedProperties.private`, a machine-only field, and
-    the `description` carries only the operator-facing route line (#178 writer
-    flip). It squatted in the description only because the retired Composio toolkit
+    the `description` carries operator-facing route and optional EV allowance (#178
+    writer flip). State squatted in the description only because the retired Composio toolkit
     exposed no writable `extendedProperties`; the native API does, and the reader
     has read both since the dual-read step, so a block written this way round-trips
     and a still-description-carried block created before the flip is read by the
@@ -168,7 +173,9 @@ def _human_description(desired: DesiredBlock) -> str:
     (the meeting/flight name) and the `location` (the destination) with the one
     detail neither shows — where the drive starts.
     """
-    return f"{desired.origin} → {desired.destination}"
+    from block_codec import human_description
+
+    return human_description(desired.origin, desired.destination, desired.charging_note)
 
 
 def _desired_extended_properties(desired: DesiredBlock) -> dict:
@@ -315,8 +322,12 @@ def apply_plan(
         # Alert only on a MATERIAL drive-time change (a swing worth acting on, on
         # a drive near enough to act on); everything else patches silently.
         delta = material_update_delta(
-            u.prior_baseline_seconds,
-            u.desired.baseline_seconds,
+            u.prior_effective_seconds
+            if u.prior_effective_seconds is not None
+            else u.prior_baseline_seconds,
+            int((u.desired.end - u.desired.start).total_seconds())
+            if u.prior_effective_seconds is not None
+            else u.desired.baseline_seconds,
             starts_at=u.desired.start,
             now=now,
         )
@@ -332,6 +343,16 @@ def apply_plan(
                     "anchor": u.desired.anchor.isoformat(),
                 }
             )
+            if u.prior_effective_seconds is not None:
+                after = u.desired.kind in DEPART_AFTER_KINDS
+                result.material_updates[-1]["timing"] = "arrival" if after else "departure"
+                if after:
+                    result.material_updates[-1]["direction"] = (
+                        "later" if direction == "sooner" else "sooner"
+                    )
+            if u.desired.charging_note is not None:
+                side = "Return" if u.desired.kind in DEPART_AFTER_KINDS else "Outbound"
+                result.material_updates[-1]["charging"] = f"{side}: {u.desired.charging_note}"
 
     for c in plan.creates:
         if c.desired.start < creation_clock():
@@ -359,6 +380,9 @@ def apply_plan(
                     "anchor": c.desired.anchor.isoformat(),
                 }
             )
+            if c.desired.charging_note is not None:
+                side = "Return" if c.desired.kind in DEPART_AFTER_KINDS else "Outbound"
+                result.added_meeting_legs[-1]["charging"] = f"{side}: {c.desired.charging_note}"
 
     for cv in plan.converts:
         if cv.desired.start < creation_clock():

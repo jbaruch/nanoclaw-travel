@@ -21,6 +21,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
@@ -176,7 +178,9 @@ def test_home_metro_placeholder_routes_meeting_from_current_home(monkeypatch, tm
         ],
     )
     monkeypatch.setattr(
-        reconcile_sweep, "make_route", lambda _: lambda origin, dest: timedelta(minutes=40)
+        reconcile_sweep,
+        "make_route",
+        lambda _, **_kwargs: lambda origin, dest: timedelta(minutes=40),
     )
     monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", real_meeting_blocks)
     monkeypatch.setattr(reconcile_sweep, "build_plan", real_build_plan)
@@ -254,7 +258,9 @@ def _arrival_day_sweep(monkeypatch, tmp_path, *, meeting_start, meeting_end):
         ],
     )
     monkeypatch.setattr(
-        reconcile_sweep, "make_route", lambda _: lambda origin, dest: timedelta(minutes=30)
+        reconcile_sweep,
+        "make_route",
+        lambda _, **_kwargs: lambda origin, dest: timedelta(minutes=30),
     )
     monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", real_meeting_blocks)
     monkeypatch.setattr(reconcile_sweep, "build_plan", real_build_plan)
@@ -328,7 +334,9 @@ def test_sweep_reads_owned_attendance_before_meeting_planning(monkeypatch, tmp_p
         ],
     )
     calls = []
-    monkeypatch.setattr(reconcile_sweep, "make_route", lambda _: lambda o, d: calls.append((o, d)))
+    monkeypatch.setattr(
+        reconcile_sweep, "make_route", lambda _, **_kwargs: lambda o, d: calls.append((o, d))
+    )
     monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", real_meeting_blocks)
     monkeypatch.setattr(reconcile_sweep, "build_plan", real_build_plan)
     plans = []
@@ -354,3 +362,219 @@ def test_unknown_attendance_schema_stops_sweep_before_apply(monkeypatch, tmp_pat
         reconcile_sweep._run_sweep()
     assert calls == []
     assert path.read_text() == raw
+
+
+def test_live_sweep_uses_route_distance_and_measured_ev_time_before_single_reconcile(
+    monkeypatch, tmp_path
+):
+    import tesla_planning
+    from calendar_apply import build_create_args
+    from ev_charging import EnergySample
+    from maps_client import TravelTime
+
+    real_meetings = reconcile_sweep.meeting_desired_blocks
+    real_build = reconcile_sweep.build_plan
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    settings = {
+        "schema_version": 1,
+        "stop_minutes": 30,
+        "reserve_percent": 10,
+        "cold_allowance_percent": 0,
+        "highway_allowance_percent": 0,
+        "default_vehicle": "Car",
+        "event_vehicles": {},
+        "person_vehicles": {},
+        "event_drivers": {},
+        "destination_charges": [],
+    }
+    monkeypatch.setattr(
+        state,
+        "read_config",
+        lambda: {
+            "home_address": "12 Example St",
+            "ev_planning": settings,
+        },
+    )
+    monkeypatch.setattr(
+        _EmptyFetcher,
+        "fetch_window",
+        lambda self, **_: [
+            {
+                "id": "long-meeting",
+                "summary": "Long meeting",
+                "location": "Far venue",
+                "start": {"dateTime": "2026-09-11T18:00:00Z"},
+                "end": {"dateTime": "2026-09-11T19:00:00Z"},
+            }
+        ],
+    )
+    routes = []
+
+    class Maps:
+        def travel_time(self, origin, destination):
+            routes.append((origin, destination))
+            return TravelTime(10800, None, 1, 395000, origin, destination, "google")
+
+    monkeypatch.setattr(maps_client.MapsClient, "from_env", classmethod(lambda cls, **_: Maps()))
+    selectors = []
+    departures = []
+
+    class Provider:
+        def __init__(self, *, now, configured):
+            assert configured
+            self.now = now
+
+        def vehicle(self, selector):
+            selectors.append(selector)
+            return "Car"
+
+        def estimate(self, vehicle, distance, departure):
+            departures.append((vehicle, distance, departure))
+            return EnergySample(vehicle, 75, 0.18, self.now, 90)
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            raise AssertionError("Synthetic complete provider must not be held")
+
+    monkeypatch.setattr(tesla_planning, "TeslaPlanning", Provider)
+    monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", real_meetings)
+    monkeypatch.setattr(reconcile_sweep, "build_plan", real_build)
+    plans = []
+    monkeypatch.setattr(
+        reconcile_sweep, "finish_sweep", lambda plan, *_a, **_kw: plans.append(plan) or {"data": {}}
+    )
+    reconcile_sweep._run_sweep()
+    assert len(plans) == 1 and len(plans[0].creates) == 2
+    blocks = {create.desired.kind: create.desired for create in plans[0].creates}
+    out = blocks["meeting_outbound"]
+    assert out.start == datetime(2026, 9, 11, 14, 30, tzinfo=UTC)
+    assert out.end == datetime(2026, 9, 11, 18, tzinfo=UTC)
+    assert out.baseline_seconds == 10800
+    assert (
+        "1 charging stop, ~30 min" in build_create_args(out, calendar_id="primary")["description"]
+    )
+    assert selectors == ["Car", "Car"]
+    assert len(routes) == 2  # distance and duration share the actual maps results
+    assert departures[-1][2] == out.start
+
+
+def test_invalid_ev_preferences_hold_drive_sweep_before_clients(monkeypatch, tmp_path):
+    import pytest
+
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    monkeypatch.setattr(
+        state,
+        "read_config",
+        lambda: {
+            "home_address": "Home",
+            "ev_planning": {"schema_version": 99},
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        maps_client.MapsClient, "from_env", classmethod(lambda cls, **_: calls.append("maps"))
+    )
+    with pytest.raises(ValueError, match="schema 1"):
+        reconcile_sweep._run_sweep()
+    assert calls == []
+
+
+@pytest.mark.parametrize("case", ["busy", "clear", "malformed", "fetch_failure"])
+def test_no_home_sweep_protects_busy_events_from_airport_charging_extension(
+    monkeypatch, tmp_path, capsys, case
+):
+    from datetime import timedelta
+
+    import home_address
+    import tesla_planning
+    from ev_charging import EnergySample
+    from reconcile import DesiredBlock
+
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    monkeypatch.setattr(state, "read_config", lambda: {})
+    monkeypatch.setattr(home_address, "read_current_home", lambda: None)
+    now = _FrozenDatetime.now(UTC)
+
+    def fetch(_self, **_kwargs):
+        if case == "fetch_failure":
+            raise google_calendar_client.GoogleCalendarError("synthetic event fetch unavailable")
+        if case == "clear":
+            return []
+        event = {
+            "id": "busy",
+            "summary": "Appointment",
+            "start": {"dateTime": (now + timedelta(hours=3, minutes=10)).isoformat()},
+            "end": {"dateTime": (now + timedelta(hours=3, minutes=20)).isoformat()},
+        }
+        if case == "malformed":
+            event.pop("end")
+        return [event]
+
+    monkeypatch.setattr(_EmptyFetcher, "fetch_window", fetch)
+
+    class Provider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def vehicle(self, _selector):
+            assert case in {"busy", "clear"}, "No provider reads with unknown protected windows"
+            return "Car"
+
+        def estimate(self, *_args):
+            return EnergySample("Car", 75, 0.18, now, 90)
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            pass
+
+    monkeypatch.setattr(tesla_planning, "TeslaPlanning", Provider)
+    dep = DesiredBlock(
+        "flight",
+        "airport_departure",
+        "Drive",
+        now + timedelta(minutes=30),
+        now + timedelta(hours=1),
+        "Hotel",
+        "AAA",
+        1800,
+        now + timedelta(hours=1),
+    )
+    arr = DesiredBlock(
+        "flight",
+        "airport_arrival",
+        "Drive",
+        now + timedelta(hours=2),
+        now + timedelta(hours=3),
+        "BBB",
+        "Hotel",
+        3600,
+        now + timedelta(hours=2),
+    )
+    actual_adjuster = reconcile_sweep._ev_adjuster
+
+    def adjusted(config, route, distances, clock, busy_windows=()):
+        return actual_adjuster(
+            config, route, {("Hotel", "AAA"): 10, ("BBB", "Hotel"): 395}, clock, busy_windows
+        )
+
+    monkeypatch.setattr(reconcile_sweep, "_ev_adjuster", adjusted)
+    seen = []
+
+    def build(**arguments):
+        result, _ = arguments["adjust_drives"]([dep, arr], [], [])
+        seen.append(result)
+        return SimpleNamespace(plan=ReconcilePlan(), skipped=(), held=(), origin_sources=())
+
+    monkeypatch.setattr(reconcile_sweep, "build_plan", build)
+    reconcile_sweep._run_sweep()
+    assert len(seen) == 1
+    if case == "clear":
+        assert seen[0][1].end == arr.end + timedelta(minutes=30)
+    else:
+        assert seen[0][1] is arr
+    if case in {"malformed", "fetch_failure"}:
+        assert "protected Calendar windows unavailable" in capsys.readouterr().err

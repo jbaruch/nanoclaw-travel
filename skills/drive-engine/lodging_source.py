@@ -685,7 +685,14 @@ def lodging_desired_blocks(
             else f"Drive: {trip.hotel} → home"
         )
         held.append(
-            HeldLeg(identity=trip.key, kind=kind, summary=summary, when=when, reason=reason)
+            HeldLeg(
+                identity=trip.key,
+                kind=kind,
+                summary=summary,
+                when=when,
+                reason=reason,
+                not_before=when if kind == KIND_RETURN else None,
+            )
         )
 
     def hold_absorbed(trip: DriveTrip, local: LocalLeg, reason: str) -> None:
@@ -701,6 +708,7 @@ def lodging_desired_blocks(
                 when=local.start,
                 reason=f"{reason} — its outer legs may absorb this drive",
                 announce=False,
+                not_before=local.start,
             )
         )
 
@@ -735,6 +743,7 @@ def lodging_desired_blocks(
                 summary=f"Drive: {trip.hotel} → home",
                 when=_return_anchor(trip, ctx),
                 reason=reason,
+                not_before=_return_anchor(trip, ctx),
             )
         )
 
