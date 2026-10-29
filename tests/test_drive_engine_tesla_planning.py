@@ -464,3 +464,31 @@ def test_deep_source_manifest_holds_without_running_provider(tmp_path, monkeypat
     api = owner.TeslaPlanning(now=NOW, configured=True, run=lambda argv: calls.append(argv))
     assert api.vehicle("Car") is None and calls == []
     assert "Legacy drive timing retained" in capsys.readouterr().err
+
+
+def test_source_clone_default_lookup_uses_declared_repo_root_without_path_override(
+    tmp_path, monkeypatch
+):
+    # The actual adapter computes CLONE_PROVIDER from its actual __file__.
+    # This synthetic declared-install layout makes no provider/authority calls.
+    mount = provider(tmp_path, monkeypatch)
+    clone = tmp_path / "travel"
+    bundle = clone / "skills/drive-engine"
+    bundle.mkdir(parents=True)
+    target = bundle / "tesla_planning.py"
+    target.write_bytes((ROOT / "skills/drive-engine/tesla_planning.py").read_bytes())
+    declared = clone / ".tessl/plugins/jbaruch/nanoclaw-tesla"
+    (declared / ".tessl-plugin").mkdir(parents=True)
+    (declared / ".tessl-plugin/plugin.json").write_text(
+        json.dumps({"name": "jbaruch/nanoclaw-tesla"})
+    )
+    (declared / "skills").mkdir()
+    for skill in ("tessie-ops", "tessie-charge"):
+        (mount / f"tessl__{skill}").rename(declared / "skills" / skill)
+    module = runpy.run_path(str(target))
+    lookup = module["provider_scripts"]
+    lookup.__globals__["MOUNT"] = mount  # empty finite native fixture; no clone-path override
+    assert lookup() == (
+        declared / "skills/tessie-ops/scripts/tessie-read.py",
+        declared / "skills/tessie-charge/scripts/tessie-charge.py",
+    )
