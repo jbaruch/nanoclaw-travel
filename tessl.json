@@ -10,6 +10,9 @@
     },
     "finsi/codex-review": {
       "version": "0.1.2"
+    },
+    "jbaruch/nanoclaw-tesla": {
+      "version": "latest"
     }
   }
 }

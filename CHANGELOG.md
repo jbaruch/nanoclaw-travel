@@ -1,5 +1,9 @@
 # Changelog
 
+### Declare the Tesla provider for trusted source review (#339)
+
+Add the published Tesla plugin to the managed source dependency manifest. The fleet reviewer can load its authority from the trusted base before reviewing the separate EV drive-time implementation.
+
 ## 0.2.168 — 2026-10-28
 
 ### Judge day-before drop-in windows by closing time (#354)
