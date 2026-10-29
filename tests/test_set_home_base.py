@@ -51,6 +51,20 @@ def test_overwrites_existing_home_address(tmp_path: Path):
     assert config["home_address"] == "new address"
 
 
+@pytest.mark.parametrize("ev_input", [{"schema_version": 99, "future_field": "retained"}, ["bad"]])
+def test_unrelated_home_update_preserves_opaque_ev_preferences(tmp_path: Path, ev_input):
+    root = tmp_path / "state" / "flight-assist"
+    root.mkdir(parents=True)
+    path = root / "config.json"
+    path.write_text(
+        json.dumps({"schema_version": 8, "home_address": "Old", "ev_planning": ev_input})
+    )
+    code, stdout, _ = _run(["New home"], state_dir=root)
+    assert code == 0
+    assert json.loads(stdout)["home_address"] == "New home"
+    assert json.loads(path.read_text())["ev_planning"] == ev_input
+
+
 def test_missing_argument_exits_2(tmp_path: Path):
     state = tmp_path / "state" / "flight-assist"
     state.mkdir(parents=True)

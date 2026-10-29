@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -541,6 +542,29 @@ def write_config(config: dict) -> None:
                 f"for the documented config shape, and bump the schema before "
                 f"introducing new fields"
             )
+        if key == "ev_planning":
+            from ev_preferences import validate_ev_preferences
+
+            try:
+                validate_ev_preferences(value)
+            except ValueError:
+                # Other config owners carry this optional record opaquely.
+                # They may preserve an unchanged unsupported/bad value, but
+                # cannot introduce or modify one. EV intake validates strictly.
+                previous = _read_json_with_version(state_dir() / CONFIG_FILE, migrate=False)
+                if (
+                    previous is None
+                    or "ev_planning" not in previous
+                    or json.dumps(previous["ev_planning"], sort_keys=True, allow_nan=False)
+                    != json.dumps(value, sort_keys=True, allow_nan=False)
+                ):
+                    raise
+                print(
+                    "[flight-assist] Existing EV preferences preserved unchanged. Inspect or "
+                    "update their owner schema before EV planning; other config fields can update.",
+                    file=sys.stderr,
+                )
+            continue
         expected_type = _CONFIG_OPTIONAL_FIELDS[key]
         if expected_type is int and isinstance(value, bool):
             raise ValueError(f"write_config: field '{key}' is bool {value!r}, expected int")
@@ -557,10 +581,6 @@ def write_config(config: dict) -> None:
         # reject at the write surface.
         if key in _CONFIG_NON_NEGATIVE_INT_FIELDS and value < 0:
             raise ValueError(f"write_config: field '{key}' is {value}, expected non-negative int")
-        if key == "ev_planning":
-            from ev_preferences import validate_ev_preferences
-
-            validate_ev_preferences(value)
     payload = {**config, "schema_version": STATE_SCHEMA_VERSION}
     _atomic_write_json(state_dir() / CONFIG_FILE, payload)
 

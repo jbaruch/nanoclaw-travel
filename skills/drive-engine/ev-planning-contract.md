@@ -136,6 +136,8 @@ every existing field and only adds optional input support. Config, flight and
 active-index writer/readers co-ship; no cross-plugin writer flip occurs. Unknown
 root versions preserve the existing owner refusal. The shared reader carries
 optional EV preferences unchanged; non-EV flight consumers do not interpret them.
+Unrelated config updates may carry an existing opaque EV value unchanged, with
+an actionable diagnostic. They cannot introduce or alter an invalid EV record.
 The drive sweep and preference intake validate EV input strictly before using it.
 Malformed/future EV input holds drive apply or preference replacement without
 interrupting flight-alert polling or downgrading the nested record.

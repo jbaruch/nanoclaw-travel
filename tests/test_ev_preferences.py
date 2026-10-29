@@ -202,3 +202,29 @@ def test_intake_still_refuses_unknown_existing_ev_schema_without_downgrade(tmp_p
     before = path.read_bytes()
     assert configure_ev.main([json.dumps(preferences())]) == 1
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("value", [None, [], "unknown", True])
+def test_opaque_preservation_cannot_introduce_a_new_invalid_ev_field(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    write_config({"home_address": "Home"})
+    path = state_dir() / "config.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        write_config({"home_address": "Home", "ev_planning": value})
+    assert path.read_bytes() == before
+
+
+def test_opaque_preservation_rejects_type_changed_invalid_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    write_config({"home_address": "Home"})
+    path = state_dir() / "config.json"
+    stored = json.loads(path.read_text())
+    stored["ev_planning"] = {"schema_version": 99, "future": True}
+    path.write_text(json.dumps(stored))
+    before = path.read_bytes()
+    with pytest.raises(ValueError):
+        write_config(
+            {"home_address": "Changed", "ev_planning": {"schema_version": 99, "future": 1}}
+        )
+    assert path.read_bytes() == before
