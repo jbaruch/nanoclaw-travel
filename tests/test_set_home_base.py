@@ -97,3 +97,20 @@ def test_accepts_varied_address_formats(tmp_path: Path, address: str):
     assert code == 0
     payload = json.loads(stdout.strip())
     assert payload["home_address"] == address
+
+
+def test_home_update_preserves_existing_nonfinite_ev_input_without_traceback(tmp_path: Path):
+    root = tmp_path / "state" / "flight-assist"
+    root.mkdir(parents=True)
+    path = root / "config.json"
+    path.write_text(
+        '{"schema_version":8,"home_address":"Old","ev_planning":{"schema_version":99,"future":NaN}}'
+    )
+    code, stdout, stderr = _run(["New home"], state_dir=root)
+    assert code == 0
+    assert json.loads(stdout)["home_address"] == "New home"
+    assert json.dumps(json.loads(path.read_text())["ev_planning"], sort_keys=True) == (
+        '{"future": NaN, "schema_version": 99}'
+    )
+    assert "Traceback" not in stderr
+    assert "preserved unchanged" in stderr

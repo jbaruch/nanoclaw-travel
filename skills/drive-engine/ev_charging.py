@@ -176,7 +176,13 @@ def adjust_charging(
         "lodging_return": "lodging_outbound",
         "airport_arrival": "airport_departure",
     }
-    unknown_from: dict[str, datetime] = {}
+    unknown_starts = sorted(
+        block.start
+        for block in original
+        if (block.identity, block.kind) not in vehicles
+        and block.end > now
+        and block.start <= now + FORECAST_HORIZON
+    )
     for index, block in enumerate(original):
         vehicle = vehicles.get((block.identity, block.kind))
         if (
@@ -186,50 +192,62 @@ def adjust_charging(
             and block.start <= now + FORECAST_HORIZON
         ):
             grouped.setdefault(vehicle, []).append((index, block))
+    for vehicle, chain in grouped.items():
+        chain.sort(key=lambda item: (item[1].start, item[1].end, item[0]))
+        segments: list[list[tuple[int, DesiredBlock]]] = []
+        segment: list[tuple[int, DesiredBlock]] = []
+        unknown_index = 0
+        grounded = True
+        ungrounded = set()
+        for item in chain:
+            _, block = item
+            crossed_unknown = False
+            while (
+                unknown_index < len(unknown_starts) and unknown_starts[unknown_index] <= block.start
+            ):
+                grounded = False
+                crossed_unknown = True
+                unknown_index += 1
             predecessor = return_predecessors.get(block.kind)
-            native_remaining = any(
+            if predecessor and (vehicle, block.identity, predecessor) not in eligible_keys:
+                grounded = False
+                crossed_unknown = True
+            if crossed_unknown and segment:
+                segments.append(segment)
+                segment = []
+            if any(
                 route.matches(block, vehicle, now)
                 and route.arrival_percent >= options.reserve_percent
                 for route in navigation
-            )
-            if (
-                predecessor
-                and (vehicle, block.identity, predecessor) not in eligible_keys
-                and not native_remaining
             ):
-                # A completed, missing or unresolved outbound is NOT a new
-                # full departure battery. Its return and downstream use of
-                # that vehicle remain legacy until cumulative inputs exist.
-                unknown_from[vehicle] = min(unknown_from.get(vehicle, block.start), block.start)
-    for vehicle, chain in grouped.items():
-        chain.sort(key=lambda item: (item[1].start, item[1].end, item[0]))
-        if vehicle in unknown_from:
-            ungrounded = frozenset(
-                (block.identity, block.kind)
-                for _, block in chain
-                if block.start >= unknown_from[vehicle]
+                # Exact fresh active-route arrival energy independently grounds
+                # this leg and later uses, even after an unknown intervening drive.
+                grounded = True
+            if grounded:
+                segment.append(item)
+            else:
+                ungrounded.add((block.identity, block.kind))
+        if segment:
+            segments.append(segment)
+        if ungrounded and unavailable is not None:
+            unavailable(frozenset(ungrounded))
+        for segment in segments:
+            planned = _vehicle_chain(
+                segment,
+                vehicle,
+                distance_km,
+                estimate,
+                now,
+                options,
+                destination_charges,
+                navigation,
+                protected_windows,
             )
-            chain = [item for item in chain if item[1].start < unknown_from[vehicle]]
-            if unavailable is not None:
-                unavailable(ungrounded)
-        if not chain:
-            continue
-        planned = _vehicle_chain(
-            chain,
-            vehicle,
-            distance_km,
-            estimate,
-            now,
-            options,
-            destination_charges,
-            navigation,
-            protected_windows,
-        )
-        if planned is not None:
-            for (index, _), block in zip(chain, planned, strict=True):
-                original[index] = block
-        elif unavailable is not None:
-            unavailable(frozenset((block.identity, block.kind) for _, block in chain))
+            if planned is not None:
+                for (index, _), block in zip(segment, planned, strict=True):
+                    original[index] = block
+            elif unavailable is not None:
+                unavailable(frozenset((block.identity, block.kind) for _, block in segment))
     return original
 
 
@@ -307,7 +325,7 @@ def _vehicle_chain(
                 result = _shift(
                     block,
                     duration - (block.end - block.start),
-                    f"Car navigation ETA; arrival ~{nav.arrival_percent:g}%",
+                    "Car navigation ETA",
                 )
                 if block.start < now:
                     # Native remaining ETA is measured from now. Preserve the

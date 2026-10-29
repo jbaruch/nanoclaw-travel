@@ -81,25 +81,34 @@ def run_json(argv: list[str]) -> dict:
         return value
 
 
-def _regular(path: Path) -> Path:
-    # Resolve only the owned installation root; target components cannot be links.
-    for candidate in (path.parent, path):
-        meta = candidate.lstat()
-        if stat.S_ISLNK(meta.st_mode):
-            raise PlanningUnavailable("Reinstall the complete regular Tesla provider.")
-    if not stat.S_ISREG(path.stat().st_mode):
+def _regular(path: Path, root: Path) -> Path:
+    # The fixed provider root and every named component remain regular/contained.
+    # Never resolve a target through an installation or skill-directory symlink.
+    relative = path.relative_to(root)
+    if not relative.parts or any(part in {".", ".."} for part in relative.parts):
         raise PlanningUnavailable("Reinstall the complete regular Tesla provider.")
+    candidate = root
+    if not stat.S_ISDIR(candidate.lstat().st_mode):
+        raise PlanningUnavailable("Reinstall the complete regular Tesla provider.")
+    for index, part in enumerate(relative.parts):
+        candidate = candidate / part
+        mode = candidate.lstat().st_mode
+        expected = stat.S_ISREG if index == len(relative.parts) - 1 else stat.S_ISDIR
+        if not expected(mode):
+            raise PlanningUnavailable("Reinstall the complete regular Tesla provider.")
     return path
 
 
 def provider_scripts() -> tuple[Path, Path]:
     ops, charge = MOUNT / "tessl__tessie-ops/scripts", MOUNT / "tessl__tessie-charge/scripts"
-    if not (ops.parent.exists() or charge.parent.exists()):
+    root = MOUNT
+    if not (os.path.lexists(ops.parent) or os.path.lexists(charge.parent)):
         # Finite declared dependency path in this verified travel source clone.
         owner = Path(__file__).absolute().parent
         if owner.name != "drive-engine" or owner.parent.name != "skills":
             raise PlanningUnavailable("Install both native Tesla provider skill mounts.")
-        manifest = json.loads((CLONE_PROVIDER / ".tessl-plugin/plugin.json").read_text("utf-8"))
+        root = CLONE_PROVIDER
+        manifest = json.loads(_regular(root / ".tessl-plugin/plugin.json", root).read_text("utf-8"))
         if manifest.get("name") != "jbaruch/nanoclaw-tesla":
             raise PlanningUnavailable("Install the declared nanoclaw-tesla provider.")
         ops, charge = (
@@ -122,7 +131,7 @@ def provider_scripts() -> tuple[Path, Path]:
         (charge, ("tessie-charge.py", "charge_ipc.py")),
     ):
         for name in names:
-            _regular(directory / name)
+            _regular(directory / name, root)
     return ops / "tessie-read.py", charge / "tessie-charge.py"
 
 

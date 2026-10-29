@@ -272,7 +272,7 @@ def test_current_car_navigation_replans_exact_destination_and_vehicle():
         navigation=[nav],
     )
     assert result[0].end == NOW + timedelta(minutes=210)
-    assert result[0].charging_note == "Car navigation ETA; arrival ~15%"
+    assert result[0].charging_note == "Car navigation ETA"
 
 
 @pytest.mark.parametrize(
@@ -360,3 +360,56 @@ def test_ongoing_native_route_uses_remaining_eta_and_preserves_actual_start():
 def test_ongoing_leg_without_fresh_bound_navigation_keeps_legacy():
     out = replace(leg(hour=0), start=NOW - timedelta(minutes=30))
     assert run([out])[0] is out
+
+
+def test_middle_unselected_drive_fences_later_vehicle_energy_without_erasing_prior():
+    earlier = leg()
+    ambiguous = replace(leg(hour=13), identity="ambiguous", origin="Venue", destination="Other")
+    later = replace(leg(hour=17), identity="later", origin="Other", destination="Last")
+    result = run(
+        [earlier, ambiguous, later],
+        vehicles={(earlier.identity, earlier.kind): "Car", (later.identity, later.kind): "Car"},
+    )
+    assert result[0].start == earlier.start - timedelta(minutes=30)
+    assert result[1] is ambiguous
+    assert result[2] is later
+
+
+def test_navigation_notice_never_exports_internal_arrival_charge():
+    block = replace(leg(hour=0), start=NOW, end=NOW + timedelta(hours=3))
+    nav = Navigation("Car", "Venue", NOW, 127, 23.75)
+    result = adjust_charging(
+        [block],
+        vehicles={(block.identity, block.kind): "Car"},
+        distance_km=lambda _: 395,
+        estimate=lambda *_: EnergySample("Car", 75, 0.18, NOW, 90),
+        now=NOW,
+        navigation=[nav],
+    )[0]
+    from calendar_apply import build_create_args
+
+    body = build_create_args(result, calendar_id="primary")
+    assert result.charging_note == "Car navigation ETA"
+    assert "23.75" not in body["description"] and "%" not in body["description"]
+
+
+def test_exact_fresh_navigation_can_ground_after_an_unselected_drive():
+    unknown = replace(leg(hour=0), end=NOW + timedelta(minutes=1))
+    current = replace(leg(hour=0), identity="active", start=NOW + timedelta(minutes=2))
+    following = replace(leg(hour=4), identity="following")
+    nav = Navigation("Car", "Venue", NOW, 25, 40)
+    result = adjust_charging(
+        [unknown, current, following],
+        vehicles={
+            (current.identity, current.kind): "Car",
+            (following.identity, following.kind): "Car",
+        },
+        distance_km=lambda _: 200,
+        estimate=lambda *_: EnergySample("Car", 75, 0.18, NOW, 90),
+        now=NOW,
+        navigation=[nav],
+        options=PlanningOptions(cold_fraction=0, highway_fraction=0),
+    )
+    assert result[0] is unknown
+    assert result[1].charging_note == "Car navigation ETA"
+    assert result[2].charging_note == "1 charging stop, ~30 min"

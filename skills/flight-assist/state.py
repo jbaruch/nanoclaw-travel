@@ -555,8 +555,8 @@ def write_config(config: dict) -> None:
                 if (
                     previous is None
                     or "ev_planning" not in previous
-                    or json.dumps(previous["ev_planning"], sort_keys=True, allow_nan=False)
-                    != json.dumps(value, sort_keys=True, allow_nan=False)
+                    or json.dumps(previous["ev_planning"], sort_keys=True)
+                    != json.dumps(value, sort_keys=True)
                 ):
                     raise
                 print(

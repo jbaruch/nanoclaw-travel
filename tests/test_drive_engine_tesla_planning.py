@@ -307,3 +307,122 @@ def test_installed_prefixed_consumer_never_uses_a_source_clone_provider(tmp_path
     lookup.__globals__["CLONE_PROVIDER"] = clone
     with pytest.raises(module["PlanningUnavailable"], match="both native"):
         lookup()
+
+
+@pytest.mark.parametrize("component", ["tessl__tessie-ops", "tessl__tessie-charge"])
+def test_linked_native_skill_ancestor_refused_before_execution(tmp_path, monkeypatch, component):
+    mount = provider(tmp_path, monkeypatch)
+    original = mount / component
+    substitute = tmp_path / "substitute"
+    original.rename(substitute)
+    original.symlink_to(substitute, target_is_directory=True)
+    called = []
+    api = owner.TeslaPlanning(now=NOW, configured=True, run=lambda argv: called.append(argv))
+    assert api.vehicle("Car") is None
+    assert called == []
+
+
+@pytest.mark.parametrize(
+    "component", ["skills", "skills/tessie-ops", "skills/tessie-charge", ".tessl-plugin"]
+)
+def test_linked_source_provider_ancestor_refused(tmp_path, monkeypatch, component):
+    mount = provider(tmp_path, monkeypatch)
+    clone = tmp_path / "plugin"
+    (clone / ".tessl-plugin").mkdir(parents=True)
+    (clone / ".tessl-plugin/plugin.json").write_text(json.dumps({"name": "jbaruch/nanoclaw-tesla"}))
+    (clone / "skills").mkdir()
+    for name in ("tessie-ops", "tessie-charge"):
+        (mount / f"tessl__{name}").rename(clone / "skills" / name)
+    monkeypatch.setattr(owner, "CLONE_PROVIDER", clone)
+    original = clone / component
+    substitute = tmp_path / "substitute"
+    original.rename(substitute)
+    original.symlink_to(substitute, target_is_directory=True)
+    with pytest.raises(owner.PlanningUnavailable):
+        owner.provider_scripts()
+
+
+@pytest.mark.parametrize("reason", ["selector_conflict", "unknown_driver", "unresolved_provider"])
+def test_middle_ambiguous_drive_holds_downstream_selected_vehicle(monkeypatch, reason):
+    from dataclasses import replace
+
+    from ev_charging import EnergySample
+    from reconcile import DesiredBlock
+    from reconcile_sweep import _ev_adjuster
+
+    class Provider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def vehicle(self, selector):
+            return None if selector == "Unresolved" else "Car"
+
+        def estimate(self, vehicle, *_args):
+            return EnergySample(vehicle, 75, 0.18, NOW, 90)
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            pass
+
+    monkeypatch.setattr(owner, "TeslaPlanning", Provider)
+    first = DesiredBlock(
+        "first",
+        "meeting_outbound",
+        "Drive",
+        NOW + timedelta(hours=9),
+        NOW + timedelta(hours=12),
+        "Home",
+        "Venue",
+        10800,
+        NOW + timedelta(hours=12),
+    )
+    middle = replace(
+        first, identity="middle", start=NOW + timedelta(hours=13), end=NOW + timedelta(hours=16)
+    )
+    later = replace(
+        first, identity="later", start=NOW + timedelta(hours=17), end=NOW + timedelta(hours=20)
+    )
+    preferences = {
+        "schema_version": 1,
+        "stop_minutes": 30,
+        "reserve_percent": 10,
+        "cold_allowance_percent": 0,
+        "highway_allowance_percent": 0,
+        "default_vehicle": "Car",
+        "event_vehicles": {},
+        "person_vehicles": {},
+        "event_drivers": {},
+        "destination_charges": [],
+    }
+    if reason == "selector_conflict":
+        preferences.update(
+            event_vehicles={"middle": "Car"},
+            person_vehicles={"Driver": "Other"},
+            event_drivers={"middle": "Driver"},
+        )
+    elif reason == "unknown_driver":
+        preferences["event_drivers"] = {"middle": "Unknown"}
+    else:
+        preferences["event_vehicles"] = {"middle": "Unresolved"}
+    adjust = _ev_adjuster(
+        {"ev_planning": preferences}, lambda *_: None, {("Home", "Venue"): 395}, NOW
+    )
+    result, held = adjust([first, middle, later], [], [])
+    assert held == []
+    assert result[0].start == first.start - timedelta(minutes=30)
+    assert result[1] is middle and result[2] is later
+    from block_codec import parse_block
+    from calendar_apply import build_create_args
+
+    retained = replace(later, charging_note="1 charging stop, ~30 min", baseline_seconds=12600)
+    current = parse_block(
+        {"id": "owned-later", **build_create_args(retained, calendar_id="primary")}
+    )
+    assert current is not None
+    result, held = adjust([first, middle, later], [], [current])
+    assert later not in result
+    assert [(item.identity, item.kind, item.announce) for item in held] == [
+        ("later", "meeting_outbound", False)
+    ]

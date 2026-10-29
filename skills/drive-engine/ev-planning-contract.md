@@ -22,7 +22,8 @@ The declared `jbaruch/nanoclaw-tesla` dependency supplies two executable targets
 `.tessl/plugins/jbaruch/nanoclaw-tesla` installation with matching manifest identity.
 An installed prefixed consumer never uses the source-clone fallback, even when
 both native mounts are missing. Partial native mounts never fall back either. Complete named
-regular transport targets must exist before execution. Pass literals in argv;
+regular transport targets and every component from the fixed provider root
+to them must exist without symlinks before execution. Pass literals in argv;
 never interpolate selectors into shell source. Both pipes and waits are bounded.
 Errors print fixed diagnostics, retain legacy timing and never try direct HTTP,
 copied provider code or another identity. The host rechecks protected enrollment,
@@ -67,7 +68,9 @@ The planner carries remaining energy through chronological admitted legs of
 the same exact native vehicle. It never reads a fresh return-leg forecast as a
 full battery. Missing distance, unknown forecast, route/vehicle ambiguity,
 invalid measurements or newly introduced overlap retains the affected dependent
-legacy blocks. Out-of-horizon legs remain unchanged without suppressing nearer
+legacy blocks. An unresolved middle drive fences later possible/default vehicle
+uses; only independent fresh exact active-route arrival energy grounds a later
+chain again. Out-of-horizon legs remain unchanged without suppressing nearer
 drives. Disconnected endpoints never replenish the same vehicle's energy. A
 return with no selected, still-accounted outbound holds that return and later
 dependent vehicle legs; a fresh exact active route's measured arrival energy
@@ -99,7 +102,8 @@ cumulative even across days.
 On the day, the owner-only cached active route may replace the duration/arrival
 energy only for the exact canonical vehicle and whole normalized destination,
 within the freshness/departure bounds in `Navigation.matches`. No coordinates or
-raw vehicle state enter the notification. Unknown/stale/other destinations leave
+raw vehicle state enter the notification. Arrival charge remains internal; the
+Calendar description and notification use only a generic navigation-derived note. Unknown/stale/other destinations leave
 the ordinary measured plan unchanged. No wake, navigation command or location
 trial is part of this feature.
 
@@ -137,7 +141,8 @@ active-index writer/readers co-ship; no cross-plugin writer flip occurs. Unknown
 root versions preserve the existing owner refusal. The shared reader carries
 optional EV preferences unchanged; non-EV flight consumers do not interpret them.
 Unrelated config updates may carry an existing opaque EV value unchanged, with
-an actionable diagnostic. They cannot introduce or alter an invalid EV record.
+an actionable diagnostic, including non-finite values accepted by the existing
+JSON reader. They cannot introduce or alter an invalid EV record.
 The drive sweep and preference intake validate EV input strictly before using it.
 Malformed/future EV input holds drive apply or preference replacement without
 interrupting flight-alert polling or downgrading the nested record.
