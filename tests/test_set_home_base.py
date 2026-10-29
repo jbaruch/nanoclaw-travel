@@ -114,3 +114,26 @@ def test_home_update_preserves_existing_nonfinite_ev_input_without_traceback(tmp
     )
     assert "Traceback" not in stderr
     assert "preserved unchanged" in stderr
+
+
+@pytest.mark.parametrize("mask", [0o000, 0o022])
+def test_unrelated_config_writer_replaces_private_config_with_mode600(tmp_path, mask):
+    import os
+    import stat
+
+    root = tmp_path / "state"
+    root.mkdir()
+    path = root / "config.json"
+    path.write_text('{"schema_version":8,"home_address":"Old","ev_planning":{"schema_version":99}}')
+    path.chmod(0o600)
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "New"],
+        env={"FLIGHT_ASSIST_STATE_DIR": str(root), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        preexec_fn=lambda: os.umask(mask),
+    )
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert json.loads(path.read_text())["ev_planning"] == {"schema_version": 99}

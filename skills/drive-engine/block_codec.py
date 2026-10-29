@@ -213,6 +213,7 @@ class ParsedBlock:
     # Existing native Calendar presentation, not a new private state field.
     # Compare EV renders independently of traffic baseline jitter.
     description: str | None = field(default=None, compare=False)
+    duration_seconds: int | None = field(default=None, compare=False)
 
 
 def _event_start_timezone(event: object) -> str | None:
@@ -305,6 +306,20 @@ def _parse_extended_block(private: dict, event_id: str | None) -> ParsedBlock | 
     )
 
 
+def _event_duration(event: object) -> int | None:
+    if not isinstance(event, dict):
+        return None
+    values = []
+    for name in ("start", "end"):
+        bound = event.get(name)
+        instant = _parse_dt(bound.get("dateTime")) if isinstance(bound, dict) else None
+        if instant is None or instant.tzinfo is None:
+            return None
+        values.append(instant)
+    seconds = int((values[1] - values[0]).total_seconds())
+    return seconds if seconds > 0 else None
+
+
 def parse_block(event: object) -> ParsedBlock | None:
     """Read a drive block off a calendar event; extendedProperties + legacy (#178, R4).
 
@@ -324,6 +339,7 @@ def parse_block(event: object) -> ParsedBlock | None:
                 extended,
                 timezone=_event_start_timezone(event),
                 description=_event_description(event),
+                duration_seconds=_event_duration(event),
             )
 
     desc = _event_description(event)

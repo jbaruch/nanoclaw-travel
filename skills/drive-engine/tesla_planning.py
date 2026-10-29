@@ -109,7 +109,7 @@ def provider_scripts() -> tuple[Path, Path]:
             raise PlanningUnavailable("Install both native Tesla provider skill mounts.")
         root = CLONE_PROVIDER
         manifest = json.loads(_regular(root / ".tessl-plugin/plugin.json", root).read_text("utf-8"))
-        if manifest.get("name") != "jbaruch/nanoclaw-tesla":
+        if not isinstance(manifest, dict) or manifest.get("name") != "jbaruch/nanoclaw-tesla":
             raise PlanningUnavailable("Install the declared nanoclaw-tesla provider.")
         ops, charge = (
             CLONE_PROVIDER / "skills/tessie-ops/scripts",

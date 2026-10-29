@@ -228,3 +228,28 @@ def test_opaque_preservation_rejects_type_changed_invalid_record(tmp_path, monke
             {"home_address": "Changed", "ev_planning": {"schema_version": 99, "future": 1}}
         )
     assert path.read_bytes() == before
+
+
+def test_private_owner_failed_atomic_replacement_preserves_file_and_foreign_temp(
+    tmp_path, monkeypatch
+):
+    import os
+    import stat
+
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    write_config({"home_address": "Old", "ev_planning": preferences()})
+    path = state_dir() / "config.json"
+    before = path.read_bytes()
+    foreign = state_dir() / "config.json.tmp"
+    foreign.write_text("unrelated retained artifact")
+
+    def unavailable(*_args):
+        raise OSError("synthetic rename refusal")
+
+    monkeypatch.setattr(os, "replace", unavailable)
+    with pytest.raises(OSError, match="synthetic"):
+        write_config({"home_address": "New", "ev_planning": preferences()})
+    assert path.read_bytes() == before
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert foreign.read_text() == "unrelated retained artifact"
+    assert list(tmp_path.glob("config.json.*.tmp")) == []

@@ -17,6 +17,15 @@ from datetime import datetime, timedelta
 
 from reconcile import DesiredBlock
 
+
+@dataclass(frozen=True)
+class EnergyGap:
+    """An existing unplanned drive; unknown start/vehicle fences all possible uses."""
+
+    start: datetime | None
+    vehicle: str | None = None
+
+
 MAX_STOPS = 24
 MAX_LEGS = 2000
 FORECAST_HORIZON = timedelta(days=14)
@@ -126,7 +135,6 @@ def _shift(block: DesiredBlock, extra: timedelta, note: str) -> DesiredBlock:
         block,
         start=block.start if after else block.start - extra,
         end=block.end + extra if after else block.end,
-        baseline_seconds=block.baseline_seconds + int(extra.total_seconds()),
         charging_note=note,
     )
 
@@ -142,6 +150,7 @@ def adjust_charging(
     destination_charges: Sequence[DestinationCharge] = (),
     navigation: Sequence[Navigation] = (),
     protected_windows: Sequence[tuple[datetime, datetime]] = (),
+    energy_gaps: Sequence[EnergyGap] = (),
     unavailable: Callable[[frozenset[tuple[str, str]]], None] | None = None,
 ) -> list[DesiredBlock]:
     """Return adjusted blocks; ungrounded dependent legs retain ORIGINAL objects.
@@ -193,6 +202,16 @@ def adjust_charging(
         ):
             grouped.setdefault(vehicle, []).append((index, block))
     for vehicle, chain in grouped.items():
+        starts = sorted(
+            [
+                *unknown_starts,
+                *(
+                    gap.start or now
+                    for gap in energy_gaps
+                    if gap.vehicle is None or gap.vehicle == vehicle
+                ),
+            ]
+        )
         chain.sort(key=lambda item: (item[1].start, item[1].end, item[0]))
         segments: list[list[tuple[int, DesiredBlock]]] = []
         segment: list[tuple[int, DesiredBlock]] = []
@@ -202,9 +221,7 @@ def adjust_charging(
         for item in chain:
             _, block = item
             crossed_unknown = False
-            while (
-                unknown_index < len(unknown_starts) and unknown_starts[unknown_index] <= block.start
-            ):
+            while unknown_index < len(starts) and starts[unknown_index] <= block.start:
                 grounded = False
                 crossed_unknown = True
                 unknown_index += 1
@@ -335,7 +352,6 @@ def _vehicle_chain(
                         result,
                         start=block.start,
                         end=now + duration,
-                        baseline_seconds=int((now + duration - block.start).total_seconds()),
                     )
                 remaining = capacity * nav.arrival_percent / 100
             if (

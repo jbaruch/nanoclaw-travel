@@ -117,6 +117,8 @@ class HeldLeg:
     when: datetime | None
     reason: str
     announce: bool = True
+    # Source-proved earliest departure; None never invents a route duration.
+    not_before: datetime | None = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -135,6 +137,8 @@ class Update:
     # The matched block's prior routed drive duration, so the apply layer can tell
     # a material traffic change (worth alerting the operator) from routine jitter.
     prior_baseline_seconds: int | None = None
+    # Native Calendar span for EV notices, separate from persisted route seconds.
+    prior_effective_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -273,6 +277,12 @@ def _needs_update(current: ParsedBlock, desired: DesiredBlock) -> bool:
             desired.origin, desired.destination, desired.charging_note
         ):
             return True
+        if (
+            current.duration_seconds is None
+            or abs(current.duration_seconds - int((desired.end - desired.start).total_seconds()))
+            >= _BASELINE_SHIFT_TOLERANCE_SECONDS
+        ):
+            return True
     if (
         current.anchor != desired.anchor
         or current.origin != desired.origin
@@ -355,7 +365,18 @@ def plan_reconcile(
             # G1: keep the first, delete every extra sharing this identity.
             keep = matches[0]
             if _needs_update(keep, d):
-                updates.append(Update(keep.event_id, d, keep.baseline_seconds))
+                has_ev = d.charging_note is not None or (
+                    isinstance(keep.description, str)
+                    and f"\n{EV_PRESENTATION_PREFIX}" in keep.description
+                )
+                updates.append(
+                    Update(
+                        keep.event_id,
+                        d,
+                        keep.baseline_seconds,
+                        keep.duration_seconds if has_ev else None,
+                    )
+                )
             for extra in matches[1:]:
                 deletes.append(Delete(extra.event_id, "duplicate identity"))
             continue

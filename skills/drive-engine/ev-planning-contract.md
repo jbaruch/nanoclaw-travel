@@ -70,7 +70,10 @@ full battery. Missing distance, unknown forecast, route/vehicle ambiguity,
 invalid measurements or newly introduced overlap retains the affected dependent
 legacy blocks. An unresolved middle drive fences later possible/default vehicle
 uses; only independent fresh exact active-route arrival energy grounds a later
-chain again. Out-of-horizon legs remain unchanged without suppressing nearer
+chain again. Held future route failures also enter this fence with their
+source timing and possible selector. An unknown earliest start conservatively
+fences from the sweep clock. Exact held keys that are still planned by another
+readable source do not add a gap. Out-of-horizon legs remain unchanged without suppressing nearer
 drives. Disconnected endpoints never replenish the same vehicle's energy. A
 return with no selected, still-accounted outbound holds that return and later
 dependent vehicle legs; a fresh exact active route's measured arrival energy
@@ -89,7 +92,10 @@ Reconciliation compares that rendered presentation independently of ordinary
 traffic jitter, including adding/removing the minimum configured allowance.
 Identical presentation keeps the existing traffic tolerance and remains a no-op.
 The description grants no vehicle authority. Private `dengine_` schema 1 and its
-fields/meaning remain unchanged; no new persisted machine field is introduced.
+fields/meaning remain unchanged. `dengine_b` remains routed driving seconds;
+charging/navigation span changes live only in native Calendar times and human
+presentation. Reconcile reads those native times separately for EV comparison
+and material-update notices; no new persisted machine field is introduced.
 
 Only a positive destination-charge input adds intervening energy. A hotel,
 conference, multi-day gap or nearby charger does not imply charging. Bind evidence
@@ -114,24 +120,15 @@ bounds live in `PlanningOptions` and `validate_ev_preferences`. Supply one compl
 JSON object to `configure_ev.py` as a literal argv value. It prints schema-1
 `recorded` and preserves all other config fields; it calls no provider or calendar.
 
-Required nested schema-1 fields:
+The complete nested schema, numeric/string/list bounds, evidence fields and
+reader/writer preservation behavior belong to the configuration owner:
 
-| Field | Contract |
-| --- | --- |
-| `schema_version` | Integer 1 |
-| `stop_minutes`, `reserve_percent` | Integers, validated by the owner |
-| `cold_allowance_percent`, `highway_allowance_percent` | Finite numeric planning allowances |
-| `default_vehicle` | Null or exact current native alias/VIN |
-| `event_vehicles` | Native event/drive identity to exact alias/VIN |
-| `person_vehicles` | Grounded driver label to exact alias/VIN |
-| `event_drivers` | Native event/drive identity to confirmed driver label; never infer from attendees |
-| `destination_charges` | Evidence rows below, or empty array |
+```text
+skills/flight-assist/state-schema.md
+```
 
-Each evidence row has exactly `schema_version:1`, `vehicle`, `destination`,
-`available_at` (zoned ISO instant), finite positive `energy_kwh` and nonempty
-`source` (owner message or native observation reference). Duplicate same
-vehicle/place/instant evidence refuses. Mapping conflicts and unknown named
-drivers hold EV adjustment rather than choosing a different default vehicle.
+Read that owner contract before preference intake. Mapping conflicts and unknown
+named drivers hold EV adjustment rather than choosing a different default vehicle.
 Absent preferences use only the provider's supported unique/default resolution;
 ambiguous fleets remain unchanged.
 

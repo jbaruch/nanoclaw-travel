@@ -161,6 +161,7 @@ def _hold(skipped: list[str], held: list[HeldLeg], meeting, leg, kind: str, reas
             summary=f"Drive: {meeting.summary}",
             when=leg.arrive_by or leg.depart_after,
             reason=reason,
+            not_before=leg.depart_after,
         )
     )
 

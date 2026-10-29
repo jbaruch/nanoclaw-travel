@@ -426,3 +426,20 @@ def test_middle_ambiguous_drive_holds_downstream_selected_vehicle(monkeypatch, r
     assert [(item.identity, item.kind, item.announce) for item in held] == [
         ("later", "meeting_outbound", False)
     ]
+
+
+@pytest.mark.parametrize("manifest", [None, [], 1, "not-an-object", True])
+def test_nonobject_declared_provider_manifest_holds_before_execution(
+    tmp_path, monkeypatch, manifest, capsys
+):
+    mount = provider(tmp_path, monkeypatch)
+    clone = tmp_path / "plugin"
+    (clone / ".tessl-plugin").mkdir(parents=True)
+    (clone / ".tessl-plugin/plugin.json").write_text(json.dumps(manifest))
+    for name in ("tessie-ops", "tessie-charge"):
+        (mount / f"tessl__{name}").rename(tmp_path / name)
+    monkeypatch.setattr(owner, "CLONE_PROVIDER", clone)
+    calls = []
+    api = owner.TeslaPlanning(now=NOW, configured=True, run=lambda argv: calls.append(argv))
+    assert api.vehicle("Car") is None and calls == []
+    assert "Legacy drive timing retained" in capsys.readouterr().err

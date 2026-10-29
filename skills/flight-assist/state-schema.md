@@ -23,7 +23,19 @@ Plugin-wide configuration set during install via the `/setup` flow.
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
   "min_transfer_minutes": 45,
   "byair_calendar_name": "Flighty Flights",
-  "byair_calendar_id": "c_abc123@group.calendar.google.com"
+  "byair_calendar_id": "c_abc123@group.calendar.google.com",
+  "ev_planning": {
+    "schema_version": 1,
+    "stop_minutes": 30,
+    "reserve_percent": 10,
+    "cold_allowance_percent": 20,
+    "highway_allowance_percent": 10,
+    "default_vehicle": null,
+    "event_vehicles": {},
+    "person_vehicles": {},
+    "event_drivers": {},
+    "destination_charges": []
+  }
 }
 ```
 
@@ -39,6 +51,36 @@ Fields:
 - `airport_post_arrival_domestic_minutes` (int, optional, non-negative) — minutes after landing before the drive home can start, domestic arrival; overrides `airport_lead.POST_ARRIVAL_DOMESTIC_MINUTES` (20)
 - `airport_post_arrival_intl_us_minutes` (int, optional, non-negative) — same, international arrival INTO the US; overrides `airport_lead.POST_ARRIVAL_INTL_TO_US_MINUTES` (40)
 - `airport_post_arrival_intl_abroad_minutes` (int, optional, non-negative) — same, international arrival abroad; overrides `airport_lead.POST_ARRIVAL_INTL_ABROAD_MINUTES` (60). The byAir `delay.index` nudge (low/med/high → +0/+15/+30) stays an `airport_lead` constant, not a config field
+
+- `ev_planning` (object, optional) — non-authorizing planning preferences owned by this skill's `ev_preferences.py`. Absence supplies no selector or charging evidence. The complete nested schema follows.
+
+#### Optional `ev_planning` schema 1
+
+Accepted records contain exactly these fields; no extra fields are admitted:
+
+| Field | Type and bounds |
+| --- | --- |
+| `schema_version` | Plain integer `1` |
+| `stop_minutes` | Plain integer 1–240 |
+| `reserve_percent` | Plain integer 0–50 |
+| `cold_allowance_percent`, `highway_allowance_percent` | Finite numbers 0–200, excluding booleans |
+| `default_vehicle` | Null or exact native alias/VIN, at most 100 characters |
+| `event_vehicles` | At most 1,000 native event/drive IDs (512 characters) mapped to literal vehicle selectors (100 characters) |
+| `person_vehicles` | At most 100 grounded driver labels (254 characters) mapped to literal selectors (100 characters) |
+| `event_drivers` | At most 1,000 event/drive IDs (512 characters) mapped to confirmed driver labels (254 characters) |
+| `destination_charges` | At most 100 evidence records in the shape below |
+
+All identifiers are nonempty, trimmed strings without control, format, surrogate, line-separator or paragraph-separator characters. Event IDs and driver labels are literal inputs; attendees never infer a driver. Selectors request a vehicle from the protected native provider and grant no role, enrollment or access.
+
+Each destination-charge record has exactly `schema_version:1`, `vehicle` (100 characters), `destination` (2,000 characters), `available_at` (zoned ISO instant, 50 characters), `energy_kwh` (finite number 0.001–1,000, excluding booleans), and `source` (1,000-character owner-message or native-observation reference). Duplicate vehicle/normalized-destination/instant records refuse. Evidence must bind the selected vehicle, actual destination, time and energy; lodging or a charger name supplies no energy by itself.
+
+Owner reader/writer contract:
+
+- `state.py:read_config` preserves optional EV values opaquely, including unsupported nested schemas or malformed/non-finite values already accepted by the existing JSON reader. Flight alerts and unrelated config consumers do not interpret them.
+- `ev_preferences.py:validate_ev_preferences`, the drive sweep and `drive-engine/configure_ev.py` validate the complete nested record before use or intake. Unknown/malformed records hold EV use and replacement with a fixed diagnostic; they never reset or downgrade stored preferences.
+- `state.py:write_config` accepts a valid new EV record. An unrelated config update may carry an existing invalid record only when its serialized typed value is unchanged, with an actionable diagnostic. New or modified invalid EV input refuses without replacement.
+- All owner entry points, including migration, set-home and calendar reconciliation, atomically replace state through an exclusive same-directory temporary file with mode `0600` established before writing private bytes. Replacement failure preserves the previous file and cleans only that temporary file.
+- Config 7→8 migration preserves all prior fields and makes no mapping/measurement claim. Main root-version rules and all existing flight gates remain; shared optional input does not interrupt flight polling.
 
 ### `active-flights.json`
 
@@ -302,7 +344,7 @@ Per-flight state: `last_snapshot` gains the resolved airport slice (`dep_airport
 
 ### v7 → v8
 
-Config gains optional `ev_planning` owned by `ev_preferences.py`; read [the EV planning contract](../drive-engine/ev-planning-contract.md) for its nested schema-1 fields and grounding. Old config, active-flight index and per-flight fields are preserved; absence adds no mapping, estimate or vehicle authority. All owner readers/writers co-ship. The shared config reader carries EV input without interpreting it; drive-engine and its preference intake validate it strictly. An invalid/future nested preference does not interrupt flight-alert polling or get silently downgraded.
+Config gains optional `ev_planning` owned by `ev_preferences.py`; its complete nested schema-1 shape and preservation contract are defined under `config.json` above. Old config, active-flight index and per-flight fields are preserved; absence adds no mapping, estimate or vehicle authority. All owner readers/writers co-ship. The shared config reader carries EV input without interpreting it; drive-engine and its preference intake validate it strictly. An invalid/future nested preference does not interrupt flight-alert polling or get silently downgraded.
 
 ## Bump Procedure
 

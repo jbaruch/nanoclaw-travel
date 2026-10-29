@@ -60,7 +60,7 @@ def test_round_trip_consumes_outbound_energy_and_adds_return_stop():
     assert result[0] is out
     assert result[1].start == back.start
     assert result[1].end == back.end + timedelta(minutes=30)
-    assert result[1].baseline_seconds == 12600
+    assert result[1].baseline_seconds == back.baseline_seconds
     assert result[1].charging_note == "1 charging stop, ~30 min"
 
 
@@ -353,7 +353,7 @@ def test_ongoing_native_route_uses_remaining_eta_and_preserves_actual_start():
     )[0]
     assert result.start == out.start
     assert result.end == NOW + timedelta(minutes=100)
-    assert result.baseline_seconds == 130 * 60
+    assert result.baseline_seconds == out.baseline_seconds
     assert requested == [NOW]
 
 

@@ -449,7 +449,7 @@ def test_live_sweep_uses_route_distance_and_measured_ev_time_before_single_recon
     out = blocks["meeting_outbound"]
     assert out.start == datetime(2026, 9, 11, 14, 30, tzinfo=UTC)
     assert out.end == datetime(2026, 9, 11, 18, tzinfo=UTC)
-    assert out.baseline_seconds == 12600
+    assert out.baseline_seconds == 10800
     assert (
         "1 charging stop, ~30 min" in build_create_args(out, calendar_id="primary")["description"]
     )

@@ -317,8 +317,12 @@ def apply_plan(
         # Alert only on a MATERIAL drive-time change (a swing worth acting on, on
         # a drive near enough to act on); everything else patches silently.
         delta = material_update_delta(
-            u.prior_baseline_seconds,
-            u.desired.baseline_seconds,
+            u.prior_effective_seconds
+            if u.prior_effective_seconds is not None
+            else u.prior_baseline_seconds,
+            int((u.desired.end - u.desired.start).total_seconds())
+            if u.prior_effective_seconds is not None
+            else u.desired.baseline_seconds,
             starts_at=u.desired.start,
             now=now,
         )

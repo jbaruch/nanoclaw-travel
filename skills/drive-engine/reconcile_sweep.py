@@ -426,7 +426,7 @@ def build_plan(
     itinerary: Itinerary | None = None,
     postarrival_meetings: list[PostarrivalMeeting] | None = None,
     adjust_drives: Callable[
-        [list[DesiredBlock], list[tuple[datetime, datetime]], list[ParsedBlock]],
+        [list[DesiredBlock], list[tuple[datetime, datetime]], list[ParsedBlock], list[HeldLeg]],
         tuple[list[DesiredBlock], list[HeldLeg]],
     ]
     | None = None,
@@ -591,7 +591,13 @@ def _on_path(name: str) -> None:
 
 def _ev_adjuster(config, route, distances, now, busy_windows=()):
     """One read-only Tesla adapter for this complete sweep, never a state writer."""
-    from ev_charging import FORECAST_HORIZON, DestinationCharge, PlanningOptions, adjust_charging
+    from ev_charging import (
+        FORECAST_HORIZON,
+        DestinationCharge,
+        EnergyGap,
+        PlanningOptions,
+        adjust_charging,
+    )
     from tesla_planning import TeslaPlanning
 
     preferences = config.get("ev_planning")
@@ -617,7 +623,7 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
             for value in preferences["destination_charges"]
         ]
 
-    def adjust(blocks, windows, current):
+    def adjust(blocks, windows, current, held=()):
         if not blocks:
             return blocks, []
         provider = TeslaPlanning(now=now, configured=preferences is not None)
@@ -670,6 +676,31 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
             if canonical in selected.values():
                 grounded_charges.append(replace(charge, vehicle=canonical))
 
+        gaps = []
+        desired_keys = {(block.identity, block.kind) for block in blocks}
+        for leg in held:
+            if leg.key in desired_keys:
+                continue
+            # Historical held anchors do not invalidate a fresh future departure
+            # forecast. Future unknown-start legs conservatively fence from now.
+            if leg.when is not None and leg.when < now:
+                continue
+            selector = None
+            if preferences is not None:
+                driver = preferences["event_drivers"].get(leg.identity)
+                event_vehicle = preferences["event_vehicles"].get(leg.identity)
+                person_vehicle = preferences["person_vehicles"].get(driver)
+                if (event_vehicle and person_vehicle and event_vehicle != person_vehicle) or (
+                    driver and not person_vehicle and not event_vehicle
+                ):
+                    gaps.append(EnergyGap(leg.not_before))
+                    continue
+                selector = event_vehicle or person_vehicle or preferences["default_vehicle"]
+            # Reuse only canonical selections already grounded in this sweep;
+            # a new or conflicting held selector remains possible for every car.
+            canonical = resolved_selectors.get(selector)
+            gaps.append(EnergyGap(leg.not_before, canonical))
+
         def unavailable(keys):
             unavailable_keys.update(keys)
             provider.unavailable()
@@ -684,6 +715,7 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
             destination_charges=grounded_charges,
             navigation=provider.navigation(),
             protected_windows=[*windows, *busy_windows],
+            energy_gaps=gaps,
             unavailable=unavailable,
         )
         from block_codec import EV_PRESENTATION_PREFIX
