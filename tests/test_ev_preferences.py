@@ -153,3 +153,37 @@ def test_intake_duplicate_json_does_not_change_config(tmp_path, monkeypatch, cap
     assert configure_ev.main(['{"schema_version":1,"schema_version":99}']) == 1
     assert path.read_bytes() == before
     assert json.loads(capsys.readouterr().out)["recorded"] is False
+
+
+def test_intake_migration_stays_private_if_later_preference_write_fails(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    import configure_ev
+
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    path = state_dir() / "config.json"
+    path.write_text('{"schema_version":7,"home_address":"Home"}')
+    path.chmod(0o600)
+
+    def unavailable(_value):
+        raise OSError("synthetic preference write failure")
+
+    monkeypatch.setattr(configure_ev, "write_config", unavailable)
+    previous = os.umask(0o022)
+    try:
+        assert configure_ev.main([json.dumps(preferences())]) == 1
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert json.loads(path.read_text())["home_address"] == "Home"
+
+
+def test_intake_usage_error_has_no_json_result_or_config_write(tmp_path, monkeypatch, capsys):
+    import configure_ev
+
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    assert configure_ev.main([]) == 2
+    result = capsys.readouterr()
+    assert result.out == "" and "Supply one" in result.err
+    assert not (state_dir() / "config.json").exists()

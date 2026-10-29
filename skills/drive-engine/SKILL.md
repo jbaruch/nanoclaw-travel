@@ -57,10 +57,16 @@ Run this when the owner confirms attendance or the existing travel intake has ac
 
 ## Step 5 — Configure grounded EV drive planning
 
-Read [ev-planning-contract.md](ev-planning-contract.md) in full. Resolve only owner-confirmed vehicle/driver selectors and charging evidence. Invoke its intake with one complete literal preference object:
+Read the complete contract:
+
+```text
+skills/drive-engine/ev-planning-contract.md
+```
+
+Resolve only owner-confirmed vehicle/driver selectors and charging evidence. Invoke its intake with one complete literal preference object:
 
 ```bash
 python3 /home/node/.claude/skills/tessl__drive-engine/configure_ev.py '<complete schema-1 preference JSON from the contract>'
 ```
 
-Report its `recorded` result. This records planning inputs and grants no vehicle operation or enrollment. Finish here.
+Exit 0 returns `{"schema_version":1,"recorded":true}`. Exit 1 returns `recorded:false` and a fixed stderr diagnostic; preserve the existing config and report the hold. Exit 2 has empty stdout for usage errors; correct the invocation. The intake records only planner preferences and preserves other config fields. It calls no provider, vehicle or calendar and grants no enrollment. Report its result. Finish here.

@@ -42,9 +42,11 @@ def main(argv: list[str] | None = None) -> int:
         if len(arguments[0].encode("utf-8")) > 256 * 1024:
             raise ValueError("Preference input exceeds its bound.")
         preferences = validate_ev_preferences(json.loads(arguments[0], object_pairs_hook=_unique))
-        current = read_config() or {}
         old_mask = os.umask(0o077)
         try:
+            # The owner read may migrate an older config before the preference
+            # write. That replacement must stay private even if the latter fails.
+            current = read_config() or {}
             write_config({**current, "ev_planning": preferences})
         finally:
             os.umask(old_mask)

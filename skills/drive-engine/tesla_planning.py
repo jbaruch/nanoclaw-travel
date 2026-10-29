@@ -96,6 +96,9 @@ def provider_scripts() -> tuple[Path, Path]:
     ops, charge = MOUNT / "tessl__tessie-ops/scripts", MOUNT / "tessl__tessie-charge/scripts"
     if not (ops.parent.exists() or charge.parent.exists()):
         # Finite declared dependency path in this verified travel source clone.
+        owner = Path(__file__).absolute().parent
+        if owner.name != "drive-engine" or owner.parent.name != "skills":
+            raise PlanningUnavailable("Install both native Tesla provider skill mounts.")
         manifest = json.loads((CLONE_PROVIDER / ".tessl-plugin/plugin.json").read_text("utf-8"))
         if manifest.get("name") != "jbaruch/nanoclaw-tesla":
             raise PlanningUnavailable("Install the declared nanoclaw-tesla provider.")

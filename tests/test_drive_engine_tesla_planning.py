@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -283,3 +284,26 @@ def test_horizon_and_unrelated_charge_rows_do_not_start_extra_provider_reads(mon
     assert result[0].start == block.start - timedelta(minutes=30)
     assert result[1] is far
     assert calls == ["Car"]
+
+
+def test_installed_prefixed_consumer_never_uses_a_source_clone_provider(tmp_path, monkeypatch):
+    # Execute the actual co-shipped adapter from its native prefixed layout.
+    # A valid-looking source provider elsewhere must not replace missing mounts.
+    mount = provider(tmp_path, monkeypatch)
+    native = tmp_path / "native/skills/tessl__drive-engine"
+    native.mkdir(parents=True)
+    target = native / "tesla_planning.py"
+    target.write_bytes((ROOT / "skills/drive-engine/tesla_planning.py").read_bytes())
+    module = runpy.run_path(str(target))
+    clone = tmp_path / "substitute"
+    (clone / ".tessl-plugin").mkdir(parents=True)
+    (clone / ".tessl-plugin/plugin.json").write_text(json.dumps({"name": "jbaruch/nanoclaw-tesla"}))
+    (clone / "skills").mkdir()
+    for name in ("tessie-ops", "tessie-charge"):
+        (mount / f"tessl__{name}").rename(clone / "skills" / name)
+    # The function's globals are the actually loaded module dictionary.
+    lookup = module["provider_scripts"]
+    lookup.__globals__["MOUNT"] = tmp_path / "absent-native"
+    lookup.__globals__["CLONE_PROVIDER"] = clone
+    with pytest.raises(module["PlanningUnavailable"], match="both native"):
+        lookup()

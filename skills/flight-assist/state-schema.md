@@ -263,7 +263,7 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Today `STATE_SCHEMA_VERSION` is `7`.
+Today `STATE_SCHEMA_VERSION` is `8`.
 
 `state.py`'s owner-side read helpers (`read_config`, `read_active_flights`, `read_flight_state`) enforce these rules on `schema_version`:
 
@@ -299,6 +299,10 @@ Per-flight state: `phase_markers` gains `gate_assignment_fired: false`. The owne
 ### v6 → v7
 
 Per-flight state: `last_snapshot` gains the resolved airport slice (`dep_airport_code`, `dep_airport_name`, `arr_airport_code`, `arr_airport_name`) and its `code` is realigned to the marketing designator (#159). `last_snapshot` is a byair-owned, rebuilt-each-poll slice whose fields are all optional and absent-tolerant, so there is no shape to backfill on migration — the owner-side `state.py:_migrate` only bumps the `schema_version`, and the next precheck poll repopulates the snapshot. Config and active-flights files have no shape change at v7 — they receive a schema_version bump only.
+
+### v7 → v8
+
+Config gains optional `ev_planning` owned by `ev_preferences.py`; read [the EV planning contract](../drive-engine/ev-planning-contract.md) for its nested schema-1 fields and grounding. Old config, active-flight index and per-flight fields are preserved; absence adds no mapping, estimate or vehicle authority. All owner readers/writers co-ship.
 
 ## Bump Procedure
 
@@ -400,7 +404,3 @@ The owner validates every version-1 root and row before an atomic upgrade under 
 After complete version-2 validation, the owner renames only each row's `key` field to `notice_digest` and stamps the root and rows with version 3. Map keys, digest bytes, IDs, sequence, event payloads, markers, poll identities, expiry times, retry deadlines and confirmations remain unchanged. Migration invokes no delivery, acknowledgement, due selection or pruning. A version-1 store first receives the existing v1→v2 transformation and then this rename; the chain is written once through the owner's private temporary file and atomic replacement while holding `notifications.lock`. Invalid, mixed or future shapes and failed replacements preserve the original journal. Secret scanner rules and allowlists are unchanged.
 
 Legacy versions 1 and 2 retain their 4,194,304-byte admission limit. Version 3 permits at most 4,214,784 bytes: the legacy budget plus exactly ten renamed-field bytes for each of the existing 2,048 allowed rows. This bounded 20,480-byte allowance lets near-limit valid legacy stores migrate and reopen without changing receipts or retry state. The collection and per-event limits remain unchanged; oversized legacy files still refuse without replacement.
-
-### v7 → v8
-
-Config gains optional `ev_planning` owned by `ev_preferences.py`; read [the EV planning contract](../drive-engine/ev-planning-contract.md) for its nested schema-1 fields and grounding. Old config, active-flight index and per-flight fields are preserved; absence adds no mapping, estimate or vehicle authority. All owner readers/writers co-ship.

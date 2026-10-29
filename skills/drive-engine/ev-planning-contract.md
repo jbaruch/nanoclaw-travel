@@ -20,19 +20,40 @@ The declared `jbaruch/nanoclaw-tesla` dependency supplies two executable targets
 `tesla_planning.py` resolves only the fixed native `tessl__tessie-ops` and
 `tessl__tessie-charge` skill directories. A source clone may use only its declared
 `.tessl/plugins/jbaruch/nanoclaw-tesla` installation with matching manifest identity.
-Partial native mounts never fall back to another installation. Complete named
+An installed prefixed consumer never uses the source-clone fallback, even when
+both native mounts are missing. Partial native mounts never fall back either. Complete named
 regular transport targets must exist before execution. Pass literals in argv;
 never interpolate selectors into shell source. Both pipes and waits are bounded.
 Errors print fixed diagnostics, retain legacy timing and never try direct HTTP,
 copied provider code or another identity. The host rechecks protected enrollment,
 roles, current dynamic non-archived fleet and all current provider contracts.
 
-Authoring identity is the trusted Tesla manifest `jbaruch/nanoclaw-tesla` in
-`jbaruch/nanoclaw-tesla`; its declared `calendar-charge-policy`,
-`nanoclaw-skill-root` and `provider-identity` rules own provider lookup/transport.
+Travel's trusted base manifest identifies `jbaruch/nanoclaw-travel`. External
+provider identity was separately verified through the normal authenticated
+declared Tessl install of `jbaruch/nanoclaw-tesla@0.3.0`. All 35 installed regular
+runtime/authority files matched published source
+`4fa72e5cb0fbd30372bafe3db098c989484b1902` byte-for-byte, including its
+[provider manifest](https://github.com/jbaruch/nanoclaw-tesla/blob/4fa72e5cb0fbd30372bafe3db098c989484b1902/.tessl-plugin/plugin.json).
+The provider repository's actual origin identity is `jbaruch/nanoclaw-tesla`.
+Its complete regular rule blobs were read from that registry install:
+
+- [calendar-charge-policy](https://github.com/jbaruch/nanoclaw-tesla/blob/4fa72e5cb0fbd30372bafe3db098c989484b1902/rules/calendar-charge-policy.md)
+  declares the native charge consumer and its full contract read.
+- [nanoclaw-skill-root](https://github.com/jbaruch/nanoclaw-tesla/blob/4fa72e5cb0fbd30372bafe3db098c989484b1902/rules/nanoclaw-skill-root.md)
+  enumerates the four authored skills, co-shipped `tessie-*.py` targets and their
+  docstring input/output contracts.
+- [provider-identity](https://github.com/jbaruch/nanoclaw-tesla/blob/4fa72e5cb0fbd30372bafe3db098c989484b1902/rules/provider-identity.md)
+  binds that manifest, repository and registry namespace.
+
+The installed complete `tessie-calendar-charge-consumer-v1` reference was also
+read before integration. This source-review provenance is not a runtime version
+pin; the declared dependency remains managed `latest`. Preserve these target,
+identity and contract checks after upgrades and hold on incompatible providers.
 Read the installed Host `tessie-calendar-charge.md` and `tessie-host-authority.md`
-before provider integration. This named scope is the Scoped Plugin Contracts
-exception in coding-policy's script-output contract. It grants no runtime authority.
+before provider integration. Lookup and delegation execute inside the real
+`tesla_planning.py` file and consume structured JSON from real provider scripts.
+Ordinary script requirements apply; no inline-bootstrap or non-JSON stdout
+exception is required. Provider metadata grants no runtime authority.
 
 ## Inputs and unavailable behavior
 

@@ -63,7 +63,7 @@ Travel history is the same story. **`jbaruch/tripit-api`** ships the `using-trip
 | Dependency | Specifier | Renewal |
 |------------|-----------|---------|
 | `jbaruch/coding-policy` | `latest` | Covered by the Runtime-Managed Manifest carve-out in `coding-policy: dependency-management`. The plugin's `SessionStart` hook flags any `jbaruch/*` dep that is not `latest`. |
-| `jbaruch/nanoclaw-tesla` | `latest` | Supported cached-state/charging-estimate provider; compatible Tesla13 source/transport publication is a release hold for EV planning. Same runtime-managed manifest contract. |
+| `jbaruch/nanoclaw-tesla` | `latest` | Supported cached-state/charging-estimate provider; Tesla0.3.0 supplies the verified compatible transport. Real vehicle/calendar acceptance remains Root-owned; same runtime-managed manifest contract. |
 | `finsi/codex-review` | pinned | Reviewed **quarterly**. Run `tessl outdated`, bump in its own PR. No scanner covers this manifest. Renovate has no Tessl datasource. See [renovate.json](renovate.json) for what it does cover. |
 
 ## Rules
