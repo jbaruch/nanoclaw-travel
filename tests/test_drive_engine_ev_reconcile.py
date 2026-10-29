@@ -155,7 +155,8 @@ def test_ev_plan_persists_route_only_baseline_while_calendar_and_notice_include_
     assert result.material_updates[0]["charging"] == "Outbound: 1 charging stop, ~30 min"
 
 
-def test_actual_route_failed_middle_enters_engine_ev_continuity(monkeypatch):
+@pytest.mark.parametrize("case", ["middle", "far_return", "far_arrive_by"])
+def test_actual_route_failed_middle_enters_engine_ev_continuity(monkeypatch, case):
     import tesla_planning
     from ev_charging import EnergySample
     from meeting_source import meeting_desired_blocks
@@ -185,7 +186,7 @@ def test_actual_route_failed_middle_enters_engine_ev_continuity(monkeypatch):
     later = replace(
         base(), identity="later", start=NOW + timedelta(hours=8), end=NOW + timedelta(hours=9)
     )
-    after = NOW + timedelta(hours=4)
+    after = NOW + (timedelta(hours=4) if case == "middle" else timedelta(days=30))
     middle = MeetingClass(
         meeting_id="middle",
         summary="Middle",
@@ -196,6 +197,10 @@ def test_actual_route_failed_middle_enters_engine_ev_continuity(monkeypatch):
         end=after,
         legs=(
             TransitLeg(
+                direction="outbound", origin="Home", destination="Middle venue", arrive_by=after
+            )
+            if case == "far_arrive_by"
+            else TransitLeg(
                 direction="return", origin="Middle venue", destination="Home", depart_after=after
             ),
         ),
@@ -215,7 +220,10 @@ def test_actual_route_failed_middle_enters_engine_ev_continuity(monkeypatch):
     )
     planned = {entry.desired.identity: entry.desired for entry in result.plan.creates}
     assert planned["first"].charging_note is not None
-    assert planned["later"] is later
+    if case == "middle":
+        assert planned["later"] is later
+    else:
+        assert planned["later"].charging_note is not None
 
 
 def test_navigation_span_change_updates_without_redefining_route_baseline():

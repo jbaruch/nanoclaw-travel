@@ -685,6 +685,11 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
             # forecast. Future unknown-start legs conservatively fence from now.
             if leg.when is not None and leg.when < now:
                 continue
+            # A far-future held leg is outside the same finite forecast scope
+            # as a far-future desired leg. Unknown starts do not move it to now.
+            horizon_time = leg.not_before if leg.not_before is not None else leg.when
+            if horizon_time is not None and horizon_time > now + FORECAST_HORIZON:
+                continue
             selector = None
             if preferences is not None:
                 driver = preferences["event_drivers"].get(leg.identity)
