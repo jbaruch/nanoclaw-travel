@@ -443,3 +443,24 @@ def test_nonobject_declared_provider_manifest_holds_before_execution(
     api = owner.TeslaPlanning(now=NOW, configured=True, run=lambda argv: calls.append(argv))
     assert api.vehicle("Car") is None and calls == []
     assert "Legacy drive timing retained" in capsys.readouterr().err
+
+
+def test_real_deep_provider_json_is_a_fixed_unavailable_result(tmp_path):
+    script = tmp_path / "deep.py"
+    script.write_text("print('['*2000+'0'+']'*2000)\n")
+    with pytest.raises(owner.PlanningUnavailable):
+        owner.run_json([sys.executable, str(script)])
+
+
+def test_deep_source_manifest_holds_without_running_provider(tmp_path, monkeypatch, capsys):
+    mount = provider(tmp_path, monkeypatch)
+    for name in ("tessie-ops", "tessie-charge"):
+        (mount / f"tessl__{name}").rename(tmp_path / name)
+    clone = tmp_path / "plugin"
+    (clone / ".tessl-plugin").mkdir(parents=True)
+    (clone / ".tessl-plugin/plugin.json").write_text("[" * 2000 + "0" + "]" * 2000)
+    monkeypatch.setattr(owner, "CLONE_PROVIDER", clone)
+    calls = []
+    api = owner.TeslaPlanning(now=NOW, configured=True, run=lambda argv: calls.append(argv))
+    assert api.vehicle("Car") is None and calls == []
+    assert "Legacy drive timing retained" in capsys.readouterr().err

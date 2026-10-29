@@ -546,9 +546,13 @@ def _unreadable_flight_holds(
                 identity=block.identity,
                 kind=block.kind,
                 summary=f"Drive: {block.origin or '?'} → {block.destination or '?'}",
-                when=block.anchor,
+                when=block.end or block.anchor,
                 reason=f"byAir {reason}",
                 announce=False,
+                not_before=block.start
+                or (
+                    block.anchor if block.kind in {"airport_arrival", "airport_transfer"} else None
+                ),
             )
         )
     return held
@@ -676,35 +680,61 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
             if canonical in selected.values():
                 grounded_charges.append(replace(charge, vehicle=canonical))
 
+        from block_codec import parse_ev_note
+
+        def possible_vehicle(identity):
+            selector = None
+            if preferences is not None:
+                driver = preferences["event_drivers"].get(identity)
+                event_vehicle = preferences["event_vehicles"].get(identity)
+                person_vehicle = preferences["person_vehicles"].get(driver)
+                if (event_vehicle and person_vehicle and event_vehicle != person_vehicle) or (
+                    driver and not person_vehicle and not event_vehicle
+                ):
+                    return None
+                selector = event_vehicle or person_vehicle or preferences["default_vehicle"]
+            # No extra reads for held selectors. Unknown identity remains possible
+            # for every selected car; exact cached canonical aliases may narrow it.
+            return resolved_selectors.get(selector) or (
+                selector if selector in selected.values() else None
+            )
+
         gaps = []
         desired_keys = {(block.identity, block.kind) for block in blocks}
         for leg in held:
             if leg.key in desired_keys:
                 continue
-            # Historical held anchors do not invalidate a fresh future departure
-            # forecast. Future unknown-start legs conservatively fence from now.
-            if leg.when is not None and leg.when < now:
+            retained_times = [
+                block.start
+                for block in current
+                if (block.identity, block.kind) == leg.key
+                and block.start is not None
+                and block.end is not None
+                and block.end > now
+            ]
+            known_starts = [
+                *retained_times,
+                *([leg.not_before] if leg.not_before is not None else []),
+            ]
+            earliest = min(known_starts) if known_starts else None
+            if leg.when is not None and leg.when < now and not retained_times:
                 continue
-            # A far-future held leg is outside the same finite forecast scope
-            # as a far-future desired leg. Unknown starts do not move it to now.
-            horizon_time = leg.not_before if leg.not_before is not None else leg.when
+            horizon_time = earliest if earliest is not None else leg.when
             if horizon_time is not None and horizon_time > now + FORECAST_HORIZON:
                 continue
-            selector = None
-            if preferences is not None:
-                driver = preferences["event_drivers"].get(leg.identity)
-                event_vehicle = preferences["event_vehicles"].get(leg.identity)
-                person_vehicle = preferences["person_vehicles"].get(driver)
-                if (event_vehicle and person_vehicle and event_vehicle != person_vehicle) or (
-                    driver and not person_vehicle and not event_vehicle
-                ):
-                    gaps.append(EnergyGap(leg.not_before))
-                    continue
-                selector = event_vehicle or person_vehicle or preferences["default_vehicle"]
-            # Reuse only canonical selections already grounded in this sweep;
-            # a new or conflicting held selector remains possible for every car.
-            canonical = resolved_selectors.get(selector)
-            gaps.append(EnergyGap(leg.not_before, canonical))
+            gaps.append(EnergyGap(earliest, possible_vehicle(leg.identity)))
+        # A retained unavailable EV block may begin before its route-only desired
+        # start. Its complete native interval must fence new extensions first.
+        for block in current:
+            key = (block.identity, block.kind)
+            if (
+                key in unavailable_keys
+                and parse_ev_note(block.description, block.origin, block.destination) is not None
+                and (block.end is None or block.end > now)
+            ):
+                horizon_time = block.start or block.anchor
+                if horizon_time is None or horizon_time <= now + FORECAST_HORIZON:
+                    gaps.append(EnergyGap(block.start, possible_vehicle(block.identity)))
 
         def unavailable(keys):
             unavailable_keys.update(keys)
@@ -723,8 +753,6 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
             energy_gaps=gaps,
             unavailable=unavailable,
         )
-        from block_codec import parse_ev_note
-
         retained = {
             (block.identity, block.kind)
             for block in current
@@ -741,6 +769,15 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
                 block.anchor,
                 "EV inputs unavailable; retaining the existing owned charging allowance",
                 announce=False,
+                not_before=min(
+                    (
+                        item.start
+                        for item in current
+                        if (item.identity, item.kind) == (block.identity, block.kind)
+                        and item.start is not None
+                    ),
+                    default=block.start,
+                ),
             )
             for block in blocks
             if (block.identity, block.kind) in retained
@@ -842,14 +879,17 @@ def _group_meeting_adds(legs: list[dict]) -> list[dict]:
 
 
 def _dedup_material(updates: list[dict]) -> list[dict]:
-    """One alert per meeting (by identity), the LARGEST drive-time swing — so a
-    meeting whose outbound and return both moved is announced once. Ordered by
-    anchor for a chronological read."""
-    by_identity: dict[str, dict] = {}
+    """Largest ordinary traffic swing per meeting, with EV scheduling sides separate.
+
+    Departure and arrival changes cannot share a direction or notice. Native
+    EV spans retain that distinction; unchanged legacy traffic grouping remains.
+    """
+    by_identity: dict[tuple[str, str | None], dict] = {}
     for u in updates:
-        cur = by_identity.get(u["identity"])
+        key = (u["identity"], u.get("timing"))
+        cur = by_identity.get(key)
         if cur is None or u["minutes"] > cur["minutes"]:
-            by_identity[u["identity"]] = u
+            by_identity[key] = u
     ordered = sorted(by_identity.values(), key=lambda u: u["anchor"])
     result = [
         {
@@ -861,10 +901,14 @@ def _dedup_material(updates: list[dict]) -> list[dict]:
         for u in ordered
     ]
     for item, update in zip(result, ordered, strict=True):
+        if update.get("timing"):
+            item["timing"] = update["timing"]
         notes = dict.fromkeys(
             entry["charging"]
             for entry in updates
-            if entry["identity"] == update["identity"] and entry.get("charging")
+            if entry["identity"] == update["identity"]
+            and entry.get("timing") == update.get("timing")
+            and entry.get("charging")
         )
         if notes:
             item["charging"] = "; ".join(notes)
@@ -889,8 +933,9 @@ def render_notification(
 
     `material_updates` are the projected `{meeting, minutes, direction, when}`
     dicts and `added_meeting_drives` the projected `{meeting, when}` dicts — both
-    already grouped and ordered by `build_sweep_payload`. `direction` is `sooner`
-    (drive got longer, leave earlier) or `later` (shorter).
+    already grouped and ordered by `build_sweep_payload`. Optional `timing` is
+    `departure` or `arrival` for EV spans. `direction` says sooner/later for that
+    scheduling side; absent timing preserves ordinary traffic departure wording.
 
     `drive_or_fly_questions` are the already-composed questions
     `lodging_source.build_question` produced for flight-less trips whose drive
@@ -900,10 +945,16 @@ def render_notification(
     to plan for an hour and that have no block (#334), appended the same way."""
     lines: list[str] = []
     for u in material_updates:
-        lines.append(
-            f"Traffic: leave {u['minutes']} min {u['direction']} "
-            f"for your {u['meeting']} at {u['when']}"
-        )
+        if u.get("timing") == "arrival":
+            lines.append(
+                f"Drive: arrive {u['minutes']} min {u['direction']} on the return "
+                f"from {u['meeting']} (departure {u['when']})"
+            )
+        else:
+            lines.append(
+                f"Traffic: leave {u['minutes']} min {u['direction']} "
+                f"for your {u['meeting']} at {u['when']}"
+            )
         if u.get("charging"):
             lines[-1] += f" — {u['charging']}"
     if len(added_meeting_drives) == 1:

@@ -74,7 +74,7 @@ def run_json(argv: list[str]) -> dict:
             value = json.loads(
                 output[process.stdout.fileno()].decode("utf-8"), object_pairs_hook=_unique
             )
-        except (ValueError, UnicodeError):
+        except (ValueError, UnicodeError, RecursionError):
             raise PlanningUnavailable("Tesla planning provider returned invalid JSON.") from None
         if not isinstance(value, dict):
             raise PlanningUnavailable("Tesla planning provider returned no object.")
@@ -108,7 +108,12 @@ def provider_scripts() -> tuple[Path, Path]:
         if owner.name != "drive-engine" or owner.parent.name != "skills":
             raise PlanningUnavailable("Install both native Tesla provider skill mounts.")
         root = CLONE_PROVIDER
-        manifest = json.loads(_regular(root / ".tessl-plugin/plugin.json", root).read_text("utf-8"))
+        try:
+            manifest = json.loads(
+                _regular(root / ".tessl-plugin/plugin.json", root).read_text("utf-8")
+            )
+        except RecursionError:
+            raise PlanningUnavailable("Reinstall the bounded Tesla provider manifest.") from None
         if not isinstance(manifest, dict) or manifest.get("name") != "jbaruch/nanoclaw-tesla":
             raise PlanningUnavailable("Install the declared nanoclaw-tesla provider.")
         ops, charge = (

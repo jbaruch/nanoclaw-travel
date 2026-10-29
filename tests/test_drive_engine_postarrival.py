@@ -1499,3 +1499,45 @@ def test_tiny_airport_meeting_handoff_keeps_only_genuine_hotel_return(minutes):
     assert returns[0].destination == HOTEL
     assert returns[0].baseline_seconds == 24 * 60
     assert returns[0].start == MEETING_END
+
+
+def test_retained_ev_native_span_controls_guard_and_continuation_safety():
+    from block_codec import parse_block
+    from calendar_apply import build_create_args
+    from postarrival import _held_is_unsafe, _remaining_continuations
+
+    now = _dt(0)
+    first = PostarrivalMeeting(
+        "first", "First", VENUE, now + timedelta(hours=1), now + timedelta(hours=2, minutes=20)
+    )
+    other = PostarrivalMeeting(
+        "other", "Other", VENUE_B, now + timedelta(hours=3), now + timedelta(hours=4)
+    )
+    desired = DesiredBlock(
+        "other",
+        "meeting_outbound",
+        "Drive",
+        now + timedelta(hours=2, minutes=5),
+        other.start,
+        VENUE,
+        VENUE_B,
+        1800,
+        other.start,
+        charging_note="1 charging stop, ~25 min",
+    )
+    current = parse_block({"id": "retained", **build_create_args(desired, calendar_id="primary")})
+    assert current is not None
+    held = HeldLeg("other", "meeting_outbound", "Drive", other.start, "route failed")
+    guard = FlightGuard(
+        "flight",
+        now + timedelta(hours=2),
+        now + timedelta(hours=2, minutes=15),
+        "AAA",
+        "0,0",
+        "Airport",
+    )
+    assert _held_is_unsafe(held, {held.key: [current]}, [guard])
+    continuing, invalid = _remaining_continuations(
+        first, [first, other], frozenset(), 3600, [], [held], [current]
+    )
+    assert not continuing and held.key in invalid

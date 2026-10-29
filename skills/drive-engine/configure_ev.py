@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
             write_config({**current, "ev_planning": preferences})
         finally:
             os.umask(old_mask)
-    except (OSError, ValueError, StateError):
+    except (OSError, ValueError, StateError, RecursionError):
         print(
             "EV preferences not recorded. Inspect the owner config/schema and grounded "
             "vehicle/charging inputs; preserve the existing file. No provider action occurred.",

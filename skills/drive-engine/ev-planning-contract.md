@@ -96,6 +96,11 @@ fields/meaning remain unchanged. `dengine_b` remains routed driving seconds;
 charging/navigation span changes live only in native Calendar times and human
 presentation. Reconcile reads those native times separately for EV comparison
 and material-update notices; no new persisted machine field is introduced.
+Native start/end also govern retained-block overlap and post-arrival checks.
+A longer depart-after return means arriving later, with its departure fixed;
+material notices preserve this polarity separately from earlier outbound leave-by.
+Grounded destination energy within the owner's documented bound is clamped to
+usable capacity rather than silently discarded above the pack's capacity.
 
 Only a positive destination-charge input adds intervening energy. A hotel,
 conference, multi-day gap or nearby charger does not imply charging. Bind evidence

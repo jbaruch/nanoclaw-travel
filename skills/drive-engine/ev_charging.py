@@ -329,7 +329,7 @@ def _vehicle_chain(
                         and place(charge.destination) == place(block.origin)
                         and charge.available_at.tzinfo is not None
                         and previous.end <= charge.available_at <= block.start
-                        and finite(charge.energy_kwh, 0, capacity)
+                        and finite(charge.energy_kwh, 0.001, 1000)
                     ):
                         remaining = min(capacity, remaining + charge.energy_kwh)
                         used_charges.add(index)

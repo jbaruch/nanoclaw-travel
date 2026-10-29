@@ -339,6 +339,11 @@ def _held_leg(concrete: ConcreteLeg, reason: str) -> HeldLeg:
         summary=_summary(concrete),
         when=when,
         reason=reason,
+        not_before=concrete.window_start
+        if concrete.kind is LegKind.AIRPORT_TRANSFER
+        else concrete.anchor
+        if concrete.kind is LegKind.AIRPORT_ARRIVAL
+        else None,
     )
 
 

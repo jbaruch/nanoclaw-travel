@@ -228,6 +228,8 @@ class ParsedBlock:
     # Compare EV renders independently of traffic baseline jitter.
     description: str | None = field(default=None, compare=False)
     duration_seconds: int | None = field(default=None, compare=False)
+    start: datetime | None = field(default=None, compare=False)
+    end: datetime | None = field(default=None, compare=False)
 
 
 def _event_start_timezone(event: object) -> str | None:
@@ -320,7 +322,7 @@ def _parse_extended_block(private: dict, event_id: str | None) -> ParsedBlock | 
     )
 
 
-def _event_duration(event: object) -> int | None:
+def _event_bounds(event: object) -> tuple[datetime, datetime] | None:
     if not isinstance(event, dict):
         return None
     values = []
@@ -331,7 +333,7 @@ def _event_duration(event: object) -> int | None:
             return None
         values.append(instant)
     seconds = int((values[1] - values[0]).total_seconds())
-    return seconds if seconds > 0 else None
+    return (values[0], values[1]) if seconds > 0 else None
 
 
 def parse_block(event: object) -> ParsedBlock | None:
@@ -349,11 +351,14 @@ def parse_block(event: object) -> ParsedBlock | None:
     if private is not None:
         extended = _parse_extended_block(private, eid)
         if extended is not None:
+            bounds = _event_bounds(event)
             return replace(
                 extended,
                 timezone=_event_start_timezone(event),
                 description=_event_description(event),
-                duration_seconds=_event_duration(event),
+                duration_seconds=int((bounds[1] - bounds[0]).total_seconds()) if bounds else None,
+                start=bounds[0] if bounds else None,
+                end=bounds[1] if bounds else None,
             )
 
     desc = _event_description(event)

@@ -317,3 +317,137 @@ def test_ev_suffix_parser_preserves_genuine_allowance_after_colliding_route(orig
     assert parse_ev_note(human_description(origin, destination, note), origin, destination) == note
     assert parse_ev_note(route + "\nEV planning: ", origin, destination) is None
     assert parse_ev_note(route + "\nEV planning: " + note + "\nextra", origin, destination) is None
+
+
+@pytest.mark.parametrize("adding", [True, False])
+def test_material_return_allowance_notice_changes_arrival_not_departure(adding):
+    from reconcile_sweep import build_sweep_payload
+
+    initial = replace(
+        base(), kind="meeting_return", start=NOW + timedelta(hours=1), end=NOW + timedelta(hours=2)
+    )
+    extended = replace(
+        initial, end=initial.end + timedelta(minutes=30), charging_note="1 charging stop, ~30 min"
+    )
+    prior, desired = (initial, extended) if adding else (extended, initial)
+    current = parse_block({"id": "return", **build_create_args(prior, calendar_id="primary")})
+    assert current is not None
+    result = apply_plan(plan_reconcile([desired], [current], now=NOW), calendar=Calendar(), now=NOW)
+    message = build_sweep_payload(result, [])["data"]["message"]
+    assert "arrive 30 min " + ("later" if adding else "sooner") in message
+    assert "leave" not in message
+    assert desired.start == prior.start
+
+
+@pytest.mark.parametrize("native_bounds", [True, False])
+def test_unavailable_middle_retained_native_allowance_fences_preceding_extension(
+    monkeypatch, native_bounds
+):
+    import tesla_planning
+    from ev_charging import EnergySample
+    from reconcile_sweep import _ev_adjuster
+
+    class Provider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def vehicle(self, selector):
+            return None if selector == "Unavailable" else "Car"
+
+        def estimate(self, *_args):
+            return EnergySample("Car", 75, 0.18, NOW, 90)
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            pass
+
+    monkeypatch.setattr(tesla_planning, "TeslaPlanning", Provider)
+    outbound = replace(
+        base(),
+        identity="first",
+        start=NOW + timedelta(minutes=30),
+        end=NOW + timedelta(hours=1),
+        origin="Home",
+        destination="First",
+        baseline_seconds=1800,
+    )
+    returned = replace(
+        base(),
+        identity="first",
+        kind="meeting_return",
+        start=NOW + timedelta(hours=2),
+        end=NOW + timedelta(hours=3),
+        origin="First",
+        destination="Home",
+    )
+    middle = replace(
+        base(), identity="middle", start=NOW + timedelta(hours=4), end=NOW + timedelta(hours=5)
+    )
+    retained = replace(
+        middle, start=NOW + timedelta(hours=3, minutes=10), charging_note="1 charging stop, ~50 min"
+    )
+    event = {"id": "retained-middle", **build_create_args(retained, calendar_id="primary")}
+    if not native_bounds:
+        event.pop("start")
+        event.pop("end")
+    current = parse_block(event)
+    assert current is not None
+    preferences = {
+        "schema_version": 1,
+        "stop_minutes": 30,
+        "reserve_percent": 10,
+        "cold_allowance_percent": 0,
+        "highway_allowance_percent": 0,
+        "default_vehicle": "Car",
+        "event_vehicles": {"middle": "Unavailable"},
+        "person_vehicles": {},
+        "event_drivers": {},
+        "destination_charges": [],
+    }
+    result, held = _ev_adjuster(
+        {"ev_planning": preferences},
+        lambda *_: None,
+        {("Home", "First"): 10, ("First", "Home"): 395},
+        NOW,
+    )([outbound, returned, middle], [], [current])
+    assert result[1] is returned
+    assert [(item.identity, item.kind) for item in held] == [("middle", "meeting_outbound")]
+
+
+def test_roundtrip_material_notices_keep_departure_and_arrival_polarity_separate():
+    from reconcile_sweep import build_sweep_payload
+
+    outbound = replace(
+        base(),
+        start=NOW + timedelta(minutes=30),
+        end=NOW + timedelta(hours=1),
+        baseline_seconds=1800,
+    )
+    returned = replace(
+        outbound,
+        kind="meeting_return",
+        start=NOW + timedelta(hours=1, minutes=10),
+        end=NOW + timedelta(hours=1, minutes=40),
+    )
+    changed_out = replace(
+        outbound,
+        start=outbound.start - timedelta(minutes=30),
+        charging_note="1 charging stop, ~30 min",
+    )
+    changed_back = replace(
+        returned, end=returned.end + timedelta(minutes=30), charging_note="1 charging stop, ~30 min"
+    )
+    current = [
+        parse_block({"id": str(i), **build_create_args(block, calendar_id="primary")})
+        for i, block in enumerate([outbound, returned])
+    ]
+    assert all(item is not None for item in current)
+    plan = plan_reconcile(
+        [changed_out, changed_back], [item for item in current if item is not None], now=NOW
+    )
+    payload = build_sweep_payload(apply_plan(plan, calendar=Calendar(), now=NOW), [])["data"]
+    assert len(payload["material_updates"]) == 2
+    assert "leave 30 min sooner" in payload["message"]
+    assert "arrive 30 min later" in payload["message"]

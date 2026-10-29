@@ -338,6 +338,13 @@ def apply_plan(
                     "anchor": u.desired.anchor.isoformat(),
                 }
             )
+            if u.prior_effective_seconds is not None:
+                after = u.desired.kind in {"meeting_return", "airport_arrival", "lodging_return"}
+                result.material_updates[-1]["timing"] = "arrival" if after else "departure"
+                if after:
+                    result.material_updates[-1]["direction"] = (
+                        "later" if direction == "sooner" else "sooner"
+                    )
             if u.desired.charging_note is not None:
                 side = "Return" if u.desired.kind.endswith("return") else "Outbound"
                 result.material_updates[-1]["charging"] = f"{side}: {u.desired.charging_note}"

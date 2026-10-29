@@ -462,3 +462,11 @@ def test_navigation_observed_before_a_future_energy_gap_cannot_reopen_it():
         energy_gaps=[EnergyGap(NOW + timedelta(minutes=1), "Car")],
     )
     assert result[0] is block
+
+
+@pytest.mark.parametrize("delivered", [80, 1000])
+def test_documented_above_capacity_destination_energy_is_clamped_not_discarded(delivered):
+    out = leg()
+    back = leg("meeting_return", origin="Venue", destination="Home", hour=39)
+    charge = DestinationCharge("Car", "Venue", NOW + timedelta(hours=30), delivered)
+    assert run([out, back], km=200, charges=[charge]) == [out, back]

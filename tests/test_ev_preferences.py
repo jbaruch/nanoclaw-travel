@@ -253,3 +253,23 @@ def test_private_owner_failed_atomic_replacement_preserves_file_and_foreign_temp
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert foreign.read_text() == "unrelated retained artifact"
     assert list(tmp_path.glob("config.json.*.tmp")) == []
+
+
+def test_deep_intake_json_has_fixed_process_failure_without_state_change(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    write_config({"home_address": "Retained"})
+    path = state_dir() / "config.json"
+    before = path.read_bytes()
+    script = Path(__file__).resolve().parents[1] / "skills/drive-engine/configure_ev.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "[" * 2000 + "0" + "]" * 2000],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == {"schema_version": 1, "recorded": False}
+    assert "Traceback" not in result.stderr and "preserve the existing file" in result.stderr
+    assert path.read_bytes() == before
