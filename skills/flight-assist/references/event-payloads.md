@@ -182,7 +182,18 @@ Fires when a flight appeared in `byair_list_trips` that wasn't on the active-fli
 }
 ```
 
-Fires when a previously-tracked flight is no longer in `byair_list_trips` (e.g., the trip expired or the user untracked it upstream). The sync script deletes the per-flight state file — the event payload captures the prior-state metadata BEFORE the delete so the agent's composition template has `code` to render. Reading state by `flight_id` after this event arrives returns None (state already deleted).
+Fires when a previously tracked flight disappears from `byair_list_trips` and
+`skills/flight-assist/sync_tripit.py::_completed_removal` does not prove its arrival
+is past. Completed expirations are quiet: no removal event and no wake. Future,
+in-air and unknown-timing removals remain actionable tracking checks; an unknown
+arrival must never be presented as a completed flight. Arrival equal to the
+sync clock is not strictly past and also remains visible.
+
+The payload captures prior code and scheduled times before the existing state
+lifecycle runs. Every removed ID leaves the active index. A state file without
+managed calendar entries is deleted; a nonempty `calendar_events` ledger remains
+as the existing reconciliation tombstone. Neither quiet suppression nor a
+missing state authorizes deleting that ledger or changing calendar history.
 
 ### Source-level (from `skills/flight-assist/sync_tripit.py`, #326)
 

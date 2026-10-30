@@ -351,7 +351,10 @@ def _has_calendar_ledger(state: dict | None) -> bool:
 
 
 def _completed_removal(prior: dict | None, now_utc: datetime) -> bool:
-    """Quiet only a provably past zoned arrival; uncertainty stays actionable."""
+    """Notification-only expiry; calendar disposition still owns teardown/history.
+
+    Quiet only a provably past zoned arrival; uncertainty stays actionable.
+    """
     if prior is None:
         return False
     try:

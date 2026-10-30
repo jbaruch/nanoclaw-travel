@@ -750,3 +750,16 @@ def test_quiet_completed_removal_does_not_mask_an_added_replacement(state_root, 
     assert payload["wake_agent"] is True
     assert [row["event"]["reason"] for row in payload["data"]["events"]] == ["tracked_flight_added"]
     assert read_active_flights() == [200] and read_flight_state(100) is None
+
+
+@pytest.mark.parametrize("status", ["landed", "cancelled", "diverted"])
+@pytest.mark.parametrize("arrival,wake", [("2024-01-15T12:00:00Z", False), ("invalid", True)])
+def test_notification_expiry_does_not_reinterpret_calendar_disposition(
+    state_root, capsys, status, arrival, wake
+):
+    _seed_removal(snapshot={"computed_status": status, "arr_time": arrival}, ledger=True)
+    before = (state_root / "flight-100.json").read_bytes()
+    payload = _removed_payload(capsys)
+    assert payload["wake_agent"] is wake
+    assert read_active_flights() == []
+    assert (state_root / "flight-100.json").read_bytes() == before
