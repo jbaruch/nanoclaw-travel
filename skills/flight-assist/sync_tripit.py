@@ -37,6 +37,7 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_BUNDLE_DIR))
 
 from byair_client import _MALFORMED_REMEDY, ByAirClient, ByAirError  # noqa: E402
+from disposition import DispositionError, _effective_arrival  # noqa: E402
 from state import (  # noqa: E402
     SYNC_HEALTH_FILE,
     StateError,
@@ -349,10 +350,26 @@ def _has_calendar_ledger(state: dict | None) -> bool:
     return bool(state and state.get("calendar_events"))
 
 
+def _completed_removal(prior: dict | None, now_utc: datetime) -> bool:
+    """Notification-only expiry; calendar disposition still owns teardown/history.
+
+    Quiet only a provably past zoned arrival; uncertainty stays actionable.
+    """
+    if prior is None:
+        return False
+    try:
+        return _effective_arrival(prior) < now_utc
+    except (DispositionError, OverflowError):
+        # A present but invalid actual arrival never falls back to an older
+        # schedule. Preserve the removal event without guessing completion.
+        return False
+
+
 def _reconcile_active_flights(upstream_flights: list[dict], *, now_utc: datetime) -> dict:
     """Diff the upstream list against the on-disk active-flights index.
 
-    Returns `{added: [flight_id, ...], removed: [flight_id, ...]}`.
+    Returns metadata for added flights and removals not proven completed.
+    Every removed ID still leaves the index under the same state lifecycle.
 
     For each `added` flight, writes an initial per-flight state record
     so the next precheck cycle has scheduled times to work with.
@@ -388,18 +405,20 @@ def _reconcile_active_flights(upstream_flights: list[dict], *, now_utc: datetime
 
     # Capture removed-flight metadata BEFORE deleting state (the
     # notification template in SKILL.md needs `code` + scheduled times
-    # to compose "Flight <code> stopped tracking...").
+    # to compose a check for a future/active or unconfirmed removal).
+    # Completed removals stay quiet; their index/state lifecycle is unchanged.
     removed: list[dict] = []
     for flight_id in sorted(removed_ids):
         prior = read_flight_state(flight_id)
-        removed.append(
-            {
-                "flight_id": flight_id,
-                "code": prior.get("code") if prior else None,
-                "scheduled_dep_time": prior.get("scheduled_dep_time") if prior else None,
-                "scheduled_arr_time": prior.get("scheduled_arr_time") if prior else None,
-            }
-        )
+        if not _completed_removal(prior, now_utc):
+            removed.append(
+                {
+                    "flight_id": flight_id,
+                    "code": prior.get("code") if prior else None,
+                    "scheduled_dep_time": prior.get("scheduled_dep_time") if prior else None,
+                    "scheduled_arr_time": prior.get("scheduled_arr_time") if prior else None,
+                }
+            )
         # Retain the state file as a teardown tombstone when it still holds a
         # `calendar_events` ledger (#55). Deleting it here would orphan those
         # managed calendar events forever: byAir won't remove them, and the

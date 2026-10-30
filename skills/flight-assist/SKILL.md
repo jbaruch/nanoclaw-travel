@@ -86,7 +86,7 @@ The reason → notification mapping for the documented events:
 | `arrival_logistics` | Surface baggage carousel (read from `last_snapshot.baggage`), suggest a rideshare ETA if location is available, and note lounge access if connecting. Read flight state for context |
 | `removed_upstream` | "Flight `<code>` no longer tracked upstream — remove from active trips if intentional." Don't auto-delete; let the user confirm |
 | `tracked_flight_added` | Silent in most cases (the daily sync added a flight to the tracking index). Surface only when the user explicitly asked "what's new" or when `data.events` contains nothing else worth reporting |
-| `tracked_flight_removed` | "Flight `<code>` stopped tracking — daily sync removed it from the active-flights index." Treat as informational, not actionable |
+| `tracked_flight_removed` | "Flight `<code>` on `<date>` disappeared from tracking before completion could be confirmed; check whether it was cancelled or re-tracked." Include the departure date only when known. This event can concern a future or in-air flight; unknown arrival timing is not proof it finished. Completed removals are filtered by `sync_tripit.py::_completed_removal` and produce no wake. |
 | `byair_unreachable` | "Flight sync with byAir is failing: `<consecutive_failures>` passes in a row, last error `<error>`. New or changed trips won't reach flight tracking until it recovers. Details are in the sync-tripit host log." Always send it |
 | `byair_recovered` | "Flight sync with byAir recovered." |
 | `sync_internal_error` | "Flight sync is failing inside NanoClaw: `<consecutive_failures>` passes in a row, last error `<error>`. The traceback is in the sync-tripit host log." Always send it |

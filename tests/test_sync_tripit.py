@@ -651,3 +651,115 @@ def test_writer_rejects_values_its_reader_would_refuse(state_root: Path, overrid
     with pytest.raises(ValueError):
         write_sync_health(record)
     assert not (state_root / "sync-health.json").exists()
+
+
+# Completed removals are ordinary lifecycle, not owner notifications (#363).
+_REMOVAL_NOW = datetime(2024, 1, 15, 13, tzinfo=UTC)
+
+
+def _removed_payload(capsys, *, added=None):
+    with patch("sync_tripit.datetime") as clock:
+        clock.now.return_value = _REMOVAL_NOW
+        return _main_payload(capsys, list_trips_return=_trips_payload(added or []))
+
+
+def _seed_removal(*, scheduled="2024-01-15T12:00:00+00:00", snapshot=None, ledger=False):
+    flight = _flight(100)
+    flight.update(scheduledDepTime="2024-01-15T08:00:00+00:00", scheduledArrTime=scheduled)
+    sync_tripit.initialize_flight_from_byair(flight=flight, now_utc=_REMOVAL_NOW)
+    write_active_flights([100])
+    if snapshot is not None or ledger:
+        row = must(read_flight_state(100))
+        if snapshot is not None:
+            row["last_snapshot"] = snapshot
+        if ledger:
+            row["calendar_events"] = _ledger_entry()
+        write_flight_state(row)
+
+
+@pytest.mark.parametrize(
+    ("scheduled", "snapshot", "wake"),
+    [
+        ("2024-01-15T06:00:00-06:00", None, False),
+        ("2024-01-16T02:00:00+14:00", None, False),
+        ("2024-01-16T04:00:00+14:00", None, True),
+        ("2024-01-15T13:00:00+00:00", None, True),
+        ("2024-01-15T12:00:00+00:00", {"arr_time": "2024-01-15T14:00:00Z"}, True),
+        ("2024-01-15T14:00:00+00:00", {"arr_time": "2024-01-15T12:00:00Z"}, False),
+        ("2024-01-15T12:00:00+00:00", {"arr_time": "2024-01-15T12:00:00"}, True),
+        ("2024-01-15T12:00:00+00:00", {"arr_time": "invalid"}, True),
+        ("2024-01-15T12:00:00", None, True),
+        ("invalid", None, True),
+        ("", None, True),
+    ],
+    ids=[
+        "past-offset",
+        "past-across-local-date",
+        "future-across-local-date",
+        "arrival-now",
+        "delayed-in-air",
+        "actual-arrival-wins",
+        "unknown-actual-offset",
+        "bad-actual",
+        "unknown-scheduled-offset",
+        "bad-scheduled",
+        "missing-scheduled",
+    ],
+)
+def test_removed_flight_wakes_only_when_completion_is_not_proven(
+    state_root, capsys, scheduled, snapshot, wake
+):
+    _seed_removal(scheduled=scheduled, snapshot=snapshot)
+    payload = _removed_payload(capsys)
+    assert payload["wake_agent"] is wake
+    events = payload["data"]["events"]
+    assert [row["event"]["reason"] for row in events] == (
+        ["tracked_flight_removed"] if wake else []
+    )
+    assert read_active_flights() == []
+    assert read_flight_state(100) is None  # Lifecycle cleanup is independent of notification.
+
+
+def test_quiet_completed_removal_preserves_exact_calendar_tombstone(state_root, capsys):
+    _seed_removal(ledger=True)
+    file = state_root / "flight-100.json"
+    before, meta = file.read_bytes(), file.stat()
+    payload = _removed_payload(capsys)
+    assert payload["wake_agent"] is False and payload["data"]["events"] == []
+    assert read_active_flights() == []
+    assert file.read_bytes() == before and file.stat().st_ino == meta.st_ino
+    assert file.stat().st_mtime_ns == meta.st_mtime_ns
+    assert must(read_flight_state(100))["calendar_events"] == _ledger_entry()
+
+
+def test_unknown_missing_removed_state_stays_actionable(state_root, capsys):
+    write_active_flights([100])
+    payload = _removed_payload(capsys)
+    assert payload["wake_agent"] is True
+    assert payload["data"]["events"][0]["event"]["reason"] == "tracked_flight_removed"
+    assert read_active_flights() == []
+
+
+def test_quiet_completed_removal_does_not_mask_an_added_replacement(state_root, capsys):
+    _seed_removal()
+    replacement = _flight(200)
+    replacement.update(
+        scheduledDepTime="2024-01-16T08:00:00Z", scheduledArrTime="2024-01-16T12:00:00Z"
+    )
+    payload = _removed_payload(capsys, added=[replacement])
+    assert payload["wake_agent"] is True
+    assert [row["event"]["reason"] for row in payload["data"]["events"]] == ["tracked_flight_added"]
+    assert read_active_flights() == [200] and read_flight_state(100) is None
+
+
+@pytest.mark.parametrize("status", ["landed", "cancelled", "diverted"])
+@pytest.mark.parametrize("arrival,wake", [("2024-01-15T12:00:00Z", False), ("invalid", True)])
+def test_notification_expiry_does_not_reinterpret_calendar_disposition(
+    state_root, capsys, status, arrival, wake
+):
+    _seed_removal(snapshot={"computed_status": status, "arr_time": arrival}, ledger=True)
+    before = (state_root / "flight-100.json").read_bytes()
+    payload = _removed_payload(capsys)
+    assert payload["wake_agent"] is wake
+    assert read_active_flights() == []
+    assert (state_root / "flight-100.json").read_bytes() == before

@@ -1,5 +1,7 @@
 # Changelog
 
+- Keep completed-flight removals quiet while preserving actionable future/unknown tracking changes and the existing calendar tombstone lifecycle.
+
 ## 0.2.170 — 2026-10-29
 
 ### Include measured EV charging time in drives (#339)
