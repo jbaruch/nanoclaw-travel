@@ -53,9 +53,10 @@ def run(blocks, *, km=395, sample=None, charges=(), options=None, vehicles=None)
     )
 
 
-def test_round_trip_consumes_outbound_energy_and_adds_return_stop():
-    out = leg()
-    back = leg("meeting_return", origin="Venue", destination="Home", hour=15)
+@pytest.mark.parametrize("prefix", ["meeting", "attendance"])
+def test_round_trip_consumes_outbound_energy_and_adds_return_stop(prefix):
+    out = leg(prefix + "_outbound")
+    back = leg(prefix + "_return", origin="Venue", destination="Home", hour=15)
     result = run([out, back], km=200)
     assert result[0] is out
     assert result[1].start == back.start
@@ -168,9 +169,12 @@ def test_disconnected_airport_leg_does_not_disable_first_grounded_drive():
     assert result[0].start == out.start - timedelta(minutes=30)
 
 
-def test_completed_outbound_cannot_rebase_a_future_return_to_a_full_forecast():
-    out = replace(leg(), start=NOW - timedelta(hours=4), end=NOW - timedelta(hours=1))
-    back = leg("meeting_return", origin="Venue", destination="Home", hour=15)
+@pytest.mark.parametrize("prefix", ["meeting", "attendance"])
+def test_completed_outbound_cannot_rebase_a_future_return_to_a_full_forecast(prefix):
+    out = replace(
+        leg(prefix + "_outbound"), start=NOW - timedelta(hours=4), end=NOW - timedelta(hours=1)
+    )
+    back = leg(prefix + "_return", origin="Venue", destination="Home", hour=15)
     result = run([out, back], km=395)
     assert result[0] is out and result[1] is back
 

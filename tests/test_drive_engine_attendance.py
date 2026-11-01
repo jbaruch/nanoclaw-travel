@@ -262,10 +262,10 @@ def test_store_upsert_missing_future_and_cli(tmp_path, monkeypatch):
     assert len(load_attendances()) == 2
     path = tmp_path / "conference-attendance.json"
     assert path.stat().st_mode & 0o777 == 0o600
-    path.write_text('{"schema_version":2,"attendances":[]}')
+    path.write_text('{"schema_version":3,"attendances":[]}')
     with pytest.raises(AttendanceError):
         record_attendance(_row())
-    assert json.loads(path.read_text())["schema_version"] == 2
+    assert json.loads(path.read_text())["schema_version"] == 3
     result = subprocess.run(
         [sys.executable, str(ROOT / "skills/drive-engine/record_attendance.py")],
         input=_payload(_row()),
@@ -430,6 +430,7 @@ def test_lock_mode_and_multiply_linked_state_are_refused_without_overwrite(tmp_p
     monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(tmp_path))
     lock = tmp_path / ".conference-attendance.lock"
     lock.touch(mode=0o644)
+    lock.chmod(0o644)  # Deliberate bad mode, independent of the runner's private umask.
     with pytest.raises(AttendanceError, match="ownership/mode/type"):
         record_attendance(_row())
     assert not (tmp_path / "conference-attendance.json").exists()

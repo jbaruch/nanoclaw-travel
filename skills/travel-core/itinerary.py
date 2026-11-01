@@ -85,6 +85,7 @@ HOME = "home"
 LODGING = "lodging"
 TRIP_LOCATION = "trip_location"
 UNRESOLVED = "unresolved"
+ATTENDANCE = "attendance"
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,26 @@ class Position:
     address: str | None
     source: str
     detail: str | None = None
+
+
+@dataclass(frozen=True)
+class AttendanceScope:
+    """Row-2 occurrence dates opt in to checkout-aware base availability."""
+
+    identity: str
+    start: datetime
+    end: datetime
+
+
+@dataclass(frozen=True)
+class AttendancePresence:
+    """Explicit owner-grounded day window supplied by the attendance adapter."""
+
+    identity: str
+    start: datetime
+    end: datetime
+    day_end: datetime
+    address: str
 
 
 @dataclass(frozen=True)
@@ -550,6 +571,8 @@ class Itinerary:
         home_address: str | None,
         home_airports: frozenset[str] = frozenset(),
         transports: list[Transport] | tuple[Transport, ...] = (),
+        attendances: tuple[AttendancePresence, ...] = (),
+        attendance_scopes: tuple[AttendanceScope, ...] = (),
     ):
         records = [record for record in schedule or [] if isinstance(record, dict)]
         self._home = home_address
@@ -559,6 +582,21 @@ class Itinerary:
         self._periods = _periods(
             self._transports, _stays(records, self._trips), self._home_airports
         )
+        self._attendances = attendances
+        self._attendance_scopes = attendance_scopes
+        ordered = sorted(attendances, key=lambda item: item.start)
+        for index, item in enumerate(ordered):
+            if (
+                not item.identity
+                or not item.address
+                or any(
+                    t.tzinfo is None or t.utcoffset() is None
+                    for t in (item.start, item.end, item.day_end)
+                )
+                or not item.start < item.end <= item.day_end
+                or (index and ordered[index - 1].end > item.start)
+            ):
+                raise ValueError("Invalid or overlapping explicit attendance windows")
 
     def _period_index(self, at: datetime) -> int:
         for index, period in enumerate(self._periods):
@@ -618,18 +656,81 @@ class Itinerary:
         at = at.astimezone(UTC)
         index = self._period_index(at)
         period = self._periods[index]
+        # A grounded conference window cannot put the operator on the ground
+        # during a transport. Nominal hotel check-in does not override it.
+        if period.contains(at):
+            active = [
+                item
+                for item in self._attendances
+                if item.start <= at < item.end and period.contains(item.start)
+            ]
+            if active:
+                item = active[0]
+                return Position(item.address, ATTENDANCE, item.identity)
         covering = [stay for stay in period.stays if stay.start <= at < stay.end]
         if covering:
             stay = max(covering, key=lambda s: s.start)
             if stay.address is not None:
                 return Position(address=stay.address, source=LODGING, detail=stay.name)
+            if any(scope.start <= at < scope.end for scope in self._attendance_scopes):
+                return Position(None, UNRESOLVED, f"at {stay.name}, which has no grounded address")
             return self._away_fallback(period, at, f"at {stay.name}, which has no address")
         if self._is_home(period, at):
             return self._home_position()
         left = self._last_checked_out(index, at)
         if left is not None:
-            return Position(address=left.address, source=LODGING, detail=f"after {left.name}")
+            if not any(scope.start <= at < scope.end for scope in self._attendance_scopes):
+                return Position(address=left.address, source=LODGING, detail=f"after {left.name}")
+            # A window continuing past checkout has no planned return to that
+            # released room. Keep its grounded venue for a later same-day leg,
+            # including an airport departure after the on-site window ended.
+            carry = [
+                item
+                for item in self._attendances
+                if item.end <= at < item.day_end
+                and left.end <= item.end
+                and period.contains(item.start)
+                and period.contains(at)
+                and not any(stay.start >= left.end and stay.start <= at for stay in period.stays)
+            ]
+            if carry:
+                item = max(carry, key=lambda item: item.end)
+                return Position(item.address, ATTENDANCE, item.identity)
+            return Position(
+                None, UNRESOLVED, f"after check-out from {left.name}; no grounded next base"
+            )
         return self._away_fallback(period, at, None)
+
+    def base_at(self, at: datetime) -> Position:
+        """Available home/lodging base, excluding presence and released rooms.
+
+        Commutes use this instead of asking where the operator already is at
+        the exact window boundary. It never selects an upcoming reservation.
+        """
+        if at.tzinfo is None or at.utcoffset() is None:
+            raise ValueError("Itinerary.base_at requires an aware instant")
+        at = at.astimezone(UTC)
+        period = self._periods[self._period_index(at)]
+        if not period.contains(at):
+            return Position(None, UNRESOLVED, "transport in progress")
+        covering = [stay for stay in period.stays if stay.start <= at < stay.end]
+        if covering:
+            stay = max(covering, key=lambda stay: stay.start)
+            return Position(stay.address, LODGING, stay.name)
+        if self._is_home(period, at):
+            return self._home_position()
+        return Position(None, UNRESOLVED, "no currently available lodging base")
+
+    def lodging_checked_out(self, at: datetime) -> bool:
+        """Positive released-room evidence, never an absence-based inference."""
+        at = at.astimezone(UTC)
+        index = self._period_index(at)
+        period = self._periods[index]
+        return (
+            period.contains(at)
+            and not any(stay.start <= at < stay.end for stay in period.stays)
+            and self._last_checked_out(index, at) is not None
+        )
 
     def addressable_lodging_in_period(self, at: datetime) -> Position | None:
         """Addressable lodging of the ground period `at` belongs to (or is flying to).

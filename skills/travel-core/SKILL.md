@@ -1,6 +1,6 @@
 ---
 name: travel-core
-description: "Shared travel-domain library bundle for the nanoclaw-travel plugin. Hosts the cross-skill Python modules itinerary (the operator's position timeline), trip_origin (its schedule-holding wrapper) and airport_lead (clearance / post-arrival buffer policy) so flight-assist and the drive engine import one source of truth instead of duplicating them. Not a user workflow — background code the other skills load at runtime; never invoke directly."
+description: "Shared Python library for trip itineraries, planned positions, conference attendance windows, travel schedules, lodging, airport buffers, trip identity, home addresses and operator timezones in nanoclaw-travel. Flight-assist, drive-engine and travel-booking readers import these modules at runtime. Load when maintaining their shared travel-domain behavior; background library only, never invoke as a user workflow."
 user-invocable: false
 disable-model-invocation: true
 ---
@@ -13,7 +13,7 @@ It ships the travel-domain Python modules that more than one skill depends on, s
 
 ## Hosted modules
 
-- `itinerary.py` — the operator's position at any instant, read off one timeline of transports and lodging stays. Public surface: `Itinerary` (`position_at`), `Transport`, `Position`, `AmbiguousTransport`, `schedule_transports`, `parse_time`, `flight_route`. Its rules live in `itinerary.py` and its tests — do not restate them here. Consumed by the drive engine (`engine`, `position`, `reconcile_sweep`) and through `trip_origin`.
+- `itinerary.py` — the operator's position at any instant, read off one timeline of transports and lodging stays. Public surface: `Itinerary` (`position_at`, `base_at`), `AttendanceScope`, `AttendancePresence`, `Transport`, `Position`, `AmbiguousTransport`, `schedule_transports`, `parse_time`, `flight_route`. Its rules live in `itinerary.py` and its tests — do not restate them here. Consumed by the drive engine (`engine`, `position`, `reconcile_sweep`) and through `trip_origin`.
 - `trip_origin.py` — the itinerary for callers holding a TripIt schedule. Public surface: `resolve_anchor`, `resolve_effective_home`, `home_airports`, `load_travel_schedule`, and the flight-window / flight-summary helpers the meeting sweep uses. Consumed by flight-assist (`precheck`) and the drive engine (`reconcile_sweep`).
 - `airport_lead.py` — the airport clearance / post-arrival buffer policy. Public surface: `resolve_departure_clearance_minutes`, `resolve_post_arrival_minutes`, `departure_class`, `arrival_class`. The classification rules and buffer values live in `airport_lead.py` and its tests. Consumed by flight-assist (`airport_drive_inputs`) and the drive engine.
 - `trip_key.py` — the canonical per-trip identifier. Public surface: `trip_key(summary, start)`. Joins `travel-db.json`'s trip slugs to the drive engine's per-trip drive-or-fly verdicts; a second implementation would decide whether a cross-skill read hits or silently misses. Consumed by check-travel-bookings (`build-travel-db`) and the drive engine (`lodging_source`).

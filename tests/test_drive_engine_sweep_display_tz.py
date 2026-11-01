@@ -354,7 +354,7 @@ def test_unknown_attendance_schema_stops_sweep_before_apply(monkeypatch, tmp_pat
 
     _stub_live_clients(monkeypatch, lambda: None, tmp_path)
     path = tmp_path / "conference-attendance.json"
-    raw = '{"schema_version":2,"attendances":[]}'
+    raw = '{"schema_version":3,"attendances":[]}'
     path.write_text(raw)
     calls = []
     monkeypatch.setattr(reconcile_sweep, "finish_sweep", lambda *_a, **_kw: calls.append("apply"))
@@ -578,3 +578,159 @@ def test_no_home_sweep_protects_busy_events_from_airport_charging_extension(
         assert seen[0][1] is arr
     if case in {"malformed", "fetch_failure"}:
         assert "protected Calendar windows unavailable" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("mode", ["window", "no-window", "legacy"])
+def test_attendance_v2_full_sweep_commute_outside_and_late_airport(monkeypatch, tmp_path, mode):
+    """Real sweep/plan/apply pipeline with fixed fake clients; no live Calendar."""
+    from datetime import timedelta
+
+    from block_codec import parse_block
+    from calendar_apply import apply_plan
+    from conference_attendance import record_attendance
+
+    real_meetings, real_build, real_finish = (
+        reconcile_sweep.meeting_desired_blocks,
+        reconcile_sweep.build_plan,
+        reconcile_sweep.finish_sweep,
+    )
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    monkeypatch.setattr(trip_origin, "home_airports", lambda: frozenset({"BNA"}))
+    intake = {
+        "schema_version": 2,
+        "id": "synthetic-occurrence",
+        "starts_on": "2026-09-11",
+        "ends_on": "2026-09-11",
+        "time_zone": "UTC",
+        "venue_locations": ["SyntheticConf"],
+        "venue_location": "100 Venue Street",
+        "days": [
+            {
+                "date": "2026-09-11",
+                "onsite_from": "14:00",
+                "onsite_to": "17:00",
+                "source": "owner",
+                "source_ref": None,
+            }
+        ],
+    }
+    if mode == "no-window":
+        intake["days"] = []
+    elif mode == "legacy":
+        for key in ("schema_version", "venue_location", "days"):
+            intake.pop(key)
+    record_attendance(intake)
+    monkeypatch.setattr(
+        trip_origin,
+        "load_travel_schedule",
+        lambda: [
+            {
+                "type": "Trip",
+                "summary": "Synthetic trip",
+                "location": "Example City",
+                "start": "2026-09-10",
+                "end": "2026-09-12",
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-in: Hotel",
+                "location": "200 Hotel Street",
+                "start": "2026-09-10T15:00:00Z",
+            },
+            {
+                "type": "Lodging",
+                "summary": "Check-out: Hotel",
+                "location": "200 Hotel Street",
+                "start": "2026-09-11T15:00:00Z",
+            },
+            {
+                "type": "Flight",
+                "summary": "AA1 LGA to BNA",
+                "uid": "native-synthetic-segment",
+                "start": "2026-09-11T23:00:00Z",
+                "end": "2026-09-12T01:00:00Z",
+            },
+        ],
+    )
+    events = [
+        {
+            "id": "native-booth",
+            "summary": "Meeting",
+            "location": "Booth - SyntheticConf",
+            "start": {"dateTime": "2026-09-11T14:00:00Z"},
+            "end": {"dateTime": "2026-09-11T14:20:00Z"},
+        },
+        {
+            "id": "native-outside",
+            "summary": "Outside appointment",
+            "location": "300 Outside Street",
+            "start": {"dateTime": "2026-09-11T16:00:00Z"},
+            "end": {"dateTime": "2026-09-11T16:30:00Z"},
+        },
+    ]
+    monkeypatch.setattr(_EmptyFetcher, "fetch_window", lambda self, **_: events)
+    monkeypatch.setattr(
+        reconcile_sweep, "make_route", lambda *_a, **_k: lambda o, d: timedelta(minutes=30)
+    )
+    monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", real_meetings)
+    monkeypatch.setattr(reconcile_sweep, "build_plan", real_build)
+
+    def observe_finish(plan, skipped, **kwargs):
+        def apply_frozen(plan, **options):
+            return apply_plan(plan, creation_clock=lambda: _FrozenDatetime.now(UTC), **options)
+
+        return real_finish(plan, skipped, apply=apply_frozen, **kwargs)
+
+    monkeypatch.setattr(reconcile_sweep, "finish_sweep", observe_finish)
+
+    class Calendar:
+        rows: list[dict] = []
+        mutations: list[str] = []
+
+        def find_events(self, _arguments):
+            return {"items": list(self.rows)}
+
+        def create_event(self, args):
+            native = {**args, "id": f"created-{len(self.rows)}"}
+            self.rows.append(native)
+            self.mutations.append("create")
+            return native
+
+        def update_event(self, _arguments):
+            raise AssertionError("unchanged second sweep must not update")
+
+        def delete_event(self, _arguments):
+            raise AssertionError("unchanged second sweep must not delete")
+
+    monkeypatch.setattr(google_calendar_client, "GoogleCalendarClient", Calendar)
+    first = reconcile_sweep._run_sweep()
+    blocks = [parse_block(e) for e in Calendar.rows]
+    assert all(b is not None for b in blocks)
+    by_kind = {}
+    for b in blocks:
+        assert b is not None
+        by_kind.setdefault(b.kind, []).append(b)
+    assert "attendance_return" not in by_kind
+    if mode == "window":
+        assert len(by_kind["attendance_outbound"]) == 1
+        assert by_kind["attendance_outbound"][0].origin == "200 Hotel Street"
+        assert by_kind["attendance_outbound"][0].destination == "100 Venue Street"
+        assert by_kind["meeting_outbound"][0].origin == "100 Venue Street"
+        assert by_kind["airport_departure"][0].origin == "100 Venue Street"
+        assert by_kind["airport_departure"][0].anchor > datetime(2026, 9, 11, 17, tzinfo=UTC)
+        assert not any(b is not None and b.destination == "200 Hotel Street" for b in blocks)
+        assert "Outside appointment" in first["data"]["message"]
+    elif mode == "legacy":
+        assert "attendance_outbound" not in by_kind
+        assert by_kind["meeting_outbound"][0].origin == "200 Hotel Street"
+        assert by_kind["airport_departure"][0].origin == "200 Hotel Street"
+        assert all(b is not None and b.identity != "native-booth" for b in blocks)
+    else:
+        assert "attendance_outbound" not in by_kind and "airport_departure" not in by_kind
+        assert by_kind["meeting_outbound"][0].identity == "native-booth"
+        assert by_kind["meeting_outbound"][0].origin == "200 Hotel Street"
+        assert all(b is not None and b.identity != "native-outside" for b in blocks)
+    before = list(Calendar.mutations)
+    second = reconcile_sweep._run_sweep()
+    assert Calendar.mutations == before
+    assert second["data"]["message"] is None
