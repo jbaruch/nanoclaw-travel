@@ -536,3 +536,228 @@ def test_existing_flight_guard_holds_conflicting_commute_without_orphan_delete()
     assert any(h.kind == "attendance_outbound" for h in result.held)
     assert not any(c.desired.kind == "attendance_outbound" for c in result.plan.creates)
     assert not result.plan.deletes
+
+
+@pytest.mark.parametrize("crosses_window", [True, False])
+def test_transport_presence_fences_return_in_full_reconcile(crosses_window):
+    from calendar_apply import build_create_args
+    from engine import build_reconcile_plan
+    from flight_identity import TRIPIT, Flight, merge_flights
+
+    attendance, prior_itinerary = model()
+    prior, _, _ = attendance_desired_blocks(
+        (attendance,),
+        itinerary=prior_itinerary,
+        route=lambda _a, _b: timedelta(minutes=20),
+        now=NOW,
+        window=timedelta(days=2),
+    )
+    old_return = next(b for b in prior if b.kind == "attendance_return")
+    retained = parse_block(
+        {"id": "retained-return", **build_create_args(old_return, calendar_id="primary")}
+    )
+    assert retained is not None
+    dep_hour, arr_hour = (10, 11) if crosses_window else (20, 21)
+    flight = Flight(
+        "LGA",
+        "PHL",
+        NOW.replace(hour=dep_hour),
+        NOW.replace(hour=arr_hour),
+        source=TRIPIT,
+        tripit_segment_id="synthetic-transport",
+    )
+    itinerary = itinerary_for(
+        merge_flights([flight]),
+        schedule("2020-07-13T09:00:00Z") if crosses_window else schedule(),
+        home_address="Grounded Philadelphia home",
+        home_airports=frozenset({"PHL"}),
+        attendances=(attendance,),
+    )
+    blocks, skipped, held = attendance_desired_blocks(
+        (attendance,),
+        itinerary=itinerary,
+        route=lambda _a, _b: timedelta(minutes=20),
+        now=NOW,
+        window=timedelta(days=2),
+    )
+    result = build_reconcile_plan(
+        flights=[flight],
+        airport_info={},
+        current_blocks=[retained],
+        itinerary=itinerary,
+        route=lambda _a, _b: timedelta(minutes=20),
+        now=NOW,
+        extra_desired=blocks,
+        extra_held=held,
+    )
+    assert not result.plan.deletes
+    if crosses_window:
+        assert itinerary.position_at(NOW.replace(hour=17)).source == "home"
+        assert any(h.kind == "attendance_return" for h in held), skipped
+        assert not any(b.kind == "attendance_return" for b in blocks)
+        assert not any(c.desired.kind == "attendance_return" for c in result.plan.creates)
+        assert not any(u.desired.kind == "attendance_return" for u in result.plan.updates)
+    else:
+        assert not any(h.kind == "attendance_return" for h in result.held)
+        returning = next(b for b in blocks if b.kind == "attendance_return")
+        assert returning.origin == VENUE
+        assert returning.destination == itinerary.base_at(returning.end).address
+        [update] = [u for u in result.plan.updates if u.desired.kind == "attendance_return"]
+        assert update.desired == returning
+
+
+def measured_ev_adjuster(monkeypatch, blocks):
+    from ev_charging import EnergySample
+    from reconcile_sweep import _ev_adjuster
+    from tesla_planning import TeslaPlanning
+
+    # Only the read-provider boundary is synthetic. The actual sweep adapter,
+    # cumulative energy owner, final engine checks and reconcile all execute.
+    monkeypatch.setattr(TeslaPlanning, "vehicle", lambda *_: "Synthetic car")
+    monkeypatch.setattr(TeslaPlanning, "navigation", lambda *_: ())
+    monkeypatch.setattr(
+        TeslaPlanning,
+        "estimate",
+        lambda *_: EnergySample("Synthetic car", 75, 0.18, NOW - timedelta(days=1), 90),
+    )
+    monkeypatch.setattr(
+        TeslaPlanning, "unavailable", lambda *_: pytest.fail("Complete synthetic energy input")
+    )
+    return _ev_adjuster(
+        {},
+        lambda _a, _b: timedelta(minutes=20),
+        {(b.origin, b.destination): 200 for b in blocks},
+        NOW,
+    )
+
+
+@pytest.mark.parametrize("checkout", ["17:40:00", "18:40:00"])
+def test_final_ev_return_arrival_rechecks_available_base(checkout, monkeypatch):
+    from calendar_apply import build_create_args
+    from engine import build_reconcile_plan
+
+    attendance, itinerary = model(checkout=f"2020-07-13T{checkout}Z")
+    blocks, _, held = attendance_desired_blocks(
+        (attendance,),
+        itinerary=itinerary,
+        route=lambda _a, _b: timedelta(minutes=20),
+        now=NOW,
+        window=timedelta(days=2),
+    )
+    assert held == []
+    original = next(b for b in blocks if b.kind == "attendance_return")
+    retained = parse_block(
+        {"id": "retained-return", **build_create_args(original, calendar_id="primary")}
+    )
+    assert retained is not None
+    adjust = measured_ev_adjuster(monkeypatch, blocks)
+    measured, charging_held = adjust(blocks, [], [retained], [])
+    assert charging_held == []
+    final = next(b for b in measured if b.kind == "attendance_return")
+    assert final.start == NOW.replace(hour=17)
+    assert final.end == NOW.replace(hour=17, minute=50)
+    assert final.charging_note == "1 charging stop, ~30 min"
+    result = build_reconcile_plan(
+        flights=[],
+        airport_info={},
+        current_blocks=[retained],
+        itinerary=itinerary,
+        route=lambda _a, _b: timedelta(minutes=20),
+        now=NOW,
+        extra_desired=blocks,
+        adjust_drives=adjust,
+    )
+    assert not result.plan.deletes
+    if checkout == "17:40:00":
+        assert itinerary.base_at(final.end).address is None
+        assert any(h.kind == "attendance_return" for h in result.held)
+        assert not any(c.desired.kind == "attendance_return" for c in result.plan.creates)
+        assert not any(u.desired.kind == "attendance_return" for u in result.plan.updates)
+    else:
+        assert itinerary.base_at(final.end).address == HOTEL
+        assert not result.held
+        [update] = [u for u in result.plan.updates if u.desired.kind == "attendance_return"]
+        assert update.desired == final  # Never remove the actual charging allowance.
+
+
+def test_legacy_meeting_ev_return_keeps_prior_checkout_semantics(monkeypatch):
+    from calendar_apply import build_create_args
+    from engine import build_reconcile_plan
+
+    legacy = parse_attendance(
+        {k: v for k, v in row().items() if k not in {"schema_version", "venue_location", "days"}}
+    )
+    itinerary = itinerary_for(
+        [], schedule("2020-07-13T17:40:00Z"), home_address="Home", attendances=(legacy,)
+    )
+    meetings = scan(
+        [event("legacy-outside", "Outside Office", 16, 17)],
+        now=NOW,
+        home_address="Home",
+        attendances=(legacy,),
+        anchor_for=lambda at: meeting_anchor(itinerary, at),
+    )
+    blocks, _, held = meeting_desired_blocks(meetings, route=lambda _a, _b: timedelta(minutes=20))
+    assert held == []
+    original = next(b for b in blocks if b.kind == "meeting_return")
+    retained = parse_block(
+        {"id": "legacy-return", **build_create_args(original, calendar_id="primary")}
+    )
+    assert retained is not None
+    result = build_reconcile_plan(
+        flights=[],
+        airport_info={},
+        current_blocks=[retained],
+        itinerary=itinerary,
+        route=lambda _a, _b: timedelta(minutes=20),
+        now=NOW,
+        extra_desired=blocks,
+        adjust_drives=measured_ev_adjuster(monkeypatch, blocks),
+    )
+    assert result.held == () and result.plan.deletes == ()
+    [update] = [u for u in result.plan.updates if u.desired.kind == "meeting_return"]
+    assert update.desired.end == NOW.replace(hour=17, minute=50)
+    assert update.desired.destination == HOTEL
+    assert update.desired.charging_note == "1 charging stop, ~30 min"
+    assert itinerary.position_at(update.desired.end).address == HOTEL
+
+
+@pytest.mark.parametrize("layout", ["source", "native"])
+def test_fresh_sweep_import_bootstraps_core_without_preloaded_sys_path(tmp_path, layout):
+    import shutil
+    import subprocess
+
+    if layout == "source":
+        script = ROOT / "skills/drive-engine/reconcile_sweep.py"
+        expected_core = ROOT / "skills/travel-core/itinerary.py"
+    else:
+        # The only source transformation maps the fixed native prefix into a
+        # private synthetic install. There is deliberately no sibling fallback.
+        native = tmp_path / "native"
+        scripts = native / "tessl__drive-engine"
+        core = native / "tessl__travel-core"
+        for bundle in ("drive-engine", "travel-core", "flight-assist"):
+            target = native / f"tessl__{bundle}"
+            target.mkdir(parents=True)
+            for original in (ROOT / "skills" / bundle).glob("*.py"):
+                shutil.copyfile(original, target / original.name)
+            for path in target.glob("*.py"):
+                path.write_text(path.read_text().replace("/home/node/.claude/skills", str(native)))
+        script, expected_core = scripts / "reconcile_sweep.py", core / "itinerary.py"
+    code = """import inspect,json,runpy,sys
+scope=runpy.run_path(sys.argv[1],run_name='isolated_sweep_import')
+print(json.dumps({'core':inspect.getfile(scope['Itinerary']),
+                  'adapter':scope['attendance_desired_blocks'].__module__}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+    assert json.loads(result.stdout) == {
+        "core": str(expected_core),
+        "adapter": "attendance_source",
+    }

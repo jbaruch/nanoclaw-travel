@@ -11,7 +11,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from conference_attendance import Attendance
-from itinerary import AttendancePresence, AttendanceScope, Itinerary
+from itinerary import ATTENDANCE, AttendancePresence, AttendanceScope, Itinerary
 from meeting_source import DEFAULT_MAX_REASONABLE_DRIVE, MIN_MEETING_DRIVE
 from reconcile import DesiredBlock, HeldLeg
 
@@ -80,11 +80,23 @@ def attendance_desired_blocks(
                 base = itinerary.base_at(
                     anchor if returning else anchor - timedelta(microseconds=1)
                 )
-                if returning and base.address is None and itinerary.lodging_checked_out(anchor):
-                    continue
+                # Reuse the shared actual transport/presence precedence. A later
+                # ground period cannot inherit an earlier window's venue merely
+                # because the owner's accepted clock interval has not ended.
+                presence = itinerary.position_at(
+                    anchor - timedelta(microseconds=1) if returning else anchor
+                )
                 reason = None
                 drive = None
-                if anchor < now:
+                if (
+                    presence.source != ATTENDANCE
+                    or presence.detail != row.id
+                    or presence.address != row.venue_location
+                ):
+                    reason = "attendance commute venue presence invalidated by transport"
+                elif returning and base.address is None and itinerary.lodging_checked_out(anchor):
+                    continue
+                elif anchor < now:
                     reason = "attendance commute is past; retain prior leg"
                 elif busy_windows is None:
                     reason = "attendance commute Calendar coverage is unknown"

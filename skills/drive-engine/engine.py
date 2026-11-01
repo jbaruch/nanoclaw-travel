@@ -611,6 +611,29 @@ def build_reconcile_plan(
         )
         held.extend(charging_held)
 
+    available_desired = []
+    for block in desired:
+        if block.kind in {"attendance_outbound", "attendance_return"}:
+            returning = block.kind == "attendance_return"
+            at = block.end if returning else block.start
+            endpoint = block.destination if returning else block.origin
+            if itinerary.base_at(at).address != endpoint:
+                reason = "attendance commute final endpoint is no longer an available base"
+                held.append(
+                    HeldLeg(
+                        block.identity,
+                        block.kind,
+                        block.summary,
+                        block.anchor,
+                        reason,
+                        not_before=block.start,
+                    )
+                )
+                skipped.append(reason)
+                continue
+        available_desired.append(block)
+    desired = available_desired
+
     held_keys = frozenset(leg.key for leg in held)
     if managed_legacy is None:
         plan = plan_reconcile(desired, current_blocks, held=held_keys, now=now)

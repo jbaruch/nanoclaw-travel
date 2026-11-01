@@ -46,13 +46,17 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-# E402: these bundle-local imports resolve only after the sys.path insert above.
+# The engine bootstraps the fixed native travel-core bundle (contained source
+# sibling in a checkout) before the attendance adapter imports its pure types.
+from engine import AirportInfo, build_reconcile_plan, itinerary_for  # noqa: E402
+
+# isort: split
+# E402: these bundle-local imports resolve only after the bootstrap above.
 from airport_facts_cache import StaticAirport, load_static_facts, store_static_facts  # noqa: E402
 from attendance_source import attendance_desired_blocks  # noqa: E402
 from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
 from drive_decision import load_verdicts, mark_asked, prune, record_drive_time  # noqa: E402
-from engine import AirportInfo, build_reconcile_plan, itinerary_for  # noqa: E402
 from flight_identity import DEFAULT_IDENTITY_TOLERANCE, Flight, merge_flights  # noqa: E402
 from flight_mask import flight_codes, is_flight_event, known_flight_codes  # noqa: E402
 from itinerary import (  # noqa: E402
