@@ -581,8 +581,8 @@ def _is_routable_candidate(
 ) -> bool:
     """True when the event can act as a real-meeting neighbour for §5 #14/#7.
 
-    A routable candidate is a future, timed, in-person, non-block, non-flight
-    meeting with a usable location away from the anchor. Excluding past
+    A routable candidate is a future or ongoing confirmed-attendance, timed,
+    in-person, non-block, non-flight meeting away from the anchor. Excluding past
     meetings here is the fix for the cross of lombot #28 and #14/#7: a stale
     same-venue meeting must not turn a future meeting into back_to_back and
     strip its outbound-from-home leg. `end` is required too, so a half-parsed
@@ -602,7 +602,7 @@ def _is_routable_candidate(
         and event.end is not None
         and event.location is not None
         and not _is_virtual(event.location)
-        and not _is_past(event, now)
+        and (not _is_past(event, now) or (event.attendance_id is not None and event.end > now))
         and not _is_flight_event(event, flight_windows, scheduled_codes)
         and not _at_anchor(event, anchor_for)
     )
@@ -712,10 +712,11 @@ def scan(
 
     # Pass 2: order the genuine ground meetings by start so each can read its
     # neighbours (lombot #14/#7). Only routable candidates are linked — and
-    # crucially that EXCLUDES past meetings (lombot #28): an already-past
+    # crucially that EXCLUDES ended and unconfirmed past meetings (lombot #28): an already-past
     # same-venue meeting must never make a future meeting back_to_back and
     # strip its outbound-from-home leg. A non-candidate still gets classified,
-    # it just can't act as a neighbour.
+    # it just can't act as a neighbour. Ongoing grounded attendance still
+    # supplies the actual venue for a tight-gap outside appointment.
     candidates = [
         event
         for event in parsed

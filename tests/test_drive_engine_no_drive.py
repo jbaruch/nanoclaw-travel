@@ -91,7 +91,7 @@ def test_no_lodging_city_is_not_a_meeting_endpoint_or_route():
     assert payload["data"]["message"] is None
 
 
-@pytest.mark.parametrize("seconds", [-1, 0, 1, 59, 60])
+@pytest.mark.parametrize("seconds", [0, 1, 59, 60])
 def test_route_at_or_below_one_minute_has_no_block_or_added_notice(seconds):
     meetings = scan([_event()], now=NOW, home_address=HOME)
     desired, skipped, held, calendar, payload = _apply(
@@ -101,6 +101,31 @@ def test_route_at_or_below_one_minute_has_no_block_or_added_notice(seconds):
     assert held == []  # Proven no-drive, not an uncertain route retaining old blocks.
     assert len(skipped) == 2
     assert calendar.created == []
+    assert payload["data"]["message"] is None
+
+
+def test_negative_route_holds_existing_drives_without_deleting_or_announcing():
+    meetings = scan([_event()], now=NOW, home_address=HOME)
+    desired, skipped, held, calendar, payload = _apply(
+        meetings, lambda _origin, _destination: timedelta(seconds=-1)
+    )
+    current = [
+        ParsedBlock(
+            generation=GEN_UNIFIED,
+            event_id="retained",
+            identity="m1",
+            kind="meeting_outbound",
+            baseline_seconds=1200,
+            anchor=NOW.replace(hour=12),
+            origin=HOME,
+            destination="Venue",
+        )
+    ]
+    plan = plan_reconcile(desired, current, held=frozenset(h.key for h in held), now=NOW)
+    assert len(held) == 2
+    assert all("negative route duration" in note for note in skipped)
+    assert plan.creates == plan.updates == plan.deletes == ()
+    assert desired == calendar.created == []
     assert payload["data"]["message"] is None
 
 

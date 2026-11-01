@@ -497,6 +497,11 @@ def _apply_handoff(
     if drive is None:
         diagnostics.append(f"postarrival {meeting.identity}: airport-to-venue route failed")
         return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
+    if drive < timedelta(0):
+        diagnostics.append(
+            f"postarrival {meeting.identity}: negative route duration — check route provider"
+        )
+        return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
 
     lodging = lodging_lookup(guard.ready_at)
     return_dest = lodging if lodging is not None else fallback_lookup(guard.ready_at)
@@ -504,6 +509,11 @@ def _apply_handoff(
     ret_drive = route(venue, return_dest) if need_return and return_dest is not None else None
     if need_return and (ret_drive is None or return_dest is None):
         diagnostics.append(f"postarrival {meeting.identity}: venue-to-lodging route failed")
+        return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
+    if ret_drive is not None and ret_drive < timedelta(0):
+        diagnostics.append(
+            f"postarrival {meeting.identity}: negative route duration — check route provider"
+        )
         return _drop_meeting(desired, unsafe, meeting.identity), diagnostics
 
     if ret_drive is not None and ret_drive <= MIN_MEETING_DRIVE:
