@@ -238,6 +238,8 @@ class _Event:
     cancelled: bool  # event-level status == "cancelled"
     timezone: str | None  # IANA name from start.timeZone, for the block's CREATE
     attendance_id: str | None = None
+    attendance_location: str | None = None
+    attendance_scoped: bool = False
 
 
 def _normalize_location(location: object) -> str | None:
@@ -619,6 +621,7 @@ def scan(
     flight_windows: list[tuple[datetime, datetime]] | None = None,
     flight_summaries: list[str] | None = None,
     attendances: tuple[Attendance, ...] = (),
+    return_anchor_for: Callable[[datetime], tuple[str | None, str | None]] | None = None,
 ) -> list[MeetingClass]:
     """Classify every event into a transit bucket.
 
@@ -651,6 +654,9 @@ def scan(
         attendances: validated owner planner inputs from conference_attendance.
             Exact labels and local dates suppress anchor legs, while real bridges
             to/from outside venues remain. No summary/city inference.
+        return_anchor_for: optional end-time position resolver for version-2
+            occurrence timelines. Omitted, the published start-anchor behavior
+            remains unchanged. It grants no attendance or routing authority.
         flight_windows: known TripIt flight (start, end) UTC spans (#85). An
             event overlapping one is air travel — bucketed `filtered` and
             excluded as a routing neighbour, so a flight's airport location
@@ -700,6 +706,17 @@ def scan(
         event.attendance_id = attendance_for(
             attendances, identity, event.location, event.start, event.end
         )
+        event.attendance_location = next(
+            (
+                row.venue_location
+                for row in attendances
+                if row.id == event.attendance_id and row.schema_version == 2
+            ),
+            None,
+        )
+        event.attendance_scoped = any(
+            row.scopes_time(event.start) or row.scopes_time(event.end) for row in attendances
+        )
 
     # Pass 1: every meeting referenced by ANY planner marker is "handled"
     # (lombot #50 — ANY marker, not both directions). Record which
@@ -732,6 +749,7 @@ def scan(
                 event,
                 now=now,
                 anchor_for=anchor_for,
+                return_anchor_for=return_anchor_for,
                 skip_state=skip_state,
                 handled_directions=handled_directions,
                 candidates=candidates,
@@ -773,6 +791,7 @@ def _classify(
     *,
     now: datetime,
     anchor_for: Callable[[datetime], tuple[str | None, str | None]],
+    return_anchor_for: Callable[[datetime], tuple[str | None, str | None]] | None,
     skip_state: dict[str, str],
     handled_directions: dict[str, list[str]],
     candidates: list[_Event],
@@ -850,6 +869,7 @@ def _classify(
     return _classify_transit(
         event,
         anchor_for=anchor_for,
+        return_anchor_for=return_anchor_for,
         candidates=candidates,
         order=order,
         tight_gap_seconds=tight_gap_seconds,
@@ -860,6 +880,7 @@ def _classify_transit(
     event: _Event,
     *,
     anchor_for: Callable[[datetime], tuple[str | None, str | None]],
+    return_anchor_for: Callable[[datetime], tuple[str | None, str | None]] | None,
     candidates: list[_Event],
     order: dict[int, int],
     tight_gap_seconds: int,
@@ -908,8 +929,8 @@ def _classify_transit(
             legs.append(
                 TransitLeg(
                     direction="bridge",
-                    origin=prev_event.location or anchor_address,
-                    destination=event.location or anchor_address,
+                    origin=prev_event.attendance_location or prev_event.location or anchor_address,
+                    destination=event.attendance_location or event.location or anchor_address,
                     arrive_by=event.start,
                     gap_seconds=prev_gap,
                 )
@@ -932,13 +953,18 @@ def _classify_transit(
     next_gap = _gap_seconds(event, next_event)
     skip_return = next_event is not None and next_gap is not None and next_gap <= tight_gap_seconds
     if not skip_return and event.attendance_id is None:
+        return_address, return_note = (
+            return_anchor_for(event.end)
+            if return_anchor_for is not None and event.end is not None and event.attendance_scoped
+            else (anchor_address, anchor_note)
+        )
         legs.append(
             TransitLeg(
                 direction="return",
                 origin=event.location or anchor_address,
-                destination=anchor_address,
+                destination=return_address,
                 depart_after=event.end,
-                anchor_note=anchor_note if anchor_address is None else None,
+                anchor_note=return_note if return_address is None else None,
             )
         )
 

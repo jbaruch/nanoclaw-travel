@@ -13,8 +13,9 @@ import secrets
 import stat
 import unicodedata
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MAX_BYTES = 256 * 1024
@@ -31,12 +32,44 @@ class AttendanceError(ValueError):
 
 
 @dataclass(frozen=True)
+class AttendanceDay:
+    date: str
+    onsite_from: str
+    onsite_to: str
+    source: str
+    source_ref: str | None
+
+    def bounds(self, zone: str) -> tuple[datetime, datetime, datetime]:
+        day = date.fromisoformat(self.date)
+        tz = ZoneInfo(zone)
+        return (
+            _local_instant(day, self.onsite_from, tz),
+            _local_instant(day, self.onsite_to, tz),
+            datetime.combine(day + timedelta(days=1), time.min, tz).astimezone(UTC),
+        )
+
+
+@dataclass(frozen=True)
 class Attendance:
     id: str
     starts_on: str
     ends_on: str
     time_zone: str
     venue_locations: tuple[str, ...]
+    schema_version: int = 1
+    venue_location: str | None = None
+    days: tuple[AttendanceDay, ...] = ()
+
+    def scopes_time(self, at: object) -> bool:
+        """Only explicit row-2 dates alter base/return-anchor semantics."""
+        return (
+            self.schema_version == 2
+            and isinstance(at, datetime)
+            and at.tzinfo is not None
+            and date.fromisoformat(self.starts_on)
+            <= at.astimezone(ZoneInfo(self.time_zone)).date()
+            <= date.fromisoformat(self.ends_on)
+        )
 
     def covers(self, identity: object, location: object, start: object, end: object) -> bool:
         if (
@@ -59,6 +92,11 @@ class Attendance:
             date.fromisoformat(self.ends_on) + timedelta(days=1), datetime.min.time(), zone
         )
         if not begins <= local_start < local_end <= finishes:
+            return False
+        if self.schema_version == 2 and not any(
+            a <= start.astimezone(UTC) < end.astimezone(UTC) <= b
+            for a, b, _ in (day.bounds(self.time_zone) for day in self.days)
+        ):
             return False
         # The one supported compound-location grammar is an exact spaced dash.
         # Whitespace/case normalization matches scan.same_place; no substring test.
@@ -83,10 +121,88 @@ def _literal(value: object, limit: int) -> str:
     return value
 
 
+def _local_instant(day: date, value: str, zone: ZoneInfo) -> datetime:
+    naive = datetime.combine(day, time.fromisoformat(value))
+    first = naive.replace(tzinfo=zone, fold=0)
+    second = naive.replace(tzinfo=zone, fold=1)
+    if (
+        first.utcoffset() != second.utcoffset()
+        or first.astimezone(UTC).astimezone(zone).replace(tzinfo=None) != naive
+    ):
+        raise AttendanceError("Ambiguous or nonexistent attendance boundary; supply other hours")
+    return first.astimezone(UTC)
+
+
+def _parse_day(value: object, starts: date, ends: date, zone: str) -> AttendanceDay:
+    if not isinstance(value, dict) or set(value) != {
+        "date",
+        "onsite_from",
+        "onsite_to",
+        "source",
+        "source_ref",
+    }:
+        raise AttendanceError("Invalid attendance day; use the documented schema-2 window")
+    raw_date = _literal(value["date"], 10)
+    try:
+        day = date.fromisoformat(raw_date)
+        if day.isoformat() != raw_date or not starts <= day <= ends:
+            raise ValueError("date")
+        for key in ("onsite_from", "onsite_to"):
+            raw = _literal(value[key], 5)
+            parsed = time.fromisoformat(raw)
+            if len(raw) != 5 or parsed.isoformat(timespec="minutes") != raw:
+                raise ValueError("time")
+        if value["onsite_from"] >= value["onsite_to"]:
+            raise ValueError("window")
+    except ValueError as exc:
+        raise AttendanceError(
+            "Invalid attendance day/time; supply an in-span date and HH:MM window"
+        ) from exc
+    source, reference = value["source"], value["source_ref"]
+    if source == "agenda":
+        reference = _literal(reference, 2000)
+        try:
+            parsed_ref = urlsplit(reference)
+            if (
+                reference != reference.strip()
+                or parsed_ref.scheme != "https"
+                or not parsed_ref.hostname
+                or parsed_ref.username is not None
+                or parsed_ref.password is not None
+            ):
+                raise ValueError("reference")
+        except ValueError as exc:
+            raise AttendanceError(
+                "Agenda hours require a cited HTTPS conference schedule reference"
+            ) from exc
+    elif source != "owner" or reference is not None:
+        raise AttendanceError("Attendance hours need owner confirmation or a cited actual agenda")
+    result = AttendanceDay(raw_date, value["onsite_from"], value["onsite_to"], source, reference)
+    result.bounds(zone)
+    return result
+
+
+def attendance_record(row: Attendance) -> dict:
+    """Explicit row discriminator keeps legacy presence distinct from empty windows."""
+    value = asdict(row)
+    value["venue_locations"] = list(row.venue_locations)
+    value["days"] = [asdict(day) for day in row.days]
+    if row.schema_version == 1:
+        del value["venue_location"]
+        del value["days"]
+    return value
+
+
 def parse_attendance(value: object) -> Attendance:
     fields = {"id", "starts_on", "ends_on", "time_zone", "venue_locations"}
-    if not isinstance(value, dict) or set(value) != fields:
-        raise AttendanceError("Invalid attendance fields; use the documented schema-1 intake")
+    if not isinstance(value, dict):
+        raise AttendanceError("Invalid attendance fields; use the documented owner intake")
+    version = value.get("schema_version", 1)
+    if type(version) is not int or version not in (1, 2):
+        raise AttendanceError("Unsupported attendance row; update its owner before writing")
+    expected = fields | ({"schema_version", "venue_location", "days"} if version == 2 else set())
+    if set(value) != expected and not (version == 1 and set(value) == fields | {"schema_version"}):
+        raise AttendanceError("Invalid attendance fields; use the documented owner intake")
     identity = _literal(value["id"], 300)
     starts, ends = _literal(value["starts_on"], 10), _literal(value["ends_on"], 10)
     try:
@@ -112,7 +228,18 @@ def parse_attendance(value: object) -> Attendance:
     labels = tuple(_literal(item, 1000) for item in locations)
     if len({" ".join(item.split()).casefold() for item in labels}) != len(labels):
         raise AttendanceError("Duplicate attendance labels; remove duplicate normalized literals")
-    return Attendance(identity, starts, ends, zone, labels)
+    if version == 1:
+        return Attendance(identity, starts, ends, zone, labels)
+    venue = _literal(value["venue_location"], 1000)
+    _local_instant(first, "00:00", ZoneInfo(zone))
+    _local_instant(last + timedelta(days=1), "00:00", ZoneInfo(zone))
+    raw_days = value["days"]
+    if not isinstance(raw_days, list) or len(raw_days) > 128:
+        raise AttendanceError("Invalid attendance days; use a bounded explicit day list")
+    days = tuple(_parse_day(item, first, last, zone) for item in raw_days)
+    if len({day.date for day in days}) != len(days):
+        raise AttendanceError("Duplicate attendance days; supply one window per local day")
+    return Attendance(identity, starts, ends, zone, labels, 2, venue, days)
 
 
 def _unique(pairs):
@@ -132,14 +259,22 @@ def decode_store(raw: bytes) -> tuple[Attendance, ...]:
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise AttendanceError("Unreadable attendance JSON; repair the owner input") from exc
     if not isinstance(value, dict) or set(value) != {"schema_version", "attendances"}:
-        raise AttendanceError("Invalid attendance store; use its documented schema-1 owner")
-    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise AttendanceError("Invalid attendance store; use its documented owner")
+    if type(value["schema_version"]) is not int or value["schema_version"] not in (1, 2):
         raise AttendanceError(
             "Unsupported attendance schema; upgrade the owner before planning/writing"
         )
     rows = value["attendances"]
     if not isinstance(rows, list) or len(rows) > 128:
         raise AttendanceError("Invalid attendance list; supply at most 128 records")
+    if value["schema_version"] == 2 and any(
+        not isinstance(row, dict) or "schema_version" not in row for row in rows
+    ):
+        raise AttendanceError("Schema-2 store requires an explicit version on every retained row")
+    if value["schema_version"] == 1 and any(
+        not isinstance(row, dict) or "schema_version" in row for row in rows
+    ):
+        raise AttendanceError("Schema-1 store accepts only original legacy rows")
     parsed = tuple(parse_attendance(row) for row in rows)
     if len({row.id for row in parsed}) != len(parsed):
         raise AttendanceError("Duplicate attendance IDs; repair the owner input")
@@ -221,8 +356,10 @@ def record_attendance(value: object) -> Attendance:
             _verify(os.fstat(lock_fd), identity, 0o600, device=directory_info.st_dev)
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             prior = _read_at(directory_fd, identity)  # Never overwrite unknown/corrupt data.
-            rows = [asdict(item) for item in prior if item.id != row.id] + [asdict(row)]
-            raw = json.dumps({"schema_version": 1, "attendances": rows}, ensure_ascii=False).encode(
+            rows = [attendance_record(item) for item in prior if item.id != row.id] + [
+                attendance_record(row)
+            ]
+            raw = json.dumps({"schema_version": 2, "attendances": rows}, ensure_ascii=False).encode(
                 "utf-8"
             )
             decode_store(raw)

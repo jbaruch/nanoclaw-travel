@@ -48,6 +48,7 @@ if str(_BUNDLE_DIR) not in sys.path:
 
 # E402: these bundle-local imports resolve only after the sys.path insert above.
 from airport_facts_cache import StaticAirport, load_static_facts, store_static_facts  # noqa: E402
+from attendance_source import attendance_desired_blocks  # noqa: E402
 from block_codec import ParsedBlock, parse_block  # noqa: E402
 from calendar_apply import apply_plan  # noqa: E402
 from drive_decision import load_verdicts, mark_asked, prune, record_drive_time  # noqa: E402
@@ -1389,7 +1390,9 @@ def _persist_static_facts_best_effort(static_facts: dict[int, StaticAirport]) ->
         )
 
 
-def _trip_presence(driving: list, meetings: list, *, route: RouteFn) -> dict[str, TripPresence]:
+def _trip_presence(
+    driving: list, meetings: list, *, route: RouteFn, itinerary: Itinerary | None = None
+) -> dict[str, TripPresence]:
     """Where the operator sleeps for each meeting on a trip they drive to.
 
     Keyed by meeting id, for `meeting_desired_blocks`. First / last are decided
@@ -1425,6 +1428,11 @@ def _trip_presence(driving: list, meetings: list, *, route: RouteFn) -> dict[str
             key=lambda meeting: meeting.start,
         )
         for index, meeting in enumerate(on_trip):
+            if itinerary is not None and any(
+                at is not None and itinerary.position_at(at).source == "attendance"
+                for at in (meeting.start, meeting.end)
+            ):
+                continue
             presence[meeting.meeting_id] = TripPresence(
                 lodging=trip.address,
                 is_first=index == 0,
@@ -1659,6 +1667,7 @@ def _run_sweep() -> dict:
     # merged byAir ∪ TripIt flights, so a flight byAir alone tracks still
     # moves the operator. Airports resolve first: the itinerary needs their
     # IATA codes to tell a landing at home from one away.
+    attendances = load_attendances()
     sweep_flights = normalize_flights(records, resolve_airport, tripit_flights)
     require_placeable(sweep_flights)
     try:
@@ -1668,6 +1677,7 @@ def _run_sweep() -> dict:
             home_address=home,
             home_airports=home_airports,
             unplaced=sweep_flights.unplaced,
+            attendances=attendances,
         )
     except AmbiguousTransport as exc:
         raise FlightsUnplaceable(
@@ -1699,7 +1709,6 @@ def _run_sweep() -> dict:
     meeting_held: list[HeldLeg] = []
     operator_zone: str | None = None
     postarrival_meetings: list[PostarrivalMeeting] = []
-    attendances = load_attendances()
     try:
         events = exclude_drive_block_events(
             CalendarFetcher().fetch_window(time_min=now, time_max=now + SWEEP_WINDOW)
@@ -1731,6 +1740,9 @@ def _run_sweep() -> dict:
             flight_windows=[],
             flight_summaries=[],
             attendances=attendances,
+            return_anchor_for=anchor_for
+            if any(row.schema_version == 2 for row in attendances)
+            else None,
         )
         # A trip the operator DRIVES to is resolved before the meeting side, so
         # that trip's own events are spared the away-suppression: with a
@@ -1755,7 +1767,7 @@ def _run_sweep() -> dict:
         # stderr).
         operator = read_operator_tz()
         operator_zone = operator.tz if operator is not None else None
-        presence = _trip_presence(driving, meetings, route=route)
+        presence = _trip_presence(driving, meetings, route=route, itinerary=itinerary)
         postarrival_meetings = postarrival_meetings_from(
             meetings, skip_state=skips, now=now, driving_to=frozenset(presence)
         )
@@ -1770,6 +1782,18 @@ def _run_sweep() -> dict:
             "meeting side skipped: no home_address (flight-assist config and "
             "user_profile current_home both empty) — see #162"
         ]
+
+    attendance_blocks, attendance_skipped, attendance_held = attendance_desired_blocks(
+        attendances,
+        itinerary=itinerary,
+        route=route,
+        now=now,
+        window=SWEEP_WINDOW,
+        busy_windows=busy_windows,
+    )
+    meeting_blocks.extend(attendance_blocks)
+    meeting_skipped.extend(attendance_skipped)
+    meeting_held.extend(attendance_held)
 
     # --- lodging side: the getting-there legs of a flight-less trip (#231) ---
     # Runs after the meeting side because it reads the local drives already

@@ -68,6 +68,8 @@ Travel history is the same story. **`jbaruch/tripit-api`** ships the `using-trip
 
 ## Rules
 
+Explicit conference day windows add one grounded commute pair, venue-based outside appointments and checkout-aware departure origins; retained legacy attendance keeps its old semantics. See [attendance intake](skills/drive-engine/attendance-contract.md) for the three owner choices, cited agenda inputs and schema-2 rollout.
+
 EV-aware drive planning adds measured-energy charging time and earlier leave-by through the supported Tesla estimate provider. See [EV planning](skills/drive-engine/ev-planning-contract.md) for configuration, grounded destination charging and the producer/install acceptance hold. Unknown vehicle data retains legacy timing.
 
 | Rule | Summary |

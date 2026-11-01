@@ -45,9 +45,11 @@ if not _TRAVEL_CORE.is_dir():
 if str(_TRAVEL_CORE) not in sys.path:
     sys.path.insert(0, str(_TRAVEL_CORE))
 
+from attendance_source import occurrence_scopes, presence_windows  # noqa: E402
 from block_codec import canonical_flight_key, leg_identity  # noqa: E402
 from chain import LegKind, plan_chain_legs  # noqa: E402
 from chain_builder import build_pair_contexts, group_into_chains  # noqa: E402
+from conference_attendance import Attendance  # noqa: E402
 from flight_identity import Flight, MergedFlight, merge_flights  # noqa: E402
 from itinerary import CANCELLED, DIVERTED, TRIP_LOCATION, Itinerary, Transport  # noqa: E402
 from leg_anchor import (  # noqa: E402
@@ -354,6 +356,7 @@ def itinerary_for(
     home_address: str | None,
     home_airports: frozenset[str] = frozenset(),
     unplaced: tuple[Transport, ...] = (),
+    attendances: tuple[Attendance, ...] = (),
 ) -> Itinerary:
     """The sweep's one itinerary: the schedule plus every merged flight, so a
     flight byAir alone tracks still moves the operator (#335). Each carries
@@ -377,7 +380,12 @@ def itinerary_for(
         or (f.effective_arr is not None and f.effective_arr > f.effective_dep)
     ]
     return Itinerary(
-        schedule, home_address=home_address, home_airports=home_airports, transports=transports
+        schedule,
+        home_address=home_address,
+        home_airports=home_airports,
+        transports=transports,
+        attendances=presence_windows(attendances),
+        attendance_scopes=occurrence_scopes(attendances),
     )
 
 
@@ -560,6 +568,18 @@ def build_reconcile_plan(
     if extra_desired:
         desired.extend(extra_desired)
     held.extend(extra_held or [])
+
+    safe_desired = []
+    for block in desired:
+        if block.kind.startswith("attendance_") and any(
+            guard.guard_start < block.end and block.start < guard.ready_at for guard in guards
+        ):
+            reason = "attendance commute overlaps a protected flight interval"
+            held.append(HeldLeg(block.identity, block.kind, block.summary, block.anchor, reason))
+            skipped.append(reason)
+        else:
+            safe_desired.append(block)
+    desired = safe_desired
 
     if guards:
 

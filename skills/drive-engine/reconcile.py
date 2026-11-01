@@ -55,7 +55,9 @@ _KIND_TO_LEGACY_DIRECTION = {
 _DEFAULT_MANAGED_LEGACY = frozenset({GEN_LEGACY_FADRIVE})
 
 
-DEPART_AFTER_KINDS = frozenset({"meeting_return", "airport_arrival", "lodging_return"})
+DEPART_AFTER_KINDS = frozenset(
+    {"meeting_return", "airport_arrival", "lodging_return", "attendance_return"}
+)
 
 
 @dataclass(frozen=True)

@@ -185,6 +185,7 @@ def adjust_charging(
         and block.start <= now + FORECAST_HORIZON
     }
     return_predecessors = {
+        "attendance_return": "attendance_outbound",
         "meeting_return": "meeting_outbound",
         "lodging_return": "lodging_outbound",
         "airport_arrival": "airport_departure",

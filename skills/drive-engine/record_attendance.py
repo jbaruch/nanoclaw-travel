@@ -10,10 +10,38 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from conference_attendance import MAX_BYTES, AttendanceError, decode_store, record_attendance  # noqa: E402
+from conference_attendance import (  # noqa: E402
+    MAX_BYTES,
+    AttendanceError,
+    attendance_record,
+    decode_store,
+    record_attendance,
+)
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--choices"]:
+        labels = ("По расписанию", "Только мои слоты", "Свои часы")
+        print(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "attendance_choices",
+                    "buttons": [
+                        [
+                            {
+                                "label": label,
+                                "action": "owner.answer.v1",
+                                "payload": {"label": label},
+                            }
+                            for label in labels
+                        ]
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
     phase = "request_decode"
     try:
         if len(sys.argv) != 1:
@@ -24,15 +52,7 @@ def main() -> int:
             raise ValueError("one row required")
         row = rows[0]
         phase = "state_upsert"
-        record_attendance(
-            {
-                "id": row.id,
-                "starts_on": row.starts_on,
-                "ends_on": row.ends_on,
-                "time_zone": row.time_zone,
-                "venue_locations": list(row.venue_locations),
-            }
-        )
+        record_attendance(attendance_record(row))
     # outer-boundary-process-contract: the skill consumes structured stdout;
     # emit a fixed error plus stderr, as a traceback would break its JSON contract.
     except Exception as exc:
