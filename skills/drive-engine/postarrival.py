@@ -215,10 +215,10 @@ def _unreachable_note(
 ) -> str | None:
     """Why `meeting` is proven unreachable from `guard`, or None.
 
-    A failed route (`drive` None) proves nothing: reachability is unknown, so the
+    A failed or negative route proves nothing: reachability is unknown, so the
     candidate stays in play and the fail-safe applies later.
     """
-    if drive is None:
+    if drive is None or drive < timedelta(0):
         return None
     if drive > max_handoff_drive:
         return f"postarrival {meeting.identity}: airport-to-venue drive exceeds cap"

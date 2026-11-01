@@ -1484,13 +1484,14 @@ def test_postarrival_does_not_recreate_a_one_minute_meeting_return():
 
 
 @pytest.mark.parametrize("negative_leg", ["arrival", "return"])
-def test_negative_handoff_route_keeps_ordinary_airport_lodging_plan(negative_leg):
+@pytest.mark.parametrize("negative_minutes", [-1, -999999999 * 24 * 60])
+def test_negative_handoff_route_keeps_ordinary_airport_lodging_plan(negative_leg, negative_minutes):
     result = _plan(
         route=_route(
             {
-                ("DEN airport", VENUE): -1 if negative_leg == "arrival" else 37,
+                ("DEN airport", VENUE): negative_minutes if negative_leg == "arrival" else 37,
                 ("DEN airport", HOTEL): 37,
-                (VENUE, HOTEL): -1 if negative_leg == "return" else 24,
+                (VENUE, HOTEL): negative_minutes if negative_leg == "return" else 24,
             }
         )
     )
