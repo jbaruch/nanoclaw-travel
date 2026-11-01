@@ -1,5 +1,9 @@
 # Changelog
 
+### Preserve conference bridge origins and reject negative routes (#356)
+
+Ongoing confirmed conference attendance supplies the venue for tight-gap outside meetings. Negative meeting or post-arrival route durations follow the existing route-failure safety paths, rather than removing drives as definitive one-minute no-drive results. Ended/unconfirmed attendance, valid zero-to-one-minute routes, flight guards and native-grounding requirements remain unchanged.
+
 - Keep completed-flight removals quiet while preserving actionable future/unknown tracking changes and the existing calendar tombstone lifecycle.
 
 ## 0.2.170 — 2026-10-29

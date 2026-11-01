@@ -271,6 +271,16 @@ def meeting_desired_blocks(
             if drive is None:
                 _hold(skipped, held, meeting, leg, kind, f"{tag}: route failed")
                 continue
+            if drive < timedelta(0):
+                _hold(
+                    skipped,
+                    held,
+                    meeting,
+                    leg,
+                    kind,
+                    f"{tag}: negative route duration — check route provider",
+                )
+                continue
             if drive <= MIN_MEETING_DRIVE:
                 skipped.append(f"{tag}: route at or below one minute — no drive")
                 continue

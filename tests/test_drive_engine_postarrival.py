@@ -1483,6 +1483,25 @@ def test_postarrival_does_not_recreate_a_one_minute_meeting_return():
     assert not any(b.kind == "meeting_return" for b in _created(result))
 
 
+@pytest.mark.parametrize("negative_leg", ["arrival", "return"])
+@pytest.mark.parametrize("negative_minutes", [-1, -999999999 * 24 * 60])
+def test_negative_handoff_route_keeps_ordinary_airport_lodging_plan(negative_leg, negative_minutes):
+    result = _plan(
+        route=_route(
+            {
+                ("DEN airport", VENUE): negative_minutes if negative_leg == "arrival" else 37,
+                ("DEN airport", HOTEL): 37,
+                (VENUE, HOTEL): negative_minutes if negative_leg == "return" else 24,
+            }
+        )
+    )
+    arrivals = [b for b in _created(result) if b.kind == "airport_arrival"]
+    assert len(arrivals) == 1
+    assert arrivals[0].destination == HOTEL
+    assert not _created_kinds(result, "mtg-1")
+    assert any("negative route duration" in note for note in result.skipped)
+
+
 @pytest.mark.parametrize("minutes", [0, 1])
 def test_tiny_airport_meeting_handoff_keeps_only_genuine_hotel_return(minutes):
     result = _plan(

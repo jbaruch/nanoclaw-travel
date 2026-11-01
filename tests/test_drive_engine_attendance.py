@@ -204,6 +204,56 @@ def test_real_external_bridges_and_return_survive_onsite_neighbor():
     ]
 
 
+@pytest.mark.parametrize("attended", [False, True])
+@pytest.mark.parametrize("ongoing", [False, True])
+def test_only_ongoing_grounded_attendance_supplies_external_bridge(attended, ongoing):
+    end = NOW + timedelta(minutes=30) if ongoing else NOW - timedelta(minutes=1)
+    events = [
+        _event("onsite", start=NOW - timedelta(hours=1), end=end),
+        _event("external", "Outside Office", start=NOW + timedelta(hours=1)),
+    ]
+    meetings = scan(
+        events,
+        now=NOW,
+        home_address="Hotel",
+        attendances=(parse_attendance(_row()),) if attended else (),
+    )
+    calls = []
+
+    def route(origin, destination):
+        calls.append((origin, destination))
+        return timedelta(minutes=10)
+
+    desired, _, _ = meeting_desired_blocks(meetings, route=route)
+    outbound = next(b for b in desired if b.identity == "external" and b.kind == "meeting_outbound")
+    expected = f"Booth A - {LABEL}" if attended and ongoing else "Hotel"
+    assert outbound.origin == expected
+    assert outbound.destination == "Outside Office"
+    assert calls == [(expected, "Outside Office"), ("Outside Office", "Hotel")]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"status": "cancelled"},
+        {"attendees": [{"self": True, "responseStatus": "declined"}]},
+        {"summary": "Flight to DEN"},
+    ],
+)
+def test_ongoing_attendance_does_not_bypass_other_candidate_filters(changes):
+    onsite = _event("onsite", start=NOW - timedelta(hours=1), end=NOW + timedelta(minutes=30))
+    onsite.update(changes)
+    meetings = scan(
+        [onsite, _event("external", "Outside Office", start=NOW + timedelta(hours=1))],
+        now=NOW,
+        home_address="Hotel",
+        attendances=(parse_attendance(_row()),),
+    )
+    desired, _, _ = meeting_desired_blocks(meetings, route=lambda _o, _d: timedelta(minutes=10))
+    outbound = next(b for b in desired if b.identity == "external" and b.kind == "meeting_outbound")
+    assert outbound.origin == "Hotel"
+
+
 def test_store_upsert_missing_future_and_cli(tmp_path, monkeypatch):
     monkeypatch.setenv("DRIVE_ENGINE_STATE_DIR", str(tmp_path))
     assert load_attendances() == ()
