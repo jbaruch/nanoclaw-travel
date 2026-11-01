@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.3.0 — 2026-11-01
+
 ### Plan explicit conference attendance windows (#366)
 
 Record grounded per-day on-site hours and a canonical venue address through the existing attendance owner, with cited agenda inputs or actual owner confirmation. The shared timeline uses the venue inside each window, plans one daily commute pair, and keeps a later checkout-day airport departure at the venue when no hotel return is available. Explicit row-2 occurrence scope ends expired hotel-base availability without changing default/legacy itineraries or whole-trip context. Store 2 preserves legacy row-1 semantics until re-recorded; empty new windows remain ordinary meetings. The intake offers the existing three owner-answer choices; no hours, native record or Calendar acceptance are inferred.
