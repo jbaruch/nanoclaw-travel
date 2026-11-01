@@ -761,3 +761,151 @@ print(json.dumps({'core':inspect.getfile(scope['Itinerary']),
         "core": str(expected_core),
         "adapter": "attendance_source",
     }
+
+
+@pytest.mark.parametrize(
+    ("end_minute", "charging", "conflict"),
+    [(40, False, False), (50, False, True), (40, True, True)],
+)
+def test_final_planned_meeting_drives_fence_only_synthetic_commute(end_minute, charging, conflict):
+    from calendar_apply import build_create_args
+    from engine import build_reconcile_plan
+    from ev_charging import EnergySample, PlanningOptions, adjust_charging
+
+    attendance, itinerary = model()
+    appointment = event("outside", "Outside Office", 16, 17)
+    appointment_end = NOW.replace(hour=16, minute=end_minute)
+    appointment["end"] = {"dateTime": appointment_end.isoformat()}
+    meetings = scan(
+        [appointment],
+        now=NOW,
+        home_address="Home",
+        attendances=(attendance,),
+        anchor_for=lambda at: meeting_anchor(itinerary, at),
+        return_anchor_for=lambda at: meeting_anchor(itinerary, at),
+    )
+    meeting_blocks, _, meeting_held = meeting_desired_blocks(
+        meetings, route=lambda _a, _b: timedelta(minutes=20)
+    )
+    commutes, _, commute_held = attendance_desired_blocks(
+        (attendance,),
+        itinerary=itinerary,
+        route=lambda _a, _b: timedelta(minutes=20),
+        now=NOW,
+        window=timedelta(days=2),
+        busy_windows=[(NOW.replace(hour=16), appointment_end)],
+    )
+    assert meeting_held == commute_held == []
+    returning = next(b for b in commutes if b.kind == "attendance_return")
+    current = parse_block(
+        {"id": "retained-commute", **build_create_args(returning, calendar_id="primary")}
+    )
+    assert current is not None
+    final_meetings = []
+
+    def adjust(blocks, windows, _current, _held):
+        # Separate explicitly selected synthetic cars let the real EV owner
+        # extend the meeting return without clipping the attendance commute.
+        # The actor's final drive-conflict check must still reject the overlap.
+        values = adjust_charging(
+            blocks,
+            vehicles={
+                (b.identity, b.kind): "Meeting car" if b.kind.startswith("meeting_") else "Day car"
+                for b in blocks
+            },
+            distance_km=lambda b: 200 if b.kind.startswith("meeting_") else 1,
+            estimate=lambda vehicle, *_: EnergySample(
+                vehicle, 75, 0.18, NOW - timedelta(days=1), 90
+            ),
+            now=NOW,
+            options=PlanningOptions(cold_fraction=0, highway_fraction=0),
+            protected_windows=windows,
+        )
+        final_meetings[:] = [b for b in values if b.kind == "meeting_return"]
+        return values, []
+
+    for retained in ([], [current]):
+        result = build_reconcile_plan(
+            flights=[],
+            airport_info={},
+            current_blocks=retained,
+            itinerary=itinerary,
+            route=lambda _a, _b: timedelta(minutes=20),
+            now=NOW,
+            extra_desired=meeting_blocks + commutes,
+            adjust_drives=adjust if charging else None,
+        )
+        assert not result.plan.deletes
+        [meeting] = [c.desired for c in result.plan.creates if c.desired.kind == "meeting_return"]
+        assert meeting.origin == "Outside Office" and meeting.destination == VENUE
+        if charging:
+            assert meeting == final_meetings[0]
+            assert meeting.end == NOW.replace(hour=17, minute=30)
+            assert meeting.charging_note == "1 charging stop, ~30 min"
+        else:
+            assert meeting.end == appointment_end + timedelta(minutes=20)
+        if conflict:
+            assert any(h.kind == "attendance_return" for h in result.held)
+            assert not any(c.desired.kind == "attendance_return" for c in result.plan.creates)
+            assert not any(u.desired.kind == "attendance_return" for u in result.plan.updates)
+        else:
+            assert meeting.end == returning.start  # Exact touch is not an overlap.
+            assert not result.held
+            if not retained:
+                [created] = [
+                    c.desired for c in result.plan.creates if c.desired.kind == "attendance_return"
+                ]
+                assert created == returning
+
+
+def test_final_meeting_departure_holds_attendance_outbound_without_removing_retained_leg():
+    from calendar_apply import build_create_args
+    from engine import build_reconcile_plan
+
+    attendance, itinerary = model()
+    appointment = event("morning-outside", "Outside Office", 9, 10)
+    appointment["start"] = {"dateTime": NOW.replace(hour=9, minute=10).isoformat()}
+    appointment["end"] = {"dateTime": NOW.replace(hour=9, minute=30).isoformat()}
+    meetings = scan(
+        [appointment],
+        now=NOW,
+        home_address="Home",
+        attendances=(attendance,),
+        anchor_for=lambda at: meeting_anchor(itinerary, at),
+        return_anchor_for=lambda at: meeting_anchor(itinerary, at),
+    )
+    meeting_blocks, _, meeting_held = meeting_desired_blocks(
+        meetings, route=lambda _a, _b: timedelta(minutes=20)
+    )
+    commutes, _, commute_held = attendance_desired_blocks(
+        (attendance,),
+        itinerary=itinerary,
+        route=lambda _a, _b: timedelta(minutes=20),
+        now=NOW,
+        window=timedelta(days=2),
+        busy_windows=[(NOW.replace(hour=9, minute=10), NOW.replace(hour=9, minute=30))],
+    )
+    assert meeting_held == commute_held == []
+    outbound = next(b for b in commutes if b.kind == "attendance_outbound")
+    current = parse_block(
+        {"id": "retained-outbound", **build_create_args(outbound, calendar_id="primary")}
+    )
+    assert current is not None
+    for retained in ([], [current]):
+        result = build_reconcile_plan(
+            flights=[],
+            airport_info={},
+            current_blocks=retained,
+            itinerary=itinerary,
+            route=lambda _a, _b: timedelta(minutes=20),
+            now=NOW,
+            extra_desired=meeting_blocks + commutes,
+        )
+        assert not result.plan.deletes
+        assert any(h.kind == "attendance_outbound" for h in result.held)
+        assert not any(c.desired.kind == "attendance_outbound" for c in result.plan.creates)
+        assert not any(u.desired.kind == "attendance_outbound" for u in result.plan.updates)
+        planned_meetings = [
+            c.desired for c in result.plan.creates if c.desired.kind.startswith("meeting_")
+        ]
+        assert planned_meetings == meeting_blocks

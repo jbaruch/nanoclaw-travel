@@ -617,8 +617,15 @@ def build_reconcile_plan(
             returning = block.kind == "attendance_return"
             at = block.end if returning else block.start
             endpoint = block.destination if returning else block.origin
+            reason = None
             if itinerary.base_at(at).address != endpoint:
                 reason = "attendance commute final endpoint is no longer an available base"
+            elif any(
+                other is not block and other.start < block.end and block.start < other.end
+                for other in desired
+            ):
+                reason = "attendance commute conflicts with another planned drive"
+            if reason is not None:
                 held.append(
                     HeldLeg(
                         block.identity,
