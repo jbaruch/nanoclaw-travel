@@ -205,6 +205,16 @@ def test_projection_carries_attendees_and_status_for_decline_filter():
     assert event["status"] == "confirmed"
 
 
+def test_projection_carries_event_type_and_transparency_for_busy_windows():
+    raw = _event("a")
+    raw["eventType"] = "outOfOffice"
+    raw["transparency"] = "transparent"
+    with patch("urllib.request.urlopen", lambda r, timeout=None: _ok({"items": [raw]})):
+        [event] = _fetcher().fetch_window(time_min=NOW, time_max=LATER)
+    assert event["eventType"] == "outOfOffice"
+    assert event["transparency"] == "transparent"
+
+
 def test_projection_carries_description_for_recheck_poll():
     # The recheck poll reads the block's machine state back out of the
     # `description` (that is where calendar-as-state lives), so the fetch must
