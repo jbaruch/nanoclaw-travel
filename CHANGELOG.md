@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.3.1 — 2026-11-02
+
 ### Keep out-of-office, free and declined events from blocking drives (#366)
 
 The installed 0.3.0 check held every attendance commute on 2026-11-03 and 11-04 with `attendance commute conflicts with an actual Calendar interval`. The trip's `[TripIt OOO]` entry carries `dateTime` bounds across the whole trip, and the sweep read it as one meeting covering every commute. All eight upcoming trips carry the same entry. Free and self-declined events had the same effect. The sweep's busy windows now skip all three, and the same windows protect EV charging adjustments, so those no longer treat them as commitments either. Real meetings still hold a commute.
