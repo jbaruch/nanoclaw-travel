@@ -318,7 +318,7 @@ def test_meeting_legs_grouped_one_per_meeting_earliest_anchor():
 
 
 def test_wake_false_on_removes_and_routine_only():
-    applied = ApplyResult(created=0, updated=3, deleted=4, converted=1)  # counts only, no notifs
+    applied = ApplyResult(created=0, updated=3, deleted=4)  # counts only, no notifs
     payload = build_sweep_payload(applied, ["skipped a leg"])
     assert payload["wake_agent"] is False
     assert payload["data"]["added_meeting_drives"] == []
@@ -458,7 +458,7 @@ def test_payload_carries_rendered_message_on_wake():
 
 
 def test_payload_message_none_when_no_wake():
-    applied = ApplyResult(created=0, updated=3, deleted=4, converted=1)
+    applied = ApplyResult(created=0, updated=3, deleted=4)
     payload = build_sweep_payload(applied, [])
     assert payload["wake_agent"] is False
     assert payload["data"]["message"] is None

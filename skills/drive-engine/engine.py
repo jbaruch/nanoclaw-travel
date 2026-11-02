@@ -66,7 +66,6 @@ from reconcile import (  # noqa: E402
     HeldLeg,
     ParsedBlock,
     ReconcilePlan,
-    legacy_keys_for_airport_leg,
     plan_reconcile,
 )
 from suppression import is_trivial_leg  # noqa: E402
@@ -164,17 +163,6 @@ def _summary(leg: ConcreteLeg) -> str:
     return f"Drive: {leg.origin_airport} → {leg.dest_airport}"
 
 
-def _legacy_keys(leg: ConcreteLeg) -> frozenset[tuple[str, str, str]]:
-    kind = (
-        "airport_departure"
-        if leg.kind is LegKind.AIRPORT_DEPARTURE
-        else "airport_arrival"
-        if leg.kind is LegKind.AIRPORT_ARRIVAL
-        else "airport_transfer"
-    )
-    return legacy_keys_for_airport_leg(kind, leg.flight.byair_flight_ids)
-
-
 def _implausible(side: str, leg: ConcreteLeg, drive: timedelta, origin: str, dest: str) -> str:
     hours = drive.total_seconds() / 3600
     return (
@@ -240,7 +228,6 @@ def _build_departure(
             baseline_seconds=int(drive.total_seconds()),
             anchor=anchor,
             timezone=leg.timezone,
-            legacy_keys=_legacy_keys(leg),
         ),
         None,
         False,
@@ -283,7 +270,6 @@ def _build_arrival(
             baseline_seconds=int(drive.total_seconds()),
             anchor=anchor,
             timezone=leg.timezone,
-            legacy_keys=_legacy_keys(leg),
         ),
         None,
         False,
@@ -406,7 +392,6 @@ def build_reconcile_plan(
     overrides: BufferOverrides | None = None,
     extra_desired: list[DesiredBlock] | None = None,
     extra_held: list[HeldLeg] | None = None,
-    managed_legacy: frozenset[str] | None = None,
     postarrival_meetings: list[PostarrivalMeeting] | None = None,
     adjust_drives: Callable[
         [list[DesiredBlock], list[tuple[datetime, datetime]], list[ParsedBlock], list[HeldLeg]],
@@ -426,9 +411,6 @@ def build_reconcile_plan(
     kept (#334). `postarrival_meetings` are timed in-person meetings composed with
     inbound arrivals before reconcile (#350): a reachable ongoing meeting replaces
     airport-to-lodging, and no desired drive may start inside a flight interval.
-    `managed_legacy`, when given, is passed through to
-    `plan_reconcile` to scope which legacy generations the engine may converge /
-    orphan-delete.
 
     A leg that could not be computed — no resolvable position, a failed or
     implausible route, a drive window already past — is held, never dropped: its
@@ -642,12 +624,7 @@ def build_reconcile_plan(
     desired = available_desired
 
     held_keys = frozenset(leg.key for leg in held)
-    if managed_legacy is None:
-        plan = plan_reconcile(desired, current_blocks, held=held_keys, now=now)
-    else:
-        plan = plan_reconcile(
-            desired, current_blocks, managed_legacy=managed_legacy, held=held_keys, now=now
-        )
+    plan = plan_reconcile(desired, current_blocks, held=held_keys, now=now)
     return EngineResult(
         plan=plan, skipped=tuple(skipped), held=tuple(held), origin_sources=tuple(origin_sources)
     )

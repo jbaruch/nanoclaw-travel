@@ -15,18 +15,11 @@ from reconcile import ReconcilePlan
 
 
 def plan_counts(plan: ReconcilePlan) -> dict[str, int]:
-    """Stable action counts for acceptance checks and at-a-glance logging.
-
-    `deletes` counts standalone deletes; the legacy events folded into converts
-    are reported separately as `legacy_converted` so a shadow run's delete-diff can
-    be compared against the counted garbage without double-counting.
-    """
+    """Stable action counts for acceptance checks and at-a-glance logging."""
     return {
         "creates": len(plan.creates),
         "updates": len(plan.updates),
         "deletes": len(plan.deletes),
-        "converts": len(plan.converts),
-        "legacy_converted": sum(len(c.legacy_event_ids) for c in plan.converts),
     }
 
 
@@ -43,8 +36,7 @@ def render_plan(plan: ReconcilePlan, *, header: str = "[shadow] reconcile plan")
     counts = plan_counts(plan)
     lines = [
         f"{header}: {counts['creates']} create, {counts['updates']} update, "
-        f"{counts['deletes']} delete, {counts['converts']} convert "
-        f"({counts['legacy_converted']} legacy events)"
+        f"{counts['deletes']} delete"
     ]
     if plan.is_noop:
         lines.append("  (no changes)")
@@ -56,9 +48,6 @@ def render_plan(plan: ReconcilePlan, *, header: str = "[shadow] reconcile plan")
         )
     for u in plan.updates:
         lines.append(f"  ~ UPDATE {_leg(u.desired)}  (event {u.event_id})")
-    for cv in plan.converts:
-        ids = ", ".join(str(e) for e in cv.legacy_event_ids)
-        lines.append(f"  ⇄ CONVERT {_leg(cv.desired)}  (adopt+delete legacy: {ids})")
     for d in plan.deletes:
         lines.append(f"  - DELETE event {d.event_id}  ({d.reason})")
     return "\n".join(lines)

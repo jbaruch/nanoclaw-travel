@@ -1,5 +1,9 @@
 # Changelog
 
+### Delete the drive engine's dead legacy-block path (#369)
+
+The convert path and the legacy block readers never ran: the live sweep managed no legacy generation, and no old drive-planner or flight-assist blocks are left. Removed, keeping the shadow dry run.
+
 ## 0.3.1 — 2026-11-02
 
 ### Keep out-of-office, free and declined events from blocking drives (#366)

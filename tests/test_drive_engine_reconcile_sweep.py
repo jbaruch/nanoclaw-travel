@@ -2,8 +2,7 @@
 
 Deterministic fixtures only — hand-built byAir records, pre-built meeting blocks,
 a fake airport resolver and router, fixed `now`. These pin: airport + meeting
-blocks are combined into ONE plan; legacy drive-planner (dp) blocks on the calendar
-are LEFT UNTOUCHED (managed_legacy empty — the operator cleans them up); an
+blocks are combined into ONE plan; an
 unresolvable airport is skipped, not guessed. main()'s live I/O work (`_run_sweep`)
 is not unit-tested, but main()'s outer-boundary contract — generic error payload vs.
 work payload — is, via a monkeypatched `_run_sweep`. The airport-resolution policy
@@ -25,7 +24,6 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 import pytest  # noqa: E402
 import reconcile_sweep  # noqa: E402
 from airport_facts_cache import StaticAirport  # noqa: E402
-from block_codec import GEN_LEGACY_DP, ParsedBlock  # noqa: E402
 from flight_identity import TRIPIT, Flight  # noqa: E402
 from maps_client import MapsError, TravelTime  # noqa: E402
 from reconcile import Create, Delete, DesiredBlock, ReconcilePlan  # noqa: E402
@@ -209,29 +207,6 @@ def test_combines_airport_and_meeting_blocks():
     # a single BNA->JFK flight yields departure + arrival; plus the meeting
     assert "meeting_outbound" in kinds
     assert "airport_departure" in kinds and "airport_arrival" in kinds
-
-
-def test_legacy_dp_blocks_left_untouched():
-    # An existing drive-planner meeting block must NOT be deleted or converted —
-    # the operator cleans those up; the engine only manages its own blocks.
-    dp = ParsedBlock(
-        generation=GEN_LEGACY_DP,
-        event_id="dp-swim",
-        legacy_id="mtg-swim",
-        legacy_direction="outbound",
-    )
-    result = build_plan(
-        flight_records=[],
-        resolve_airport=_resolve_airport,
-        meeting_blocks=[_meeting_block()],
-        current_blocks=[dp],
-        route=_route,
-        now=NOW,
-        home_address=HOME,
-    )
-    assert all(d.event_id != "dp-swim" for d in result.plan.deletes)
-    assert result.plan.deletes == ()  # nothing deleted
-    assert any(c.desired.kind == "meeting_outbound" for c in result.plan.creates)
 
 
 def test_no_home_off_trip_degrades_not_crashes():
@@ -667,8 +642,6 @@ def test_shadow_payload_reports_planned_counts_not_applied():
         "creates": 1,
         "updates": 0,
         "deletes": 1,
-        "converts": 0,
-        "legacy_converted": 0,
     }
     assert data["skipped"] == 1
     # a shadow run applied nothing, so it must not report `applied` counts

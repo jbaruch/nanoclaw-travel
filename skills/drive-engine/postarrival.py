@@ -18,7 +18,7 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from block_codec import GEN_LEGACY_DP, GEN_UNIFIED, ParsedBlock  # noqa: E402
+from block_codec import GEN_UNIFIED, ParsedBlock  # noqa: E402
 from meeting_source import DEFAULT_MAX_REASONABLE_DRIVE, MIN_MEETING_DRIVE  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
 from scan import DEFAULT_TIGHT_GAP_SECONDS, same_place  # noqa: E402
@@ -595,7 +595,6 @@ def _apply_handoff(
                 baseline_seconds=int(ret_drive.total_seconds()),
                 anchor=meeting.end,
                 timezone=meeting.timezone,
-                legacy_keys=frozenset({(GEN_LEGACY_DP, meeting.identity, "return")}),
             )
         )
     elif not need_return:

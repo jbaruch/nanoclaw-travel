@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
-from block_codec import GEN_LEGACY_FADRIVE, GEN_UNIFIED, ParsedBlock  # noqa: E402
+from block_codec import GEN_UNIFIED, ParsedBlock  # noqa: E402
 from engine import AirportInfo, build_reconcile_plan  # noqa: E402
 from flight_identity import BYAIR, TRIPIT, Flight  # noqa: E402
 
@@ -80,15 +80,6 @@ def test_airport_blocks_carry_airport_timezone():
 
 def const_route(minutes):
     return lambda o, d: timedelta(minutes=minutes)
-
-
-def legacy(flight_id, direction, event_id):
-    return ParsedBlock(
-        generation=GEN_LEGACY_FADRIVE,
-        event_id=event_id,
-        legacy_id=flight_id,
-        legacy_direction=direction,
-    )
 
 
 # --- single flight ----------------------------------------------------------
@@ -369,36 +360,6 @@ def test_past_flight_builds_no_legs_and_is_skipped():
     )
     assert result.plan.creates == ()
     assert any("past" in s for s in result.skipped)
-
-
-def test_jul12_itinerary_converges_storm_and_deletes_connection_orphans():
-    chain = [
-        flight("STN", "CPH", _dt(9), _dt(11), fid=6277117, trip_id=7),
-        flight("CPH", "JFK", _dt(13), _dt(20), fid=3358446, trip_id=7),
-        flight("JFK", "BNA", _dt(22), _dt(23, 30), fid=3359520, trip_id=7),
-    ]
-    current = (
-        [legacy("6277117", "to_airport", f"stn{i}") for i in range(5)]
-        + [legacy("3358446", "to_airport", f"cph{i}") for i in range(7)]
-        + [legacy("3359520", "to_airport", "jfk1")]
-    )
-    result = build_reconcile_plan(
-        flights=chain,
-        airport_info=_us_info("STN", "CPH", "JFK", "BNA"),
-        current_blocks=current,
-        route=const_route(30),
-        home_address=HOME,
-        now=NOW,
-    )
-    plan = result.plan
-    # STN departure converges the 5 legacy STN blocks
-    assert len(plan.converts) == 1
-    assert len(plan.converts[0].legacy_event_ids) == 5
-    # the closing BNA arrival is a fresh create (no legacy for it)
-    assert any(c.desired.kind == "airport_arrival" for c in plan.creates)
-    # the 7 CPH + 1 JFK connection blocks are orphan-deleted
-    assert len(plan.deletes) == 8
-    assert all("legacy orphan" in d.reason for d in plan.deletes)
 
 
 # --- suppression / degrade --------------------------------------------------

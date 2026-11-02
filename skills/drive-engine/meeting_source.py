@@ -34,7 +34,7 @@ _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
-from block_codec import GEN_LEGACY_DP, parse_block  # noqa: E402
+from block_codec import parse_block  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
 from scan import same_place  # noqa: E402
 
@@ -43,26 +43,17 @@ _DRIVE_SUMMARY_PREFIX = "Drive:"
 
 
 def exclude_drive_block_events(events: list[dict]) -> list[dict]:
-    """Filter the meeting scan input (#156 — calendar-as-output), keeping dp blocks.
+    """Filter the meeting scan input (#156 — calendar-as-output).
 
-    Drops the drive blocks the reused `scan` CANNOT classify — the engine's own
-    unified (dengine) blocks and legacy flight-assist (fadrive) airport blocks —
-    so a later sweep never treats one as a meeting and plans a drive TO the drive
-    block (self-referential duplicate).
-
-    KEEPS legacy drive-planner (dp) blocks: `scan` recognizes those and uses them
-    to bucket a meeting as already-handled (`has_block`). Hiding them would make
-    `scan` re-plan that meeting and the engine would create a dengine block on top
-    of the existing dp block — a duplicate. A `Drive:`-prefixed block with an
-    unreadable marker is dropped too (it can't be a genuine meeting).
+    Drops the engine's own drive blocks so a later sweep never treats one as a
+    meeting and plans a drive TO the drive block (self-referential duplicate). A
+    `Drive:`-prefixed block with an unreadable marker is dropped too.
     """
     kept: list[dict] = []
     for event in events:
         parsed = parse_block(event)
         if parsed is not None:
-            if parsed.generation == GEN_LEGACY_DP:
-                kept.append(event)  # scan needs dp blocks for has_block detection
-            continue  # dengine / fadrive — scan can't classify them; drop
+            continue  # the engine's own block — not a meeting
         summary = event.get("summary") if isinstance(event, dict) else None
         if isinstance(summary, str) and summary.strip().startswith(_DRIVE_SUMMARY_PREFIX):
             continue  # a Drive: block with an unreadable marker — not a meeting
@@ -347,7 +338,6 @@ def meeting_desired_blocks(
                         if isinstance(gap, int) and leg.arrive_by is not None
                         else None
                     ),
-                    legacy_keys=frozenset({(GEN_LEGACY_DP, meeting.meeting_id, leg.direction)}),
                 )
             )
 

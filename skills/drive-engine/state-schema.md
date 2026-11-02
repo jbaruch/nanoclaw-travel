@@ -192,14 +192,3 @@ Extended-properties shape (`extendedProperties.private`, a flat string→string 
 Blocks are stamped Tangerine (`colorId` "6") so they read as visually distinct from meetings and flights (#167). The colour is a write-only presentation attribute, not machine state read back off the event — `calendar_apply.py` sets it on both create and shift (named constant `_DRIVE_BLOCK_COLOR_ID`); no reader consults it.
 
 The API fetch / create / patch / delete go through `google_calendar_client` — the native Calendar REST API, brokered by OneCLI's gateway (nanoclaw#638).
-
-### Legacy drive-planner blocks — recognized, never written
-
-Blocks the retired drive-planner (#156) left on the calendar carry a `[drive-planner:meeting=<id>:dir=<dir>]` marker and a `<!--dp:{...}-->` state comment. **Nothing writes this shape** — the sweep that did is retired and its codec is deleted (#181). Two readers still care, and both read the marker only:
-
-- `scan.py` (`_MARKER_RE`) buckets the served meeting as `has_block`, so the engine does not plan a duplicate drive on top of a block that already exists;
-- `block_codec.parse_block` classifies the event as `GEN_LEGACY_DP` on the marker plus the *presence* of the `<!--dp:-->` comment, so `meeting_source.exclude_drive_block_events` can keep it in the scan input while dropping the engine's own blocks.
-
-The `<!--dp:-->` payload's keys (`v`, `b`, `a`, `o`, `d`, `al`) are **not decoded by anything** — `block_props.parse_block` was their only reader and went with #181. They are inert bytes on deployed events; the comment survives as a recognition signal, not a record.
-
-The engine never converges or deletes these blocks (`_MANAGED_LEGACY` is empty) — the operator cleans them up. Once none remain on the calendar, both readers above are dead code and can go.
