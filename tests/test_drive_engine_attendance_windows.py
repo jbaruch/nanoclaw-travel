@@ -25,7 +25,11 @@ from conference_attendance import (  # noqa: E402
 from engine import itinerary_for  # noqa: E402
 from meeting_source import meeting_desired_blocks  # noqa: E402
 from reconcile import plan_reconcile  # noqa: E402
-from reconcile_sweep import build_sweep_payload, meeting_anchor  # noqa: E402
+from reconcile_sweep import (  # noqa: E402
+    _calendar_busy_windows,
+    build_sweep_payload,
+    meeting_anchor,
+)
 from scan import scan  # noqa: E402
 
 NOW = datetime(2020, 7, 13, 7, tzinfo=UTC)
@@ -325,6 +329,73 @@ def test_uncertain_commute_is_held_not_deleted(fault):
         busy_windows=[(NOW.replace(hour=8), NOW.replace(hour=9))] if fault == "conflict" else [],
     )
     assert skipped and any(item.kind == "attendance_outbound" for item in held)
+
+
+def _timed_event(start, end, **fields):
+    return {
+        "start": {"dateTime": start.isoformat()},
+        "end": {"dateTime": end.isoformat()},
+        **fields,
+    }
+
+
+def test_only_events_occupying_time_become_busy_windows():
+    start, end = NOW.replace(hour=8), NOW.replace(hour=9)
+    assert (
+        _calendar_busy_windows(
+            [
+                _timed_event(start, end, summary="[TripIt OOO] Trip", eventType="outOfOffice"),
+                _timed_event(start, end, summary="Reclaim hold", transparency="transparent"),
+                _timed_event(
+                    start,
+                    end,
+                    summary="Declined",
+                    attendees=[{"self": True, "responseStatus": "declined"}],
+                ),
+                _timed_event(start, end, summary="Gone", status="cancelled"),
+                {"start": {"date": "2020-07-14"}, "end": {"date": "2020-07-15"}},
+            ]
+        )
+        == []
+    )
+    assert _calendar_busy_windows(
+        [
+            _timed_event(
+                start,
+                end,
+                summary="Accepted",
+                eventType="default",
+                transparency="opaque",
+                attendees=[{"self": True, "responseStatus": "accepted"}],
+            ),
+        ]
+    ) == [(start, end)]
+    assert _calendar_busy_windows([{"start": {"dateTime": "soon"}, "end": {}}]) is None
+
+
+def test_commutes_plan_across_the_trips_out_of_office_event():
+    attendance, itinerary = model()
+
+    def plan(busy):
+        return attendance_desired_blocks(
+            (attendance,),
+            itinerary=itinerary,
+            route=lambda _a, _b: timedelta(minutes=20),
+            now=NOW,
+            window=timedelta(days=2),
+            busy_windows=busy,
+        )
+
+    whole_trip = _timed_event(
+        NOW - timedelta(days=1), NOW + timedelta(days=3), eventType="outOfOffice"
+    )
+    blocks, _, held = plan(_calendar_busy_windows([whole_trip]))
+    assert blocks and not held
+    assert blocks == plan([])[0]
+
+    # The same span as a real meeting still holds them.
+    _, _, held = plan(_calendar_busy_windows([{**whole_trip, "eventType": "default"}]))
+    assert held
 
 
 def test_intake_three_choices_use_existing_owner_answer_without_state(

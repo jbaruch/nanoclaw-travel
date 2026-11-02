@@ -302,7 +302,7 @@ def _parse_iso(raw: object) -> datetime | None:
     return parsed
 
 
-def _self_declined(attendees: object) -> bool:
+def self_declined(attendees: object) -> bool:
     """True when the operator's own attendee entry RSVP'd `declined`.
 
     Google Calendar marks the operator's row with `self: true` and carries
@@ -446,7 +446,7 @@ def _parse_event(raw: object) -> _Event:
         end=end,
         all_day=start_all_day or end_all_day,
         marker=marker,
-        declined=_self_declined(raw.get("attendees")),
+        declined=self_declined(raw.get("attendees")),
         cancelled=raw.get("status") == "cancelled",
         timezone=_extract_timezone(raw.get("start")),
     )

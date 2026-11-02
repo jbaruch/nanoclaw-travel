@@ -1520,14 +1520,25 @@ def _plan_lodging_legs(
 
 
 def _calendar_busy_windows(events: list) -> list[tuple[datetime, datetime]] | None:
-    """Timed native event bounds; malformed active bounds remain unknown."""
+    """Timed native bounds of events that occupy the operator's time.
+
+    Malformed active bounds remain unknown. An out-of-office entry spans a whole
+    trip, and a free or self-declined entry holds no time, so none of them block
+    a drive.
+    """
     from block_codec import event_bounds
+    from scan import self_declined
 
     windows = []
     for event in events:
         if not isinstance(event, dict):
             return None
-        if event.get("status") == "cancelled":
+        if (
+            event.get("status") == "cancelled"
+            or event.get("eventType") == "outOfOffice"
+            or event.get("transparency") == "transparent"
+            or self_declined(event.get("attendees"))
+        ):
             continue
         start, end = event.get("start"), event.get("end")
         if (

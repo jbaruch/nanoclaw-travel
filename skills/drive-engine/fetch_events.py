@@ -90,6 +90,8 @@ _EVENT_FIELDS = (
     "extendedProperties",
     "attendees",  # scan.py reads the operator's RSVP to skip declined meetings
     "status",  # scan.py skips cancelled events
+    "eventType",  # reconcile_sweep: an out-of-office entry occupies no time
+    "transparency",  # reconcile_sweep: a free entry occupies no time
 )
 
 
