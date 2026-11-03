@@ -186,9 +186,9 @@ def test_day_before_with_a_date_label_and_no_calendar():
             {
                 "reason": "tracked_flight_removed",
                 "code": "DL9",
-                "scheduled_dep_time": "2026-12-01T08:00:00Z",
+                "scheduled_dep_time": "2026-10-01T08:00:00Z",
             },
-            "Flight DL9 on 2026-12-01 disappeared from tracking",
+            "Flight DL9 on 2026-10-01 disappeared from tracking",
         ),
     ],
 )
@@ -258,11 +258,11 @@ def test_new_flights_are_announced_only_when_nothing_else_came():
         "event": {
             "reason": "tracked_flight_added",
             "code": "DL9",
-            "scheduled_dep_time": "2026-12-01T08:00:00Z",
+            "scheduled_dep_time": "2026-10-01T08:00:00Z",
         },
     }
     assert compose([added], lambda fid: None, lambda fid: None) == [
-        ([], "Now tracking DL9 on 2026-12-01.")
+        ([], "Now tracking DL9 on 2026-10-01.")
     ]
     other = {"flight_id": None, "event": {"reason": "byair_recovered"}}
     assert compose([added, other], lambda fid: None, lambda fid: None) == [
