@@ -36,7 +36,7 @@ if str(_BUNDLE_DIR) not in sys.path:
 
 from block_codec import parse_block  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
-from scan import same_place  # noqa: E402
+from scan import _MARKER_RE, same_place  # noqa: E402
 
 # A drive block's human summary always starts with this.
 _DRIVE_SUMMARY_PREFIX = "Drive:"
@@ -47,7 +47,9 @@ def exclude_drive_block_events(events: list[dict]) -> list[dict]:
 
     Drops the engine's own drive blocks so a later sweep never treats one as a
     meeting and plans a drive TO the drive block (self-referential duplicate). A
-    `Drive:`-prefixed block with an unreadable marker is dropped too.
+    `Drive:`-prefixed block with an unreadable marker is dropped too, except a
+    block the retired drive-planner left on the calendar: `scan` reads its
+    marker to bucket that meeting as `has_block`, so no duplicate is planned.
     """
     kept: list[dict] = []
     for event in events:
@@ -56,6 +58,9 @@ def exclude_drive_block_events(events: list[dict]) -> list[dict]:
             continue  # the engine's own block — not a meeting
         summary = event.get("summary") if isinstance(event, dict) else None
         if isinstance(summary, str) and summary.strip().startswith(_DRIVE_SUMMARY_PREFIX):
+            description = event.get("description")
+            if isinstance(description, str) and _MARKER_RE.search(description):
+                kept.append(event)  # a retired drive-planner block: scan needs its marker
             continue  # a Drive: block with an unreadable marker — not a meeting
         kept.append(event)
     return kept

@@ -207,6 +207,34 @@ def test_exclude_drive_block_events_by_marker():
     assert [e["id"] for e in kept] == ["e1"]
 
 
+def test_exclude_keeps_retired_drive_planner_blocks_for_scan_has_block():
+    # A block the retired drive-planner left must PASS THROUGH: scan reads its
+    # marker to bucket the meeting as already handled. Dropping it would make
+    # the engine create a duplicate block on top of it.
+    events = [
+        {
+            "id": "dp1",
+            "summary": "Drive: Swimming Practice",
+            "description": "x\n[drive-planner:meeting=mtg9:dir=outbound]\n",
+        },
+        {
+            "id": "de1",
+            "summary": "Drive: Football",
+            "extendedProperties": build_extended_properties(
+                identity="mtg8",
+                kind="meeting_outbound",
+                baseline_seconds=600,
+                anchor=_dt(8, 0),
+                origin="Home",
+                destination="Venue",
+            ),
+        },
+        {"id": "x1", "summary": "Drive: no marker at all"},
+        {"id": "m1", "summary": "Real meeting"},
+    ]
+    assert [e["id"] for e in exclude_drive_block_events(events)] == ["dp1", "m1"]
+
+
 # --- display zone (#301) ----------------------------------------------------
 
 
