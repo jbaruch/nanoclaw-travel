@@ -7,11 +7,10 @@ returning the raw Google Calendar event dicts in the exact shape
 `scan(events=...)` consumes (`id`, `summary`, `location`, `start`, `end`,
 `description`, `extendedProperties`). Block state IS the calendar event (Epic
 #59 §4 — fetched by API), carried in `extendedProperties.private` since the
-#178 writer flip (and in the `description` for pre-flip blocks the reader still
-accepts), so both come back verbatim: `exclude_drive_block_events` reads them
-through `parse_block` to drop the engine's own blocks from the scan input, and
-`scan.py` reads the `description` to recognize a legacy drive-planner block by
-its marker.
+#178 writer flip, so it comes back verbatim: `exclude_drive_block_events` reads
+it through `parse_block` to drop the engine's own blocks from the scan input.
+The `description` comes back too: `scan.py` reads it to recognize a legacy
+drive-planner block by its marker.
 
 This used to be a second, self-contained Composio transport — its own HTTP
 POST, its own auth headers, its own success/failure envelope handling, its own
@@ -75,11 +74,11 @@ _BASE_ARGS = {"calendar_id": "primary", "singleEvents": True}
 # Event fields carried through verbatim from the raw event. `scan.py` reads
 # id/summary/location/start/end/description/extendedProperties. A drive block's
 # machine state is the calendar event itself (Epic #59 §4 — fetched by API):
-# since the #178 writer flip it rides in `extendedProperties.private`, and in the
-# `description` for pre-flip blocks and the legacy drive-planner marker `scan.py`
-# still recognizes. `block_codec.parse_block` reads `extendedProperties.private`
-# first, the description second, so both must be carried through — that is what
-# lets `exclude_drive_block_events` and `scan` tell a block from a meeting.
+# since the #178 writer flip it rides in `extendedProperties.private`, which
+# `block_codec.parse_block` reads. The `description` carries the legacy
+# drive-planner marker `scan.py` still recognizes. Both must be carried
+# through — that is what lets `exclude_drive_block_events` and `scan` tell a
+# block from a meeting.
 _EVENT_FIELDS = (
     "id",
     "summary",

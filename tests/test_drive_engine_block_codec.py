@@ -20,8 +20,6 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 from block_codec import (  # noqa: E402
     ALERT_GROWTH,
     ALERT_LEAVE_NOW,
-    GEN_LEGACY_DP,
-    GEN_LEGACY_FADRIVE,
     GEN_UNIFIED,
     build_extended_properties,
     canonical_flight_key,
@@ -233,33 +231,6 @@ def test_extended_missing_leg_identity_is_no_unified_state():
 
 
 # --- legacy-description reader (cutover) -------------------------------------
-
-
-def test_reads_legacy_fadrive_block():
-    desc = (
-        "Drive: → CPH (SK915)\n"
-        "[flight-assist:flight=3358446:dir=to_airport]\n"
-        '<!--fadrive:{"schema_version":1,"b":900,"a":"2020-07-12T08:00:00+00:00",'
-        '"o":"here","d":"CPH","al":""}-->'
-    )
-    parsed = parse_block({"id": "old1", "description": desc})
-    assert parsed is not None
-    assert parsed.generation == GEN_LEGACY_FADRIVE
-    assert parsed.legacy_id == "3358446"
-    assert parsed.legacy_direction == "to_airport"
-
-
-def test_reads_legacy_dp_block():
-    desc = (
-        "Drive: Keynote\n"
-        "[drive-planner:meeting=abc123:dir=outbound]\n"
-        '<!--dp:{"v":2,"b":600,"a":"2020-07-12T08:00:00+00:00","o":"home","d":"venue","al":""}-->'
-    )
-    parsed = parse_block({"id": "old2", "description": desc})
-    assert parsed is not None
-    assert parsed.generation == GEN_LEGACY_DP
-    assert parsed.legacy_id == "abc123"
-    assert parsed.legacy_direction == "outbound"
 
 
 # --- tolerance --------------------------------------------------------------
