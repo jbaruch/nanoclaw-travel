@@ -1,8 +1,8 @@
 # Precheck Wake Event Payloads
 
-Reference for the `data.events` payload the precheck script emits on `wake_agent: true`. Each event is `{"flight_id": int | null, "event": {...}}`. `flight_id` is `null` only for the source-level events (`byair_unreachable`, `byair_recovered`, `sync_internal_error`, `sync_internal_recovered`). Consumed by `SKILL.md` Step 3 to compose user-facing notifications.
+Reference for the events the precheck renders into notices (`notices.py`) and reports in its `data.events`. Each event is `{"flight_id": int | null, "event": {...}}`. `flight_id` is `null` only for the source-level events (`byair_unreachable`, `byair_recovered`, `sync_internal_error`, `sync_internal_recovered`). Consumed by `SKILL.md` Step 3 to compose user-facing notifications.
 
-Flight poll events also carry an opaque `notification_id`. The precheck persists it before advancing the snapshot. Acknowledge each ID only after `send_message` confirms delivery, following `skills/flight-assist/references/notification-delivery.md`. Source-level sync events and other callers may omit the ID.
+Flight poll events also carry an opaque `notification_id`. The precheck persists it before advancing the snapshot, sends the rendered notice through the host itself and confirms the ID only on the host's success (#370).
 
 ## Event Reasons
 

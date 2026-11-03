@@ -243,19 +243,16 @@ def test_main_emits_wake_false_on_no_sync_gate(state_root, monkeypatch):
     assert payload["data"]["reason"] == "no_imminent_flights_recent_sync"
 
 
-def test_main_delegates_to_sync_tripit_on_gate_pass(state_root, monkeypatch):
-    """When the gate passes, the precheck spawns sync_tripit.py and forwards
-    its stdout verbatim."""
-    now = datetime(2026, 5, 22, 12, 0, 0, tzinfo=UTC)
-    write_flight_state(_flight_state(707, dep_time=now + timedelta(hours=2)))
-    write_active_flights([707])
-
-    sync_output = json.dumps({"wake_agent": True, "data": {"events": [{"flight_id": 707}]}})
+def _run_sync(monkeypatch, now, events, send):
+    sync_output = json.dumps({"wake_agent": bool(events), "data": {"events": events}})
 
     class _FakeResult:
         stdout = sync_output + "\n"
         stderr = ""
 
+    import host_send
+
+    monkeypatch.setattr(host_send, "send_message", send)
     buf = _capture_stdout(monkeypatch)
     with patch("sync_tripit_precheck.datetime") as mock_datetime:
         mock_datetime.now.return_value = now
@@ -263,11 +260,42 @@ def test_main_delegates_to_sync_tripit_on_gate_pass(state_root, monkeypatch):
         mock_datetime.fromtimestamp = datetime.fromtimestamp
         with patch("sync_tripit_precheck.subprocess.run", return_value=_FakeResult()) as mock_run:
             rc = precheck.main()
-
-    assert rc == 0
     mock_run.assert_called_once()
-    # Sync output appears on stdout (precheck doesn't reshape it).
-    assert sync_output in buf.getvalue()
+    return rc, json.loads(buf.getvalue())
+
+
+def test_main_sends_the_sync_notices_through_the_host(state_root, monkeypatch):
+    """#370: the precheck renders each sync event and sends it through the
+    host itself; it never wakes the model."""
+    now = datetime(2026, 5, 22, 12, 0, 0, tzinfo=UTC)
+    write_flight_state(_flight_state(707, dep_time=now + timedelta(hours=2)))
+    write_active_flights([707])
+    sent = []
+    events = [
+        {"flight_id": None, "event": {"reason": "byair_recovered", "failures_before_recovery": 4}}
+    ]
+    rc, payload = _run_sync(monkeypatch, now, events, sent.append)
+    assert rc == 0
+    assert sent == ["Flight sync with byAir recovered."]
+    assert payload["wake_agent"] is False
+    assert (payload["data"]["sent"], payload["data"]["send_failed"]) == (1, 0)
+
+
+def test_an_unconfirmed_sync_notice_fails_the_run(state_root, monkeypatch, capsys):
+    import host_send
+
+    now = datetime(2026, 5, 22, 12, 0, 0, tzinfo=UTC)
+    write_flight_state(_flight_state(707, dep_time=now + timedelta(hours=2)))
+    write_active_flights([707])
+
+    def refuse(text):
+        raise host_send.SendError("the host refused the send")
+
+    events = [{"flight_id": None, "event": {"reason": "sync_internal_recovered"}}]
+    rc, payload = _run_sync(monkeypatch, now, events, refuse)
+    assert rc == 1
+    assert payload["data"]["send_failed"] == 1
+    assert "notice not sent: the host refused the send" in capsys.readouterr().err
 
 
 def test_main_handles_empty_sync_subprocess_stdout(state_root, monkeypatch):
