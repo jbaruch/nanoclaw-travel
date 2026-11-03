@@ -1,11 +1,11 @@
 ---
 name: sync-tripit
-description: "Adaptive scheduler for the TripIt/byAir refresh of active-flights.json. Precheck-gated to keep byAir polling responsive on flight days and idle between travel windows. Actions: relay a sync wake's events (tracked-flight changes, sync outage and recovery), or diagnose a failed precheck run. Use when active-flights.json isn't updating, byAir polling cadence isn't matching flight density, troubleshooting flight tracking / flight notifications / flight status updates / travel schedule refresh, or setting up flight-assist on a new install. The gate predicate and threshold constants live in skills/sync-tripit/precheck.py."
+description: "Adaptive scheduler for the TripIt/byAir refresh of active-flights.json. Precheck-gated to keep byAir polling responsive on flight days and idle between travel windows. Its precheck sends the sync's notices (tracked-flight changes, sync outage and recovery) through the host itself. Action: diagnose a failed precheck run. Use when active-flights.json isn't updating, byAir polling cadence isn't matching flight density, troubleshooting flight tracking / flight notifications / flight status updates / travel schedule refresh, or setting up flight-assist on a new install. The gate predicate and threshold constants live in skills/sync-tripit/precheck.py."
 cadence: "*/5 * * * *"
 # agentModel renewal: no scanner tracks this pin. Re-check it on each new Claude model release and bump it in its own PR.
 agentModel: "claude-haiku-5-5"
 script: "precheck.py"
-precheck_timeout_ms: 90000
+precheck_timeout_ms: 120000
 user-invocable: false
 ---
 
@@ -14,29 +14,18 @@ user-invocable: false
 This skill is an action router — pick the step that matches the user's intent and execute only that step. Do not run other steps; do not parallelize.
 
 Available actions:
-- Relay a sync wake's events (the wake carries a non-empty `data.events`)
 - Diagnose a failed precheck run (operator request while troubleshooting a sync that isn't updating; the run log shows `precheck_internal_error`)
 
-**Silence rule:** produces NO user-visible output of its own. The precheck delegates wake-payload composition to `skills/flight-assist/sync_tripit.py`, which emits `wake_agent: true` only on tracked-flight added/removed events and on the sync outage events (`byair_unreachable`, `byair_recovered`, `sync_internal_error`, `sync_internal_recovered`).
+**Silence rule:** produces NO user-visible output of its own. `skills/flight-assist/sync_tripit.py` reports tracked-flight added/removed events and the sync outage events (`byair_unreachable`, `byair_recovered`, `sync_internal_error`, `sync_internal_recovered`). The precheck renders each with `skills/flight-assist/notices.py` and sends it through the host itself (#370); it never wakes the model. A send the host does not confirm makes the run exit non-zero, so it shows as an error in the run log.
 
 ## Hard rules
 
 - **No byAir call without the gate passing.** `skills/sync-tripit/precheck.py:_should_sync_now()` is the sole authority on whether a 5-min fire becomes a byAir round-trip.
 - **No state writes here.** All state mutations live in `skills/flight-assist/sync_tripit.py` + `skills/flight-assist/state.py`.
 
-## Step 1 — Relay sync wake events
+## Step 1 — Diagnose a failed precheck run
 
-This step fires when the wake carries a non-empty `data.events` list. Compose one notification per event with the flight-assist reason table:
-
-```
-Skill(skill: "tessl__flight-assist")
-```
-
-Use its Step 3 table and its composition rules. Source-level events carry `flight_id: null` and need no per-flight state. Finish here.
-
-## Step 2 — Diagnose a failed precheck run
-
-This step fires on an operator request while troubleshooting, never on a wake. A precheck that failed to execute emits `{"wake_agent": false, "data": {"reason": "precheck_internal_error"}}` and wakes nobody; the operator finds that reason in the run log. A sync that fails repeatedly does wake the agent, through Step 1's `sync_internal_error` event.
+This step fires on an operator request while troubleshooting, never on a wake. A precheck that failed to execute emits `{"wake_agent": false, "data": {"reason": "precheck_internal_error"}}` and wakes nobody; the operator finds that reason in the run log. A sync that fails repeatedly sends the owner a `sync_internal_error` notice through the host.
 
 Inspect the agent-runner host log for the Python traceback the script wrote to stderr, then match against:
 

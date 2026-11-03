@@ -7,12 +7,14 @@ flights whose poll-interval has elapsed, runs wake_rules + phase_markers
 on each, writes updated state, and emits a single-line JSON payload
 on stdout:
 
-    {"wake_agent": <bool>, "data": {"events": [...]}}
+    {"wake_agent": false, "data": {"events": [...], "sent": N, "send_failed": [...],
+                                   "reconcile": "<status>"}}
 
-When `wake_agent` is true, the scheduler wakes the agent with the
-events list as context; the agent composes user notifications.
-When false, zero LLM tokens spent. Per `coding-policy:
-script-delegation` "Precheck Gating".
+The precheck never wakes the model (#370). It renders each due notice from
+its template (`notices.py`), sends it through the host (`host_send.py`) and
+confirms it in the journal only on the host's own success; an unconfirmed
+notice is offered again after the journal's retry delay. After events it
+runs the calendar reconcile (`scripts/reconcile.py`) itself.
 
 The cadence ladder (per `state-schema.md`'s `last_polled_at`
 discipline):
@@ -36,6 +38,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 import traceback
@@ -61,10 +64,12 @@ from connection_risk import (  # noqa: E402
     DEFAULT_MIN_TRANSFER_MINUTES,
     detect_connection_risks,
 )
-from itinerary import CANCELLED, DIVERTED, Transport, parse_time  # noqa: E402
-from maps_client import MapsClient, MapsError  # noqa: E402
 
 # The co-shipped bundle path must be inserted before this import.
+from host_send import REPLY_TIMEOUT_SECONDS, SendError, send_message  # noqa: E402
+from itinerary import CANCELLED, DIVERTED, Transport, parse_time  # noqa: E402
+from maps_client import MapsClient, MapsError  # noqa: E402
+from notices import compose  # noqa: E402
 from notification_delivery import PHASE_BY_REASON, DeliveryStore, notification_store  # noqa: E402
 from operator_tz import READER_TIMEOUT_SECONDS, OperatorTz, read_operator_tz  # noqa: E402
 from phase_markers import (  # noqa: E402
@@ -144,7 +149,7 @@ _MAPS_CALL_TIMEOUT_SECONDS = _MAPS_HTTP_CALL_TIMEOUT_SECONDS * _MAPS_MAX_SERIAL_
 
 # Wall-clock budget for the whole poll loop. The agent-runner hard-kills the
 # precheck process at the budget this skill declares for itself —
-# `precheck_timeout_ms: 30000` in SKILL.md — and surfaces the kill as
+# `precheck_timeout_ms: 75000` in SKILL.md — and surfaces the kill as
 # `execfile-error`.
 #
 # That declaration and `_SCRIPT_KILL_BUDGET_SECONDS` below are ONE number in two
@@ -192,14 +197,21 @@ _MAPS_CALL_TIMEOUT_SECONDS = _MAPS_HTTP_CALL_TIMEOUT_SECONDS * _MAPS_MAX_SERIAL_
 # flight, never the lookup: a lookup skipped near the kill would turn fresh
 # at-airport GPS into permission to alert. The per-call bounds leave room for
 # both the lookup and the real operator-zone reader in one flight.
-_SCRIPT_KILL_BUDGET_SECONDS = 30.0
+#
+# Since #370 the precheck also sends its notices and runs the calendar
+# reconcile after the poll loop. `_DELIVERY_RESERVE_SECONDS` of the kill budget
+# is held back for that, so the poll loop keeps its earlier 30-second share.
+_SCRIPT_KILL_BUDGET_SECONDS = 75.0
+_DELIVERY_RESERVE_SECONDS = 45.0
 _INTERPRETER_TEARDOWN_HEADROOM_SECONDS = 4.0
 _CYCLE_POLL_HEADROOM_SECONDS = (
     _BYAIR_CALL_TIMEOUT_SECONDS
     + _MAPS_CALL_TIMEOUT_SECONDS
     + _INTERPRETER_TEARDOWN_HEADROOM_SECONDS
 )
-_CYCLE_WALL_CLOCK_BUDGET_SECONDS = _SCRIPT_KILL_BUDGET_SECONDS - _CYCLE_POLL_HEADROOM_SECONDS
+_CYCLE_WALL_CLOCK_BUDGET_SECONDS = (
+    _SCRIPT_KILL_BUDGET_SECONDS - _DELIVERY_RESERVE_SECONDS - _CYCLE_POLL_HEADROOM_SECONDS
+)
 _READER_RESERVE_SECONDS = READER_TIMEOUT_SECONDS
 _AIRPORT_LOOKUP_RESERVE_SECONDS = _BYAIR_CALL_TIMEOUT_SECONDS
 
@@ -211,6 +223,12 @@ def main() -> int:
     # bubbling out would silently disable the wake contract for every
     # subsequent run, so the outermost catch emits a safe-shape JSON +
     # writes the traceback to stderr per error-handling.md's carve-out.
+    started = time.monotonic()
+
+    def time_left() -> float:
+        spent = time.monotonic() - started
+        return _SCRIPT_KILL_BUDGET_SECONDS - _INTERPRETER_TEARDOWN_HEADROOM_SECONDS - spent
+
     try:
         now_utc = datetime.now(UTC)
         # Defense-in-depth trip-window gate (#147). The host pre-spawn gate
@@ -234,12 +252,97 @@ def main() -> int:
             # consecutive-failure counter); this keeps the run log honest.
             data["error"] = "byair_poll_failed"
             data["poll_failed_ids"] = sorted(poll_failed)
-        _emit({"wake_agent": bool(events), "data": data})
+        if events:
+            data.update(_deliver(events, now_utc=now_utc, time_left=time_left))
+            if time_left() > _RECONCILE_TIMEOUT_SECONDS:
+                data["reconcile"] = _reconcile()
+            else:
+                data["reconcile"] = "deferred"
+        _emit({"wake_agent": False, "data": data})
         return 0
     except Exception:  # noqa: BLE001 — outer-boundary-process-contract
         traceback.print_exc(file=sys.stderr)
         _emit({"wake_agent": False, "data": {"error": "precheck_exception"}})
         return 0  # exit 0 with safe-shape JSON so the scheduler reads "no wake"
+
+
+_SCRIPTS = Path(__file__).resolve().parent / "scripts"
+_DAY_BEFORE_TIMEOUT_SECONDS = 15
+_RECONCILE_TIMEOUT_SECONDS = 30
+
+
+def _day_before_calendar(flight_id: int) -> dict | None:
+    """The day-before calendar items, or None so the check goes out without them."""
+    try:
+        done = subprocess.run(
+            [sys.executable, str(_SCRIPTS / "day-before-calendar.py"), str(flight_id)],
+            capture_output=True,
+            text=True,
+            timeout=_DAY_BEFORE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        print("flight-assist precheck: day-before calendar timed out", file=sys.stderr)
+        return None
+    if done.returncode != 0:
+        print(f"flight-assist precheck: {done.stderr.strip()[:300]}", file=sys.stderr)
+        return None
+    try:
+        return json.loads(done.stdout)
+    except ValueError:
+        print("flight-assist precheck: day-before calendar printed no JSON", file=sys.stderr)
+        return None
+
+
+def _deliver(
+    events: list[dict],
+    *,
+    now_utc: datetime,
+    time_left: Callable[[], float],
+    send: Callable[[str], None] = send_message,
+    read_calendar: Callable[[int], dict | None] = _day_before_calendar,
+) -> dict:
+    """Send each composed notice through the host; confirm only what it sent.
+    A notice that no longer fits before the kill stays pending for next time."""
+    sent, failed = 0, []
+    for ids, text in compose(events, read_flight_state, read_calendar):
+        if text:
+            if time_left() < REPLY_TIMEOUT_SECONDS:
+                print("flight-assist precheck: out of time; notice left pending", file=sys.stderr)
+                failed.extend(ids or ["source-level"])
+                continue
+            try:
+                send(text)
+            except SendError as error:
+                print(f"flight-assist precheck: notice not sent: {error}", file=sys.stderr)
+                failed.extend(ids or ["source-level"])
+                continue
+            sent += 1
+        if ids:
+            with notification_store(now_utc=now_utc) as delivery:
+                delivery.confirm(ids)
+    return {"sent": sent, "send_failed": failed}
+
+
+def _reconcile() -> str:
+    """Run the calendar reconcile; a failure defers it to the next event cycle."""
+    try:
+        done = subprocess.run(
+            [sys.executable, str(_SCRIPTS / "reconcile.py")],
+            capture_output=True,
+            text=True,
+            timeout=_RECONCILE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        print("flight-assist precheck: reconcile timed out", file=sys.stderr)
+        return "timeout"
+    if done.returncode != 0:
+        print(f"flight-assist precheck: reconcile: {done.stderr.strip()[:300]}", file=sys.stderr)
+    try:
+        return str(json.loads(done.stdout).get("status", "unknown"))
+    except ValueError:
+        return "no_output"
 
 
 def _emit(payload: dict) -> None:

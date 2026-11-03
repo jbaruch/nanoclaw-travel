@@ -66,7 +66,7 @@ _IMMINENT_FLIGHT_WINDOW = timedelta(hours=24)
 _STALE_STATE_THRESHOLD = timedelta(hours=6)
 
 # The agent-runner hard-kills this precheck at the budget the skill
-# declares for itself — `precheck_timeout_ms: 90000` in SKILL.md — and
+# declares for itself — `precheck_timeout_ms: 120000` in SKILL.md — and
 # surfaces that kill as `execfile-error` with no payload.
 #
 # That declaration and `_SCRIPT_KILL_BUDGET_SECONDS` are ONE number in two
@@ -80,10 +80,10 @@ _STALE_STATE_THRESHOLD = timedelta(hours=6)
 # global — a skill that declares nothing now runs unbounded up to the
 # container kill (`MAINTENANCE_CONTAINER_TIMEOUT`, 300s).
 #
-# sync-tripit declares 90s rather than nothing because its cadence is
+# sync-tripit declares 120s rather than nothing because its cadence is
 # `*/5 * * * *` — 300s, the same as that container kill. An undeclared
 # wedge would run until the moment the next fire is due and still be
-# holding the maintenance slot. flight-assist declares 30s for the same
+# holding the maintenance slot. flight-assist declares 75s for the same
 # reason at a 2-min cadence; every other travel precheck deliberately
 # declares nothing.
 #
@@ -94,9 +94,15 @@ _STALE_STATE_THRESHOLD = timedelta(hours=6)
 # relation correct if the declared budget moves. The byAir per-call bound
 # that has to fit INSIDE this budget lives at its construction site,
 # `flight-assist/sync_tripit.py:_BYAIR_CALL_TIMEOUT_SECONDS`.
-_SCRIPT_KILL_BUDGET_SECONDS = 90.0
+#
+# Since #370 this precheck sends the sync's notices itself after the
+# subprocess returns; `_SEND_RESERVE_SECONDS` of the budget is kept for that.
+_SCRIPT_KILL_BUDGET_SECONDS = 120.0
+_SEND_RESERVE_SECONDS = 30.0
 _INTERPRETER_TEARDOWN_HEADROOM_SECONDS = 4.0
-_SYNC_SUBPROCESS_TIMEOUT = _SCRIPT_KILL_BUDGET_SECONDS - _INTERPRETER_TEARDOWN_HEADROOM_SECONDS
+_SYNC_SUBPROCESS_TIMEOUT = (
+    _SCRIPT_KILL_BUDGET_SECONDS - _SEND_RESERVE_SECONDS - _INTERPRETER_TEARDOWN_HEADROOM_SECONDS
+)
 
 
 def _load_flight_assist() -> tuple[ModuleType, Path]:
@@ -125,6 +131,25 @@ def _load_flight_assist() -> tuple[ModuleType, Path]:
     import state as state_module
 
     return state_module, flight_assist_dir / "sync_tripit.py"
+
+
+def _send_notices(events: list[dict]) -> tuple[int, int]:
+    """Render and send each sync notice through the host. These events are
+    one-shot, so a failed send is reported on stderr and by a non-zero exit."""
+    from host_send import SendError, send_message
+    from notices import compose
+
+    sent = failed = 0
+    for _ids, text in compose(events, lambda _fid: None, lambda _fid: None):
+        if not text:
+            continue
+        try:
+            send_message(text)
+            sent += 1
+        except SendError as error:
+            failed += 1
+            sys.stderr.write(f"sync-tripit precheck: notice not sent: {error}\n")
+    return sent, failed
 
 
 def _should_sync_now(state_module: ModuleType, *, now: datetime) -> tuple[bool, str]:
@@ -238,17 +263,19 @@ def main() -> int:
         # tracebacks from its outer-boundary-process-contract handler).
         if result.stderr:
             sys.stderr.write(result.stderr)
-        # Forward stdout — sync_tripit.py is contracted to emit the
-        # wake-payload JSON on stdout. If it didn't (subprocess crash,
-        # empty output), emit a safe-shape payload so the cadence-
-        # registry doesn't silently disable the next wake decision.
-        if result.stdout.strip():
-            sys.stdout.write(result.stdout)
-        else:
+        # sync_tripit.py emits its events as the wake-payload JSON. This
+        # precheck sends their notices through the host itself (#370) and
+        # never wakes the model. No output gets a safe-shape payload so the
+        # run log stays honest.
+        if not result.stdout.strip():
             _emit(
                 {"wake_agent": False, "data": {"reason": "sync_no_output", "gate_reason": reason}}
             )
-        return 0
+            return 0
+        data = json.loads(result.stdout)["data"]
+        sent, failed = _send_notices(data.get("events") or [])
+        _emit({"wake_agent": False, "data": {**data, "sent": sent, "send_failed": failed}})
+        return 1 if failed else 0
     except subprocess.TimeoutExpired:
         sys.stderr.write(
             f"sync-tripit precheck: sync_tripit.py exceeded {_SYNC_SUBPROCESS_TIMEOUT}s budget\n"
