@@ -28,7 +28,8 @@ from state import state_dir
 
 SCHEMA_VERSION = 3
 MAX_NOTICES = 2048
-MAX_BYTES = 4 * 1024 * 1024
+# The bound schema-3 journals were written under; a smaller one would strand them.
+MAX_BYTES = 4 * 1024 * 1024 + 10 * MAX_NOTICES
 MAX_EVENT_BYTES = 8192
 RETRY_SECONDS = 300
 PHASE_BY_REASON = {

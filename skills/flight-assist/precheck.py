@@ -305,7 +305,16 @@ def _deliver(
     """Send each composed notice through the host; confirm only what it sent.
     A notice that no longer fits before the kill stays pending for next time."""
     sent, failed = 0, []
-    for ids, text in compose(events, read_flight_state, read_calendar):
+
+    def budgeted_calendar(flight_id: int) -> dict | None:
+        # A calendar read runs only when it and one send still fit before the
+        # kill; otherwise the check goes out without the calendar.
+        if time_left() < _DAY_BEFORE_TIMEOUT_SECONDS + REPLY_TIMEOUT_SECONDS:
+            print("flight-assist precheck: no time for the calendar read", file=sys.stderr)
+            return None
+        return read_calendar(flight_id)
+
+    for ids, text in compose(events, read_flight_state, budgeted_calendar):
         if text:
             if time_left() < REPLY_TIMEOUT_SECONDS:
                 print("flight-assist precheck: out of time; notice left pending", file=sys.stderr)

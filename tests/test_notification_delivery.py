@@ -259,3 +259,11 @@ def test_current_notice_rows_refuse_a_legacy_key_field(store_root):
         with notification_store(now_utc=NOW):
             pytest.fail("Mixed current and legacy fields must refuse")
     assert path.read_text() == raw
+
+
+def test_the_journal_bound_is_the_one_schema_3_was_written_under():
+    import notification_delivery
+
+    assert (
+        notification_delivery.MAX_BYTES == 4 * 1024 * 1024 + 10 * notification_delivery.MAX_NOTICES
+    )

@@ -85,3 +85,32 @@ def test_the_precheck_wakes_nobody_and_reports_delivery(monkeypatch, capsys):
         "wake_agent": False,
         "data": {"events": events, "sent": 1, "send_failed": [], "reconcile": "ok"},
     }
+
+
+def test_no_calendar_read_without_time_for_it_and_a_send(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(precheck, "read_flight_state", lambda fid: STATE)
+    with notification_store(now_utc=NOW) as store:
+        store.offer(
+            42,
+            {"reason": "day_before", "day_label": "tomorrow"},
+            prior_poll=None,
+            expires_at=NOW + timedelta(hours=2),
+        )
+        events = store.due(active_ids={42}, excluded_ids=set())
+    reads = []
+
+    def calendar(fid):
+        reads.append(fid)
+        return None
+
+    tight = precheck._DAY_BEFORE_TIMEOUT_SECONDS + precheck.REPLY_TIMEOUT_SECONDS - 1
+    sent = []
+    precheck._deliver(
+        events, now_utc=NOW, time_left=lambda: tight, send=sent.append, read_calendar=calendar
+    )
+    assert reads == [] and len(sent) == 1
+    precheck._deliver(
+        events, now_utc=NOW, time_left=lambda: 60.0, send=sent.append, read_calendar=calendar
+    )
+    assert reads == [42]

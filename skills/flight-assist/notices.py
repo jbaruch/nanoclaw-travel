@@ -58,25 +58,31 @@ def clock(value: Any) -> str | None:
     return moment.strftime("%H:%M") if moment else None
 
 
-def _day(label: Any, departure: datetime | None) -> str:
+MAX_CALENDAR_LINES = 12
+
+
+def _day(label: Any) -> str | None:
+    """The precheck's own day label, never re-derived here: today, tomorrow or
+    its explicit local date; anything else leaves the day out."""
     if label in ("today", "tomorrow"):
         return str(label).capitalize()
-    moment = _when(f"{label}T00:00:00+00:00") if isinstance(label, str) else departure
-    moment = moment or departure
-    return f"{moment:%a} {moment.month}/{moment.day}" if moment else "Soon"
+    moment = _when(f"{label}T00:00:00+00:00") if isinstance(label, str) else None
+    return f"{moment:%a} {moment.month}/{moment.day}" if moment else None
 
 
 def _day_before(code: str, event: Event, state: dict, calendar: dict | None) -> str:
     snap = state.get("last_snapshot") or {}
     departure = _when(event.get("scheduled_dep_time") or state.get("scheduled_dep_time"))
     route = " → ".join(x for x in (snap.get("dep_airport_code"), snap.get("arr_airport_code")) if x)
-    text = f"{_day(event.get('day_label'), departure)}: {code}"
+    day = _day(event.get("day_label"))
+    text = f"{day}: {code}" if day else code
     text += f" {route}" if route else ""
     text += f", departs {departure:%H:%M}." if departure else "."
     items = (calendar or {}).get("events") or []
     lines = []
-    for item in items:
-        summary = item.get("summary") or "(untitled)"
+    # A notice must stay under the host's 4,000-character send limit.
+    for item in items[:MAX_CALENDAR_LINES]:
+        summary = (item.get("summary") or "(untitled)")[:120]
         if item.get("window"):
             closes = clock(item.get("end"))
             lines.append(
@@ -85,6 +91,8 @@ def _day_before(code: str, event: Event, state: dict, calendar: dict | None) -> 
             )
         else:
             lines.append(f"• {summary} {item.get('display') or ''}".rstrip())
+    if len(items) > MAX_CALENDAR_LINES:
+        lines.append(f"• …and {len(items) - MAX_CALENDAR_LINES} more")
     if lines:
         text += "\nNear it on your calendar:\n" + "\n".join(lines)
     return text

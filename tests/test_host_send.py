@@ -89,3 +89,28 @@ def test_outside_a_chat_nothing_is_queued(ipc, monkeypatch):
 def test_an_empty_notice_is_refused(ipc):
     with pytest.raises(SendError, match="characters"):
         send_message("  ", root=ipc)
+
+
+def test_the_queued_message_is_private(ipc, monkeypatch):
+    modes = []
+    real_rename = Path.rename
+
+    def watch(self, target):
+        modes.append(self.stat().st_mode & 0o777)
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", watch)
+    thread, _request = host(ipc, {"stdout": "sent"})
+    send_message("Boarding now.", root=ipc, timeout=5)
+    thread.join()
+    assert modes == [0o600]
+
+
+def test_a_failed_queue_leaves_no_temporary(ipc, monkeypatch):
+    def refuse(self, target):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "rename", refuse)
+    with pytest.raises(SendError, match="cannot queue"):
+        send_message("Boarding now.", root=ipc, timeout=1)
+    assert list((ipc / "messages").iterdir()) == []

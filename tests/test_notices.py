@@ -268,3 +268,25 @@ def test_new_flights_are_announced_only_when_nothing_else_came():
     assert compose([added, other], lambda fid: None, lambda fid: None) == [
         ([], "Flight sync with byAir recovered.")
     ]
+
+
+def test_day_before_without_a_usable_label_leaves_the_day_out():
+    for label in (None, "soon", 7):
+        event = {
+            "reason": "day_before",
+            "scheduled_dep_time": STATE["scheduled_dep_time"],
+            "day_label": label,
+        }
+        assert line(event, STATE, None) == "DL1234 BNA → LGA, departs 10:05."
+
+
+def test_a_busy_calendar_stays_under_the_send_limit():
+    event = {
+        "reason": "day_before",
+        "scheduled_dep_time": STATE["scheduled_dep_time"],
+        "day_label": "tomorrow",
+    }
+    calendar = {"events": [{"summary": "M" * 500, "display": "Tue 15:00", "window": False}] * 40}
+    text = line(event, STATE, calendar) or ""
+    assert len(text) < 4000
+    assert text.count("\n• ") == 13 and text.endswith("• …and 28 more")

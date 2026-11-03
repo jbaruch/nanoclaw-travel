@@ -54,10 +54,15 @@ def send_message(
     }
     outbox = root / "messages"
     temporary = outbox / f".flight-{request_id}.tmp"
+    # The message holds private chat text: create it exclusively at 0600 and
+    # never leave a temporary copy behind.
     try:
-        temporary.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+        handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(request, ensure_ascii=False))
         temporary.rename(outbox / f"flight-{request_id}.json")
     except OSError as error:
+        temporary.unlink(missing_ok=True)
         raise SendError(f"cannot queue the message for the host: {error}") from None
     reply = root / "input" / f"_script_result_{request_id}.json"
     deadline = monotonic() + timeout
