@@ -114,3 +114,39 @@ def test_a_failed_queue_leaves_no_temporary(ipc, monkeypatch):
     with pytest.raises(SendError, match="cannot queue"):
         send_message("Boarding now.", root=ipc, timeout=1)
     assert list((ipc / "messages").iterdir()) == []
+
+
+def test_a_reply_still_being_written_is_read_again(ipc):
+    """The host may be mid-write when the reply is first read."""
+
+    def run():
+        for _ in range(200):
+            queued = list((ipc / "messages").glob("flight-*.json"))
+            if queued:
+                request_id = json.loads(queued[0].read_text())["requestId"]
+                reply = ipc / "input" / f"_script_result_{request_id}.json"
+                reply.write_text('{"std')
+                threading.Event().wait(0.3)
+                reply.write_text(json.dumps({"stdout": "sent"}))
+                return
+            threading.Event().wait(0.01)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    send_message("x", root=ipc, timeout=5)
+    thread.join()
+
+
+def test_a_failed_reply_cleanup_never_fails_a_confirmed_send(ipc, monkeypatch, capsys):
+    real = Path.unlink
+
+    def busy(self, *args, **kwargs):
+        if self.name.startswith("_script_result_"):
+            raise OSError(16, "Device or resource busy")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", busy)
+    thread, _request = host(ipc, {"stdout": "sent"})
+    send_message("x", root=ipc, timeout=5)
+    thread.join()
+    assert "reply left for the host sweep" in capsys.readouterr().err

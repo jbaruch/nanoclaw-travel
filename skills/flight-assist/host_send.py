@@ -10,7 +10,6 @@ The model takes no part in delivery.
 
 from __future__ import annotations
 
-import errno
 import json
 import os
 import sys
@@ -72,16 +71,16 @@ def send_message(
         except FileNotFoundError:
             sleep(0.25)
             continue
-        except (OSError, ValueError) as error:
+        except ValueError:
+            sleep(0.25)  # the host may still be writing it; read again
+            continue
+        except OSError as error:
             raise SendError(f"unreadable host reply: {error}") from None
+        # The reply decides the outcome; cleaning it up never does.
         try:
             reply.unlink()
         except OSError as error:
-            # The input mount is read-only for some sessions; the host sweeps
-            # those replies. Any other unlink failure is a real fault.
-            if error.errno not in (errno.EROFS, errno.EACCES):
-                raise SendError(f"cannot remove the host reply: {error}") from None
-            print(f"host_send: reply kept for the host sweep ({error.strerror})", file=sys.stderr)
+            print(f"host_send: reply left for the host sweep ({error.strerror})", file=sys.stderr)
         if isinstance(result, dict) and "stdout" in result:
             return
         raise SendError(f"the host refused the send: {str(result)[:300]}")
