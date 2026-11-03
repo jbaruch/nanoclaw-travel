@@ -207,16 +207,15 @@ def test_exclude_drive_block_events_by_marker():
     assert [e["id"] for e in kept] == ["e1"]
 
 
-def test_exclude_keeps_legacy_dp_blocks_for_scan_has_block():
-    # A legacy drive-planner (dp) block must PASS THROUGH: scan uses it to bucket
-    # its meeting as already-handled. Dropping it would make the engine create a
-    # dengine duplicate on top of the dp block.
+def test_exclude_keeps_retired_drive_planner_blocks_for_scan_has_block():
+    # A block the retired drive-planner left must PASS THROUGH: scan reads its
+    # marker to bucket the meeting as already handled. Dropping it would make
+    # the engine create a duplicate block on top of it.
     events = [
         {
             "id": "dp1",
             "summary": "Drive: Swimming Practice",
-            "description": "x\n[drive-planner:meeting=mtg9:dir=outbound]\n"
-            '<!--dp:{"v":2,"a":"2020-07-12T08:00:00+00:00"}-->',
+            "description": "x\n[drive-planner:meeting=mtg9:dir=outbound]\n",
         },
         {
             "id": "de1",
@@ -230,12 +229,10 @@ def test_exclude_keeps_legacy_dp_blocks_for_scan_has_block():
                 destination="Venue",
             ),
         },
+        {"id": "x1", "summary": "Drive: no marker at all"},
         {"id": "m1", "summary": "Real meeting"},
     ]
-    kept = [e["id"] for e in exclude_drive_block_events(events)]
-    assert "dp1" in kept  # dp kept — scan needs it
-    assert "de1" not in kept  # dengine dropped — no self-ingestion
-    assert "m1" in kept
+    assert [e["id"] for e in exclude_drive_block_events(events)] == ["dp1", "m1"]
 
 
 # --- display zone (#301) ----------------------------------------------------

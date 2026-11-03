@@ -17,10 +17,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
-from block_codec import GEN_LEGACY_DP, GEN_LEGACY_FADRIVE, GEN_UNIFIED, ParsedBlock  # noqa: E402
+from block_codec import GEN_UNIFIED, ParsedBlock  # noqa: E402
 from reconcile import (  # noqa: E402
     DesiredBlock,
-    legacy_keys_for_airport_leg,
     plan_reconcile,
 )
 
@@ -31,7 +30,7 @@ def _dt(h, mi=0):
     return datetime(2020, 7, 12, h, mi, tzinfo=UTC)
 
 
-def desired(identity, kind="airport_departure", *, byair_ids=frozenset(), anchor=None, origin="X"):
+def desired(identity, kind="airport_departure", *, anchor=None, origin="X"):
     anchor = anchor or _dt(8)
     return DesiredBlock(
         identity=identity,
@@ -43,7 +42,6 @@ def desired(identity, kind="airport_departure", *, byair_ids=frozenset(), anchor
         destination="APT",
         baseline_seconds=1800,
         anchor=anchor,
-        legacy_keys=legacy_keys_for_airport_leg(kind, byair_ids),
     )
 
 
@@ -57,15 +55,6 @@ def unified_block(identity, kind="airport_departure", *, event_id, anchor=None, 
         origin=origin,
         destination="APT",
         baseline_seconds=1800,  # matches desired()'s baseline so "unchanged" is a no-op
-    )
-
-
-def legacy_fadrive(flight_id, direction, *, event_id):
-    return ParsedBlock(
-        generation=GEN_LEGACY_FADRIVE,
-        event_id=event_id,
-        legacy_id=flight_id,
-        legacy_direction=direction,
     )
 
 
@@ -258,77 +247,4 @@ def test_unified_orphan_is_deleted():
     assert "orphan" in plan.deletes[0].reason
 
 
-def test_legacy_orphan_is_deleted():
-    # A pre-filter fadrive block for a flight that is no longer a desired leg.
-    plan = plan_reconcile([], [legacy_fadrive("3358446", "to_airport", event_id="cph1")])
-    assert len(plan.deletes) == 1
-    assert plan.deletes[0].event_id == "cph1"
-    assert "legacy orphan" in plan.deletes[0].reason
-
-
-def test_drive_planner_meeting_blocks_are_left_untouched():
-    # The engine has no meeting-leg source yet, so it does NOT own dp (meeting)
-    # blocks: an unmatched drive-planner meeting block must never be orphaned —
-    # deleting real meeting drives would be catastrophic for the apply path.
-    dp_block = ParsedBlock(
-        generation=GEN_LEGACY_DP,
-        event_id="meeting1",
-        legacy_id="mtg-abc",
-        legacy_direction="outbound",
-    )
-    plan = plan_reconcile(
-        [desired("STN-CPH-20200712T0900Z", byair_ids=frozenset({6277117}))],
-        [dp_block, legacy_fadrive("6277117", "to_airport", event_id="stn1")],
-    )
-    # the fadrive block converges onto the desired leg; the dp block is untouched
-    assert len(plan.converts) == 1
-    assert all(d.event_id != "meeting1" for d in plan.deletes)
-    assert plan.deletes == ()
-
-
 # --- R4: legacy convergence -------------------------------------------------
-
-
-def test_legacy_block_matching_desired_is_converted():
-    ident = "STN-CPH-20200712T0900Z"
-    plan = plan_reconcile(
-        [desired(ident, kind="airport_departure", byair_ids=frozenset({6277117}))],
-        [legacy_fadrive("6277117", "to_airport", event_id="stn1")],
-    )
-    assert plan.creates == ()  # became a convert, not a plain create
-    assert len(plan.converts) == 1
-    assert plan.converts[0].legacy_event_ids == ("stn1",)
-
-
-def test_codeshare_dual_id_converges_both_legacy_onto_one_leg():
-    ident = "STN-CPH-20200712T0900Z"
-    plan = plan_reconcile(
-        [desired(ident, kind="airport_departure", byair_ids=frozenset({6277117, 7166978}))],
-        [
-            legacy_fadrive("6277117", "to_airport", event_id="fr"),
-            legacy_fadrive("7166978", "to_airport", event_id="mw"),
-        ],
-    )
-    assert len(plan.converts) == 1
-    assert set(plan.converts[0].legacy_event_ids) == {"fr", "mw"}
-    assert plan.deletes == ()  # both legacy consumed by the convert, none orphaned
-
-
-def test_jul12_itinerary_shape():
-    # BNA→STN→CPH→JFK: STN departure desired; CPH + JFK connections suppressed.
-    # Current calendar: 5× STN legacy, 7× CPH legacy storm, 1× JFK legacy.
-    stn_ident = "BNA-STN-20200712T0600Z"
-    desired_legs = [desired(stn_ident, kind="airport_departure", byair_ids=frozenset({6277117}))]
-    current = (
-        [legacy_fadrive("6277117", "to_airport", event_id=f"stn{i}") for i in range(5)]
-        + [legacy_fadrive("3358446", "to_airport", event_id=f"cph{i}") for i in range(7)]
-        + [legacy_fadrive("3359520", "to_airport", event_id="jfk1")]
-    )
-    plan = plan_reconcile(desired_legs, current)
-    # the 5 STN legacy converge onto the one STN leg
-    assert len(plan.converts) == 1
-    assert len(plan.converts[0].legacy_event_ids) == 5
-    # the 7 CPH + 1 JFK have no desired leg → all deleted as legacy orphans
-    assert len(plan.deletes) == 8
-    assert all("legacy orphan" in d.reason for d in plan.deletes)
-    assert plan.creates == ()

@@ -4,6 +4,12 @@
 
 A flight notice used to depend on the model doing two things: sending it, then running a confirm script. #341 lost notices when that chain broke. The flight-assist precheck now renders each due notice from a fixed template, sends it through the host, and confirms it in the journal only when the host reports the send done. A notice the host does not confirm is offered again five minutes later. The precheck also runs the calendar reconcile itself, so a flight event no longer wakes the model. The TripIt sync's outage and tracking notices go through the same templates and host send, and a failed send there makes the run exit non-zero. The confirm script, its rule, the v1/v2 journal migrations and the legacy byte allowance are gone; the live journal was already v3. Notice wording stays the same. Two changes: arrival logistics now give landing time, terminal, gate and carousel, without the rideshare or lounge suggestions; the day-before check lists the calendar items as given.
 
+## 0.3.2 — 2026-11-03
+
+### Delete the drive engine's dead legacy-block path (#369)
+
+The convert path and the legacy block readers never ran: the live sweep managed no legacy generation, and no old drive-planner or flight-assist blocks are left. Removed, keeping the shadow dry run.
+
 ## 0.3.1 — 2026-11-02
 
 ### Keep out-of-office, free and declined events from blocking drives (#366)

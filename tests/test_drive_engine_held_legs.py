@@ -37,7 +37,12 @@ from airport_drive_inputs import airport_context  # noqa: E402
 from block_codec import GEN_UNIFIED, ParsedBlock  # noqa: E402
 from engine import AirportInfo, build_reconcile_plan  # noqa: E402
 from flight_identity import BYAIR, TRIPIT, Flight  # noqa: E402
-from lodging_source import KIND_OUTBOUND, KIND_RETURN, DriveTrip, lodging_desired_blocks  # noqa: E402
+from lodging_source import (  # noqa: E402
+    KIND_OUTBOUND,
+    KIND_RETURN,
+    DriveTrip,
+    lodging_desired_blocks,
+)
 from maps_client import TomTomClient, TravelTime  # noqa: E402
 from meeting_source import meeting_desired_blocks  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg, plan_reconcile  # noqa: E402

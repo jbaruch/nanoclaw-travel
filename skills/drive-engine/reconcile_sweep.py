@@ -19,9 +19,7 @@ The one engine that manages every `Drive:` block. On each ~30-min sweep it:
    `DRIVE_ENGINE_SHADOW` is set, in which case it renders the plan to stderr and
    writes nothing (#183; the dry run that de-risks a block-shape cutover).
 
-It does NOT touch legacy drive-planner / flight-assist blocks (`managed_legacy` is
-empty): those are left for the operator to clean up, and the two old engines are
-retired so they stop writing. The engine's own blocks carry the unified codec.
+The engine's own blocks carry the unified codec.
 
 `build_plan` is the testable core (injected resolvers, no I/O). `main` wires the
 real clients and is the OUTER PROCESS BOUNDARY — it fails CLOSED to a no-wake
@@ -90,11 +88,6 @@ RouteFn = Callable[[str, str], "timedelta | None"]
 # An airport endpoint routed by name (`engine._airport_place`) because byAir gave
 # no coordinates for it.
 _TEXT_AIRPORT = re.compile(r"[A-Z]{3} airport")
-
-# The engine owns ONLY its own (unified) blocks for now; it never converges or
-# deletes legacy drive-planner / flight-assist blocks (the operator cleans those
-# up). Empty = touch no legacy generation.
-_MANAGED_LEGACY: frozenset[str] = frozenset()
 
 SWEEP_WINDOW = timedelta(days=14)
 
@@ -473,7 +466,6 @@ def build_plan(
         boarding_present=boarding_present,
         extra_desired=meeting_blocks + list(lodging_blocks or []),
         extra_held=list(held or []) + retained,
-        managed_legacy=_MANAGED_LEGACY,
         postarrival_meetings=postarrival_meetings,
         adjust_drives=adjust_drives,
     )
@@ -1030,7 +1022,7 @@ def build_sweep_payload(
     MEETING drive (which they can skip), a MATERIAL drive-time change (leave
     earlier / later), a drive-or-fly question about a flight-less trip, or a
     drive the engine has failed to plan for an hour that has no block (#334).
-    Removes, airport-drive adds, lodging-drive adds, converts, and routine
+    Removes, airport-drive adds, lodging-drive adds, and routine
     sub-threshold re-times all apply SILENTLY — no message, so the host stays
     quiet (the noise this gating exists to kill). `applied` is a
     `calendar_apply.ApplyResult`.
@@ -1060,7 +1052,6 @@ def build_sweep_payload(
                 "created": applied.created,
                 "updated": applied.updated,
                 "deleted": applied.deleted,
-                "converted": applied.converted,
             },
             "added_meeting_drives": added,
             "material_updates": material,

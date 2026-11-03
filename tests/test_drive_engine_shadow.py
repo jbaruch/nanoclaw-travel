@@ -16,7 +16,6 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
 from reconcile import (  # noqa: E402
-    Convert,
     Create,
     Delete,
     DesiredBlock,
@@ -43,20 +42,17 @@ def _desired(identity, kind="airport_departure"):
     )
 
 
-def test_counts_separate_converts_from_deletes():
+def test_counts_each_action():
     plan = ReconcilePlan(
         creates=(Create(_desired("A")),),
         updates=(Update("e1", _desired("B")),),
         deletes=(Delete("d1", "orphan"), Delete("d2", "orphan")),
-        converts=(Convert(_desired("C"), ("l1", "l2")),),
     )
     counts = plan_counts(plan)
     assert counts == {
         "creates": 1,
         "updates": 1,
         "deletes": 2,
-        "converts": 1,
-        "legacy_converted": 2,
     }
 
 
@@ -69,14 +65,10 @@ def test_render_noop():
 def test_render_lists_each_action():
     plan = ReconcilePlan(
         creates=(Create(_desired("STN-CPH-20200712T0900Z")),),
-        deletes=(Delete("cph1", "legacy orphan: no desired leg"),),
-        converts=(Convert(_desired("BNA-STN-20200712T0600Z"), ("stn1", "stn2")),),
+        deletes=(Delete("cph1", "orphan: no desired leg"),),
     )
     out = render_plan(plan)
     assert "+ CREATE airport_departure STN-CPH-20200712T0900Z" in out
-    assert "- DELETE event cph1  (legacy orphan: no desired leg)" in out
-    assert "⇄ CONVERT airport_departure BNA-STN-20200712T0600Z" in out
-    assert "stn1, stn2" in out
 
 
 def test_render_header_override():

@@ -23,7 +23,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 from block_codec import parse_block  # noqa: E402
 from calendar_apply import ApplyResult, apply_plan, build_create_args  # noqa: E402
 from google_calendar_client import GoogleCalendarError  # noqa: E402
-from reconcile import Convert, Create, Delete, DesiredBlock, ReconcilePlan, Update  # noqa: E402
+from reconcile import Create, Delete, DesiredBlock, ReconcilePlan, Update  # noqa: E402
 
 UTC = UTC
 
@@ -220,27 +220,6 @@ def test_create_renders_the_notice_time_and_body_in_the_block_zone():
     assert body["end"]["dateTime"] == "2026-09-11T08:00:00-05:00"
 
 
-def test_convert_creates_new_and_deletes_all_legacy():
-    plan = ReconcilePlan(converts=(Convert(_desired(), ("leg1", "leg2")),))
-    comp = FakeCalendar()
-    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
-    assert result.converted == 1
-    assert len(comp.created) == 1
-    assert set(comp.deleted) == {"leg1", "leg2"}
-
-
-def test_convert_rolls_back_new_when_a_legacy_delete_fails():
-    # If any legacy block survives, new + legacy would duplicate — roll back the
-    # new block and don't count the convert (retried next cycle).
-    plan = ReconcilePlan(converts=(Convert(_desired(), ("leg1", "leg2")),))
-    comp = FakeCalendar(delete_fail={"leg2"})
-    result = apply_plan(plan, calendar=comp, calendar_id="primary", creation_clock=lambda: _dt(0))
-    assert result.converted == 0
-    assert "leg1" in comp.deleted  # the deletable legacy was still removed
-    assert "new1" in comp.deleted  # replacement rolled back (no duplicate left)
-    assert any("leg2" in e for e in result.errors)
-
-
 def test_update_patches_in_place_never_duplicates():
     """#164: an update is a single in-place PATCH of the same event — no create,
     no delete, so a kill right after can't leave a duplicate."""
@@ -347,8 +326,8 @@ def test_no_budget_applies_everything():
 
 
 def test_apply_result_totals():
-    result = ApplyResult(created=1, updated=2, deleted=3, converted=4)
-    assert result.total_writes == 10
+    result = ApplyResult(created=1, updated=2, deleted=3)
+    assert result.total_writes == 6
 
 
 def test_new_drive_with_a_past_start_is_skipped_but_existing_drive_is_patchable():
@@ -374,11 +353,3 @@ def test_clock_is_rechecked_between_creates_and_equal_start_is_allowed():
     assert result.created == 1
     assert len(result.skipped_creations) == 1
     assert "second" in result.skipped_creations[0]
-
-
-def test_past_legacy_conversion_preserves_legacy_event():
-    cal = FakeCalendar()
-    plan = ReconcilePlan(converts=(Convert(_desired(), ("legacy",)),))
-    result = apply_plan(plan, calendar=cal, creation_clock=lambda: _dt(9))
-    assert cal.created == [] and cal.deleted == []
-    assert result.converted == 0 and len(result.skipped_creations) == 1

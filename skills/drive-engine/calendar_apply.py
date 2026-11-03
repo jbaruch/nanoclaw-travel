@@ -1,16 +1,13 @@
 """Apply a reconcile plan to the calendar — the engine's WRITE path.
 
 Executes a `ReconcilePlan` against a Google Calendar client: deletes orphans,
-creates new drive blocks, converts prior-gen blocks (create new + delete legacy),
-and shifts changed blocks with an in-place PATCH. This is what makes the engine
-authoritative instead of merely observant.
+creates new drive blocks and shifts changed blocks with an in-place PATCH. This is
+what makes the engine authoritative instead of merely observant.
 
 A shift is a single atomic PATCH of the same event — never a recreate-then-delete
 — so a sweep killed mid-write can't leave the new block next to an undeleted old
-one (the #164 duplicate storm). A convert still CREATES the unified replacement
-before deleting the legacy event(s) (they are distinct events), rolling the
-replacement back if a legacy delete fails; a delete that 404s (already gone) is an
-idempotent success. The whole write phase is bounded by a wall-clock budget so it
+one (the #164 duplicate storm). A delete that 404s (already gone) is an idempotent
+success. The whole write phase is bounded by a wall-clock budget so it
 returns a clean payload under the host precheck timeout, deferring the rest to the
 next (idempotent) sweep instead of being killed mid-write (#164).
 
@@ -74,7 +71,6 @@ class ApplyResult:
     created: int = 0
     updated: int = 0
     deleted: int = 0
-    converted: int = 0
     deferred: int = 0
     errors: list[str] = field(default_factory=list)
     skipped_creations: list[str] = field(default_factory=list)
@@ -88,7 +84,7 @@ class ApplyResult:
 
     @property
     def total_writes(self) -> int:
-        return self.created + self.updated + self.deleted + self.converted
+        return self.created + self.updated + self.deleted
 
 
 def _meeting_name(summary: str) -> str:
@@ -266,18 +262,17 @@ def apply_plan(
 ) -> ApplyResult:
     """Execute a reconcile plan against the calendar. Returns applied counts.
 
-    Order: updates, creates, converts, then deletes. Desired-state corrections
+    Order: updates, creates, then deletes. Desired-state corrections
     take the bounded write budget before duplicate/orphan cleanup.
 
     Updates are an in-place PATCH of the same event, so an update can never leave
     a duplicate even if the sweep is killed the instant after — the recreate-then-
-    delete that produced the #164 storm is gone. Converts (adopting a legacy event
-    into a unified one — two distinct events) still create-then-delete atomically.
+    delete that produced the #164 storm is gone.
 
     `budget_seconds` bounds the wall-clock spent on writes so the sweep returns a
     clean payload instead of being killed mid-write past the host precheck timeout
     (#164). Each write UNIT is atomic — the budget is checked BEFORE starting one,
-    never mid-unit — so bounding never splits a create/patch/convert. Ops not
+    never mid-unit — so bounding never splits a create or patch. Ops not
     started this sweep are counted in `deferred` and drained on the next sweep.
     The reconcile is idempotent, so resuming never duplicates. `monotonic` is
     injected for deterministic tests.
@@ -383,34 +378,6 @@ def apply_plan(
             if c.desired.charging_note is not None:
                 side = "Return" if c.desired.kind in DEPART_AFTER_KINDS else "Outbound"
                 result.added_meeting_legs[-1]["charging"] = f"{side}: {c.desired.charging_note}"
-
-    for cv in plan.converts:
-        if cv.desired.start < creation_clock():
-            result.skipped_creations.append(
-                f"{cv.desired.kind} {cv.desired.identity}: start already past"
-            )
-            continue
-        if over_budget():
-            result.deferred += 1
-            continue
-        try:
-            created = calendar.create_event(build_create_args(cv.desired, calendar_id=calendar_id))
-        except _WRITE_ERRORS as exc:
-            result.errors.append(f"convert-create {cv.desired.identity}: {exc}")
-            continue
-        # Delete EVERY legacy event (list comp — no short-circuit, so a mid-list
-        # failure doesn't skip the rest). Only count the convert when all legacy
-        # blocks are gone; if any survived, the new block would duplicate it, so
-        # roll the replacement back (same treatment as a failed update delete).
-        deletes_ok = [
-            _delete(calendar, calendar_id=calendar_id, event_id=event_id, result=result)
-            for event_id in cv.legacy_event_ids
-        ]
-        if all(deletes_ok):
-            result.converted += 1
-        else:
-            new_id = _created_id(created)
-            _delete(calendar, calendar_id=calendar_id, event_id=new_id, result=result)
 
     for d in plan.deletes:
         if over_budget():
