@@ -82,7 +82,12 @@ def _stub_live_clients(monkeypatch, reader, state_dir: Path) -> dict:
     monkeypatch.setattr(state, "read_flight_state", lambda _flight_id: None)
     monkeypatch.setattr(trip_origin, "load_travel_schedule", lambda: [])
     monkeypatch.setattr(skip_state, "load_active_skips", lambda _now: {})
-    monkeypatch.setattr(maps_client.MapsClient, "from_env", classmethod(lambda cls, **_: None))
+
+    class Maps:
+        def geocode(self, _place):
+            raise maps_client.MapsError("ZERO_RESULTS", "Synthetic unknown place")
+
+    monkeypatch.setattr(maps_client.MapsClient, "from_env", classmethod(lambda cls, **_: Maps()))
     monkeypatch.setattr(byair_client.ByAirClient, "from_env", classmethod(lambda cls, **_: None))
     monkeypatch.setattr(google_calendar_client, "GoogleCalendarClient", _EmptyCalendar)
     monkeypatch.setattr(fetch_events, "CalendarFetcher", _EmptyFetcher)
@@ -668,6 +673,20 @@ def test_attendance_v2_full_sweep_commute_outside_and_late_airport(monkeypatch, 
             "end": {"dateTime": "2026-09-11T16:30:00Z"},
         },
     ]
+    if mode == "window":
+        events[0]["location"] = "Room 52A"
+
+        class CampusMaps:
+            def geocode(self, place):
+                return {
+                    "100 Venue Street": (40.0, -74.0),
+                    "Room 52A": (40.002, -74.0),
+                    "300 Outside Street": (40.02, -74.0),
+                }[place]
+
+        monkeypatch.setattr(
+            maps_client.MapsClient, "from_env", classmethod(lambda cls, **_: CampusMaps())
+        )
     monkeypatch.setattr(_EmptyFetcher, "fetch_window", lambda self, **_: events)
     monkeypatch.setattr(
         reconcile_sweep, "make_route", lambda *_a, **_k: lambda o, d: timedelta(minutes=30)

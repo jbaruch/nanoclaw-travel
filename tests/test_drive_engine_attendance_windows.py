@@ -980,3 +980,68 @@ def test_final_meeting_departure_holds_attendance_outbound_without_removing_reta
             c.desired for c in result.plan.creates if c.desired.kind.startswith("meeting_")
         ]
         assert planned_meetings == meeting_blocks
+
+
+def test_nearby_room_has_no_drive_or_notice_but_outside_appointment_still_routes():
+    attendance, itinerary = model()
+    points = {VENUE: (40.0, -74.0), "Room 52A": (40.002, -74.0), "Outside Office": (40.02, -74.0)}
+    meetings = scan(
+        [event("room", "Room 52A"), event("outside", "Outside Office", 14, 15)],
+        now=NOW,
+        home_address="Home",
+        attendances=(attendance,),
+        venue_points=points,
+        anchor_for=lambda at: meeting_anchor(itinerary, at),
+    )
+    assert meetings[0].attendance_id == attendance.id
+    blocks, _, held = meeting_desired_blocks(meetings, route=lambda _a, _b: timedelta(minutes=2))
+    assert held == []
+    assert blocks and all(block.identity != "room" for block in blocks)
+    assert any(block.destination == "Outside Office" for block in blocks)
+    room_blocks, room_skipped, _ = meeting_desired_blocks(
+        meetings[:1], route=lambda _a, _b: timedelta(minutes=2)
+    )
+    applied = apply_plan(plan_reconcile(room_blocks, [], now=NOW), calendar=object(), now=NOW)
+    assert build_sweep_payload(applied, room_skipped)["data"]["message"] is None
+
+
+def test_radius_respects_window_setting_withdrawal_and_unknown_points():
+    attendance, _ = model()
+    start, end = NOW.replace(hour=12), NOW.replace(hour=13)
+    points = {VENUE: (40.0, -74.0), "Room 52A": (40.002, -74.0)}
+    assert attendance.covers("room", "Room 52A", start, end, points=points)
+    assert not attendance.covers("room", "Room 52A", start, end, points=points, radius_meters=100)
+    assert not attendance.covers("room", "Room 52A", start.replace(hour=8), end, points=points)
+    assert not parse_attendance(row(venue_locations=[])).covers(
+        "room", "Room 52A", start, end, points=points
+    )
+    assert not attendance.covers("room", "Room 52A", start, end, points={VENUE: None})
+    assert attendance.covers("room", "ExampleConf", start, end, points={VENUE: None})
+
+
+def test_geocodes_once_per_sweep_only_for_confirmed_window_and_caches_failures(capsys):
+    from maps_client import MapsError
+    from reconcile_sweep import attendance_points
+
+    attendance, _ = model()
+    calls = []
+
+    class Maps:
+        def geocode(self, place):
+            calls.append(place)
+            if place == "Unresolved room":
+                raise MapsError("ZERO_RESULTS", "Clarify the address")
+            return (40.0, -74.0)
+
+    points = attendance_points(
+        [
+            event("one", "Unresolved room"),
+            event("two", "Unresolved room"),
+            event("outside-window", "Other room", 18, 19),
+        ],
+        (attendance,),
+        Maps(),
+    )
+    assert calls == [VENUE, "Unresolved room"]
+    assert points == {VENUE: (40.0, -74.0), "Unresolved room": None}
+    assert "check Maps geocoding access and the address" in capsys.readouterr().err

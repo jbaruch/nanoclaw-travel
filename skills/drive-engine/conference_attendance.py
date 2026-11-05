@@ -8,15 +8,19 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import secrets
 import stat
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+DEFAULT_VENUE_RADIUS_METERS = 500
 
 MAX_BYTES = 256 * 1024
 _FILENAME = "conference-attendance.json"
@@ -71,15 +75,13 @@ class Attendance:
             <= date.fromisoformat(self.ends_on)
         )
 
-    def covers(self, identity: object, location: object, start: object, end: object) -> bool:
+    def covers_time(self, identity: object, start: object, end: object) -> bool:
         if (
             not isinstance(identity, str)
             or not identity.strip()
             or len(identity) > 1024
             or _invalid_text(identity)
         ):
-            return False
-        if not isinstance(location, str):
             return False
         if not isinstance(start, datetime) or not isinstance(end, datetime):
             return False
@@ -98,6 +100,29 @@ class Attendance:
             for a, b, _ in (day.bounds(self.time_zone) for day in self.days)
         ):
             return False
+        return True
+
+    def covers(
+        self,
+        identity: object,
+        location: object,
+        start: object,
+        end: object,
+        *,
+        points: Mapping[str, tuple[float, float] | None] | None = None,
+        radius_meters: int = DEFAULT_VENUE_RADIUS_METERS,
+    ) -> bool:
+        if not isinstance(location, str) or not self.covers_time(identity, start, end):
+            return False
+        if self.schema_version == 2 and self.venue_locations and points:
+            venue = points.get(self.venue_location or "")
+            room = points.get(location)
+            if venue is not None and room is not None:
+                a, b = math.radians(venue[0]), math.radians(room[0])
+                dlat, dlon = b - a, math.radians(room[1] - venue[1])
+                h = math.sin(dlat / 2) ** 2 + math.cos(a) * math.cos(b) * math.sin(dlon / 2) ** 2
+                if 2 * 6_371_000 * math.asin(math.sqrt(min(1.0, h))) <= radius_meters:
+                    return True
         # The one supported compound-location grammar is an exact spaced dash.
         # Whitespace/case normalization matches scan.same_place; no substring test.
         whole = " ".join(location.split()).casefold()
@@ -438,8 +463,21 @@ def record_attendance(value: object) -> Attendance:
     return row
 
 
-def attendance_for(rows: tuple[Attendance, ...], identity, location, start, end) -> str | None:
-    matches = [row.id for row in rows if row.covers(identity, location, start, end)]
+def attendance_for(
+    rows: tuple[Attendance, ...],
+    identity,
+    location,
+    start,
+    end,
+    *,
+    points: Mapping[str, tuple[float, float] | None] | None = None,
+    radius_meters: int = DEFAULT_VENUE_RADIUS_METERS,
+) -> str | None:
+    matches = [
+        row.id
+        for row in rows
+        if row.covers(identity, location, start, end, points=points, radius_meters=radius_meters)
+    ]
     if len(matches) > 1:
         raise AttendanceError("Ambiguous attendance match; consolidate overlapping owner records")
     return matches[0] if matches else None

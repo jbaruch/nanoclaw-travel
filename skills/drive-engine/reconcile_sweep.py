@@ -140,6 +140,47 @@ _SWEEP_BYAIR_TIMEOUT_SECONDS = 6.0
 _DELAY_FRESHNESS_WINDOW = timedelta(hours=24)
 
 
+def attendance_points(
+    events: list[dict], attendances, maps
+) -> dict[str, tuple[float, float] | None]:
+    """Resolve only in-window row-2 locations; cache each label once per sweep."""
+    import urllib.error
+
+    from maps_client import MapsError
+    from scan import _is_virtual, _parse_event
+
+    points: dict[str, tuple[float, float] | None] = {}
+    for raw in events:
+        event = _parse_event(raw)
+        if (
+            not isinstance(raw, dict)
+            or event.cancelled
+            or event.declined
+            or _is_virtual(event.location)
+        ):
+            continue
+        for row in attendances:
+            if (
+                row.schema_version != 2
+                or not row.venue_locations
+                or not row.covers_time(raw.get("id"), event.start, event.end)
+                or not event.location
+            ):
+                continue
+            for place in (row.venue_location, event.location):
+                if place and place not in points:
+                    try:
+                        points[place] = maps.geocode(place)
+                    except (MapsError, urllib.error.URLError, TimeoutError):
+                        print(
+                            "drive-engine: venue geocode unavailable; exact labels remain in use; "
+                            "check Maps geocoding access and the address",
+                            file=sys.stderr,
+                        )
+                        points[place] = None
+    return points
+
+
 def make_route(
     maps,
     *,
@@ -1737,6 +1778,11 @@ def _run_sweep() -> dict:
         def anchor_for(at: datetime) -> tuple[str | None, str | None]:
             return meeting_anchor(itinerary, at)
 
+        from conference_attendance import DEFAULT_VENUE_RADIUS_METERS
+
+        radius = config.get("venue_radius_meters", DEFAULT_VENUE_RADIUS_METERS)
+        if isinstance(radius, bool) or not isinstance(radius, int) or radius < 0:
+            raise ValueError("venue_radius_meters must be a non-negative integer; repair config")
         meetings = scan(
             events,
             now=now,
@@ -1746,6 +1792,8 @@ def _run_sweep() -> dict:
             flight_windows=[],
             flight_summaries=[],
             attendances=attendances,
+            venue_points=attendance_points(events, attendances, maps),
+            venue_radius_meters=radius,
             return_anchor_for=anchor_for
             if any(row.schema_version == 2 for row in attendances)
             else None,

@@ -469,3 +469,55 @@ def test_from_env_no_tomtom_when_key_absent(monkeypatch):
     monkeypatch.delenv("TOMTOM_API_KEY", raising=False)
     maps = MapsClient.from_env()
     assert maps._tomtom is None
+
+
+def test_geocode_google_returns_coordinates_and_uses_existing_transport():
+    payload = {
+        "status": "OK",
+        "results": [
+            {"geometry": {"location_type": "ROOFTOP", "location": {"lat": 40.002, "lng": -74.0}}}
+        ],
+    }
+    payload["results"][0]["partial_match"] = True
+    with patch("maps_client._get_json", return_value=payload) as get:
+        assert MapsClient(SYNTH_KEY).geocode("Room 52A, Example Campus") == (40.002, -74.0)
+    url, timeout = get.call_args.args
+    parsed = urllib.parse.urlparse(url)
+    assert parsed.path == "/maps/api/geocode/json"
+    assert urllib.parse.parse_qs(parsed.query)["address"] == ["Room 52A, Example Campus"]
+    assert timeout == 10.0
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"geometry": {"location_type": "APPROXIMATE", "location": {"lat": 40.0, "lng": -74.0}}},
+        {"geometry": {"location": {"lat": float("nan"), "lng": -74.0}}},
+        {"geometry": {"location": {"lat": 91, "lng": -74.0}}},
+        {"geometry": {"location": {"lat": True, "lng": -74.0}}},
+        {},
+    ],
+)
+def test_geocode_rejects_uncertain_or_malformed_points(result):
+    with patch("maps_client._get_json", return_value={"status": "OK", "results": [result]}):
+        with pytest.raises(MapsError):
+            MapsClient(SYNTH_KEY).geocode("Unknown room")
+
+
+def test_geocode_uses_tomtom_fallback_but_rejects_geography():
+    backup = {"results": [{"type": "Point Address", "position": {"lat": 40.0, "lon": -74.0}}]}
+    client = MapsClient(SYNTH_KEY, tomtom=TomTomClient(SYNTH_TOMTOM_KEY))
+    with patch("maps_client._get_json", side_effect=[{"status": "REQUEST_DENIED"}, backup]):
+        assert client.geocode("Room") == (40.0, -74.0)
+    backup["results"][0]["type"] = "Geography"
+    with patch("maps_client._get_json", side_effect=[{"status": "ZERO_RESULTS"}, backup]):
+        with pytest.raises(MapsError, match="ALL_GEOCODERS_FAILED"):
+            client.geocode("Room")
+
+
+def test_geocode_coordinate_input_needs_no_provider():
+    with patch("maps_client._get_json") as get:
+        assert MapsClient(SYNTH_KEY).geocode("40.0,-74.0") == (40.0, -74.0)
+        with pytest.raises(MapsError):
+            MapsClient(SYNTH_KEY).geocode("91,0")
+        get.assert_not_called()
