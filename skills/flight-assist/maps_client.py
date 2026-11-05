@@ -49,6 +49,7 @@ Errors:
 
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import os
@@ -290,7 +291,7 @@ class MapsClient:
             raise ValueError(
                 "MapsClient: api_key is empty — set GOOGLE_MAPS_API_KEY in the env "
                 "(generate at https://console.cloud.google.com/apis/credentials and "
-                "enable the Distance Matrix API)"
+                "enable Distance Matrix and Geocoding APIs)"
             )
         self._api_key = api_key
         self._timeout = timeout
@@ -312,8 +313,9 @@ class MapsClient:
         api_key = os.environ.get(env_var, "")
         if not api_key:
             raise ValueError(
-                f"MapsClient.from_env: ${env_var} is unset — generate a Distance Matrix "
-                f"API key at https://console.cloud.google.com/apis/credentials and add "
+                f"MapsClient.from_env: ${env_var} is unset — generate a Maps "
+                f"API key with Distance Matrix and Geocoding enabled at "
+                f"https://console.cloud.google.com/apis/credentials and add "
                 f"it to OneCLI vault"
             )
         tomtom = None
@@ -354,7 +356,7 @@ class MapsClient:
     def geocode(self, place: str) -> tuple[float, float]:
         """Resolve a place to a point, using the existing Google/TomTom chain.
 
-        Approximate Google matches cannot classify a room as on site.
+        Only non-partial ROOFTOP Google matches classify a room as on site.
         TomTom requires a point address or POI for venue matching.
         """
         if not place or not place.strip():
@@ -373,6 +375,7 @@ class MapsClient:
                 return _checked_point(lat, lon)
             except (
                 MapsError,
+                http.client.HTTPException,
                 urllib.error.URLError,
                 TimeoutError,
                 ValueError,
@@ -400,11 +403,18 @@ class MapsClient:
                 )
             result = results[0]
             geometry = result.get("geometry") or {}
-            if result.get("partial_match") or geometry.get("location_type") == "APPROXIMATE":
+            if result.get("partial_match") or geometry.get("location_type") != "ROOFTOP":
                 raise MapsError("GEOCODE_UNCERTAIN", "Use a grounded venue or room address")
             location = geometry.get("location") or {}
             return _checked_point(location.get("lat"), location.get("lng"))
-        except (ValueError, TypeError, AttributeError, KeyError, IndexError) as exc:
+        except (
+            http.client.HTTPException,
+            ValueError,
+            TypeError,
+            AttributeError,
+            KeyError,
+            IndexError,
+        ) as exc:
             raise MapsError(
                 "GEOCODE_MALFORMED", "Google returned invalid geocode data; check access/address"
             ) from exc

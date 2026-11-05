@@ -2,7 +2,7 @@
 
 [![tessl](https://img.shields.io/endpoint?url=https%3A%2F%2Fapi.tessl.io%2Fv1%2Fbadges%2Fjbaruch%2Fnanoclaw-travel)](https://tessl.io/registry/jbaruch/nanoclaw-travel)
 
-Actionable travel assistance for NanoClaw — byAir-powered flight notifications, travel-booking gap checks, and nightly TripIt sync. Replaces generic "21 minutes to departure" reminders with alerts that change behavior. Powered by [byAir](https://byairapp.com/mcp/) for flight data and Google Maps Distance Matrix for traffic-aware time-to-leave.
+Actionable travel assistance for NanoClaw — byAir-powered flight notifications, travel-booking gap checks, and nightly TripIt sync. Replaces generic "21 minutes to departure" reminders with alerts that change behavior. Powered by [byAir](https://byairapp.com/mcp/) for flight data and Google Maps Distance Matrix for traffic-aware time-to-leave, plus Geocoding for venue-radius matching.
 
 Per-chat overlay plugin. Install via NanoClaw's `containerConfig.additionalTiles` mechanism.
 
@@ -32,7 +32,7 @@ additionalTiles: ["jbaruch/nanoclaw-travel"]
 | Variable | Purpose | Where to get |
 |----------|---------|--------------|
 | `BYAIR_MCP_URL` | byAir streamable-HTTP MCP endpoint (includes API key) | https://byairapp.com/mcp/ — Pro subscription, personal MCP link |
-| `GOOGLE_MAPS_API_KEY` | Distance Matrix API key for time-to-leave | https://console.cloud.google.com/apis/credentials |
+| `GOOGLE_MAPS_API_KEY` | Maps API key with Distance Matrix and Geocoding enabled for routing/venue points | https://console.cloud.google.com/apis/credentials |
 
 Google Calendar access (boarding-block reconciliation, drive-block
 create/remove, calendar fetches) needs **no variable**: it calls the native
@@ -44,7 +44,7 @@ Optional:
 
 | Variable | Purpose |
 |----------|---------|
-| `TOMTOM_API_KEY` | Backup routing provider, used only when the Google Distance Matrix call fails; absent it, a Google failure propagates |
+| `TOMTOM_API_KEY` | Backup routing/geocoding provider with TomTom Search + Routing enabled; used when Google fails |
 
 Store all required credentials in OneCLI vault. Never commit. See [.env.example](.env.example) for the contract; GitHub Actions secrets configuration link is in its file header.
 

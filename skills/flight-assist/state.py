@@ -5,11 +5,11 @@ deltas between byAir snapshots. State lives under
 `/workspace/state/flight-assist/` in production; tests override the
 directory via the `FLIGHT_ASSIST_STATE_DIR` environment variable.
 
-Files written (all JSON, all carry `schema_version: 8` at the top level):
+Files written (all JSON with their own top-level schema_version):
 
-    config.json                       — home_address, etc. (set via /setup)
-    active-flights.json               — list of currently-tracked flight_ids
-    flight-<flight_id>.json           — per-flight state record
+    config.json                       — schema 9, home/venue/EV preferences
+    active-flights.json               — schema 8, currently-tracked flight_ids
+    flight-<flight_id>.json           — schema 8, per-flight state record
 
     sync-health.json                  — consecutive sync failures, byAir
                                         and internal (own `schema_version: 1`,

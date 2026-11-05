@@ -8,6 +8,7 @@ fixture address strings).
 
 from __future__ import annotations
 
+import http.client
 import json
 import sys
 import urllib.error
@@ -490,11 +491,14 @@ def test_geocode_google_returns_coordinates_and_uses_existing_transport():
 @pytest.mark.parametrize(
     "result",
     [
-        {"partial_match": True, "geometry": {"location": {"lat": 40.0, "lng": -74.0}}},
+        {
+            "partial_match": True,
+            "geometry": {"location_type": "ROOFTOP", "location": {"lat": 40.0, "lng": -74.0}},
+        },
         {"geometry": {"location_type": "APPROXIMATE", "location": {"lat": 40.0, "lng": -74.0}}},
-        {"geometry": {"location": {"lat": float("nan"), "lng": -74.0}}},
-        {"geometry": {"location": {"lat": 91, "lng": -74.0}}},
-        {"geometry": {"location": {"lat": True, "lng": -74.0}}},
+        {"geometry": {"location_type": "ROOFTOP", "location": {"lat": float("nan"), "lng": -74.0}}},
+        {"geometry": {"location_type": "ROOFTOP", "location": {"lat": 91, "lng": -74.0}}},
+        {"geometry": {"location_type": "ROOFTOP", "location": {"lat": True, "lng": -74.0}}},
         {},
     ],
 )
@@ -549,3 +553,25 @@ def test_geocode_bad_json_and_tomtom_coordinates_become_maps_error():
     with patch("maps_client._get_json", side_effect=[json.JSONDecodeError("bad", "{", 1), bad]):
         with pytest.raises(MapsError, match="ALL_GEOCODERS_FAILED"):
             MapsClient(SYNTH_KEY, tomtom=TomTomClient(SYNTH_TOMTOM_KEY)).geocode("Unknown room")
+
+
+@pytest.mark.parametrize("precision", ["RANGE_INTERPOLATED", "GEOMETRIC_CENTER", "UNKNOWN", None])
+def test_geocode_requires_explicit_rooftop_precision(precision):
+    geometry: dict = {"location": {"lat": 40.0, "lng": -74.0}}
+    if precision is not None:
+        geometry["location_type"] = precision
+    with patch(
+        "maps_client._get_json", return_value={"status": "OK", "results": [{"geometry": geometry}]}
+    ):
+        with pytest.raises(MapsError, match="GEOCODE_UNCERTAIN"):
+            MapsClient(SYNTH_KEY).geocode("Uncertain room")
+
+
+def test_geocode_incomplete_http_body_becomes_unavailable_point():
+    class TruncatedResponse(_FakeResponse):
+        def read(self):
+            raise http.client.IncompleteRead(b"partial", 10)
+
+    with patch("urllib.request.urlopen", return_value=TruncatedResponse(b"")):
+        with pytest.raises(MapsError, match="GEOCODE_MALFORMED"):
+            MapsClient(SYNTH_KEY).geocode("Room")

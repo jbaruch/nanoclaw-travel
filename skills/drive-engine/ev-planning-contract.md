@@ -4,7 +4,7 @@
 
 `ev_charging.py` owns pure stop-time/cumulative-energy planning. `reconcile_sweep.py`
 applies it to the complete meeting/airport/lodging desired set before the existing
-single reconcile. `flight-assist/state.py` owns config schema 8 and additive
+single reconcile. `flight-assist/state.py` owns config schema 9 and additive
 `ev_planning`; `ev_preferences.py` validates that nested schema 1. `configure_ev.py`
 is its intake. No new vehicle state, access policy or command store exists.
 
@@ -141,8 +141,10 @@ named drivers hold EV adjustment rather than choosing a different default vehicl
 Absent preferences use only the provider's supported unique/default resolution;
 ambiguous fleets remain unchanged.
 
-`config.json` stays under its existing flight-assist owner. Version 7→8 preserves
-every existing field and only adds optional input support. Config, flight and
+`config.json` stays under its existing flight-assist owner. Its 7→8 EV migration
+and 8→9 venue-radius migration preserve every existing field. Config now has its
+own version 9; active-flight and per-flight records remain at version 8. Nested
+EV schema 1 is unchanged. Config, flight and
 active-index writer/readers co-ship; no cross-plugin writer flip occurs. Unknown
 root versions preserve the existing owner refusal. The shared reader carries
 optional EV preferences unchanged; non-EV flight consumers do not interpret them.
