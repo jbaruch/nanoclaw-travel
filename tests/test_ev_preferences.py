@@ -12,7 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/flight-assist"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills/drive-engine"))
 from ev_preferences import validate_ev_preferences  # noqa: E402
-from state import STATE_SCHEMA_VERSION, read_config, state_dir, write_config  # noqa: E402
+from state import CONFIG_SCHEMA_VERSION, read_config, state_dir, write_config  # noqa: E402
 
 
 def preferences():
@@ -43,8 +43,8 @@ def test_existing_config_owner_round_trip_and_additive_v7_migration(tmp_path, mo
     monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
     path = state_dir() / "config.json"
     path.write_text(json.dumps({"schema_version": 7, "home_address": "Home"}))
-    assert read_config() == {"schema_version": STATE_SCHEMA_VERSION, "home_address": "Home"}
-    assert json.loads(path.read_text())["schema_version"] == STATE_SCHEMA_VERSION
+    assert read_config() == {"schema_version": CONFIG_SCHEMA_VERSION, "home_address": "Home"}
+    assert json.loads(path.read_text())["schema_version"] == CONFIG_SCHEMA_VERSION
     write_config({"home_address": "Home", "ev_planning": preferences()})
     current = read_config()
     assert current is not None and current["ev_planning"] == preferences()
@@ -112,7 +112,7 @@ def test_shared_reader_preserves_unknown_preferences_without_interpreting_them(
     value = preferences()
     value["schema_version"] = 99
     path = state_dir() / "config.json"
-    path.write_text(json.dumps({"schema_version": STATE_SCHEMA_VERSION, "ev_planning": value}))
+    path.write_text(json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, "ev_planning": value}))
     before = path.read_bytes()
     result = read_config()
     assert result is not None and result["ev_planning"] == value
@@ -124,7 +124,7 @@ def test_root_migration_preserves_unknown_nested_ev_fields_for_their_reader(tmp_
     path = state_dir() / "config.json"
     path.write_text('{"schema_version":7,"ev_planning":{"schema_version":99}}')
     assert read_config() == {
-        "schema_version": STATE_SCHEMA_VERSION,
+        "schema_version": CONFIG_SCHEMA_VERSION,
         "ev_planning": {"schema_version": 99},
     }
 
@@ -197,7 +197,7 @@ def test_intake_still_refuses_unknown_existing_ev_schema_without_downgrade(tmp_p
     monkeypatch.setenv("FLIGHT_ASSIST_STATE_DIR", str(tmp_path))
     path = state_dir() / "config.json"
     path.write_text(
-        json.dumps({"schema_version": STATE_SCHEMA_VERSION, "ev_planning": {"schema_version": 99}})
+        json.dumps({"schema_version": CONFIG_SCHEMA_VERSION, "ev_planning": {"schema_version": 99}})
     )
     before = path.read_bytes()
     assert configure_ev.main([json.dumps(preferences())]) == 1

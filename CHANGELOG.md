@@ -1,5 +1,9 @@
 # Changelog
 
+### Match conference rooms by map radius (#373)
+
+Inside a confirmed attendance window, a geocoded room within 500 metres of the grounded venue counts as on site, with no meeting drive or notice. The existing maps client resolves points with its Google/TomTom chain; per-sweep memoization includes failures. Unknown or approximate locations retain explicit-label matching with a diagnostic. The radius is configurable through the existing config owner. Config alone advances to schema 9, preserving old values; flight records and alert markers stay at 8. Legacy attendance and outside appointments retain their behavior.
+
 ## 0.3.3 — 2026-11-03
 
 ### Send flight notices from the precheck, not the model (#370)

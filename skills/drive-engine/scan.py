@@ -79,12 +79,12 @@ sweep imports `scan()` directly.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from conference_attendance import Attendance, attendance_for
+from conference_attendance import DEFAULT_VENUE_RADIUS_METERS, Attendance, attendance_for
 
 # A meeting whose start is at or before `now` is in the past and is never
 # planned (lombot #28). A small grace window keeps a meeting that started a
@@ -621,6 +621,8 @@ def scan(
     flight_windows: list[tuple[datetime, datetime]] | None = None,
     flight_summaries: list[str] | None = None,
     attendances: tuple[Attendance, ...] = (),
+    venue_points: Mapping[str, tuple[float, float] | None] | None = None,
+    venue_radius_meters: int = DEFAULT_VENUE_RADIUS_METERS,
     return_anchor_for: Callable[[datetime], tuple[str | None, str | None]] | None = None,
 ) -> list[MeetingClass]:
     """Classify every event into a transit bucket.
@@ -704,7 +706,13 @@ def scan(
         # attendance observation. The ID still comes from the native projection.
         identity = raw.get("id") if isinstance(raw, dict) else None
         event.attendance_id = attendance_for(
-            attendances, identity, event.location, event.start, event.end
+            attendances,
+            identity,
+            event.location,
+            event.start,
+            event.end,
+            points=venue_points,
+            radius_meters=venue_radius_meters,
         )
         event.attendance_location = next(
             (

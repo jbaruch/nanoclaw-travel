@@ -19,7 +19,7 @@ Plugin-wide configuration set during install via the `/setup` flow.
 
 ```json
 {
-  "schema_version": 8,
+  "schema_version": 9,
   "home_address": "1 Infinite Loop, Cupertino, CA 95014",
   "min_transfer_minutes": 45,
   "byair_calendar_name": "Flighty Flights",
@@ -41,7 +41,8 @@ Plugin-wide configuration set during install via the `/setup` flow.
 
 Fields:
 
-- `schema_version` (int, required) — currently `8`
+- `schema_version` (int, required) — `CONFIG_SCHEMA_VERSION`, currently `9`
+- `venue_radius_meters` (integer, optional, non-negative) — straight-line venue matching radius for drive-engine row-2 attendance, default 500 metres. Zero requires coincident geocoded points; approved exact aliases remain usable. Flight alerts do not interpret it.
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
 - `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in plugin terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in plugin code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)
@@ -81,6 +82,8 @@ Owner reader/writer contract:
 - `state.py:write_config` accepts a valid new EV record. An unrelated config update may carry an existing invalid record only when its serialized typed value is unchanged, with an actionable diagnostic. New or modified invalid EV input refuses without replacement.
 - All owner entry points, including migration, set-home and calendar reconciliation, atomically replace state through an exclusive same-directory temporary file with mode `0600` established before writing private bytes. Replacement failure preserves the previous file and cleans only that temporary file.
 - Config 7→8 migration preserves all prior fields and makes no mapping/measurement claim. Main root-version rules and all existing flight gates remain; shared optional input does not interrupt flight polling.
+
+Config 8→9 is an additive owner migration preserving every prior field. Only `config.json` now uses `CONFIG_SCHEMA_VERSION`; active-flight and per-flight records remain at `STATE_SCHEMA_VERSION` 8. The same owner read/write APIs serve every config consumer. Install the updated co-shipped readers and retire old active agents before the first config-9 write; an old owner refuses version 9 rather than downgrading it. Unsupported future config versions retain the strict refusal behavior. No new file or config writer is introduced.
 
 ### `active-flights.json`
 
@@ -305,9 +308,9 @@ Every `write_*` helper uses write-to-tmp + `os.replace` in the same directory so
 
 ## Migration Policy
 
-Today `STATE_SCHEMA_VERSION` is `8`.
+Today `STATE_SCHEMA_VERSION` is `8`; config alone selects `CONFIG_SCHEMA_VERSION` `9`.
 
-`state.py`'s owner-side read helpers (`read_config`, `read_active_flights`, `read_flight_state`) enforce these rules on `schema_version`:
+`state.py`'s owner-side read helpers (`read_config`, `read_active_flights`, `read_flight_state`) enforce these rules against their selected version on `schema_version`:
 
 - Equal to current → return the payload
 - Higher than current → `StateError` (the owner is authoritative for its schema and must never run behind its own state files; never silently downgrade)
@@ -350,7 +353,7 @@ Config gains optional `ev_planning` owned by `ev_preferences.py`; its complete n
 
 When adding or renaming a field:
 
-1. Bump `STATE_SCHEMA_VERSION` in `state.py` and document the new shape in this file
+1. Bump the affected artifact’s version in `state.py` (`CONFIG_SCHEMA_VERSION` for config) and document the new shape in this file
 2. Add migration logic to `state.py` that reads old `schema_version` and rewrites the upgraded shape via the owner-skill code path (the precheck, the agent on wake, sync-tripit — every entry point that uses `read_flight_state` from inside `flight-assist`)
 3. Non-owner reader skills (other plugins, future cross-plugin composition) call `read_active_flights_snapshot` / `read_flight_state_snapshot` instead of the owner-side helpers; the snapshot readers treat any mismatched `schema_version` as "no usable prior state" and return without rewriting. Migration happens exclusively on the owner-skill's next read
 4. CHANGELOG entry describing the version bump and the owner-side migration path — an un-headed `### ` block at the top of `CHANGELOG.md`; the publish stamp step adds the `## <version> — <date>` heading (no `## Unreleased` section — that heading is forbidden per `coding-policy: context-artifacts` CHANGELOG Hygiene)

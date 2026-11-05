@@ -23,6 +23,10 @@ stdlib-only: `urllib.request` + `urllib.parse` + `json` per
 `jbaruch/coding-policy: dependency-management` (Stdlib First).
 
 Public API:
+    geocode(place) -> (latitude, longitude) uses Google Geocoding with the
+    existing TomTom backup; API access must include Geocoding. No coordinates
+    are inferred from Distance Matrix durations or returned addresses.
+
     # The skill bundle dir is added to sys.path at invocation time; this
     # module is imported by its bare name (matches nanoclaw-core's convention).
     from maps_client import MapsClient, MapsError, TravelTime
@@ -45,7 +49,9 @@ Errors:
 
 from __future__ import annotations
 
+import http.client
 import json
+import math
 import os
 import re
 import urllib.error
@@ -53,6 +59,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
+_GOOGLE_GEOCODE_ENDPOINT = "https://maps.googleapis.com/maps/api/geocode/json"
 _GOOGLE_ENDPOINT = "https://maps.googleapis.com/maps/api/distancematrix/json"
 # A `"lat,lon"` place, routed without geocoding.
 _COORDINATES = re.compile(r"(-?\d{1,3}(?:\.\d+)?),\s*(-?\d{1,3}(?:\.\d+)?)")
@@ -105,6 +112,23 @@ def _get_json(url: str, timeout: float) -> dict:
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _checked_point(lat: object, lon: object) -> tuple[float, float]:
+    if (
+        isinstance(lat, bool)
+        or isinstance(lon, bool)
+        or not isinstance(lat, (int, float))
+        or not isinstance(lon, (int, float))
+        or not math.isfinite(lat)
+        or not math.isfinite(lon)
+        or not -90 <= lat <= 90
+        or not -180 <= lon <= 180
+    ):
+        raise MapsError(
+            "GEOCODE_MALFORMED", "Geocoder returned no valid point; clarify the address"
+        )
+    return float(lat), float(lon)
 
 
 def _traffic_factor(duration: int, in_traffic: int | None) -> float:
@@ -166,7 +190,7 @@ class TomTomClient:
                 return lat, lon, place.strip()
         return self._geocode(place)
 
-    def _geocode(self, query: str) -> tuple[float, float, str]:
+    def _geocode(self, query: str, *, precise: bool = False) -> tuple[float, float, str]:
         encoded = urllib.parse.quote(query, safe="")
         params = urllib.parse.urlencode({"key": self._api_key, "limit": 1})
         url = f"{_TOMTOM_GEOCODE_ENDPOINT}/{encoded}.json?{params}"
@@ -178,6 +202,8 @@ class TomTomClient:
                 "TOMTOM_GEOCODE_ZERO_RESULTS",
                 f"TomTom geocode returned no match for {query!r}",
             )
+        if precise and results[0].get("type") not in {"Point Address", "POI"}:
+            raise MapsError("TOMTOM_GEOCODE_UNCERTAIN", "Use a grounded venue or room address")
         position = results[0].get("position") or {}
         lat = position.get("lat")
         lon = position.get("lon")
@@ -265,7 +291,7 @@ class MapsClient:
             raise ValueError(
                 "MapsClient: api_key is empty — set GOOGLE_MAPS_API_KEY in the env "
                 "(generate at https://console.cloud.google.com/apis/credentials and "
-                "enable the Distance Matrix API)"
+                "enable Distance Matrix and Geocoding APIs)"
             )
         self._api_key = api_key
         self._timeout = timeout
@@ -287,8 +313,9 @@ class MapsClient:
         api_key = os.environ.get(env_var, "")
         if not api_key:
             raise ValueError(
-                f"MapsClient.from_env: ${env_var} is unset — generate a Distance Matrix "
-                f"API key at https://console.cloud.google.com/apis/credentials and add "
+                f"MapsClient.from_env: ${env_var} is unset — generate a Maps "
+                f"API key with Distance Matrix and Geocoding enabled at "
+                f"https://console.cloud.google.com/apis/credentials and add "
                 f"it to OneCLI vault"
             )
         tomtom = None
@@ -325,6 +352,72 @@ class MapsClient:
                     "ALL_PROVIDERS_FAILED",
                     f"Google failed ({google_err}); TomTom backup failed ({tomtom_err})",
                 ) from tomtom_err
+
+    def geocode(self, place: str) -> tuple[float, float]:
+        """Resolve a place to a point, using the existing Google/TomTom chain.
+
+        Only non-partial ROOFTOP Google matches classify a room as on site.
+        TomTom requires a point address or POI for venue matching.
+        """
+        if not place or not place.strip():
+            raise ValueError("geocode: a nonempty place is required")
+        point = _COORDINATES.fullmatch(place.strip())
+        if point is not None:
+            return _checked_point(float(point.group(1)), float(point.group(2)))
+        try:
+            return self._google_geocode(place)
+        except (MapsError, urllib.error.URLError, TimeoutError) as google_err:
+            if self._tomtom is None:
+                raise
+            # Existing geocode owner also serves the routing fallback.
+            try:
+                lat, lon, _ = self._tomtom._geocode(place, precise=True)
+                return _checked_point(lat, lon)
+            except (
+                MapsError,
+                http.client.HTTPException,
+                urllib.error.URLError,
+                TimeoutError,
+                ValueError,
+                TypeError,
+                AttributeError,
+                KeyError,
+                IndexError,
+            ) as tomtom_err:
+                raise MapsError(
+                    "ALL_GEOCODERS_FAILED",
+                    f"Google ({type(google_err).__name__}) and TomTom "
+                    f"({type(tomtom_err).__name__}) geocoding failed; check access/address",
+                ) from tomtom_err
+
+    def _google_geocode(self, place: str) -> tuple[float, float]:
+        try:
+            params = urllib.parse.urlencode({"address": place, "key": self._api_key})
+            payload = _get_json(f"{_GOOGLE_GEOCODE_ENDPOINT}?{params}", self._timeout)
+            if payload.get("status") != "OK":
+                raise MapsError("GEOCODE_FAILED", "Google geocode failed; check API access/place")
+            results = payload.get("results") or []
+            if not results:
+                raise MapsError(
+                    "GEOCODE_ZERO_RESULTS", "Google found no place; clarify its address"
+                )
+            result = results[0]
+            geometry = result.get("geometry") or {}
+            if result.get("partial_match") or geometry.get("location_type") != "ROOFTOP":
+                raise MapsError("GEOCODE_UNCERTAIN", "Use a grounded venue or room address")
+            location = geometry.get("location") or {}
+            return _checked_point(location.get("lat"), location.get("lng"))
+        except (
+            http.client.HTTPException,
+            ValueError,
+            TypeError,
+            AttributeError,
+            KeyError,
+            IndexError,
+        ) as exc:
+            raise MapsError(
+                "GEOCODE_MALFORMED", "Google returned invalid geocode data; check access/address"
+            ) from exc
 
     def _google_travel_time(self, origin: str, destination: str) -> TravelTime:
         """Query the Google Distance Matrix API for a single pair.

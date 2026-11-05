@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
 from state import (  # noqa: E402
     ACTIVE_FLIGHTS_FILE,
     CONFIG_FILE,
+    CONFIG_SCHEMA_VERSION,
     CURRENT_LOCATION_FILE,
     CURRENT_LOCATION_SCHEMA_VERSION,
     STATE_SCHEMA_VERSION,
@@ -102,14 +103,14 @@ def test_write_then_read_config_roundtrips(state_root: Path):
     loaded = read_config()
     assert loaded is not None
     assert loaded["home_address"] == "1 Fixture Loop, Cupertino, CA"
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
 
 
 def test_write_config_overrides_caller_supplied_schema_version(state_root: Path):
     """Caller-supplied schema_version is overridden by the canonical constant."""
     write_config({"home_address": "X", "schema_version": 99})
     loaded = must(read_config())
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
 
 
 def test_read_current_location_returns_none_when_missing(state_root: Path):
@@ -394,7 +395,7 @@ def test_write_config_drops_caller_schema_version_but_allows_it(state_root: Path
     """Caller may supply schema_version; it's silently overridden, not rejected."""
     write_config({"home_address": "X", "schema_version": 999})
     loaded = must(read_config())
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
 
 
 def test_write_flight_state_rejects_phase_markers_missing_key(state_root: Path):
@@ -612,7 +613,7 @@ def test_v1_config_migration_bumps_version_without_shape_change(state_root: Path
         json.dumps({"schema_version": 1, "home_address": "1 Old Loop"})
     )
     loaded = must(read_config())
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
 
 
@@ -689,7 +690,7 @@ def test_v2_config_migration_bumps_version_without_shape_change(state_root: Path
         json.dumps({"schema_version": 2, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
     )
     loaded = must(read_config())
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
     assert "calendar_events" not in loaded
 
@@ -706,7 +707,7 @@ def test_v3_to_v4_config_migration_bumps_version_without_shape_change(state_root
         json.dumps({"schema_version": 3, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
     )
     loaded = must(read_config())
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
     assert loaded["min_transfer_minutes"] == 60
     assert "byair_calendar_name" not in loaded
@@ -726,7 +727,7 @@ def test_config_round_trips_byair_calendar_fields(state_root: Path):
     loaded = must(read_config())
     assert loaded["byair_calendar_name"] == "Flighty Flights"
     assert loaded["byair_calendar_id"] == "c_abc123@group.calendar.google.com"
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
 
 
 def test_write_config_rejects_non_string_byair_calendar_id(state_root: Path):
@@ -747,7 +748,7 @@ def test_v4_to_v5_config_migration_bumps_version_without_shape_change(state_root
         json.dumps({"schema_version": 4, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
     )
     loaded = must(read_config())
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
     assert loaded["min_transfer_minutes"] == 60
     assert "airport_clearance_domestic_minutes" not in loaded
@@ -816,7 +817,7 @@ def test_v5_to_v6_config_migration_bumps_version_without_shape_change(state_root
         json.dumps({"schema_version": 5, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
     )
     loaded = must(read_config())
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
     assert "gate_assignment_fired" not in loaded
 
@@ -869,7 +870,7 @@ def test_v6_to_v7_config_migration_bumps_version_without_shape_change(state_root
         json.dumps({"schema_version": 6, "home_address": "1 Old Loop", "min_transfer_minutes": 60})
     )
     loaded = must(read_config())
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
     assert loaded["home_address"] == "1 Old Loop"
 
 
@@ -891,7 +892,7 @@ def test_config_round_trips_airport_clearance_fields(state_root: Path):
     assert loaded["airport_post_arrival_domestic_minutes"] == 20
     assert loaded["airport_post_arrival_intl_us_minutes"] == 40
     assert loaded["airport_post_arrival_intl_abroad_minutes"] == 60
-    assert loaded["schema_version"] == STATE_SCHEMA_VERSION
+    assert loaded["schema_version"] == CONFIG_SCHEMA_VERSION
 
 
 def test_write_config_accepts_zero_airport_clearance(state_root: Path):
@@ -1342,3 +1343,26 @@ def test_resolve_live_origin_rejects_offset_naive_now(state_root: Path):
     offset_naive = datetime(2026, 5, 20, 12, 0, 0, tzinfo=_OffsetNaiveTZ())
     with pytest.raises(ValueError, match="timezone-aware"):
         resolve_live_origin("1 Infinite Loop", now=offset_naive)
+
+
+def test_venue_radius_config_migrates_without_rewriting_flight_state(state_root):
+    state_root.mkdir(parents=True)
+    (state_root / CONFIG_FILE).write_text('{"schema_version":8,"home_address":"Home"}')
+    write_flight_state(_make_flight_state())
+    flight_path = state_root / "flight-12345.json"
+    before = flight_path.read_bytes()
+    config = must(read_config())
+    assert config == {"schema_version": CONFIG_SCHEMA_VERSION, "home_address": "Home"}
+    write_config({**config, "venue_radius_meters": 750})
+    assert must(read_config())["venue_radius_meters"] == 750
+    assert flight_path.read_bytes() == before
+    assert must(read_flight_state(12345))["schema_version"] == STATE_SCHEMA_VERSION
+
+
+@pytest.mark.parametrize("radius", [-1, True, "500", 1.5])
+def test_venue_radius_rejects_invalid_config_without_replacement(state_root, radius):
+    write_config({"venue_radius_meters": 500})
+    before = (state_root / CONFIG_FILE).read_bytes()
+    with pytest.raises(ValueError):
+        write_config({"venue_radius_meters": radius})
+    assert (state_root / CONFIG_FILE).read_bytes() == before
