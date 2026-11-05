@@ -478,7 +478,6 @@ def test_geocode_google_returns_coordinates_and_uses_existing_transport():
             {"geometry": {"location_type": "ROOFTOP", "location": {"lat": 40.002, "lng": -74.0}}}
         ],
     }
-    payload["results"][0]["partial_match"] = True
     with patch("maps_client._get_json", return_value=payload) as get:
         assert MapsClient(SYNTH_KEY).geocode("Room 52A, Example Campus") == (40.002, -74.0)
     url, timeout = get.call_args.args
@@ -491,6 +490,7 @@ def test_geocode_google_returns_coordinates_and_uses_existing_transport():
 @pytest.mark.parametrize(
     "result",
     [
+        {"partial_match": True, "geometry": {"location": {"lat": 40.0, "lng": -74.0}}},
         {"geometry": {"location_type": "APPROXIMATE", "location": {"lat": 40.0, "lng": -74.0}}},
         {"geometry": {"location": {"lat": float("nan"), "lng": -74.0}}},
         {"geometry": {"location": {"lat": 91, "lng": -74.0}}},
@@ -521,3 +521,31 @@ def test_geocode_coordinate_input_needs_no_provider():
         with pytest.raises(MapsError):
             MapsClient(SYNTH_KEY).geocode("91,0")
         get.assert_not_called()
+
+
+@pytest.mark.parametrize("kind", ["Street", "Cross Street", "Address Range", "Geography"])
+def test_approximate_google_cannot_fall_back_to_a_tomtom_area(kind):
+    google = {
+        "status": "OK",
+        "results": [
+            {"geometry": {"location_type": "APPROXIMATE", "location": {"lat": 40.0, "lng": -74.0}}}
+        ],
+    }
+    tomtom = {"results": [{"type": kind, "position": {"lat": 40.0, "lon": -74.0}}]}
+    with patch("maps_client._get_json", side_effect=[google, tomtom]):
+        with pytest.raises(MapsError, match="ALL_GEOCODERS_FAILED"):
+            MapsClient(SYNTH_KEY, tomtom=TomTomClient(SYNTH_TOMTOM_KEY)).geocode("Unknown room")
+
+
+@pytest.mark.parametrize("payload", [[], {"status": "OK", "results": [None]}])
+def test_geocode_bad_google_shape_becomes_maps_error(payload):
+    with patch("maps_client._get_json", return_value=payload):
+        with pytest.raises(MapsError, match="GEOCODE_MALFORMED"):
+            MapsClient(SYNTH_KEY).geocode("Unknown room")
+
+
+def test_geocode_bad_json_and_tomtom_coordinates_become_maps_error():
+    bad = {"results": [{"type": "Point Address", "position": {"lat": "bad", "lon": -74.0}}]}
+    with patch("maps_client._get_json", side_effect=[json.JSONDecodeError("bad", "{", 1), bad]):
+        with pytest.raises(MapsError, match="ALL_GEOCODERS_FAILED"):
+            MapsClient(SYNTH_KEY, tomtom=TomTomClient(SYNTH_TOMTOM_KEY)).geocode("Unknown room")

@@ -1045,3 +1045,21 @@ def test_geocodes_once_per_sweep_only_for_confirmed_window_and_caches_failures(c
     assert calls == [VENUE, "Unresolved room"]
     assert points == {VENUE: (40.0, -74.0), "Unresolved room": None}
     assert "check Maps geocoding access and the address" in capsys.readouterr().err
+
+
+def test_malformed_provider_result_is_cached_unavailable_and_keeps_literal_matching(capsys):
+    from unittest.mock import patch
+
+    from maps_client import MapsClient
+    from reconcile_sweep import attendance_points
+
+    attendance, _ = model()
+    events = [event("one", "Unknown room"), event("two", "Unknown room")]
+    with patch("maps_client._get_json", side_effect=json.JSONDecodeError("bad", "{", 1)) as get:
+        points = attendance_points(events, (attendance,), MapsClient("synthetic"))
+    assert get.call_count == 2  # one venue, one repeated room
+    assert points == {VENUE: None, "Unknown room": None}
+    start, end = NOW.replace(hour=12), NOW.replace(hour=13)
+    assert attendance.covers("native", "ExampleConf", start, end, points=points)
+    assert not attendance.covers("native", "Unknown room", start, end, points=points)
+    assert "check Maps geocoding access" in capsys.readouterr().err

@@ -201,7 +201,7 @@ class TomTomClient:
                 "TOMTOM_GEOCODE_ZERO_RESULTS",
                 f"TomTom geocode returned no match for {query!r}",
             )
-        if precise and results[0].get("type") == "Geography":
+        if precise and results[0].get("type") not in {"Point Address", "POI"}:
             raise MapsError("TOMTOM_GEOCODE_UNCERTAIN", "Use a grounded venue or room address")
         position = results[0].get("position") or {}
         lat = position.get("lat")
@@ -355,13 +355,39 @@ class MapsClient:
         """Resolve a place to a point, using the existing Google/TomTom chain.
 
         Approximate Google matches cannot classify a room as on site.
-        TomTom geography results likewise cannot supply a venue point.
+        TomTom requires a point address or POI for venue matching.
         """
         if not place or not place.strip():
             raise ValueError("geocode: a nonempty place is required")
         point = _COORDINATES.fullmatch(place.strip())
         if point is not None:
             return _checked_point(float(point.group(1)), float(point.group(2)))
+        try:
+            return self._google_geocode(place)
+        except (MapsError, urllib.error.URLError, TimeoutError) as google_err:
+            if self._tomtom is None:
+                raise
+            # Existing geocode owner also serves the routing fallback.
+            try:
+                lat, lon, _ = self._tomtom._geocode(place, precise=True)
+                return _checked_point(lat, lon)
+            except (
+                MapsError,
+                urllib.error.URLError,
+                TimeoutError,
+                ValueError,
+                TypeError,
+                AttributeError,
+                KeyError,
+                IndexError,
+            ) as tomtom_err:
+                raise MapsError(
+                    "ALL_GEOCODERS_FAILED",
+                    f"Google ({type(google_err).__name__}) and TomTom "
+                    f"({type(tomtom_err).__name__}) geocoding failed; check access/address",
+                ) from tomtom_err
+
+    def _google_geocode(self, place: str) -> tuple[float, float]:
         try:
             params = urllib.parse.urlencode({"address": place, "key": self._api_key})
             payload = _get_json(f"{_GOOGLE_GEOCODE_ENDPOINT}?{params}", self._timeout)
@@ -374,23 +400,14 @@ class MapsClient:
                 )
             result = results[0]
             geometry = result.get("geometry") or {}
-            if geometry.get("location_type") == "APPROXIMATE":
+            if result.get("partial_match") or geometry.get("location_type") == "APPROXIMATE":
                 raise MapsError("GEOCODE_UNCERTAIN", "Use a grounded venue or room address")
             location = geometry.get("location") or {}
             return _checked_point(location.get("lat"), location.get("lng"))
-        except (MapsError, urllib.error.URLError, TimeoutError) as google_err:
-            if self._tomtom is None:
-                raise
-            # Existing geocode owner also serves the routing fallback.
-            try:
-                lat, lon, _ = self._tomtom._geocode(place, precise=True)
-                return _checked_point(lat, lon)
-            except (MapsError, urllib.error.URLError, TimeoutError) as tomtom_err:
-                raise MapsError(
-                    "ALL_GEOCODERS_FAILED",
-                    f"Google ({type(google_err).__name__}) and TomTom "
-                    f"({type(tomtom_err).__name__}) geocoding failed; check access/address",
-                ) from tomtom_err
+        except (ValueError, TypeError, AttributeError, KeyError, IndexError) as exc:
+            raise MapsError(
+                "GEOCODE_MALFORMED", "Google returned invalid geocode data; check access/address"
+            ) from exc
 
     def _google_travel_time(self, origin: str, destination: str) -> TravelTime:
         """Query the Google Distance Matrix API for a single pair.
