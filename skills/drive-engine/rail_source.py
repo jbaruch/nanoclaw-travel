@@ -58,13 +58,12 @@ def station_desired_blocks(
     held: list[HeldLeg] = []
     skipped: list[str] = []
     guards: list[TransportGuard] = []
+    trains = []
     for row in schedule or []:
         if not isinstance(row, dict) or row.get("type") != "Rail":
             continue
         identity = row.get("uid")
         start, end = parse_time(row.get("start")), parse_time(row.get("end"))
-        if (end is not None and end < now) or (start is not None and start > now + window):
-            continue
         if (
             not isinstance(identity, str)
             or not identity
@@ -73,6 +72,8 @@ def station_desired_blocks(
             or end <= start
             or not all("T" in str(row.get(k)) for k in ("start", "end"))
         ):
+            if (end is not None and end < now) or (start is not None and start > now + window):
+                continue
             reason = "Rail row has no usable UID/timed interval — refresh travel-schedule"
             skipped.append(reason)
             if isinstance(identity, str) and identity:
@@ -83,7 +84,39 @@ def station_desired_blocks(
                         )
                     )
             continue
-        identity = f"rail:{identity}"
+        trains.append((row, identity, start, end))
+
+    trains.sort(key=lambda train: train[2])
+    connections = {}
+    connected_departures = set()
+    for earlier, later in zip(trains, trains[1:], strict=False):
+        first, first_id, _, arrives = earlier
+        second, second_id, departs, _ = later
+        arrival = station_address(first, arriving=True)
+        departure = station_address(second, arriving=False)
+        if (
+            arrives > departs
+            or not arrival
+            or not departure
+            or _base(itinerary, arrives) is not None
+            or _base(itinerary, departs - STATION_ARRIVAL_BUFFER) is not None
+            or any(
+                isinstance(item, dict)
+                and item.get("type") == "Flight"
+                and (when := parse_time(item.get("start"))) is not None
+                and arrives <= when < departs
+                for item in schedule or []
+            )
+        ):
+            continue
+        connections[first_id] = (departure, departs - STATION_ARRIVAL_BUFFER)
+        connected_departures.add(second_id)
+
+    for row, uid, start, end in trains:
+        if end < now or start > now + window:
+            continue
+        connection = connections.get(uid)
+        identity = f"rail:{uid}"
         departure = station_address(row, arriving=False)
         arrival = station_address(row, arriving=True)
         board_at = start - STATION_ARRIVAL_BUFFER
@@ -96,13 +129,19 @@ def station_desired_blocks(
                 arrival_point=arrival or "",
                 arrival_label=arrival or "",
                 arrival_kind="station_arrival",
+                arrival_handoff=connection is None,
             )
         )
         for kind, at, origin, destination in (
             ("station_departure", board_at, _base(itinerary, board_at), departure),
-            ("station_arrival", end, arrival, _base(itinerary, end)),
+            (
+                "station_arrival",
+                end,
+                arrival,
+                connection[0] if connection else _base(itinerary, end),
+            ),
         ):
-            if at < now:
+            if at < now or (kind == "station_departure" and uid in connected_departures):
                 continue
             reason = None
             drive = None
@@ -116,6 +155,8 @@ def station_desired_blocks(
                     reason = "station drive route unavailable"
                 elif drive < timedelta(0) or drive > MAX_ASSUMED_ROAD_TRIP:
                     reason = "station drive outside the road-trip range"
+                elif kind == "station_arrival" and connection and end + drive > connection[1]:
+                    reason = "station transfer does not fit between booked trains"
                 elif drive <= MIN_MEETING_DRIVE:
                     continue
             summary = f"Drive: {row.get('summary', 'Train')}"

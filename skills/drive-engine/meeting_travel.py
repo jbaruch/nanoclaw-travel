@@ -104,9 +104,13 @@ def maintain_meeting_routes(
         ]
         durations = [route(origin, destination) for origin, destination in endpoints]
         unroutable = any(pair in no_routes for pair in endpoints)
-        if not durations or (any(duration is None for duration in durations) and not unroutable):
-            continue
         longest = max((d for d in durations if d is not None), default=None)
+        if not durations or (
+            any(duration is None for duration in durations)
+            and not unroutable
+            and (longest is None or longest <= MAX_ASSUMED_ROAD_TRIP)
+        ):
+            continue
         if longest is not None and longest <= DEFAULT_MAX_REASONABLE_DRIVE and not unroutable:
             if meeting_key(identity) in verdicts:
                 clear_meeting_route(identity)

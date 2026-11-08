@@ -49,6 +49,7 @@ class TransportGuard:
     arrival_point: str
     arrival_label: str
     arrival_kind: str = "airport_arrival"
+    arrival_handoff: bool = True  # False at a booked connection, still protects its train interval.
 
 
 @dataclass(frozen=True)
@@ -361,7 +362,7 @@ def compose_postarrival(
     arrival_keys = {(block.identity, block.kind) for block in desired_list}
 
     for guard in guards:
-        if (guard.identity, guard.arrival_kind) not in arrival_keys:
+        if not guard.arrival_handoff or (guard.identity, guard.arrival_kind) not in arrival_keys:
             continue
         candidates = [
             meeting

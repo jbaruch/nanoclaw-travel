@@ -220,8 +220,21 @@ def test_cancelled_preferred_flight_does_not_return_from_the_stale_tripit_copy()
     )
 
 
+@pytest.mark.parametrize(
+    "durations,no_routes,expects_gap",
+    [
+        ((timedelta(hours=9), timedelta(hours=9)), set(), True),
+        ((None, None), {("Home", "Venue"), ("Venue", "Home")}, True),
+        ((None, None), set(), False),
+        ((timedelta(hours=9), None), set(), True),
+        ((None, timedelta(hours=9)), set(), True),
+    ],
+)
 def test_long_or_unroutable_meeting_goes_to_booking_check_but_an_outage_does_not(
     check_travel_bookings,
+    durations,
+    no_routes,
+    expects_gap,
 ):
     from drive_decision import clear_meeting_route
     from scan import scan
@@ -236,25 +249,20 @@ def test_long_or_unroutable_meeting_goes_to_booking_check_but_an_outage_does_not
     }
     meetings = scan([event], now=now, home_address="Home", skip_state={})
     check_bookings, _, _ = check_travel_bookings
-    for duration, no_routes, expects_gap in [
-        (timedelta(hours=9), set(), True),
-        (None, {("Home", "Venue"), ("Venue", "Home")}, True),
-        (None, set(), False),
-    ]:
-        clear_meeting_route("distant")
-        maintain_meeting_routes(
-            meetings,
-            route=lambda a, b, result=duration: result,
-            booked=set(),
-            driving_to={},
-            verdicts={},
-            no_routes=no_routes,
-            now=now,
-        )
-        gaps, error = check_bookings.load_meeting_transport_gaps(
-            now=now, events=[event], schedule=[], route=lambda a, b: None
-        )
-        assert error is None
-        assert bool(gaps) is expects_gap
-        if gaps:
-            assert gaps[0]["trip"] == "Distant meeting"
+    clear_meeting_route("distant")
+    maintain_meeting_routes(
+        meetings,
+        route=lambda a, b: durations[0] if a == "Home" else durations[1],
+        booked=set(),
+        driving_to={},
+        verdicts={},
+        no_routes=no_routes,
+        now=now,
+    )
+    gaps, error = check_bookings.load_meeting_transport_gaps(
+        now=now, events=[event], schedule=[], route=lambda a, b: None
+    )
+    assert error is None
+    assert bool(gaps) is expects_gap
+    if gaps:
+        assert gaps[0]["trip"] == "Distant meeting"

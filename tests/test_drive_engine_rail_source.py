@@ -4,6 +4,8 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 for bundle in ("travel-core", "flight-assist", "drive-engine"):
     sys.path.insert(0, str(ROOT / "skills" / bundle))
@@ -13,8 +15,9 @@ from calendar_apply import build_create_args  # noqa: E402
 from engine import build_reconcile_plan  # noqa: E402
 from itinerary import Itinerary  # noqa: E402
 from meeting_source import meeting_desired_blocks  # noqa: E402
-from postarrival import postarrival_meetings_from  # noqa: E402
+from postarrival import PostarrivalMeeting, postarrival_meetings_from  # noqa: E402
 from rail_source import station_desired_blocks  # noqa: E402
+from reconcile import DesiredBlock  # noqa: E402
 from reconcile_sweep import meeting_anchor  # noqa: E402
 from scan import scan  # noqa: E402
 
@@ -119,6 +122,104 @@ def test_station_blocks_use_real_addresses_and_reconcile_without_duplicates():
         now=NOW,
     )
     assert {d.event_id for d in without_booking.plan.deletes} == {"s0", "s1"}
+
+
+@pytest.mark.parametrize("different_station", [False, True])
+def test_connecting_trains_have_no_phantom_home_or_hotel_drive(different_station):
+    rows = schedule()
+    middle = DEP + timedelta(hours=2)
+    connection = "Connection East" if different_station else "Connection Station"
+    onward = rows[1] | {
+        "uid": "item-onward@tripit.com",
+        "summary": "Train B to C",
+        "start": (middle + timedelta(hours=1)).isoformat(),
+        "description": f"Depart {connection}\\nArrive Destination Station",
+    }
+    rows[1] = rows[1] | {
+        "end": middle.isoformat(),
+        "description": "Depart Origin Station\\nArrive Connection Station",
+    }
+    rows.append(onward)
+
+    def connecting_route(a, b):
+        if a == "Connection Station" and b in {"Connection East", "Venue"}:
+            return timedelta(minutes=15)
+        return route(a, b)
+
+    unsafe = DesiredBlock(
+        identity="unsafe-meeting",
+        kind="meeting_outbound",
+        summary="Drive: unsafe meeting",
+        start=DEP + timedelta(minutes=15),
+        end=DEP + timedelta(minutes=30),
+        origin="Home",
+        destination="Venue",
+        baseline_seconds=900,
+        anchor=DEP + timedelta(minutes=30),
+    )
+    result = build_reconcile_plan(
+        flights=[],
+        airport_info={},
+        current_blocks=[],
+        schedule=rows,
+        home_address="Home",
+        route=connecting_route,
+        now=NOW,
+        extra_desired=[unsafe],
+        postarrival_meetings=[
+            PostarrivalMeeting(
+                "connection-meeting",
+                "Meeting during connection",
+                "Venue",
+                middle - timedelta(minutes=10),
+                middle + timedelta(minutes=45),
+            )
+        ],
+    )
+    blocks = [create.desired for create in result.plan.creates]
+    assert result.held == ()
+    assert all(b.identity != "unsafe-meeting" for b in blocks)
+    endpoints = [(b.origin, b.destination) for b in blocks]
+    expected = [("Home", "Origin Station")]
+    if different_station:
+        expected.append(("Connection Station", "Connection East"))
+        transfer = next(b for b in blocks if b.destination == "Connection East")
+        assert transfer.start == middle
+        assert transfer.end == middle + timedelta(minutes=15)
+    expected.append(("Destination Station", "Hotel address"))
+    assert endpoints == expected
+
+
+def test_grounded_lodging_between_trains_keeps_its_real_drives():
+    rows = schedule()
+    rows.append(
+        rows[1]
+        | {
+            "uid": "item-onward@tripit.com",
+            "summary": "Train B to C",
+            "start": (ARR + timedelta(hours=26)).isoformat(),
+            "end": (ARR + timedelta(hours=28)).isoformat(),
+            "description": "Depart Destination Station\\nArrive Third Station",
+        }
+    )
+
+    def hotel_route(a, b):
+        return (
+            timedelta(minutes=20)
+            if (a, b) == ("Hotel address", "Destination Station")
+            else route(a, b)
+        )
+
+    blocks, _, _, _ = station_desired_blocks(
+        rows,
+        itinerary=Itinerary(rows, home_address="Home"),
+        route=hotel_route,
+        now=NOW,
+        window=timedelta(days=14),
+    )
+    endpoints = [(b.origin, b.destination) for b in blocks]
+    assert ("Destination Station", "Hotel address") in endpoints
+    assert ("Hotel address", "Destination Station") in endpoints
 
 
 def test_train_arrival_reuses_the_meeting_handoff():
