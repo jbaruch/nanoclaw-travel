@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from itinerary import TRIP_LOCATION, Itinerary, parse_time
+from lodging import trip_ref
 from meeting_source import MAX_ASSUMED_ROAD_TRIP, MIN_MEETING_DRIVE
 from postarrival import TransportGuard
 from reconcile import DesiredBlock, HeldLeg
@@ -17,6 +18,9 @@ from scan import same_place
 # Default boarding allowance. Amtrak's ordinary station guidance is 30 minutes:
 # https://www.amtrak.com/at-the-station/boarding.html
 STATION_ARRIVAL_BUFFER = timedelta(minutes=30)
+# Coalesce only nearby bookings on the same recorded TripIt trip. Longer gaps
+# keep the destination handoff: they may be visits, including same-day returns.
+MAX_CONNECTION_GAP = timedelta(hours=3)
 
 
 def station_address(row: dict, *, arriving: bool) -> str | None:
@@ -95,9 +99,15 @@ def station_desired_blocks(
         arrival = station_address(first, arriving=True)
         departure = station_address(second, arriving=False)
         if (
-            arrives > departs
+            not timedelta(0) <= departs - arrives <= MAX_CONNECTION_GAP
+            or (trip := trip_ref(first.get("description"))) is None
+            or trip != trip_ref(second.get("description"))
             or not arrival
             or not departure
+            or same_place(
+                station_address(first, arriving=False) or "",
+                station_address(second, arriving=True) or "",
+            )
             or _base(itinerary, arrives) is not None
             or _base(itinerary, departs - STATION_ARRIVAL_BUFFER) is not None
             or any(
@@ -113,7 +123,7 @@ def station_desired_blocks(
         connected_departures.add(second_id)
 
     for row, uid, start, end in trains:
-        if end < now or start > now + window:
+        if start > now + window:
             continue
         connection = connections.get(uid)
         identity = f"rail:{uid}"
@@ -129,7 +139,7 @@ def station_desired_blocks(
                 arrival_point=arrival or "",
                 arrival_label=arrival or "",
                 arrival_kind="station_arrival",
-                arrival_handoff=connection is None,
+                arrival_handoff=connection is None and end >= now,
             )
         )
         for kind, at, origin, destination in (

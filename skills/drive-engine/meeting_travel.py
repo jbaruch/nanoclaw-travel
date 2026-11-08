@@ -108,7 +108,7 @@ def maintain_meeting_routes(
         if not durations or (
             any(duration is None for duration in durations)
             and not unroutable
-            and (longest is None or longest <= MAX_ASSUMED_ROAD_TRIP)
+            and (longest is None or longest <= DEFAULT_MAX_REASONABLE_DRIVE)
         ):
             continue
         if longest is not None and longest <= DEFAULT_MAX_REASONABLE_DRIVE and not unroutable:
@@ -135,6 +135,13 @@ def travel_plan_changes(
 ) -> dict[str, tuple[str, str]]:
     """Descriptions keyed by the existing Calendar IDs apply must confirm."""
     old = {block.event_id: block for block in current if block.event_id is not None}
+    long_meetings = {
+        block.identity
+        for block in current
+        if block.kind in {"meeting_outbound", "meeting_return"}
+        and block.baseline_seconds is not None
+        and block.baseline_seconds > DEFAULT_MAX_REASONABLE_DRIVE.total_seconds()
+    }
     changes = {}
     for deletion in plan.deletes:
         block = old.get(deletion.event_id)
@@ -143,8 +150,7 @@ def travel_plan_changes(
             and block.identity in booked
             and block.identity in names
             and block.kind in {"meeting_outbound", "meeting_return"}
-            and block.baseline_seconds is not None
-            and block.baseline_seconds > DEFAULT_MAX_REASONABLE_DRIVE.total_seconds()
+            and block.identity in long_meetings
         ):
             identity = block.identity
             changes[deletion.event_id] = (

@@ -266,3 +266,41 @@ def test_long_or_unroutable_meeting_goes_to_booking_check_but_an_outage_does_not
     assert bool(gaps) is expects_gap
     if gaps:
         assert gaps[0]["trip"] == "Distant meeting"
+
+
+def test_one_known_four_hour_route_still_records_context_for_the_advertised_reply(
+    monkeypatch, tmp_path
+):
+    from answer_drive_or_fly import record_answer
+    from drive_decision import load_verdicts, meeting_key
+    from scan import scan
+
+    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(tmp_path))
+    now = AT - timedelta(days=1)
+    event = {
+        "id": "asymmetric",
+        "summary": "Distant meeting",
+        "location": "Venue",
+        "start": {"dateTime": AT.isoformat()},
+        "end": {"dateTime": (AT + timedelta(hours=1)).isoformat()},
+    }
+    meetings = scan([event], now=now, home_address="Home", skip_state={})
+    maintain_meeting_routes(
+        meetings,
+        route=lambda a, b: timedelta(hours=4) if a == "Home" else None,
+        booked=set(),
+        driving_to={},
+        verdicts={},
+        no_routes=set(),
+        now=now,
+    )
+    context = load_verdicts(now)[meeting_key("asymmetric")]
+    assert context.drive_seconds == 14400
+    assert context.meeting is not None and context.meeting["gap_reason"] is None
+    answer = record_answer(
+        {"trip": "Distant meeting", "answer": "fly"},
+        schedule=[],
+        events=[event],
+        now=now,
+    )
+    assert answer["recorded"] is True

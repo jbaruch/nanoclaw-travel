@@ -569,3 +569,34 @@ def test_a_bridge_leg_keeps_its_prior_venue_origin_on_a_driving_trip():
         driving_to={"m2": TripPresence(lodging=LODGING, is_first=False, is_last=False)},
     )
     assert [(b.origin, b.destination) for b in blocks] == [("Prior Venue", VENUE)]
+
+
+@pytest.mark.parametrize("outbound_minutes", [None, 240])
+@pytest.mark.parametrize("booking", [True, None])
+def test_transport_decision_covers_both_directions_even_with_a_failed_or_short_leg(
+    outbound_minutes, booking
+):
+    meeting = FakeMeeting(
+        "m1",
+        "Distant meeting",
+        (
+            FakeLeg("outbound", HOME_ADDR, VENUE, arrive_by=_dt(16)),
+            FakeLeg("return", VENUE, HOME_ADDR, depart_after=_dt(17)),
+        ),
+    )
+    blocks, _, held = meeting_desired_blocks(
+        [meeting],
+        route=_pair_route(
+            {
+                (HOME_ADDR, VENUE): (
+                    timedelta(minutes=outbound_minutes) if outbound_minutes is not None else None
+                ),
+                (VENUE, HOME_ADDR): timedelta(minutes=150),
+            }
+        ),
+        booked_transport=lambda _: booking,
+    )
+    assert blocks == []
+    assert {leg.kind for leg in held} == (
+        {"meeting_outbound", "meeting_return"} if booking is None else set()
+    )

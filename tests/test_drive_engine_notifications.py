@@ -84,7 +84,7 @@ def test_booking_replacement_notice_requires_the_actual_calendar_changes(
             event_id=f"old{i}",
             identity="pickup",
             kind=kind,
-            baseline_seconds=227 * 60,
+            baseline_seconds=(240 if i == 0 else 150) * 60,
             anchor=_dt(16 + i),
             origin="Home",
             destination="ATL",
@@ -666,4 +666,48 @@ def test_a_silent_sweep_carries_no_message_so_the_host_stays_quiet():
     old wake gate produced, reached without a model."""
     payload = build_sweep_payload(ApplyResult(), [])
     assert payload["wake_agent"] is False
+    assert payload["data"]["message"] is None
+
+
+def test_asymmetric_booking_replacement_does_not_announce_a_budget_deferred_return(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    current = [
+        ParsedBlock(
+            generation=GEN_UNIFIED,
+            event_id=f"old{i}",
+            identity="pickup",
+            kind=kind,
+            baseline_seconds=(240 if i == 0 else 150) * 60,
+            anchor=_dt(16 + i),
+            origin="Home",
+            destination="Venue",
+        )
+        for i, kind in enumerate(("meeting_outbound", "meeting_return"))
+    ]
+    plan = plan_reconcile([], current, now=_dt(0))
+    changes = travel_plan_changes(
+        plan,
+        current,
+        booked={"pickup"},
+        names={"pickup": "Asher pickup"},
+    )
+    clock = iter([0, 0, 2])
+
+    def apply_with_fixed_budget(plan, **kwargs):
+        kwargs["budget_seconds"] = 1
+        return apply_plan(plan, **kwargs, monotonic=lambda: next(clock))
+
+    payload = finish_sweep(
+        plan,
+        [],
+        calendar=FakeCalendar(),
+        now=_dt(0),
+        travel_changes=changes,
+        apply=apply_with_fixed_budget,
+    )
+    assert payload["data"]["applied"]["deleted"] == 1
+    assert payload["data"]["deferred"] == 1
     assert payload["data"]["message"] is None

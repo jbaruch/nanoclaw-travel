@@ -251,22 +251,52 @@ def meeting_desired_blocks(
                     )
                 )
             continue
-        block_start, held_start = len(blocks), len(held)
-        replaced_reason = None
+        # Resolve routes first so transport evidence applies to the meeting,
+        # never just the first long/failed direction encountered.
+        routed = []
+        check_transport = False
         for leg in meeting.legs:
-            tag = f"meeting {meeting.meeting_id} {leg.direction}"
             kind = _DIRECTION_KIND.get(leg.direction)
             if kind is None:
-                skipped.append(f"{tag}: unknown direction")
+                skipped.append(f"meeting {meeting.meeting_id} {leg.direction}: unknown direction")
                 continue
-
             if leg.origin is None or leg.destination is None:
-                if booked_transport is not None and booked_transport(meeting):
-                    replaced_reason = "booked transport replaces the assumed drive"
-                    break
-                if answers.get(meeting.meeting_id) == "fly":
-                    replaced_reason = "operator is flying — check the missing booking"
-                    break
+                routed.append((leg, kind, None, None, None))
+                check_transport = True
+                continue
+            origin, destination = _trip_endpoints(leg, presence.get(meeting.meeting_id))
+            drive = timedelta(0) if same_place(origin, destination) else route(origin, destination)
+            routed.append((leg, kind, origin, destination, drive))
+            if drive is None or (
+                drive > max_reasonable_drive and meeting.meeting_id not in presence
+            ):
+                check_transport = True
+
+        booking = booked_transport(meeting) if check_transport and booked_transport else False
+        if check_transport and (booking or answers.get(meeting.meeting_id) == "fly"):
+            reason = (
+                "booked transport replaces the assumed drive"
+                if booking
+                else "operator is flying — check the missing booking"
+            )
+            skipped.append(f"meeting {meeting.meeting_id}: {reason}")
+            continue
+        if booking is None and answers.get(meeting.meeting_id) != "drive":
+            for leg, kind, _, _, _ in routed:
+                _hold(
+                    skipped,
+                    held,
+                    meeting,
+                    leg,
+                    kind,
+                    f"meeting {meeting.meeting_id}: transport destination unavailable — "
+                    "check TripIt arrival and Maps access",
+                )
+            continue
+
+        for leg, kind, origin, destination, drive in routed:
+            tag = f"meeting {meeting.meeting_id} {leg.direction}"
+            if origin is None or destination is None:
                 _hold(
                     skipped,
                     held,
@@ -276,15 +306,10 @@ def meeting_desired_blocks(
                     f"{tag}: {leg.anchor_note or 'unresolved anchor'}",
                 )
                 continue
-            origin, destination = _trip_endpoints(leg, presence.get(meeting.meeting_id))
             if same_place(origin, destination):
                 skipped.append(f"{tag}: origin is the destination — no drive")
                 continue
-            drive = route(origin, destination)
             if drive is None:
-                if answers.get(meeting.meeting_id) == "fly":
-                    replaced_reason = "operator is flying — check the missing booking"
-                    break
                 _hold(skipped, held, meeting, leg, kind, f"{tag}: route failed")
                 continue
             if drive < timedelta(0):
@@ -301,24 +326,6 @@ def meeting_desired_blocks(
                 skipped.append(f"{tag}: route at or below one minute — no drive")
                 continue
             long_drive = drive > max_reasonable_drive and meeting.meeting_id not in presence
-            booking = booked_transport(meeting) if long_drive and booked_transport else False
-            if booking:
-                replaced_reason = "booked transport replaces the assumed drive"
-                break
-            if long_drive and answers.get(meeting.meeting_id) == "fly":
-                replaced_reason = "operator is flying — check the missing booking"
-                break
-            if booking is None and answers.get(meeting.meeting_id) != "drive":
-                _hold(
-                    skipped,
-                    held,
-                    meeting,
-                    leg,
-                    kind,
-                    f"{tag}: transport destination unavailable — "
-                    "check TripIt arrival and Maps access",
-                )
-                continue
             if drive > MAX_ASSUMED_ROAD_TRIP and meeting.meeting_id not in presence:
                 minutes = int(drive.total_seconds() // 60)
                 _hold(
@@ -386,10 +393,4 @@ def meeting_desired_blocks(
                 )
             )
 
-        if replaced_reason:
-            # A meeting-level transport decision replaces both directions,
-            # including a shorter leg considered before the long one.
-            del blocks[block_start:]
-            del held[held_start:]
-            skipped.append(f"meeting {meeting.meeting_id}: {replaced_reason}")
     return blocks, skipped, held

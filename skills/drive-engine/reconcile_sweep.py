@@ -775,8 +775,7 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
         gaps = [
             EnergyGap(guard.ready_at, possible_vehicle(guard.identity))
             for guard in transport_guards
-            if guard.arrival_kind == "station_arrival"
-            and now <= guard.ready_at <= now + FORECAST_HORIZON
+            if guard.arrival_kind == "station_arrival" and guard.ready_at <= now + FORECAST_HORIZON
         ]
         desired_keys = {(block.identity, block.kind) for block in blocks}
         for leg in held:

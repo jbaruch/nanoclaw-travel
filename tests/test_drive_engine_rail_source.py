@@ -140,6 +140,9 @@ def test_connecting_trains_have_no_phantom_home_or_hotel_drive(different_station
         "description": "Depart Origin Station\\nArrive Connection Station",
     }
     rows.append(onward)
+    for row in rows:
+        if row["type"] == "Rail":
+            row["description"] += "\\nhttps://www.tripit.com/trip/show/id/12345"
 
     def connecting_route(a, b):
         if a == "Connection Station" and b in {"Connection East", "Venue"}:
@@ -286,8 +289,9 @@ def test_train_arrival_reuses_the_meeting_handoff(arrival_base):
 
 @pytest.mark.parametrize("arrival_base", ["same_place", "sub_minute"])
 @pytest.mark.parametrize("navigation", [False, True])
+@pytest.mark.parametrize("minutes_after_arrival", [0, 5])
 def test_a_no_drive_rail_arrival_still_fences_remote_ev_energy(
-    monkeypatch, arrival_base, navigation
+    monkeypatch, arrival_base, navigation, minutes_after_arrival
 ):
     import tesla_planning
     from ev_charging import EnergySample, Navigation
@@ -299,7 +303,8 @@ def test_a_no_drive_rail_arrival_still_fences_remote_ev_energy(
             if row["type"] == "Lodging":
                 row["location"] = "Destination Station"
     base = "Destination Station" if arrival_base == "same_place" else "Hotel address"
-    start = ARR + (timedelta(minutes=2) if navigation else timedelta(hours=2))
+    now = ARR + timedelta(minutes=minutes_after_arrival)
+    start = now + (timedelta(minutes=2) if navigation else timedelta(hours=2))
     remote = DesiredBlock(
         "remote",
         "meeting_outbound",
@@ -324,7 +329,7 @@ def test_a_no_drive_rail_arrival_still_fences_remote_ev_energy(
     monkeypatch.setattr(
         tesla_planning.TeslaPlanning,
         "navigation",
-        lambda *_: [Navigation("Car", "Venue", ARR, 25, 40)] if navigation else [],
+        lambda *_: [Navigation("Car", "Venue", now, 25, 40)] if navigation else [],
     )
     result = build_reconcile_plan(
         flights=[],
@@ -333,9 +338,23 @@ def test_a_no_drive_rail_arrival_still_fences_remote_ev_energy(
         route=current_route,
         schedule=rows,
         itinerary=Itinerary(rows, home_address="Home"),
-        now=ARR,
+        now=now,
         extra_desired=[remote],
-        adjust_drives=_ev_adjuster({}, current_route, {(base, "Venue"): 395}, ARR),
+        postarrival_meetings=(
+            [
+                PostarrivalMeeting(
+                    "ongoing",
+                    "Ongoing meeting",
+                    "Venue",
+                    ARR - timedelta(minutes=10),
+                    ARR + timedelta(hours=1),
+                    return_suppressed=True,
+                )
+            ]
+            if minutes_after_arrival
+            else []
+        ),
+        adjust_drives=_ev_adjuster({}, current_route, {(base, "Venue"): 395}, now),
     )
     planned = next(c.desired for c in result.plan.creates if c.desired.identity == "remote")
     if navigation:
@@ -393,3 +412,46 @@ def test_unreadable_train_times_hold_its_blocks_and_skip_with_a_diagnostic():
     assert result.plan.is_noop
     assert {leg.kind for leg in result.held} == {"station_departure", "station_arrival"}
     assert any("refresh travel-schedule" in line for line in result.skipped)
+
+
+@pytest.mark.parametrize("same_trip", [False, True])
+@pytest.mark.parametrize("gap_hours", [1, 6])
+def test_day_return_keeps_destination_handoff_instead_of_becoming_a_connection(
+    same_trip, gap_hours
+):
+    rows = schedule()[:2]
+    rows[1]["description"] += "\\nhttps://www.tripit.com/trip/show/id/12345"
+    rows.append(
+        rows[1]
+        | {
+            "uid": "return@tripit.com",
+            "start": (ARR + timedelta(hours=gap_hours)).isoformat(),
+            "end": (ARR + timedelta(hours=gap_hours + 4)).isoformat(),
+            "description": "Depart Destination Station\\nArrive Origin Station\\n"
+            + ("https://www.tripit.com/trip/show/id/12345" if same_trip else ""),
+        }
+    )
+    result = build_reconcile_plan(
+        flights=[],
+        airport_info={},
+        current_blocks=[],
+        schedule=rows,
+        home_address="Home",
+        route=route,
+        now=NOW,
+        postarrival_meetings=[
+            PostarrivalMeeting(
+                "day-meeting",
+                "Destination meeting",
+                "Venue",
+                ARR - timedelta(minutes=10),
+                ARR + timedelta(hours=1),
+                # The meeting continues at this venue; this case needs only
+                # the arrival handoff, not an ungrounded lodging return.
+                return_suppressed=True,
+            )
+        ],
+    )
+    arrival = next(c.desired for c in result.plan.creates if c.desired.kind == "station_arrival")
+    assert (arrival.origin, arrival.destination) == ("Destination Station", "Venue")
+    assert (arrival.start, arrival.end) == (ARR, ARR + timedelta(minutes=15))
