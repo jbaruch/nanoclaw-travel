@@ -81,6 +81,7 @@ class ApplyResult:
     # not skippable, so there is nothing for the operator to act on).
     added_meeting_legs: list[dict] = field(default_factory=list)
     material_updates: list[dict] = field(default_factory=list)
+    changed_event_ids: list[str] = field(default_factory=list)
 
     @property
     def total_writes(self) -> int:
@@ -314,6 +315,7 @@ def apply_plan(
             result.errors.append(f"update-patch {u.desired.identity}: {exc}")
             continue
         result.updated += 1
+        result.changed_event_ids.append(u.event_id)
         # Alert only on a MATERIAL drive-time change (a swing worth acting on, on
         # a drive near enough to act on); everything else patches silently.
         delta = material_update_delta(
@@ -378,6 +380,8 @@ def apply_plan(
             if c.desired.charging_note is not None:
                 side = "Return" if c.desired.kind in DEPART_AFTER_KINDS else "Outbound"
                 result.added_meeting_legs[-1]["charging"] = f"{side}: {c.desired.charging_note}"
+            if c.desired.assumed_drive:
+                result.added_meeting_legs[-1]["assumed_drive"] = True
 
     for d in plan.deletes:
         if over_budget():
@@ -385,5 +389,7 @@ def apply_plan(
             continue
         if _delete(calendar, calendar_id=calendar_id, event_id=d.event_id, result=result):
             result.deleted += 1
+            if d.event_id is not None:
+                result.changed_event_ids.append(d.event_id)
 
     return result

@@ -31,10 +31,13 @@ from drive_decision import (  # noqa: E402
     VERDICT_FLY,
     VERDICT_UNKNOWN,
     DriveDecisionError,
+    clear_meeting_route,
     load_verdicts,
     mark_asked,
+    meeting_key,
     prune,
     record_drive_time,
+    record_meeting_route,
     record_operator_answer,
 )
 
@@ -232,7 +235,7 @@ def test_a_newer_schema_version_refuses_both_read_and_write(tmp_path):
 
 
 def test_an_older_schema_version_refuses_rather_than_guessing(tmp_path):
-    _write_raw(tmp_path, {"schema_version": DECISION_SCHEMA_VERSION - 1, "trips": {}})
+    _write_raw(tmp_path, {"schema_version": 0, "trips": {}})
     with pytest.raises(DriveDecisionError, match="below the current floor"):
         load_verdicts(NOW)
 
@@ -275,3 +278,45 @@ def test_a_naive_or_missing_now_is_rejected(bad_now):
     wrong, not merely an exception."""
     with pytest.raises(DriveDecisionError):
         load_verdicts(bad_now)
+
+
+def test_v1_migration_keeps_the_existing_operator_answer(tmp_path):
+    record_drive_time(KEY, verdict=VERDICT_UNKNOWN, drive_seconds=13200, expires=EXPIRES, now=NOW)
+    record_operator_answer(KEY, VERDICT_FLY, now=NOW)
+    raw = json.loads(_store_file(tmp_path).read_text())
+    original = raw["trips"]
+    raw["schema_version"] = 1
+    _write_raw(tmp_path, raw)
+    before = _store_file(tmp_path).read_bytes()
+    assert load_verdicts(NOW, migrate=False)[KEY].verdict == VERDICT_FLY
+    assert _store_file(tmp_path).read_bytes() == before
+    assert load_verdicts(NOW)[KEY].verdict == VERDICT_FLY
+    migrated = json.loads(_store_file(tmp_path).read_text())
+    assert migrated["schema_version"] == 2
+    assert migrated["trips"] == original
+
+
+def test_calendar_meeting_answer_survives_replanning_and_booking_clears_it():
+    def observe():
+        return record_meeting_route(
+            "pickup",
+            summary="Asher pickup",
+            start=NOW + timedelta(days=1),
+            end=NOW + timedelta(days=1, hours=1),
+            destination="ATL parking",
+            drive_seconds=227 * 60,
+            gap_reason=None,
+            now=NOW,
+        )
+
+    observe()
+    key = meeting_key("pickup")
+    record_operator_answer(key, VERDICT_FLY, now=NOW)
+    assert observe().verdict == VERDICT_FLY
+    current = load_verdicts(NOW)[key]
+    assert current.meeting is not None
+    assert current.meeting["summary"] == "Asher pickup"
+    assert current.meeting["destination"] == "ATL parking"
+    record_operator_answer(key, VERDICT_DRIVE, now=NOW)
+    clear_meeting_route("pickup")
+    assert key not in load_verdicts(NOW)

@@ -60,7 +60,8 @@ from leg_anchor import (  # noqa: E402
     resolve_leg_anchor,
 )
 from position import position_at, resolve_leg_origin  # noqa: E402
-from postarrival import FlightGuard, PostarrivalMeeting, compose_postarrival  # noqa: E402
+from postarrival import PostarrivalMeeting, TransportGuard, compose_postarrival  # noqa: E402
+from rail_source import station_desired_blocks  # noqa: E402
 from reconcile import (  # noqa: E402
     DesiredBlock,
     HeldLeg,
@@ -386,6 +387,7 @@ def build_reconcile_plan(
     home_airports: frozenset[str] = frozenset(),
     itinerary: Itinerary | None = None,
     now: datetime,
+    display_tz: str | None = None,
     live_origin: str | None = None,
     boarding_present: BoardingPresentFn | None = None,
     left_terminal: LeftTerminalFn | None = None,
@@ -437,10 +439,9 @@ def build_reconcile_plan(
     skipped: list[str] = []
     held: list[HeldLeg] = []
     origin_sources: list[dict[str, str]] = []
-    guards: list[FlightGuard] = []
+    guards: list[TransportGuard] = []
 
     for chain in chains:
-        closing = chain[-1]
         for merged in chain:
             if merged.status == DIVERTED or merged.effective_arr is None:
                 continue
@@ -449,15 +450,13 @@ def build_reconcile_plan(
                 merged, facts=facts, overrides=overrides
             )
             guards.append(
-                FlightGuard(
+                TransportGuard(
                     identity=canonical_flight_key(merged),
                     guard_start=guard_start,
                     ready_at=ready_at,
-                    airport_code=merged.arr_airport,
-                    airport_point=_airport_point(merged.arr_airport, airport_info),
-                    airport_label=_airport_place(merged.arr_airport),
-                    timezone=facts.arr_timezone,
-                    chain_closing=merged is closing,
+                    arrival_name=merged.arr_airport,
+                    arrival_point=_airport_point(merged.arr_airport, airport_info),
+                    arrival_label=_airport_place(merged.arr_airport),
                 )
             )
         contexts = build_pair_contexts(chain, schedule=schedule, left_terminal=left_terminal)
@@ -546,6 +545,19 @@ def build_reconcile_plan(
                 skipped.append(diag)
                 if hold:
                     held.append(_held_leg(concrete, diag))
+
+    station_blocks, station_held, station_skipped, station_guards = station_desired_blocks(
+        schedule,
+        itinerary=itinerary,
+        route=route,
+        now=now,
+        window=timedelta(days=14),
+        display_tz=display_tz,
+    )
+    desired.extend(station_blocks)
+    held.extend(station_held)
+    skipped.extend(station_skipped)
+    guards.extend(station_guards)
 
     if extra_desired:
         desired.extend(extra_desired)

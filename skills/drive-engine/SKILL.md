@@ -33,16 +33,16 @@ Reply in one message. Finish here.
 
 ## Step 2 — Record a drive-or-fly answer
 
-Run this when the operator answers a drive-or-fly question the sweep asked about a trip with no flight booked — "drive", "fly", "we're driving", "I'll fly that one". Map the answer to the trip NAME from the message you sent; a bare "drive" or "fly" refers to the single trip just asked about. Never surface an internal key — the operator only ever saw the trip name. Invoke:
+Run this when the operator answers a drive-or-fly question or corrects an assumed meeting road trip — "drive", "fly", "we're driving", "I'll fly that one". Map the answer to the trip or meeting NAME from the notice; a bare "drive" or "fly" refers to the single journey just offered. Never surface an internal key — the operator only ever saw the trip name. Invoke:
 
 ```bash
 python3 /home/node/.claude/skills/tessl__drive-engine/answer_drive_or_fly.py '{"trip": "<trip name>", "answer": "drive"}'
 ```
 
-`answer` is `drive` or `fly`, nothing else. The script records the answer so it outranks the drive time from then on and the question is not repeated. It always prints a JSON result on stdout; read it (do not treat a non-zero exit as "no result"):
+`answer` is `drive` or `fly`, nothing else. The script records the answer in the existing decision owner. A later relevant flight or train booking takes precedence. Calendar-only meetings are checked against the live source event. It always prints a JSON result on stdout; read it (do not treat a non-zero exit as "no result"):
 - `{"recorded": true, "trip": ..., "answer": ...}` (exit 0) — confirm what you recorded. On `drive`, the next sweep adds the drives; on `fly`, the booking check reports the missing flight.
 - `{"recorded": false, "unmatched": ...}` (exit 0) — the trip name wasn't found; say so.
-- `{"recorded": false, "ambiguous": ..., "candidates": [...]}` (exit 0) — several same-named trips; ask the operator which `when` they mean, then re-invoke.
+- `{"recorded": false, "ambiguous": ..., "candidates": [...]}` (exit 0) — several same-named journeys; ask the operator which `when` they mean, then re-invoke.
 - `{"recorded": false, "error": ...}` (exit 1) — an operational failure; tell the operator the answer couldn't be recorded and to retry. Exit 2 is a usage error in how it was invoked — fix the call.
 
 Reply in one message. Finish here.

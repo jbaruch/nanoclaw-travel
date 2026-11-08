@@ -14,6 +14,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "flight-assist"))
@@ -22,6 +24,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 import reconcile as reconcile_module  # noqa: E402
 from block_codec import GEN_UNIFIED, ParsedBlock  # noqa: E402
 from calendar_apply import ApplyResult, apply_plan  # noqa: E402
+from meeting_travel import travel_plan_changes  # noqa: E402
 from reconcile import (  # noqa: E402
     Create,
     DesiredBlock,
@@ -30,7 +33,7 @@ from reconcile import (  # noqa: E402
     material_update_delta,
     plan_reconcile,
 )
-from reconcile_sweep import build_sweep_payload, render_notification  # noqa: E402
+from reconcile_sweep import build_sweep_payload, finish_sweep, render_notification  # noqa: E402
 
 UTC = UTC
 
@@ -63,6 +66,84 @@ class FakeCalendar:
 
     def delete_event(self, args):
         pass
+
+
+@pytest.mark.parametrize("fail_second", [False, True])
+def test_booking_replacement_notice_requires_the_actual_calendar_changes(
+    fail_second,
+    monkeypatch,
+    tmp_path,
+):
+    from google_calendar_client import GoogleCalendarError
+
+    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    current = [
+        ParsedBlock(
+            generation=GEN_UNIFIED,
+            event_id=f"old{i}",
+            identity="pickup",
+            kind=kind,
+            baseline_seconds=227 * 60,
+            anchor=_dt(16 + i),
+            origin="Home",
+            destination="ATL",
+        )
+        for i, kind in enumerate(("meeting_outbound", "meeting_return"))
+    ]
+    plan = plan_reconcile([], current, now=_dt(0))
+    changes = travel_plan_changes(
+        plan, current, booked={"pickup"}, names={"pickup": "Asher pickup"}
+    )
+
+    class Calendar(FakeCalendar):
+        def delete_event(self, args):
+            if fail_second and args["event_id"] == "old1":
+                raise GoogleCalendarError("synthetic failure")
+
+    payload = finish_sweep(plan, [], calendar=Calendar(), now=_dt(0), travel_changes=changes)
+    if fail_second:
+        assert payload["data"]["message"] is None
+        assert payload["data"]["applied"]["deleted"] == 1
+        assert payload["data"]["errors"] == 1
+    else:
+        assert payload["data"]["message"] == (
+            "Removed assumed road trip for Asher pickup: a flight or train is booked."
+        )
+        assert payload["wake_agent"] is False
+
+
+def test_booking_origin_change_reports_a_plan_change_instead_of_traffic(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    old = ParsedBlock(
+        generation=GEN_UNIFIED,
+        event_id="old",
+        identity="pickup",
+        kind="meeting_outbound",
+        baseline_seconds=227 * 60,
+        anchor=_dt(16),
+        origin="Home",
+        destination="Venue",
+    )
+    short = DesiredBlock(
+        identity="pickup",
+        kind="meeting_outbound",
+        summary="Drive: Asher pickup",
+        start=_dt(15, 45),
+        end=_dt(16),
+        origin="Hotel",
+        destination="Venue",
+        baseline_seconds=900,
+        anchor=_dt(16),
+    )
+    plan = plan_reconcile([short], [old], now=_dt(15))
+    changes = travel_plan_changes(plan, [old], booked=set(), names={"pickup": "Asher pickup"})
+    payload = finish_sweep(plan, [], calendar=FakeCalendar(), now=_dt(15), travel_changes=changes)
+    assert payload["data"]["message"] == "Updated drive for Asher pickup: Hotel → Venue."
 
 
 def test_applied_roundtrip_notice_preserves_each_legs_charging_time():

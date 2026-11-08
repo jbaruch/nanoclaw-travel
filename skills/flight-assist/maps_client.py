@@ -348,6 +348,15 @@ class MapsClient:
             try:
                 return self._tomtom.travel_time(origin, destination)
             except (MapsError, urllib.error.URLError) as tomtom_err:
+                if (
+                    isinstance(google_err, MapsError)
+                    and google_err.status == "ZERO_RESULTS"
+                    and isinstance(tomtom_err, MapsError)
+                    and tomtom_err.status == "TOMTOM_ZERO_RESULTS"
+                ):
+                    raise MapsError(
+                        "NO_ROUTE", "Both providers found no driving route"
+                    ) from tomtom_err
                 raise MapsError(
                     "ALL_PROVIDERS_FAILED",
                     f"Google failed ({google_err}); TomTom backup failed ({tomtom_err})",

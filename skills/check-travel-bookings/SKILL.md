@@ -32,7 +32,7 @@ The script outputs JSON:
 
 The "отель есть, рейса нет" issue is the mirror case — a hotel booked with nothing to get there on. It fires for a trip the drive engine has settled as a flight, and — worded as a question, naming the `drive` / `fly` reply words — for one whose drive-or-fly answer is still open. A trip the operator drives to has no transport booking by design and never raises it. Both verdicts are read from drive-engine's `drive-decisions.json` (`load_transport_gap_verdicts`; wordings in `TRANSPORT_GAP_ISSUE` / `TRANSPORT_GAP_ASK_ISSUE`; owner contract in `skills/drive-engine/state-schema.md`). Do not re-derive them — an absent or unreadable store means no such gap.
 
-Relay the issue verbatim. The operator's `drive` / `fly` reply is handled by `Skill(skill: "tessl__drive-engine")` Step 2; either answer clears the line. An expired verdict raises no gap.
+Relay the issue verbatim. The operator's `drive` / `fly` reply is handled by `Skill(skill: "tessl__drive-engine")` Step 2; either answer clears the line. An expired verdict raises no gap. Long calendar-only meeting journeys also appear in `gaps` when the operator plans to fly or the road route is not viable. Their `meeting:<event id>` slugs are supplied by the script; use the returned slug unchanged for snoozing. They come from the same drive-decision owner, without another calendar or TripIt fetch.
 
 `/workspace/group/travel-db.json` is rebuilt nightly by `tessl__nightly-travel-sync` Step 4. Missing/unreadable/invalid DB → exit 1 with `{"error": "..."}` on stdout plus `check-travel-bookings: ...` on stderr. DB alerting is Step 4's responsibility. On non-zero exit, report error output and stop. On invalid JSON or missing fields, report the parse error with raw output.
 
@@ -98,6 +98,6 @@ python3 /home/node/.claude/skills/tessl__check-travel-bookings/scripts/update-tr
     --slug <slug> --action resolve
 ```
 
-Slug format: `{normalized-summary}-{YYYY}-{MM}` (lowercase, spaces/punctuation → hyphens).
+Use the exact `slug` from the reported gap.
 
 The script emits single-line JSON to stdout `{"action": "...", "slug": "...", "state": {...}}` (the post-update snooze map) on success, or a stderr diagnostic with non-zero exit on validation failure (missing `--until` for snooze, invalid ISO date, etc.). Every snoozed entry the script writes carries `schema_version: 1` per `state-schema.md`. Finish here.

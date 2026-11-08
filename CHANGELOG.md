@@ -1,3 +1,7 @@
+### Plan reasonable long meeting drives instead of silently dropping them (#377)
+
+Keep ordinary local meeting drives unchanged. For longer routes within the road-trip bound, use the resolved origin and assume driving only without a relevant Flight/Rail booking or an explicit fly answer. Explain the assumption in the existing notice. Calendar-only meetings can use the existing drive-or-fly answer; a later booking wins even over an earlier drive answer. Long or definitively unroutable journeys appear in the existing booking report. Use the existing arrival handoff for real train-station legs as well as airport legs. Announce booking replacements only after Calendar applies the changes. Extend the existing decision owner to schema 2 while preserving old trip answers; a preview neither migrates decisions nor consumes a question. No new cadence, state file or calendar-block schema.
+
 # Changelog
 
 ## 0.3.4 — 2026-11-05

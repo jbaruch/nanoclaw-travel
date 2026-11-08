@@ -93,12 +93,20 @@ def _stub_live_clients(monkeypatch, reader, state_dir: Path) -> dict:
     monkeypatch.setattr(fetch_events, "CalendarFetcher", _EmptyFetcher)
 
     # Module-level collaborators of the sweep that touch disk or the network.
-    monkeypatch.setattr(reconcile_sweep, "load_verdicts", lambda _now: {})
+    monkeypatch.setattr(reconcile_sweep, "load_verdicts", lambda _now, **_kwargs: {})
     monkeypatch.setattr(reconcile_sweep, "load_static_facts", lambda: {})
     monkeypatch.setattr(reconcile_sweep, "_fresh_live_origin", lambda _now, _age: None)
     monkeypatch.setattr(reconcile_sweep, "_boarding_block_end_times", lambda *_args, **_kwargs: [])
 
-    def capture_meeting_blocks(meetings, *, route, driving_to, display_tz=None):
+    def capture_meeting_blocks(
+        meetings,
+        *,
+        route,
+        driving_to,
+        display_tz=None,
+        operator_answers=None,
+        booked_transport=None,
+    ):
         captured["display_tz"] = display_tz
         return [], [], []
 

@@ -48,8 +48,13 @@ if not _TRAVEL_CORE.is_dir():
 if str(_TRAVEL_CORE) not in sys.path:
     sys.path.insert(0, str(_TRAVEL_CORE))
 
-from drive_decision import VERDICT_DRIVE, VERDICT_FLY, record_operator_answer  # noqa: E402
-from lodging_source import DriveTrip, find_drive_trips  # noqa: E402
+from drive_decision import (  # noqa: E402
+    VERDICT_DRIVE,
+    VERDICT_FLY,
+    load_verdicts,
+    record_operator_answer,
+)
+from lodging_source import find_drive_trips  # noqa: E402
 from trip_origin import load_travel_schedule  # noqa: E402
 
 # How far ahead to look for the trip being answered about. Matches the sweep's
@@ -67,27 +72,9 @@ def _normalize_answer(raw: object) -> str | None:
     return answer if answer in _ANSWERS else None
 
 
-def resolve_trip(trips: list[DriveTrip], *, summary: str) -> tuple[DriveTrip | None, list[dict]]:
-    """Find the trip being answered about, by summary.
-
-    Returns `(trip, candidates)`: `trip` is set only when exactly ONE matches;
-    several same-named trips return `(None, candidates)` for the agent to
-    disambiguate. No match returns `(None, [])`. Matching is case-insensitive
-    and whitespace-trimmed, since the operator retypes the name by hand.
-    """
-    wanted = summary.strip().casefold()
-    matches = [trip for trip in trips if trip.summary.strip().casefold() == wanted]
-    if not matches:
-        return None, []
-    if len(matches) > 1:
-        return None, [
-            {"trip": trip.summary, "when": trip.check_in.strftime("%a %b %d, %H:%M")}
-            for trip in matches
-        ]
-    return matches[0], []
-
-
-def record_answer(request: dict, *, schedule=None, now: datetime | None = None) -> dict:
+def record_answer(
+    request: dict, *, schedule=None, events=None, now: datetime | None = None
+) -> dict:
     """Resolve + record an answer. See the module docstring for the shapes."""
     summary = request.get("trip")
     if not isinstance(summary, str) or not summary.strip():
@@ -101,14 +88,53 @@ def record_answer(request: dict, *, schedule=None, now: datetime | None = None) 
         schedule = load_travel_schedule()
 
     trips = find_drive_trips(schedule, now=now, window=_LOOKAHEAD)
-    trip, candidates = resolve_trip(trips, summary=summary)
-    if trip is None:
-        if candidates:
-            return {"recorded": False, "ambiguous": summary, "candidates": candidates}
-        return {"recorded": False, "unmatched": summary}
+    wanted = summary.strip().casefold()
+    targets = [
+        (trip.key, trip.summary, trip.expires, trip.check_in)
+        for trip in trips
+        if trip.summary.strip().casefold() == wanted
+    ]
+    meetings = {
+        key: verdict
+        for key, verdict in load_verdicts(now).items()
+        if key.startswith("meeting:")
+        and verdict.meeting is not None
+        and str(verdict.meeting.get("summary", "")).strip().casefold() == wanted
+    }
+    if meetings:
+        from fetch_events import CalendarFetcher
+        from scan import _is_virtual, _parse_event
 
-    record_operator_answer(trip.key, answer, now=now, expires=trip.expires)
-    return {"recorded": True, "trip": trip.summary, "answer": answer}
+        if events is None:
+            events = CalendarFetcher().fetch_window(time_min=now, time_max=now + _LOOKAHEAD)
+        for raw in events:
+            event = _parse_event(raw)
+            key = f"meeting:{event.raw_id}"
+            if (
+                key in meetings
+                and not event.cancelled
+                and not event.declined
+                and not _is_virtual(event.location)
+                and event.start is not None
+                and event.end is not None
+                and event.end > now
+                and event.summary.strip().casefold() == wanted
+            ):
+                targets.append((key, event.summary, event.end + timedelta(days=2), event.start))
+    if not targets:
+        return {"recorded": False, "unmatched": summary}
+    if len(targets) > 1:
+        return {
+            "recorded": False,
+            "ambiguous": summary,
+            "candidates": [
+                {"trip": name, "when": when.strftime("%a %b %d, %H:%M")}
+                for _, name, _, when in targets
+            ],
+        }
+    key, name, expires, _ = targets[0]
+    record_operator_answer(key, answer, now=now, expires=expires)
+    return {"recorded": True, "trip": name, "answer": answer}
 
 
 def _fail(message: str, code: int) -> int:

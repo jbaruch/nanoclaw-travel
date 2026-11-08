@@ -37,7 +37,7 @@ from block_codec import (
 )
 
 DEPART_AFTER_KINDS = frozenset(
-    {"meeting_return", "airport_arrival", "lodging_return", "attendance_return"}
+    {"meeting_return", "airport_arrival", "station_arrival", "lodging_return", "attendance_return"}
 )
 
 
@@ -63,6 +63,8 @@ class DesiredBlock:
     zone_from_operator: bool = False
     charging_note: str | None = None
     earliest_start: datetime | None = None
+    # Ephemeral notice context; the Calendar codec and identity stay unchanged.
+    assumed_drive: bool = False
 
 
 @dataclass(frozen=True)

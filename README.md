@@ -15,6 +15,12 @@ Per-chat overlay plugin. Install via NanoClaw's `containerConfig.additionalTiles
 5. **Inbound aircraft delay** — earliest possible signal (incoming aircraft delayed on previous leg, ~1h before gate-board flip)
 6. **Arrival logistics** — ~15 min before landing: baggage carousel, Lyft estimate, lounge access if transit
 
+The unified drive engine also plans reasonable long meeting drives from the
+resolved home/lodging origin, lets the owner correct an assumed drive through
+the existing drive-or-fly answer, and replaces it when transport is booked.
+Booked trains get station transfers through the same reconciliation and arrival
+handoff as flights. Booking gaps remain in the existing booking report.
+
 ## Installation
 
 ```

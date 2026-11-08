@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
@@ -316,13 +318,103 @@ def _pair_route(pairs):
     return lambda o, d: pairs.get((o, d))
 
 
-def test_away_suppression_still_fires_for_a_meeting_off_any_trip():
+def test_long_drive_from_home_without_a_trip_is_planned():
     meeting = FakeMeeting(
         "m1", "Swim practice", (FakeLeg("outbound", HOME_ADDR, VENUE, arrive_by=_dt(20)),)
     )
     blocks, skipped, _held = meeting_desired_blocks([meeting], route=const_route(234))
+    assert [(b.origin, b.destination, b.baseline_seconds) for b in blocks] == [
+        (HOME_ADDR, VENUE, 234 * 60)
+    ]
+    assert blocks[0].assumed_drive is True
+    assert skipped == []
+
+
+def test_asher_pickup_gets_both_real_drives():
+    meeting = FakeMeeting(
+        "pickup",
+        "Asher pickup",
+        (
+            FakeLeg("outbound", HOME_ADDR, "ATL parking", arrive_by=_dt(16)),
+            FakeLeg("return", "ATL parking", HOME_ADDR, depart_after=_dt(17)),
+        ),
+    )
+    blocks, skipped, held = meeting_desired_blocks([meeting], route=const_route(227))
+    assert [(b.kind, b.start, b.end) for b in blocks] == [
+        ("meeting_outbound", _dt(12, 13), _dt(16)),
+        ("meeting_return", _dt(17), _dt(20, 47)),
+    ]
+    assert skipped == held == []
+
+
+def test_ordinary_drive_does_not_check_transport_or_assume_a_road_trip():
+    def unexpected_lookup(_):
+        pytest.fail("ordinary meeting drives must not look for flights or trains")
+
+    meeting = FakeMeeting(
+        "dentist", "Dentist", (FakeLeg("outbound", HOME_ADDR, "Office", arrive_by=_dt(16)),)
+    )
+    blocks, _, _ = meeting_desired_blocks(
+        [meeting],
+        route=const_route(180),
+        booked_transport=unexpected_lookup,
+    )
+    assert len(blocks) == 1
+    assert blocks[0].assumed_drive is False
+
+
+def test_fly_answer_removes_the_long_drive_without_holding_it():
+    meeting = FakeMeeting(
+        "pickup", "Pickup", (FakeLeg("outbound", HOME_ADDR, "ATL", arrive_by=_dt(16)),)
+    )
+    blocks, _, held = meeting_desired_blocks(
+        [meeting],
+        route=const_route(227),
+        operator_answers={"pickup": "fly"},
+        booked_transport=lambda _: None,
+    )
+    assert blocks == held == []
+
+
+def test_unknown_booking_destination_does_not_become_an_assumed_drive():
+    meeting = FakeMeeting(
+        "pickup", "Pickup", (FakeLeg("outbound", HOME_ADDR, "ATL", arrive_by=_dt(16)),)
+    )
+    blocks, skipped, held = meeting_desired_blocks(
+        [meeting],
+        route=const_route(227),
+        booked_transport=lambda _: None,
+    )
     assert blocks == []
-    assert any("implausible" in note for note in skipped)
+    assert len(held) == 1
+    assert "transport destination unavailable" in skipped[0]
+
+
+def test_an_explicit_drive_answer_is_not_announced_as_an_assumption():
+    meeting = FakeMeeting(
+        "pickup", "Pickup", (FakeLeg("outbound", HOME_ADDR, "ATL", arrive_by=_dt(16)),)
+    )
+    blocks, _, held = meeting_desired_blocks(
+        [meeting],
+        route=const_route(227),
+        operator_answers={"pickup": "drive"},
+        booked_transport=lambda _: None,
+    )
+    assert len(blocks) == 1 and held == []
+    assert blocks[0].assumed_drive is False
+
+
+def test_booking_replaces_even_an_assumed_drive_with_an_unresolved_new_anchor():
+    meeting = FakeMeeting(
+        "pickup", "Pickup", (FakeLeg("outbound", None, "ATL", arrive_by=_dt(16)),)
+    )
+    blocks, skipped, held = meeting_desired_blocks(
+        [meeting],
+        route=const_route(227),
+        booked_transport=lambda _: True,
+    )
+    assert blocks == held == []
+    assert "booked transport" in skipped[0]
 
 
 def test_away_suppression_spared_for_a_trip_the_operator_drives_to():

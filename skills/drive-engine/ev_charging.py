@@ -189,6 +189,7 @@ def adjust_charging(
         "meeting_return": "meeting_outbound",
         "lodging_return": "lodging_outbound",
         "airport_arrival": "airport_departure",
+        "station_arrival": "station_departure",
     }
     unknown_starts = sorted(
         block.start

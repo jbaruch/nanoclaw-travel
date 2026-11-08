@@ -68,10 +68,14 @@ def exclude_drive_block_events(events: list[dict]) -> list[dict]:
 
 RouteFn = Callable[[str, str], "timedelta | None"]
 
-# A routed meeting drive longer than this is implausible as a "drive to a meeting"
-# — the operator almost certainly is not positioned to drive it (they flew, or are
-# on a trip elsewhere). Mirrors drive-planner's MAX_REASONABLE_DRIVE_SECONDS.
+# Ordinary drives below this boundary keep their existing behavior. Above it,
+# check the existing drive-or-fly answer and relevant transport before assuming
+# a drivable road trip. The upper road-trip bound remains independent.
 DEFAULT_MAX_REASONABLE_DRIVE = timedelta(hours=3)
+
+# Beyond an ordinary meeting drive, assume a road trip only within this bound.
+# Longer routes belong in the booking check rather than a calendar road trip.
+MAX_ASSUMED_ROAD_TRIP = timedelta(hours=8)
 
 # A zero or at-most-one-minute route is not a useful calendar drive (#356).
 # Treat it as a definitive no-drive, so an earlier bogus block is not retained.
@@ -174,15 +178,19 @@ def meeting_desired_blocks(
     max_reasonable_drive: timedelta = DEFAULT_MAX_REASONABLE_DRIVE,
     driving_to: dict[str, TripPresence] | None = None,
     display_tz: str | None = None,
+    operator_answers: dict[str, str] | None = None,
+    booked_transport: Callable[[object], bool | None] | None = None,
 ) -> tuple[list[DesiredBlock], list[str], list[HeldLeg]]:
     """Turn scan `MeetingClass` results into unified meeting `DesiredBlock`s.
 
     Only actionable meetings carry legs, so pass the scan output directly. Returns
     `(blocks, skipped_diagnostics, held)`. A leg is skipped (never blindly
     blocked) when its anchor is unresolved, its route fails, or its routed drive
-    exceeds `max_reasonable_drive` (the travel-away suppression). Each of those
+    exceeds the road-trip upper bound. Drives above `max_reasonable_drive`
+    become assumed road trips only without a booked transport or fly answer. Each of those
     is also HELD (#334): the leg exists, so its current block is kept rather
-    than orphan-deleted. Only a leg whose origin is its destination is dropped.
+    than orphan-deleted. A booked transport or fly answer deliberately removes a long meeting drive
+    from the desired set, so reconcile also removes its earlier assumed block.
 
     A leg whose origin IS its destination is skipped too (#301): the scan
     already filters a meeting held at the anchor, but the lodging rewrite below
@@ -216,6 +224,7 @@ def meeting_desired_blocks(
     on the next sweep (#309) while a fallback zone never triggers a re-patch.
     """
     presence = driving_to or {}
+    answers = operator_answers or {}
     blocks: list[DesiredBlock] = []
     skipped: list[str] = []
     held: list[HeldLeg] = []
@@ -250,6 +259,12 @@ def meeting_desired_blocks(
                 continue
 
             if leg.origin is None or leg.destination is None:
+                if booked_transport is not None and booked_transport(meeting):
+                    skipped.append(f"{tag}: booked transport replaces the assumed drive")
+                    continue
+                if answers.get(meeting.meeting_id) == "fly":
+                    skipped.append(f"{tag}: operator is flying — check the missing booking")
+                    continue
                 _hold(
                     skipped,
                     held,
@@ -265,6 +280,9 @@ def meeting_desired_blocks(
                 continue
             drive = route(origin, destination)
             if drive is None:
+                if answers.get(meeting.meeting_id) == "fly":
+                    skipped.append(f"{tag}: operator is flying — check the missing booking")
+                    continue
                 _hold(skipped, held, meeting, leg, kind, f"{tag}: route failed")
                 continue
             if drive < timedelta(0):
@@ -280,7 +298,26 @@ def meeting_desired_blocks(
             if drive <= MIN_MEETING_DRIVE:
                 skipped.append(f"{tag}: route at or below one minute — no drive")
                 continue
-            if drive > max_reasonable_drive and meeting.meeting_id not in presence:
+            long_drive = drive > max_reasonable_drive and meeting.meeting_id not in presence
+            booking = booked_transport(meeting) if long_drive and booked_transport else False
+            if booking:
+                skipped.append(f"{tag}: booked transport replaces the assumed drive")
+                continue
+            if long_drive and answers.get(meeting.meeting_id) == "fly":
+                skipped.append(f"{tag}: operator is flying — check the missing booking")
+                continue
+            if booking is None and answers.get(meeting.meeting_id) != "drive":
+                _hold(
+                    skipped,
+                    held,
+                    meeting,
+                    leg,
+                    kind,
+                    f"{tag}: transport destination unavailable — "
+                    "check TripIt arrival and Maps access",
+                )
+                continue
+            if drive > MAX_ASSUMED_ROAD_TRIP and meeting.meeting_id not in presence:
                 minutes = int(drive.total_seconds() // 60)
                 _hold(
                     skipped,
@@ -343,6 +380,7 @@ def meeting_desired_blocks(
                         if isinstance(gap, int) and leg.arrive_by is not None
                         else None
                     ),
+                    assumed_drive=long_drive and answers.get(meeting.meeting_id) != "drive",
                 )
             )
 

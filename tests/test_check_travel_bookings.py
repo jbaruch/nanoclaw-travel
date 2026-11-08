@@ -118,6 +118,43 @@ def _run(module, monkeypatch, capsys):
     return code, captured.out, captured.err
 
 
+def test_calendar_only_flight_gap_uses_the_existing_report(
+    check_travel_bookings,
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    module, db, _ = check_travel_bookings
+    start = _FROZEN_NOW + timedelta(days=1)
+    db.write_text(json.dumps({"schema_version": 3, "trips": {}}))
+    (tmp_path / "drive-decisions.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "trips": {
+                    "meeting:pickup": {
+                        "verdict": "fly",
+                        "decided_by": "operator",
+                        "expires": (start + timedelta(days=2)).isoformat(),
+                        "meeting": {
+                            "summary": "Pickup",
+                            "start": start.isoformat(),
+                            "end": (start + timedelta(hours=1)).isoformat(),
+                            "destination": "ATL",
+                            "gap_reason": None,
+                        },
+                    }
+                },
+            }
+        )
+    )
+    code, out, _ = _run(module, monkeypatch, capsys)
+    assert code == 0
+    [gap] = json.loads(out)["gaps"]
+    assert gap["trip"] == "Pickup" and gap["slug"] == "meeting:pickup"
+    assert "рейс или поезд" in gap["issue"]
+
+
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------

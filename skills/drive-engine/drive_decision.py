@@ -53,12 +53,12 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from skip_state import state_dir
 
-DECISION_SCHEMA_VERSION = 1
+DECISION_SCHEMA_VERSION = 2
 
 _DECISION_FILE = "drive-decisions.json"
 
@@ -103,6 +103,9 @@ class TripVerdict:
     drive_seconds: int | None
     asked_at: datetime | None
     expires: datetime
+    # Present only for a calendar meeting's long journey. Existing trip keys
+    # and records keep their meaning; the booking check also reads this context.
+    meeting: dict | None = None
 
     @property
     def needs_question(self) -> bool:
@@ -166,7 +169,7 @@ def _parse_when(raw: object) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def _read_raw() -> dict[str, dict]:
+def _read_raw(*, migrate: bool = True) -> dict[str, dict]:
     """Read the raw `{trip_key: record}` map from disk, validating the schema.
 
     A missing file returns an empty map. A *corrupt* file — unparseable, not an
@@ -178,8 +181,8 @@ def _read_raw() -> dict[str, dict]:
     Schema version handling mirrors `skip_state._read_skips`: newer than this
     plugin raises on both read and write (reading it as empty loses answers; a
     write would clobber a newer writer's file), and anything below the current
-    floor is corrupt rather than migratable — v1 is the first version. A future
-    bump adds the v(N-1)→vN upgrade here instead of refusing.
+    floor is corrupt rather than migratable — v1 is the first version.
+    Version 1 upgrades to version 2 with all existing trip records preserved.
     """
     path = _decision_path()
     if not path.exists():
@@ -207,17 +210,19 @@ def _read_raw() -> dict[str, dict]:
             f"plugin supports ({DECISION_SCHEMA_VERSION}) — upgrade the nanoclaw-travel "
             "plugin; refusing to read it as empty (that would drop every recorded "
             "drive-or-fly answer and re-ask about trips already settled) or to "
-            "overwrite it as v1"
+            "overwrite it as the current version"
         )
-    if version < DECISION_SCHEMA_VERSION:
+    if version < 1:
         raise DriveDecisionError(
             f"drive-decision file {path} has schema_version {version}, below the current "
-            f"floor ({DECISION_SCHEMA_VERSION}) with no migration path — repair or delete it"
+            f"floor (1) with no migration path — repair or delete it"
         )
 
     trips = payload.get("trips")
     if not isinstance(trips, dict):
         raise DriveDecisionError(f"drive-decision file {path} `trips` must be a JSON object")
+    if version == 1 and migrate:
+        _atomic_write(path, {"schema_version": DECISION_SCHEMA_VERSION, "trips": trips})
     return {
         key: record
         for key, record in trips.items()
@@ -251,28 +256,33 @@ def _to_verdict(record: dict) -> TripVerdict | None:
         drive_seconds=drive_seconds,
         asked_at=_parse_when(record.get("asked_at")),
         expires=expires,
+        meeting=record.get("meeting") if isinstance(record.get("meeting"), dict) else None,
     )
 
 
 def _from_verdict(verdict: TripVerdict) -> dict:
-    return {
+    record: dict = {
         "verdict": verdict.verdict,
         "decided_by": verdict.decided_by,
         "drive_seconds": verdict.drive_seconds,
         "asked_at": verdict.asked_at.isoformat() if verdict.asked_at is not None else None,
         "expires": verdict.expires.isoformat(),
     }
+    if verdict.meeting is not None:
+        record["meeting"] = verdict.meeting
+    return record
 
 
-def load_verdicts(now: datetime) -> dict[str, TripVerdict]:
+def load_verdicts(now: datetime, *, migrate: bool = True) -> dict[str, TripVerdict]:
     """Every still-active verdict at `now`, keyed by `travel-core`'s `trip_key`.
 
-    Expired and malformed records are dropped from the returned map (the file
-    itself is only rewritten by a write call — a read never mutates it).
+    Expired and malformed records are dropped from the returned map. A version-1
+    envelope is upgraded on live reads; existing trip records remain unchanged.
+    A non-applying preview passes `migrate=False` for a read-only snapshot.
     """
     _require_aware(now, "now")
     active: dict[str, TripVerdict] = {}
-    for key, record in _read_raw().items():
+    for key, record in _read_raw(migrate=migrate).items():
         parsed = _to_verdict(record)
         if parsed is not None and parsed.expires > now:
             active[key] = parsed
@@ -351,6 +361,7 @@ def mark_asked(trip_key: str, *, now: datetime) -> None:
             drive_seconds=existing.drive_seconds,
             asked_at=now,
             expires=existing.expires,
+            meeting=existing.meeting,
         ),
     )
 
@@ -387,9 +398,66 @@ def record_operator_answer(
         drive_seconds=existing.drive_seconds if existing is not None else None,
         asked_at=existing.asked_at if existing is not None else None,
         expires=expires,
+        meeting=existing.meeting if existing is not None else None,
     )
     _save(key, updated)
     return updated
+
+
+def meeting_key(identity: str) -> str:
+    """A calendar event identity cannot collide with an existing TripIt slug."""
+    return f"meeting:{_require_key(identity)}"
+
+
+def record_meeting_route(
+    identity: str,
+    *,
+    summary: str,
+    start: datetime,
+    end: datetime,
+    destination: str,
+    drive_seconds: int | None,
+    gap_reason: str | None,
+    now: datetime,
+) -> TripVerdict:
+    """Keep long-drive context in the existing verdict owner, preserving answers.
+
+    The route bound still applies after an explicit drive answer. Its gap
+    reason is independent of that answer and is reported by the booking check.
+    """
+    key = meeting_key(identity)
+    _require_aware(start, "start")
+    _require_aware(end, "end")
+    _require_aware(now, "now")
+    existing = load_verdicts(now).get(key)
+    context = {
+        "summary": summary,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "destination": destination,
+        "gap_reason": gap_reason,
+    }
+    updated = TripVerdict(
+        verdict=existing.verdict if existing and existing.is_operator_answer else VERDICT_DRIVE,
+        decided_by=existing.decided_by
+        if existing and existing.is_operator_answer
+        else DECIDED_BY_DRIVE_TIME,
+        drive_seconds=drive_seconds,
+        asked_at=existing.asked_at if existing else None,
+        expires=end + timedelta(days=2),
+        meeting=context,
+    )
+    _save(key, updated)
+    return updated
+
+
+def clear_meeting_route(identity: str) -> None:
+    """A booking or ordinary local route retires the assumed long journey."""
+    key = meeting_key(identity)
+    raw = _read_raw()
+    if key in raw:
+        del raw[key]
+        _atomic_write(_decision_path(), {"schema_version": DECISION_SCHEMA_VERSION, "trips": raw})
 
 
 def prune(now: datetime) -> int:

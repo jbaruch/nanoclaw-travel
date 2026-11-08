@@ -125,11 +125,11 @@ Migration: `schema_version` `1` is the initial version.
 
 ### `drive-decisions.json`
 
-Whether each flight-less trip is a drive or an unbooked flight, with per-trip expiry. Owned by `drive_decision.py`. Introduced in #231, when a trip booked with lodging and no flight got neither a getting-there drive nor a missing-flight warning.
+Whether each flight-less trip or long calendar-meeting journey is a drive or an unbooked flight/train, with expiry. Owned by `drive_decision.py`. Introduced in #231, when a trip booked with lodging and no flight got neither a getting-there drive nor a missing-flight warning.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "trips": {
     "tn-tigers-vs-faith-christian-school-2026-08": {
       "verdict": "drive",
@@ -144,20 +144,22 @@ Whether each flight-less trip is a drive or an unbooked flight, with per-trip ex
 
 Fields:
 
-- `schema_version` (int, required) — currently `1`
-- `trips` (object, required) — map of trip key → record. The key is `travel-core`'s `trip_key(summary, start)`, the same slug `travel-db.json` buckets a trip under, so the booking-gap consumer joins on it without a second identifier.
+- `schema_version` (int, required) — currently `2`
+- `trips` (object, required) — map of trip key → record. A TripIt key is `travel-core`'s `trip_key(summary, start)`, the same slug `travel-db.json` buckets a trip under, so the booking-gap consumer joins on it without a second identifier.
 - `verdict` (string, required) — `drive`, `fly`, or `unknown` (the drive time is ambiguous and the operator has not answered)
 - `decided_by` (string, required) — `drive_time` or `operator`
 - `drive_seconds` (int or null) — the routed home→lodging drive the verdict was read from
 - `asked_at` (ISO-8601 tz-aware string or null) — when the drive-or-fly question went out; null while unasked
 - `expires` (ISO-8601 tz-aware string, required) — the verdict applies while this is strictly after `now`
+- Calendar journeys use `meeting:<Google Calendar event id>`, with optional `meeting` context: `summary`, `start`, `end` and `destination` (non-empty strings; times carry offsets), plus `gap_reason` (string or null). Existing TripIt rows omit this field. `drive_seconds` is the routed meeting leg rather than home→lodging. No calendar-block schema changes.
+- The meeting context supplies the existing booking report when the owner answers `fly`, the route exceeds `meeting_source.MAX_ASSUMED_ROAD_TRIP`, or Maps definitively reports no route. Provider failures retain prior context and the ordinary unplanned-drive diagnostic; they never assert a missing booking.
 
 The band thresholds and the verdict each maps to live in `lodging_source.py` (`DRIVE_CERTAIN_MAX`, `DRIVE_IMPLAUSIBLE_MIN`, `classify_drive`); per `coding-policy: script-as-black-box` they are not restated here.
 
 Writer / reader contract:
 
-- **Writers** — both co-bundled, both through the owner API. The sweep (`reconcile_sweep._plan_lodging_legs`) calls `record_drive_time` each cycle and `mark_asked` when it hands the question to the payload. The answer action (`answer_drive_or_fly.py`) calls `record_operator_answer`.
-- **Precedence** — `record_drive_time` never overwrites an unexpired verdict whose `decided_by` is `operator`, so a sweep landing after the answer cannot revert it and re-ask. `asked_at` likewise survives a re-derivation, so the question is asked once per trip, not once per sweep.
+- **Writers** — both co-bundled, both through the owner API. The sweep (`reconcile_sweep._plan_lodging_legs`) calls `record_drive_time` each cycle and `mark_asked` when it hands the question to the payload. The meeting planner calls `record_meeting_route` for long journeys and `clear_meeting_route` when a booking, ordinary local route, skip or cancellation retires one. The answer action (`answer_drive_or_fly.py`) checks the live calendar event before calling `record_operator_answer` for a meeting; TripIt name resolution is unchanged.
+- **Precedence** — a relevant Flight/Rail booking replaces an assumed meeting road trip even after an explicit drive answer; its existing calendar blocks become unwanted in the normal reconcile. The route upper bound still applies.  `record_drive_time` never overwrites an unexpired verdict whose `decided_by` is `operator`, so a sweep landing after the answer cannot revert it and re-ask. `asked_at` likewise survives a re-derivation, so the question is asked once per trip, not once per sweep.
 - **Reader (same skill)** — the sweep calls `load_verdicts(now)` and passes the result to `lodging_source.lodging_desired_blocks`.
 - **Reader (other skill)** — `check-travel-bookings` reads the file directly, read-only and non-migrating, to report a missing flight for a `fly` verdict and to re-raise the open question for an `unknown` one (#240). It never writes and never upgrades a version.
 
@@ -165,13 +167,15 @@ Tolerance:
 
 - A **missing** file is not an error — indistinguishable from "no verdicts yet", reads as an empty map.
 - A **present but corrupt** file (unparseable, non-object root, missing/invalid `schema_version`, `trips` not an object, or a version below the current floor) raises `DriveDecisionError`. Reading it as "no verdicts" would drop every recorded answer and re-ask about every settled trip — the nag `skip-state.json` fails closed for the same reason.
-- A `schema_version` **newer** than this plugin is **refused** on both read and write, mirroring `skip-state.json`: reading it as empty loses answers, and a write would rewrite a newer writer's file as v1.
+- A `schema_version` **newer** than this plugin is **refused** on both read and write, mirroring `skip-state.json`: reading it as empty loses answers, and a write would rewrite a newer writer's file as v2.
 - Malformed **individual** records (bad verdict, bad decider, missing/unparseable expiry) are dropped rather than fatal — unlike a corrupt file, one bad record only means that trip has no verdict, and the sweep re-derives it from the drive time this cycle.
 - The **cross-skill reader** in `check-travel-bookings` is deliberately looser: a missing, unreadable, or unrecognized-version file yields no verdicts and therefore no gap. Its no-prior-state path must stay non-disruptive (`coding-policy: stateful-artifacts`), and inventing a missing-flight alert from an unreadable file is exactly the alert storm that forbids.
 
-Migration: `schema_version` `1` is the initial version. Writer and cross-skill reader ship in one plugin published together, so there is no skew window; a future bump adds the owner-side upgrade-on-read in `drive_decision.py` and widens the `check-travel-bookings` reader's accepted set first, per `coding-policy: stateful-artifacts` Cross-Pipeline Schema Bumps.
+Migration: v2 adds optional meeting context and a disjoint meeting key namespace. On a live read of v1, the owner rewrites the same trip records under v2 without changing answers, receipts or expiries. A non-applying preview uses the owner's read-only `load_verdicts(migrate=False)` view; it accepts the same data and refuses unsupported versions, with no migration, new decisions or question stamps. The read-only booking consumer accepts both versions and never migrates. Both ship together in this plugin. Future versions remain refused by the owner. This is the gate-store exception in `coding-policy: stateful-artifacts`: treating an unsupported file as empty would lose an existing fly decision and recreate a declined drive.
 
 ## Calendar-as-State: Drive Blocks
+
+Booked Rail legs are owned by `rail_source.py`: `station_departure` and `station_arrival`, identified by `rail:<TripIt item uid>`. Station addresses come from the observed `Depart`/`Arrive` description lines; `LOCATION` is the departure station. They use the existing itinerary for a grounded home/lodging base, Calendar codec, reconciliation, failure holds, EV timing and shared `postarrival.TransportGuard`. The departure allowance is owned by `rail_source.STATION_ARRIVAL_BUFFER`. There is no station state file. These kinds use the existing string fields without changing their shape or meaning.
 
 A drive block has no local record — the calendar event itself IS the state (Epic #59 §4). The sweep re-fetches the near-term window by a direct API call and reads each block back off the event. There is no `blocks.json`; the local state files are `skip-state.json`, `airport-facts.json`, and `drive-decisions.json` above.
 

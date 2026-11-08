@@ -26,8 +26,8 @@ from flight_mask import is_flight_event, known_flight_codes  # noqa: E402
 from itinerary import Itinerary  # noqa: E402
 from meeting_source import meeting_desired_blocks  # noqa: E402
 from postarrival import (  # noqa: E402
-    FlightGuard,
     PostarrivalMeeting,
+    TransportGuard,
     compose_postarrival,
     postarrival_meetings_from,
 )
@@ -402,14 +402,13 @@ def test_handoff_route_failure_keeps_lodging_and_drops_unsafe_meeting():
 
 
 def test_block_at_ready_at_is_kept_block_at_guard_start_is_dropped():
-    guard = FlightGuard(
+    guard = TransportGuard(
         identity="BNA-DEN-20200712T1720Z",
         guard_start=GUARD,
         ready_at=READY,
-        airport_code="DEN",
-        airport_point="DEN airport",
-        airport_label="DEN airport",
-        chain_closing=True,
+        arrival_name="DEN",
+        arrival_point="DEN airport",
+        arrival_label="DEN airport",
     )
     departure = DesiredBlock(
         identity="dep",
@@ -1201,7 +1200,7 @@ def test_scan_held_return_starting_in_window_is_deleted_even_without_a_block():
         now=INFLIGHT,
     )
     assert all(h.key != ("late", "meeting_return") for h in result.held)
-    assert any("late: drive would start inside a flight interval" in s for s in result.skipped)
+    assert any("late: drive would start inside a transport interval" in s for s in result.skipped)
 
 
 def test_scan_held_outbound_history_stays_distinct_from_future_return():
@@ -1547,7 +1546,7 @@ def test_retained_ev_native_span_controls_guard_and_continuation_safety():
     current = parse_block({"id": "retained", **build_create_args(desired, calendar_id="primary")})
     assert current is not None
     held = HeldLeg("other", "meeting_outbound", "Drive", other.start, "route failed")
-    guard = FlightGuard(
+    guard = TransportGuard(
         "flight",
         now + timedelta(hours=2),
         now + timedelta(hours=2, minutes=15),

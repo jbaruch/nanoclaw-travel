@@ -446,6 +446,19 @@ def test_both_providers_fail_raises_combined_error():
     assert "TomTom" in str(exc_info.value)
 
 
+def test_both_providers_proving_no_route_is_not_a_provider_outage():
+    maps = MapsClient(SYNTH_KEY, tomtom=TomTomClient(SYNTH_TOMTOM_KEY))
+    with (
+        patch.object(maps, "_google_travel_time", side_effect=MapsError("ZERO_RESULTS", "none")),
+        patch.object(
+            TomTomClient, "travel_time", side_effect=MapsError("TOMTOM_ZERO_RESULTS", "none")
+        ),
+        pytest.raises(MapsError) as caught,
+    ):
+        maps.travel_time("Home", "Across the ocean")
+    assert caught.value.status == "NO_ROUTE"
+
+
 def test_google_success_does_not_call_tomtom():
     """When Google answers, TomTom must not be queried at all."""
     maps = MapsClient(SYNTH_KEY, timeout=5.0, tomtom=TomTomClient(SYNTH_TOMTOM_KEY, timeout=5.0))

@@ -28,6 +28,8 @@ from drive_decision import (  # noqa: E402
     VERDICT_DRIVE,
     VERDICT_FLY,
     load_verdicts,
+    meeting_key,
+    record_meeting_route,
 )
 
 UTC = UTC
@@ -75,6 +77,42 @@ def test_an_answer_is_recorded_as_the_operators(answer):
     stored = load_verdicts(NOW)["tn-tigers-2020-08"]
     assert stored.verdict == answer
     assert stored.decided_by == DECIDED_BY_OPERATOR
+
+
+def test_fly_answer_for_a_calendar_only_meeting_uses_the_live_event():
+    start, end = NOW + timedelta(days=1), NOW + timedelta(days=1, hours=1)
+    record_meeting_route(
+        "pickup",
+        summary="Asher pickup",
+        start=start,
+        end=end,
+        destination="ATL",
+        drive_seconds=227 * 60,
+        gap_reason=None,
+        now=NOW,
+    )
+    event = {
+        "id": "pickup",
+        "summary": "Asher pickup",
+        "location": "ATL",
+        "start": {"dateTime": start.isoformat()},
+        "end": {"dateTime": end.isoformat()},
+    }
+    result = record_answer(
+        {"trip": "Asher pickup", "answer": "fly"},
+        schedule=[],
+        events=[event],
+        now=NOW,
+    )
+    assert result == {"recorded": True, "trip": "Asher pickup", "answer": "fly"}
+    assert load_verdicts(NOW)[meeting_key("pickup")].verdict == VERDICT_FLY
+    # A removed source meeting cannot be acted on from the stored notice alone.
+    assert record_answer(
+        {"trip": "Asher pickup", "answer": "drive"},
+        schedule=[],
+        events=[],
+        now=NOW,
+    ) == {"recorded": False, "unmatched": "Asher pickup"}
 
 
 @pytest.mark.parametrize("typed", ["Drive", "  FLY  ", "drive"])

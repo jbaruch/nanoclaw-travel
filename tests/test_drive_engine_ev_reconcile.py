@@ -453,12 +453,11 @@ def test_roundtrip_material_notices_keep_departure_and_arrival_polarity_separate
     assert "arrive 30 min later" in payload["message"]
 
 
-def test_airport_arrival_material_notice_uses_depart_after_side_label():
+@pytest.mark.parametrize("kind", ["airport_arrival", "station_arrival"])
+def test_transport_arrival_material_notice_uses_depart_after_side_label(kind):
     from reconcile_sweep import build_sweep_payload
 
-    prior = replace(
-        base(), kind="airport_arrival", start=NOW + timedelta(hours=1), end=NOW + timedelta(hours=2)
-    )
+    prior = replace(base(), kind=kind, start=NOW + timedelta(hours=1), end=NOW + timedelta(hours=2))
     changed = replace(
         prior, end=prior.end + timedelta(minutes=30), charging_note="1 charging stop, ~30 min"
     )

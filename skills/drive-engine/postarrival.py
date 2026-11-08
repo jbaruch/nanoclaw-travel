@@ -1,8 +1,8 @@
-"""Post-arrival meeting composition — flight-aware handoff before reconcile.
+"""Post-arrival meeting composition — booked-transport handoff before reconcile.
 
-A meeting still going after landing replaces airport-to-lodging with
-airport-to-venue; the return goes to lodging. No drive may begin inside a
-flight's clearance / flight / post-arrival interval. Ended or unreachable
+A meeting still going after arrival replaces airport/station-to-lodging with
+airport/station-to-venue; the return goes to lodging. No drive may begin inside a
+transport's boarding / travel / post-arrival interval. Ended or unreachable
 meetings get no drive. Pure: no I/O, no clock.
 """
 
@@ -39,17 +39,16 @@ AddressLookup = Callable[[datetime], str | None]
 
 
 @dataclass(frozen=True)
-class FlightGuard:
-    """Protected bounds and arrival routing for one flight."""
+class TransportGuard:
+    """Protected bounds and arrival routing for a booked flight or train."""
 
     identity: str
     guard_start: datetime
     ready_at: datetime
-    airport_code: str
-    airport_point: str
-    airport_label: str
-    timezone: str | None = None
-    chain_closing: bool = False
+    arrival_name: str
+    arrival_point: str
+    arrival_label: str
+    arrival_kind: str = "airport_arrival"
 
 
 @dataclass(frozen=True)
@@ -182,7 +181,7 @@ def _key(block: DesiredBlock) -> tuple[str, str]:
     return (block.identity, block.kind)
 
 
-def _in_protected(start: datetime, guards: Sequence[FlightGuard]) -> bool:
+def _in_protected(start: datetime, guards: Sequence[TransportGuard]) -> bool:
     return any(guard.guard_start <= start < guard.ready_at for guard in guards)
 
 
@@ -208,7 +207,7 @@ def _ongoing(meeting: PostarrivalMeeting, ready_at: datetime) -> bool:
 
 
 def _unreachable_note(
-    guard: FlightGuard,
+    guard: TransportGuard,
     meeting: PostarrivalMeeting,
     drive: timedelta | None,
     max_handoff_drive: timedelta,
@@ -315,7 +314,7 @@ def _current_drive_start(block: ParsedBlock) -> datetime | None:
 def _held_is_unsafe(
     item: HeldLeg,
     current_by_key: dict[tuple[str, str], list[ParsedBlock]],
-    guards: Sequence[FlightGuard],
+    guards: Sequence[TransportGuard],
 ) -> bool:
     """Whether the drive a held meeting leg keeps alive begins inside a guard.
 
@@ -337,7 +336,7 @@ def _held_is_unsafe(
 
 def compose_postarrival(
     *,
-    guards: Sequence[FlightGuard],
+    guards: Sequence[TransportGuard],
     meetings: Sequence[PostarrivalMeeting],
     desired: Sequence[DesiredBlock],
     held: Sequence[HeldLeg],
@@ -347,7 +346,7 @@ def compose_postarrival(
     current_blocks: Sequence[ParsedBlock] = (),
     max_handoff_drive: timedelta = _MAX_HANDOFF_DRIVE,
 ) -> tuple[list[DesiredBlock], list[HeldLeg], list[str]]:
-    """Compose airport and meeting desired blocks around inbound arrivals.
+    """Compose airport/station and meeting blocks around booked arrivals.
 
     Returns `(desired, held, diagnostics)`. Unsafe meeting keys are removed from
     both desired and held so reconcile deletes a stale airborne or centroid block
@@ -359,10 +358,10 @@ def compose_postarrival(
     diagnostics: list[str] = []
     unsafe: set[tuple[str, str]] = set()
     used_meetings: set[str] = set()
-    arrival_ids = {block.identity for block in desired_list if block.kind == "airport_arrival"}
+    arrival_keys = {(block.identity, block.kind) for block in desired_list}
 
     for guard in guards:
-        if guard.identity not in arrival_ids:
+        if (guard.identity, guard.arrival_kind) not in arrival_keys:
             continue
         candidates = [
             meeting
@@ -377,7 +376,7 @@ def compose_postarrival(
         dropped: set[str] = set()
         for meeting in candidates:
             assert meeting.location is not None
-            drive = route(guard.airport_point, meeting.location)
+            drive = route(guard.arrival_point, meeting.location)
             note = _unreachable_note(guard, meeting, drive, max_handoff_drive)
             if note is not None:
                 diagnostics.append(note)
@@ -434,13 +433,13 @@ def compose_postarrival(
         if block.kind == "meeting_outbound":
             protected_outbound.add(block.identity)
             diagnostics.append(
-                f"postarrival {block.identity}: drive would start inside a flight "
+                f"postarrival {block.identity}: drive would start inside a transport "
                 "interval — suppressed"
             )
         elif block.kind == "meeting_return":
             protected_return.add(block.identity)
             diagnostics.append(
-                f"postarrival {block.identity}: drive would start inside a flight "
+                f"postarrival {block.identity}: drive would start inside a transport "
                 "interval — suppressed"
             )
 
@@ -462,7 +461,8 @@ def compose_postarrival(
         else:
             protected_return.add(item.identity)
         diagnostics.append(
-            f"postarrival {item.identity}: drive would start inside a flight interval — suppressed"
+            f"postarrival {item.identity}: drive would start inside a transport "
+            "interval — suppressed"
         )
 
     for identity in protected_outbound:
@@ -481,7 +481,7 @@ def compose_postarrival(
 
 def _apply_handoff(
     *,
-    guard: FlightGuard,
+    guard: TransportGuard,
     meeting: PostarrivalMeeting,
     drive: timedelta | None,
     desired: list[DesiredBlock],
@@ -535,7 +535,7 @@ def _apply_handoff(
 
     no_arrival_drive = drive <= MIN_MEETING_DRIVE
     if no_arrival_drive:
-        unsafe.add((guard.identity, "airport_arrival"))
+        unsafe.add((guard.identity, guard.arrival_kind))
         diagnostics.append(
             f"postarrival {meeting.identity}: arrival at or below one minute — no drive"
         )
@@ -545,16 +545,16 @@ def _apply_handoff(
         if block.kind == "meeting_outbound" and block.identity == meeting.identity:
             unsafe.add(_key(block))
             continue
-        if block.kind == "airport_arrival" and block.identity == guard.identity:
+        if block.kind == guard.arrival_kind and block.identity == guard.identity:
             if no_arrival_drive:
                 continue
             rewritten.append(
                 replace(
                     block,
-                    summary=f"Drive: {guard.airport_code} → {venue}",
+                    summary=f"Drive: {guard.arrival_name} → {venue}",
                     start=guard.ready_at,
                     end=guard.ready_at + drive,
-                    origin=guard.airport_label,
+                    origin=guard.arrival_label,
                     destination=venue,
                     baseline_seconds=int(drive.total_seconds()),
                     anchor=guard.ready_at,

@@ -612,6 +612,14 @@ class Itinerary:
             len(self._periods) - 1,
         )
 
+    def latest_transport_before(self, at: datetime) -> Transport | None:
+        """Latest actual departure by `at`, after preferred times/status dedupe.
+
+        A cancelled flight cannot reappear from its stale TripIt copy when a
+        caller checks whether transport already covers a meeting journey.
+        """
+        return next((item for item in reversed(self._transports) if item.departs <= at), None)
+
     def _home_position(self, detail: str | None = None) -> Position:
         return Position(address=self._home, source=HOME, detail=detail)
 

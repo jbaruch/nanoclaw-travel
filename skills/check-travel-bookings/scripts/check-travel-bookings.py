@@ -47,7 +47,7 @@ STATE_PATH = "/workspace/group/travel-booking-state.json"
 DRIVE_DECISIONS_DIR_ENV = "DRIVE_PLANNER_STATE_DIR"
 DRIVE_DECISIONS_DEFAULT_DIR = "/workspace/state/drive-planner"
 DRIVE_DECISIONS_FILE = "drive-decisions.json"
-DRIVE_DECISIONS_SCHEMA_VERSION = 1
+DRIVE_DECISIONS_SCHEMA_VERSION = 2
 
 # The verdicts that make a flight-less trip a booking gap.
 #   fly     — the operator is flying (or the drive is too long to be one) and
@@ -142,6 +142,16 @@ def load_transport_gap_verdicts(path: Path | None = None, *, now: datetime | Non
     The caller words the two differently — `fly` is a settled gap, `unknown` is
     the daily nudge that replaces a one-shot question nobody re-asked.
     """
+    records = _active_drive_decisions(path, now=now)
+    return {
+        slug: record["verdict"]
+        for slug, record in records.items()
+        if record.get("verdict") in _GAP_VERDICTS and not slug.startswith("meeting:")
+    }
+
+
+def _active_drive_decisions(path: Path | None = None, *, now: datetime | None = None) -> dict:
+    """Read accepted owner versions without migrating or writing their file."""
     target = (
         path
         or Path(os.environ.get(DRIVE_DECISIONS_DIR_ENV, DRIVE_DECISIONS_DEFAULT_DIR))
@@ -153,20 +163,55 @@ def load_transport_gap_verdicts(path: Path | None = None, *, now: datetime | Non
         return {}
     if not isinstance(payload, dict):
         return {}
-    if payload.get("schema_version") != DRIVE_DECISIONS_SCHEMA_VERSION:
+    version = payload.get("schema_version")
+    if type(version) is not int or version not in {1, DRIVE_DECISIONS_SCHEMA_VERSION}:
         return {}
     trips = payload.get("trips")
     if not isinstance(trips, dict):
         return {}
     at = now if now is not None else datetime.now(UTC)
     return {
-        slug: record["verdict"]
+        slug: record
         for slug, record in trips.items()
-        if isinstance(slug, str)
-        and isinstance(record, dict)
-        and record.get("verdict") in _GAP_VERDICTS
-        and _still_active(record, at)
+        if isinstance(slug, str) and isinstance(record, dict) and _still_active(record, at)
     }
+
+
+def load_meeting_transport_gaps(path: Path | None = None, *, now: datetime | None = None) -> list:
+    """Calendar-only long journeys join the existing booking-gap report."""
+    at = now if now is not None else datetime.now(UTC)
+    gaps = []
+    for key, record in _active_drive_decisions(path, now=at).items():
+        meeting = record.get("meeting")
+        if not key.startswith("meeting:") or not isinstance(meeting, dict):
+            continue
+        if not all(
+            isinstance(meeting.get(k), str) and meeting[k]
+            for k in ("summary", "start", "end", "destination")
+        ):
+            continue
+        try:
+            start = datetime.fromisoformat(meeting["start"])
+            end = datetime.fromisoformat(meeting["end"])
+        except ValueError:
+            continue
+        if start.tzinfo is None or end.tzinfo is None or end <= at:
+            continue
+        issue = meeting.get("gap_reason")
+        if not issue and record.get("verdict") == VERDICT_FLY:
+            issue = "нужен рейс или поезд к встрече — брони в TripIt нет"
+        if isinstance(issue, str) and issue:
+            gaps.append(
+                {
+                    "trip": meeting["summary"],
+                    "start": start.date().isoformat(),
+                    "end": end.date().isoformat(),
+                    "issue": issue,
+                    "slug": key,
+                    "uncovered_nights": [],
+                }
+            )
+    return gaps
 
 
 def build_lodging_ranges(lodging_items: list[dict]) -> list[tuple]:
@@ -641,6 +686,17 @@ def main():
                 "uncovered_nights": uncovered if uncovered else [],
             }
         )
+
+    for gap in load_meeting_transport_gaps():
+        entry = snooze_state.get(gap["slug"], {})
+        until = entry.get("snooze_until") if isinstance(entry, dict) else None
+        if isinstance(until, str) and _schema_compatible(entry.get("schema_version")):
+            try:
+                if date.fromisoformat(until) >= today:
+                    continue
+            except ValueError:
+                pass
+        gaps.append(gap)
 
     output = {
         "gaps": gaps,

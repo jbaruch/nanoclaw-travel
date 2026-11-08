@@ -297,6 +297,20 @@ def test_make_route_caches_failure_as_none():
     assert maps.calls == [("home", "STN airport")]  # failure not re-attempted
 
 
+@pytest.mark.parametrize(
+    "status,reported", [("NO_ROUTE", True), ("ZERO_RESULTS", True), ("REQUEST_DENIED", False)]
+)
+def test_make_route_keeps_proven_no_route_separate_from_outages(status, reported):
+    class Maps:
+        def travel_time(self, origin, destination):
+            raise MapsError(status, "synthetic fixture")
+
+    no_routes = set()
+    route = make_route(Maps(), no_routes=no_routes)
+    assert route("Home", "Venue") is None
+    assert (("Home", "Venue") in no_routes) is reported
+
+
 # --- airport resolution: static cache + near-term delay refresh (#211) -------
 
 
@@ -818,6 +832,50 @@ def test_plan_lodging_legs_drops_the_local_drive_the_outbound_absorbed(tmp_path,
     assert any(block.destination == stadium for block in blocks)
     assert questions == []
     assert any("absorbed" in note for note in skipped)
+
+
+def test_shadow_lodging_plan_does_not_consume_the_real_drive_or_fly_question(tmp_path, monkeypatch):
+    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("DRIVE_ENGINE_SHADOW", "1")
+    start = NOW + timedelta(days=2)
+    schedule = [
+        {
+            "type": "Trip",
+            "summary": "Weekend",
+            "location": "Away",
+            "start": start.date().isoformat(),
+            "end": (start + timedelta(days=2)).date().isoformat(),
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-in: Hotel",
+            "location": "Hotel address",
+            "start": start.isoformat(),
+        },
+        {
+            "type": "Lodging",
+            "summary": "Check-out: Hotel",
+            "location": "Hotel address",
+            "start": (start + timedelta(days=1)).isoformat(),
+        },
+    ]
+
+    def plan():
+        return reconcile_sweep._plan_lodging_legs(
+            schedule=schedule,
+            home=HOME,
+            route=lambda a, b: timedelta(hours=4),
+            now=NOW,
+            meeting_blocks=[],
+        )
+
+    _, _, questions, _, _ = plan()
+    assert len(questions) == 1
+    assert not (tmp_path / "drive-decisions.json").exists()
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW")
+    _, _, real_questions, _, _ = plan()
+    assert real_questions == questions
+    assert (tmp_path / "drive-decisions.json").exists()
 
 
 def test_plan_lodging_legs_keeps_every_meeting_block_when_no_trip_matches(tmp_path, monkeypatch):
