@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.3.6 — 2026-11-08
+
 ### Plan long meeting drives when TripIt has no flight or train (#377)
 
 A meeting drive over 3 hours from home was dropped without a word (2026-11-07 Asher pickup at ATL, 227 min). The 3-hour cap assumed he must be away. Per the owner's rule, a drive between 3 and 9 hours is now a road trip: with no TripIt flight landing in the 24 hours before the event (or flight/train leaving in the 24 hours after it), the drive is planned and the notice says «no flight or train in TripIt, so I assumed you drive», with the usual 'skip' reply. When a flight or train is booked, the drive is dropped and the airport or station drives replace it. A drive over 9 hours is held as a missing booking and reported as an unplanned drive. Drives under 3 hours are unchanged.
