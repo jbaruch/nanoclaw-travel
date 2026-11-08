@@ -4,7 +4,7 @@ Per `coding-policy: stateful-artifacts`. This skill owns two cross-invocation JS
 
 ## `/workspace/group/travel-schedule.json`
 
-Flat list of upcoming TripIt events, projected from the live ICS feed.
+Flat list of upcoming TripIt events plus valid timed Rail history, projected from the live ICS feed. Rail arrivals remain available to the EV continuity planner after refresh; historical timestamps remain unchanged.
 
 - **Owner skill:** `nightly-travel-sync` (this skill)
 - **Writer:** `scripts/refresh-travel-schedule.py` (Step 2) — the sole writer
@@ -81,11 +81,11 @@ Value-shape: `location` arrives with its RFC 5545 escapes decoded (#275). No sto
 
 ### Migration policy
 
-Bump `SCHEMA_VERSION` in `refresh-travel-schedule.py` for any record-shape change. The file is fully regenerated each run. The next successful Step 2 rewrites every record at the new version. No stored old-version state exists to upgrade. Readers are non-owners per `coding-policy: stateful-artifacts`. They extract the fields they need and tolerate the per-record `schema_version` without migrating it. A reader that gates on the version treats an unfamiliar value as "no usable schedule" and falls back to its own degraded path.
+Bump the shared record-format `SCHEMA_VERSION` in `travel-core/tripit_feed.py` for any record-shape change. Nightly travel sync remains the cache owner. The file is fully regenerated each run. The next successful Step 2 rewrites every record at the new version. No stored old-version state exists to upgrade. Readers are non-owners per `coding-policy: stateful-artifacts`. They extract the fields they need and tolerate the per-record `schema_version` without migrating it. A reader that gates on the version treats an unfamiliar value as "no usable schedule" and falls back to its own degraded path.
 
 ### Live booking verification
 
-`check-travel-bookings` calls the owner parser `scripts/refresh-travel-schedule.py:fetch_schedule(now=...)` to verify recalled long-meeting gaps against the live TripIt feed. The supplied filter instant retains the previous two days of transport arrivals. This entry point validates and returns the same record shape without writing or freshening `travel-schedule.json`; `main()` remains the cache writer.
+`check-travel-bookings` calls the owner parser `travel-core/tripit_feed.py:fetch_schedule(now=...)` to verify recalled long-meeting gaps against the live TripIt feed. The supplied filter instant retains the previous two days of flight arrivals; valid timed Rail history remains in the live projection. This entry point validates and returns the same record shape without writing or freshening `travel-schedule.json`; `main()` remains the cache writer.
 
 ## `/workspace/group/travel-trips-seen.json`
 

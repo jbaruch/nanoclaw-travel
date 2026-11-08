@@ -18,7 +18,6 @@ Trips to the operator's own metro are skipped outright — see the home-metro
 guard in `main()`.
 """
 
-import importlib.util
 import json
 import os
 import sys
@@ -191,22 +190,14 @@ def _meeting_gap_sources(*, now, until):
     """Reuse the owner clients; no cache refresh or drive sweep is applied."""
     from fetch_events import CalendarFetcher, GoogleCalendarError
     from maps_client import MapsClient
-    from reconcile_sweep import make_route
+    from route_lookup import make_route
+    from tripit_feed import fetch_schedule
 
-    nightly = Path("/home/node/.claude/skills/tessl__nightly-travel-sync")
-    if not nightly.is_dir():
-        nightly = _BUNDLE_DIR.parent / "nightly-travel-sync"
-    source = nightly / "scripts" / "refresh-travel-schedule.py"
-    spec = importlib.util.spec_from_file_location("booking_gap_tripit_reader", source)
-    if spec is None or spec.loader is None:
-        raise MeetingGapUnavailable("TripIt reader unavailable; reinstall nanoclaw-travel.")
-    reader = importlib.util.module_from_spec(spec)
     try:
-        spec.loader.exec_module(reader)
         events = CalendarFetcher().fetch_window(time_min=now, time_max=until)
         # A just-arrived flight still covers an upcoming meeting. The nightly
         # writer's usual future-only filter would otherwise hide that booking.
-        schedule = reader.fetch_schedule(now=now - timedelta(days=2))
+        schedule = fetch_schedule(now=now - timedelta(days=2))
         route = make_route(MapsClient.from_env())
     except (GoogleCalendarError, OSError, RuntimeError, ValueError, UnicodeError) as exc:
         # Never echo feed URLs or upstream response bodies into the brief.

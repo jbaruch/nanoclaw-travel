@@ -17,7 +17,8 @@ the missing flight — without asking again.
 
 CLI: `python3 answer_drive_or_fly.py '<json-request>'` where the request is
 `{"trip": "TN Tigers", "answer": "drive"}`. The answer is timestamped by the
-process clock, so the request carries no time field. Always prints a JSON
+process clock. Optional `when` copies a candidate's returned value to select
+one occurrence; it never supplies the answer timestamp. Always prints a JSON
 result to stdout (never a bare traceback — the skill parses stdout):
   {"recorded": true, "trip": "TN Tigers", "answer": "drive"}
   {"recorded": false, "unmatched": "TN Tigers"}
@@ -121,6 +122,13 @@ def record_answer(
                 and event.summary.strip().casefold() == wanted
             ):
                 targets.append((key, event.summary, event.end + timedelta(days=2), event.start))
+    chosen_when = request.get("when")
+    if chosen_when is not None:
+        if not isinstance(chosen_when, str) or not chosen_when.strip():
+            raise ValueError("`when` must copy a non-empty candidate value")
+        targets = [
+            target for target in targets if target[3].strftime("%a %b %d, %H:%M") == chosen_when
+        ]
     if not targets:
         return {"recorded": False, "unmatched": summary}
     if len(targets) > 1:

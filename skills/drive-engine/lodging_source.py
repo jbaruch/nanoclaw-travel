@@ -450,7 +450,8 @@ def build_question(trip: DriveTrip, drive: timedelta) -> str:
     """
     return (
         f"{trip.summary}: no flight booked, and it's a {_hours(drive)} drive to "
-        f"{trip.hotel}. Reply 'drive' and I'll plan the drive, or 'fly' and I'll "
+        f"{trip.hotel}. Reply 'drive {trip.summary}' and I'll plan the drive, "
+        f"or 'fly {trip.summary}' and I'll "
         "flag the missing flight."
     )
 

@@ -455,3 +455,60 @@ def test_day_return_keeps_destination_handoff_instead_of_becoming_a_connection(
     arrival = next(c.desired for c in result.plan.creates if c.desired.kind == "station_arrival")
     assert (arrival.origin, arrival.destination) == ("Destination Station", "Venue")
     assert (arrival.start, arrival.end) == (ARR, ARR + timedelta(minutes=15))
+
+
+def test_a_successful_postarrival_schedule_refresh_preserves_the_ev_fence(
+    refresh_travel_schedule, monkeypatch
+):
+    import io
+    import json
+
+    import tesla_planning
+    from ev_charging import EnergySample
+    from reconcile_sweep import _ev_adjuster
+
+    reader, url_path, output_path = refresh_travel_schedule
+    url_path.write_text("https://example.test/calendar.ics")
+    raw = (
+        "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:item-rail@tripit.com\r\n"
+        "SUMMARY:Train A to B\r\nDESCRIPTION:[Rail] A to B\\nDepart Origin Station"
+        "\\nArrive Destination Station\r\nLOCATION:Origin Station\r\n"
+        f"DTSTART:{DEP.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        f"DTEND:{ARR.strftime('%Y%m%dT%H%M%SZ')}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_a, **_kw: io.BytesIO(raw.encode()))
+    reader.write_schedule(reader.fetch_schedule(now=ARR - timedelta(minutes=5)))
+    now = ARR + timedelta(minutes=5)
+    reader.write_schedule(reader.fetch_schedule(now=now))
+    refreshed = json.loads(output_path.read_text())
+    assert len(refreshed) == 1 and refreshed[0]["type"] == "Rail"
+    remote = DesiredBlock(
+        "remote",
+        "meeting_outbound",
+        "Drive: Remote",
+        now + timedelta(hours=2),
+        now + timedelta(hours=6),
+        "Hotel address",
+        "Venue",
+        14400,
+        now + timedelta(hours=6),
+    )
+    monkeypatch.setattr(tesla_planning.TeslaPlanning, "vehicle", lambda *_: "Car")
+    monkeypatch.setattr(
+        tesla_planning.TeslaPlanning, "estimate", lambda *_: EnergySample("Car", 75, 0.18, now, 90)
+    )
+    monkeypatch.setattr(tesla_planning.TeslaPlanning, "navigation", lambda *_: [])
+    result = build_reconcile_plan(
+        flights=[],
+        airport_info={},
+        current_blocks=[],
+        schedule=refreshed,
+        home_address="Home",
+        route=route,
+        now=now,
+        extra_desired=[remote],
+        adjust_drives=_ev_adjuster({}, route, {("Hotel address", "Venue"): 395}, now),
+    )
+    planned = next(c.desired for c in result.plan.creates if c.desired.identity == "remote")
+    assert planned == remote
+    assert not any(c.desired.kind == "station_arrival" for c in result.plan.creates)

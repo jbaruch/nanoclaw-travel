@@ -376,6 +376,7 @@ def test_the_notice_line_says_what_to_check(kind, check):
 def test_unplanned_lines_reach_the_rendered_notice():
     applied = types.SimpleNamespace(
         added_meeting_legs=[],
+        assumed_meeting_legs=[],
         material_updates=[],
         created=0,
         updated=0,
@@ -457,6 +458,7 @@ def test_a_live_sweep_announces_a_drive_missing_for_an_hour(state_dir, monkeypat
     monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
     applied = types.SimpleNamespace(
         added_meeting_legs=[],
+        assumed_meeting_legs=[],
         material_updates=[],
         created=0,
         updated=0,

@@ -9,7 +9,7 @@ Locks down the documented contract per `coding-policy: testing-standards`:
     error
   - Unfolds RFC-5545 CRLF + whitespace continuations before parsing
   - One event per `BEGIN:VEVENT` segment; events whose `DTEND` is
-    before `now` are filtered
+    before `now` are filtered, except paired lodging and timed Rail history
   - Event type derives from UID + DESCRIPTION:
       * UID without `item-` → `'Trip'`
       * UID with `item-` and DESCRIPTION matching `[Type]` → that Type
@@ -172,7 +172,7 @@ def test_retry_after_first_failure_succeeds(refresh_travel_schedule, monkeypatch
         ],
     )
     _patch_urlopen(monkeypatch, ConnectionError("transient"), body)
-    monkeypatch.setattr(module.time, "sleep", lambda _s: None)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
 
     code, _, _ = _run(module, monkeypatch, capsys)
     assert code == 0
@@ -187,7 +187,7 @@ def test_both_attempts_fail_raises(refresh_travel_schedule, monkeypatch, capsys)
     module, url_path, _ = refresh_travel_schedule
     url_path.write_text("https://tripit.example.test/feed.ics\n")
     _patch_urlopen(monkeypatch, ConnectionError("first boom"), TimeoutError("second boom"))
-    monkeypatch.setattr(module.time, "sleep", lambda _s: None)
+    monkeypatch.setattr("time.sleep", lambda _s: None)
 
     with pytest.raises(RuntimeError) as excinfo:
         _run(module, monkeypatch, capsys)
@@ -863,8 +863,10 @@ def test_decoded_summary_still_pairs_a_lodging_check_in_to_its_check_out(
     pass here rather than an assumption."""
     module, _, _ = refresh_travel_schedule
     url = "https://www.tripit.com/trip/show/id/12345"
-    _, key_in = module.lodging_pair_key("Check-in: Radisson Blu Airport Hotel, Oslo", url)
-    _, key_out = module.lodging_pair_key("Check-out: Radisson Blu Airport Hotel, Oslo", url)
+    from tripit_feed import lodging_pair_key
+
+    _, key_in = lodging_pair_key("Check-in: Radisson Blu Airport Hotel, Oslo", url)
+    _, key_out = lodging_pair_key("Check-out: Radisson Blu Airport Hotel, Oslo", url)
     assert key_in == key_out
     assert key_in == ("12345", "Radisson Blu Airport Hotel, Oslo")
 
@@ -913,7 +915,9 @@ def test_missing_required_field_is_rejected(refresh_travel_schedule, missing):
     record = _valid_record()
     del record[missing]
     with pytest.raises(RuntimeError, match="verify the feed"):
-        module.validate_schedule([record])
+        from tripit_feed import validate_schedule
+
+        validate_schedule([record])
 
 
 def test_duplicate_uid_never_replaces_valid_cache(refresh_travel_schedule):

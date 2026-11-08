@@ -145,7 +145,7 @@ def test_assumption_reply_booking_and_existing_notice_work_together(check_travel
         creation_clock=lambda: now,
     )
     message = build_sweep_payload(applied, [])["data"]["message"]
-    assert "Assumed driving" in message and "reply 'fly'" in message
+    assert "Assumed driving" in message and "reply 'fly Asher pickup'" in message
     result = record_answer(
         {"trip": "Asher pickup", "answer": "fly"},
         schedule=[],

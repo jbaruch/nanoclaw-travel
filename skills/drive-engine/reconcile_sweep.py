@@ -85,6 +85,7 @@ from meeting_travel import (  # noqa: E402
 from normalize import flight_from_byair  # noqa: E402
 from postarrival import PostarrivalMeeting, TransportGuard, postarrival_meetings_from  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg, ReconcilePlan  # noqa: E402
+from route_lookup import make_route as make_route  # noqa: E402
 from shadow import plan_counts, render_plan  # noqa: E402
 from tripit_flights import flights_from_schedule  # noqa: E402
 from unplanned_notices import due_notices  # noqa: E402
@@ -93,7 +94,6 @@ RouteFn = Callable[[str, str], "timedelta | None"]
 
 # An airport endpoint routed by name (`engine._airport_place`) because byAir gave
 # no coordinates for it.
-_TEXT_AIRPORT = re.compile(r"[A-Z]{3} airport")
 
 SWEEP_WINDOW = timedelta(days=14)
 
@@ -185,75 +185,6 @@ def attendance_points(
                         )
                         points[place] = None
     return points
-
-
-def make_route(
-    maps,
-    *,
-    cache: dict[tuple[str, str], timedelta | None] | None = None,
-    distances: dict[tuple[str, str], float] | None = None,
-    no_routes: set[tuple[str, str]] | None = None,
-) -> RouteFn:
-    """A memoizing `route(origin, destination) -> timedelta | None`.
-
-    Per `MapsClient`'s own contract ("cache aggressively at the caller level"),
-    dedupes identical (origin, destination) pairs within one sweep — an airport
-    that is both a departure destination and a transfer origin is routed once, not
-    per leg. Traffic is stable across a single sweep, so a cached duration is the
-    same answer the provider would return again (#172). A failed route caches None
-    too, so a dead endpoint isn't re-attempted every leg.
-
-    There is no routing deadline: the plan phase runs to completion (#211).
-    Runaway routing is bounded instead by the maps client's per-call timeout
-    (`_SWEEP_MAPS_TIMEOUT_SECONDS`) — a hung provider fails the single leg (cached
-    as None) rather than stalling the sweep.
-    """
-    import urllib.error
-
-    from maps_client import MapsError
-
-    memo: dict[tuple[str, str], timedelta | None] = {} if cache is None else cache
-
-    def route(origin: str, destination: str) -> timedelta | None:
-        key = (origin, destination)
-        if key in memo:
-            return memo[key]
-        try:
-            tt = maps.travel_time(origin, destination)
-        except (MapsError, urllib.error.URLError, TimeoutError) as exc:
-            if (
-                no_routes is not None
-                and isinstance(exc, MapsError)
-                and exc.status in {"ZERO_RESULTS", "NO_ROUTE"}
-            ):
-                no_routes.add(key)
-            memo[key] = None
-            return None
-        if tt.source != "google" and (
-            _TEXT_AIRPORT.fullmatch(origin) or _TEXT_AIRPORT.fullmatch(destination)
-        ):
-            # The backup geocoded "SFO airport" as the town of Airport, MO (#334).
-            # A text airport is trusted from the primary only; the leg is held.
-            print(
-                f"[drive-engine] route {origin} → {destination}: {tt.source} answer for a "
-                f"text airport ({tt.origin_resolved} → {tt.destination_resolved}) refused",
-                file=sys.stderr,
-            )
-            memo[key] = None
-            return None
-        seconds = (
-            tt.in_traffic_seconds if tt.in_traffic_seconds is not None else tt.duration_seconds
-        )
-        result = timedelta(seconds=seconds)
-        if distances is not None:
-            from ev_charging import finite
-
-            if finite(tt.distance_meters, 0, 100000000):
-                distances[key] = tt.distance_meters / 1000
-        memo[key] = result
-        return result
-
-    return route
 
 
 @dataclass(frozen=True)
@@ -1020,6 +951,7 @@ def render_notification(
     added_meeting_drives: list[dict],
     drive_or_fly_questions: list[str] | None = None,
     unplanned: list[str] | None = None,
+    assumed_meeting_updates: list[dict] | None = None,
 ) -> str | None:
     """Render the operator notice deterministically from the sweep's structured
     material — the fixed one-liners the wake agent used to compose by hand (#187).
@@ -1064,7 +996,10 @@ def render_notification(
             "reply 'skip' if you're not driving to it."
         )
         if d.get("assumed_drive"):
-            lines[-1] += " Assumed driving: no flight or train in TripIt; reply 'fly' if flying."
+            lines[-1] += (
+                " Assumed driving: no flight or train in TripIt; "
+                f"reply 'fly {d['meeting']}' if flying."
+            )
         if d.get("charging"):
             lines[-1] += f" {d['charging']}."
     elif added_meeting_drives:
@@ -1081,6 +1016,14 @@ def render_notification(
                 )
             if d.get("charging"):
                 lines[-1] += f" — {d['charging']}"
+    for d in assumed_meeting_updates or []:
+        lines.append(
+            f"Assumed driving for {d['meeting']} at {d['when']}: "
+            "no flight or train in TripIt; "
+            f"reply 'fly {d['meeting']}' if flying."
+        )
+        if d.get("charging"):
+            lines[-1] += f" {d['charging']}."
     lines.extend(drive_or_fly_questions or [])
     lines.extend(unplanned or [])
     return "\n".join(lines) if lines else None
@@ -1098,7 +1041,8 @@ def build_sweep_payload(
     delivers `data.message` verbatim off that branch (#285).
 
     A notice is emitted ONLY when the operator has something to act on: a new
-    MEETING drive (which they can skip), a MATERIAL drive-time change (leave
+    MEETING drive (which they can skip), a newly assumed road-trip update,
+    a MATERIAL drive-time change (leave
     earlier / later), a drive-or-fly question about a flight-less trip, or a
     drive the engine has failed to plan for an hour that has no block (#334).
     Removes, airport-drive adds, lodging-drive adds, and routine
@@ -1117,6 +1061,7 @@ def build_sweep_payload(
     The operator's `skip` / `drive` / `fly` replies are inbound-triggered and
     wake normally; only this cadence path is silent."""
     added = _group_meeting_adds(applied.added_meeting_legs)
+    assumed = _group_meeting_adds(applied.assumed_meeting_legs)
     material = _dedup_material(applied.material_updates)
     questions = list(drive_or_fly_questions or [])
     unplanned_lines = list(unplanned or [])
@@ -1134,9 +1079,10 @@ def build_sweep_payload(
             },
             "added_meeting_drives": added,
             "material_updates": material,
+            "assumed_meeting_updates": assumed,
             "drive_or_fly_questions": questions,
             "unplanned": unplanned_lines,
-            "message": render_notification(material, added, questions, unplanned_lines),
+            "message": render_notification(material, added, questions, unplanned_lines, assumed),
             "deferred": applied.deferred,
             "skipped": len(skipped) + len(applied.skipped_creations),
             "skipped_creations": list(applied.skipped_creations),

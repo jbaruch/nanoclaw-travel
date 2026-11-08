@@ -725,3 +725,77 @@ def test_multiple_assumed_journeys_each_offer_a_named_fly_reply():
     assert "reply 'fly Asher pickup' if flying" in message
     assert "reply 'fly Atlanta meeting' if flying" in message
     assert "reply 'fly'" not in message
+
+
+@pytest.mark.parametrize("patch_fails", [False, True])
+def test_short_to_assumed_update_offers_fly_even_outside_the_traffic_notice_horizon(patch_fails):
+    from google_calendar_client import GoogleCalendarError
+
+    desired = DesiredBlock(
+        identity="pickup",
+        kind="meeting_outbound",
+        summary="Drive: Asher pickup",
+        start=_dt(10),
+        end=_dt(14),
+        origin="Home",
+        destination="Venue",
+        baseline_seconds=14400,
+        anchor=_dt(14),
+        assumed_drive=True,
+    )
+    current = ParsedBlock(
+        generation=GEN_UNIFIED,
+        event_id="old",
+        identity="pickup",
+        kind="meeting_outbound",
+        baseline_seconds=7200,
+        anchor=_dt(14),
+        origin="Home",
+        destination="Venue",
+        start=_dt(12),
+        end=_dt(14),
+    )
+    plan = plan_reconcile([desired], [current], now=_dt(0))
+
+    class Calendar(FakeCalendar):
+        def patch_event(self, args):
+            if patch_fails:
+                raise GoogleCalendarError("synthetic patch failure")
+
+    applied = apply_plan(plan, calendar=Calendar(), now=_dt(0))
+    payload = build_sweep_payload(applied, [])
+    assert applied.created == 0
+    assert applied.updated == (0 if patch_fails else 1)
+    assert payload["data"]["material_updates"] == []
+    if patch_fails:
+        assert payload["data"]["message"] is None
+        assert payload["data"]["assumed_meeting_updates"] == []
+    else:
+        assert "Assumed driving for Asher pickup" in payload["data"]["message"]
+        assert "reply 'fly Asher pickup'" in payload["data"]["message"]
+
+
+def test_mixed_meeting_and_lodging_notice_offers_named_journey_answers():
+    from lodging_source import DriveTrip, build_question
+
+    trip = DriveTrip(
+        key="denver",
+        summary="Denver trip",
+        hotel="Hotel",
+        address="Hotel address",
+        check_in=_dt(16),
+        check_out=None,
+        span_start=_dt(0),
+        span_end=_dt(23),
+        expires=_dt(23),
+    )
+    question = build_question(trip, timedelta(hours=4))
+    message = render_notification(
+        [],
+        [{"meeting": "Asher pickup", "when": "Sat 10:30", "assumed_drive": True}],
+        [question],
+    )
+    assert message is not None
+    assert "reply 'fly Asher pickup'" in message
+    assert "'drive Denver trip'" in message and "'fly Denver trip'" in message
+    assert "'fly'" not in message

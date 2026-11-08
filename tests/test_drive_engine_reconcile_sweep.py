@@ -736,6 +736,7 @@ class _ApplyResult:
     skipped_creations = ()
     created = updated = deleted = converted = 0
     added_meeting_legs = ()
+    assumed_meeting_legs = ()
     material_updates = ()
     deferred = 0
     errors = ()

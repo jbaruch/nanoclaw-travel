@@ -219,3 +219,48 @@ def test_invoked_as_a_subprocess_it_prints_json_not_a_traceback(tmp_path):
     payload = json.loads(proc.stdout)
     assert payload["recorded"] is False
     assert proc.returncode in (0, 1)
+
+
+@pytest.mark.parametrize("moved", [False, True])
+def test_a_same_named_meeting_can_be_selected_by_its_returned_date(moved):
+    events = []
+    for i in range(2):
+        start = CHECK_IN + timedelta(days=i)
+        end = start + timedelta(hours=1)
+        record_meeting_route(
+            f"pickup{i}",
+            summary="Recurring pickup",
+            start=start,
+            end=end,
+            destination="Venue",
+            drive_seconds=14400,
+            gap_reason=None,
+            now=NOW,
+        )
+        events.append(
+            {
+                "id": f"pickup{i}",
+                "summary": "Recurring pickup",
+                "location": "Venue",
+                "start": {"dateTime": start.isoformat()},
+                "end": {"dateTime": end.isoformat()},
+            }
+        )
+    result = record_answer(
+        {"trip": "Recurring pickup", "answer": "fly"}, schedule=[], events=events, now=NOW
+    )
+    assert result["recorded"] is False
+    when = result["candidates"][1]["when"]
+    if moved:
+        events[1]["start"] = {"dateTime": (CHECK_IN + timedelta(days=3)).isoformat()}
+        events[1]["end"] = {"dateTime": (CHECK_IN + timedelta(days=3, hours=1)).isoformat()}
+    selected = record_answer(
+        {"trip": "Recurring pickup", "answer": "fly", "when": when},
+        schedule=[],
+        events=events,
+        now=NOW,
+    )
+    assert selected["recorded"] is (not moved)
+    verdicts = load_verdicts(NOW)
+    assert verdicts[meeting_key("pickup0")].verdict == VERDICT_DRIVE
+    assert verdicts[meeting_key("pickup1")].verdict == (VERDICT_DRIVE if moved else VERDICT_FLY)

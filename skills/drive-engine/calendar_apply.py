@@ -62,6 +62,7 @@ if str(_FA) not in sys.path:
 
 from calendar_reconcile import _created_event_id  # noqa: E402
 from google_calendar_client import GoogleCalendarError  # noqa: E402
+from meeting_source import DEFAULT_MAX_REASONABLE_DRIVE  # noqa: E402
 
 _WRITE_ERRORS = (GoogleCalendarError, urllib.error.URLError)
 
@@ -82,6 +83,7 @@ class ApplyResult:
     added_meeting_legs: list[dict] = field(default_factory=list)
     material_updates: list[dict] = field(default_factory=list)
     changed_event_ids: list[str] = field(default_factory=list)
+    assumed_meeting_legs: list[dict] = field(default_factory=list)
 
     @property
     def total_writes(self) -> int:
@@ -117,6 +119,21 @@ def _start_in_local(start: datetime, tz_name: str | None) -> tuple[datetime, str
         except (ZoneInfoNotFoundError, ValueError):
             pass
     return start.astimezone(UTC), "UTC"
+
+
+def _meeting_leg_notice(block: DesiredBlock) -> dict[str, str | bool]:
+    notice: dict[str, str | bool] = {
+        "identity": block.identity,
+        "meeting": _meeting_name(block.summary),
+        "when": _local_when(block),
+        "anchor": block.anchor.isoformat(),
+    }
+    if block.charging_note is not None:
+        side = "Return" if block.kind in DEPART_AFTER_KINDS else "Outbound"
+        notice["charging"] = f"{side}: {block.charging_note}"
+    if block.assumed_drive:
+        notice["assumed_drive"] = True
+    return notice
 
 
 def build_create_args(desired: DesiredBlock, *, calendar_id: str) -> dict:
@@ -316,6 +333,15 @@ def apply_plan(
             continue
         result.updated += 1
         result.changed_event_ids.append(u.event_id)
+        if (
+            u.desired.kind.startswith("meeting_")
+            and u.desired.assumed_drive
+            and (
+                u.prior_baseline_seconds is None
+                or u.prior_baseline_seconds <= DEFAULT_MAX_REASONABLE_DRIVE.total_seconds()
+            )
+        ):
+            result.assumed_meeting_legs.append(_meeting_leg_notice(u.desired))
         # Alert only on a MATERIAL drive-time change (a swing worth acting on, on
         # a drive near enough to act on); everything else patches silently.
         delta = material_update_delta(
@@ -369,19 +395,7 @@ def apply_plan(
         # Notify only for MEETING drives (skippable). Airport drives to/from a
         # flight are not skippable, so they are created silently.
         if c.desired.kind.startswith("meeting_"):
-            result.added_meeting_legs.append(
-                {
-                    "identity": c.desired.identity,
-                    "meeting": _meeting_name(c.desired.summary),
-                    "when": _local_when(c.desired),
-                    "anchor": c.desired.anchor.isoformat(),
-                }
-            )
-            if c.desired.charging_note is not None:
-                side = "Return" if c.desired.kind in DEPART_AFTER_KINDS else "Outbound"
-                result.added_meeting_legs[-1]["charging"] = f"{side}: {c.desired.charging_note}"
-            if c.desired.assumed_drive:
-                result.added_meeting_legs[-1]["assumed_drive"] = True
+            result.added_meeting_legs.append(_meeting_leg_notice(c.desired))
 
     for d in plan.deletes:
         if over_budget():
