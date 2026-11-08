@@ -379,6 +379,32 @@ def test_middle_unselected_drive_fences_later_vehicle_energy_without_erasing_pri
     assert result[2] is later
 
 
+def test_a_train_journey_does_not_carry_the_same_car_to_the_arrival_station():
+    departure = replace(leg("station_departure"), identity="rail:trip", destination="Station A")
+    arrival = replace(leg("station_arrival", origin="Station B", hour=15), identity="rail:trip")
+    later = replace(leg(hour=19), identity="later", origin="Venue", destination="Hotel")
+    result = run([departure, arrival, later])
+    assert result[0].start == departure.start - timedelta(minutes=30)
+    assert result[1] is arrival
+    assert result[2] is later
+
+
+def test_fresh_exact_navigation_can_ground_a_car_at_a_station_arrival():
+    arrival = replace(leg("station_arrival", origin="Station B", hour=0), identity="rail:trip")
+    later = replace(leg(hour=4), identity="later", origin="Venue", destination="Hotel")
+    result = adjust_charging(
+        [arrival, later],
+        vehicles={(block.identity, block.kind): "Car" for block in [arrival, later]},
+        distance_km=lambda _: 200,
+        estimate=lambda *_: EnergySample("Car", 75, 0.18, NOW, 90),
+        now=NOW,
+        navigation=[Navigation("Car", "Venue", NOW, 25, 40)],
+        options=PlanningOptions(cold_fraction=0, highway_fraction=0),
+    )
+    assert result[0].charging_note == "Car navigation ETA"
+    assert result[1].charging_note == "1 charging stop, ~30 min"
+
+
 def test_navigation_notice_never_exports_internal_arrival_charge():
     block = replace(leg(hour=0), start=NOW, end=NOW + timedelta(hours=3))
     nav = Navigation("Car", "Venue", NOW, 127, 23.75)

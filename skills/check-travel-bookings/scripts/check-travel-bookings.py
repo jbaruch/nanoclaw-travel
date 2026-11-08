@@ -224,7 +224,7 @@ def load_meeting_transport_gaps(
     events=None,
     schedule=None,
     route=None,
-) -> list:
+) -> tuple[list, str | None]:
     """Verify recalled long journeys against current Calendar and TripIt evidence."""
     from itinerary import Itinerary
     from meeting_travel import booked_transport_to
@@ -266,7 +266,7 @@ def load_meeting_transport_gaps(
                 }
             )
     if not candidates:
-        return []
+        return [], None
     if events is None or schedule is None or route is None:
         events, schedule, route = _meeting_gap_sources(
             now=at, until=max(gap["meeting_end"] for gap in candidates)
@@ -274,6 +274,7 @@ def load_meeting_transport_gaps(
     current = {event.raw_id: event for raw in events if (event := _parse_event(raw)).raw_id}
     itinerary = Itinerary(schedule, home_address=None)
     gaps = []
+    unavailable = None
     for gap in candidates:
         event = current.get(gap["slug"].removeprefix("meeting:"))
         if (
@@ -298,10 +299,11 @@ def load_meeting_transport_gaps(
             route=route,
         )
         if booked is None:
-            raise MeetingGapUnavailable(
+            unavailable = (
                 "Meeting booking gaps unavailable; verify the booked arrival station/airport "
                 "and Maps access, then rerun check-travel-bookings."
             )
+            continue
         if not booked:
             gaps.append(
                 {
@@ -311,7 +313,7 @@ def load_meeting_transport_gaps(
                 }
                 | {"trip": event.summary}
             )
-    return gaps
+    return gaps, unavailable
 
 
 def build_lodging_ranges(lodging_items: list[dict]) -> list[tuple]:
@@ -789,11 +791,12 @@ def main():
 
     meeting_error = None
     try:
-        meeting_gaps = load_meeting_transport_gaps()
+        meeting_gaps, meeting_error = load_meeting_transport_gaps()
     except MeetingGapUnavailable as exc:
         meeting_error = str(exc)
-        print(f"check-travel-bookings: {meeting_error}", file=sys.stderr)
         meeting_gaps = []
+    if meeting_error is not None:
+        print(f"check-travel-bookings: {meeting_error}", file=sys.stderr)
     for gap in meeting_gaps:
         entry = snooze_state.get(gap["slug"], {})
         until = entry.get("snooze_until") if isinstance(entry, dict) else None

@@ -157,7 +157,7 @@ def test_assumption_reply_booking_and_existing_notice_work_together(check_travel
     assert (
         booking_check.load_meeting_transport_gaps(
             now=now, events=[event], schedule=[], route=route
-        )[0]["trip"]
+        )[0][0]["trip"]
         == "Asher pickup"
     )
     # The later booking wins even after a subsequent explicit drive answer.
@@ -189,7 +189,7 @@ def test_assumption_reply_booking_and_existing_notice_work_together(check_travel
         now=now,
     )
     assert meeting_key("pickup") not in load_verdicts(now)
-    assert booking_check.load_meeting_transport_gaps(now=now) == []
+    assert booking_check.load_meeting_transport_gaps(now=now) == ([], None)
 
 
 def test_cancelled_preferred_flight_does_not_return_from_the_stale_tripit_copy():
@@ -251,9 +251,10 @@ def test_long_or_unroutable_meeting_goes_to_booking_check_but_an_outage_does_not
             no_routes=no_routes,
             now=now,
         )
-        gaps = check_bookings.load_meeting_transport_gaps(
+        gaps, error = check_bookings.load_meeting_transport_gaps(
             now=now, events=[event], schedule=[], route=lambda a, b: None
         )
+        assert error is None
         assert bool(gaps) is expects_gap
         if gaps:
             assert gaps[0]["trip"] == "Distant meeting"

@@ -240,10 +240,72 @@ def test_meeting_gap_is_checked_against_current_calendar_and_transport(
         raising=False,
     )
     if change == "unknown-arrival":
-        with pytest.raises(module.MeetingGapUnavailable, match="Maps access"):
-            module.load_meeting_transport_gaps(now=_FROZEN_NOW)
+        gaps, error = module.load_meeting_transport_gaps(now=_FROZEN_NOW)
+        assert gaps == [] and error is not None and "Maps access" in error
     else:
-        assert module.load_meeting_transport_gaps(now=_FROZEN_NOW) == []
+        assert module.load_meeting_transport_gaps(now=_FROZEN_NOW) == ([], None)
+
+
+@pytest.mark.parametrize("uncertain_first", [True, False])
+def test_one_uncertain_arrival_keeps_other_verified_meeting_gaps(
+    check_travel_bookings, monkeypatch, capsys, tmp_path, uncertain_first
+):
+    module, db, _ = check_travel_bookings
+    db.write_text(json.dumps({"schema_version": 3, "trips": {}}))
+    start = _FROZEN_NOW + timedelta(days=1)
+    end = start + timedelta(hours=1)
+    names = ["Uncertain", "Distant"] if uncertain_first else ["Distant", "Uncertain"]
+    events = [
+        {
+            "id": name,
+            "summary": name,
+            "location": name,
+            "start": {"dateTime": start.isoformat()},
+            "end": {"dateTime": end.isoformat()},
+        }
+        for name in names
+    ]
+    records = {
+        f"meeting:{name}": {
+            "verdict": "fly",
+            "decided_by": "operator",
+            "expires": (end + timedelta(days=2)).isoformat(),
+            "meeting": {
+                "summary": name,
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "destination": name,
+                "gap_reason": None,
+            },
+        }
+        for name in names
+    }
+    (tmp_path / "drive-decisions.json").write_text(
+        json.dumps({"schema_version": 2, "trips": records})
+    )
+    schedule = [
+        {
+            "type": "Flight",
+            "summary": "DL 123 BNA to ATL",
+            "start": (start - timedelta(hours=4)).isoformat(),
+            "end": (start - timedelta(hours=3)).isoformat(),
+        }
+    ]
+    monkeypatch.setattr(
+        module,
+        "_meeting_gap_sources",
+        lambda **_: (
+            events,
+            schedule,
+            lambda a, b: None if b == "Uncertain" else timedelta(hours=5),
+        ),
+    )
+    code, out, err = _run(module, monkeypatch, capsys)
+    assert code == 0
+    payload = json.loads(out)
+    assert [gap["trip"] for gap in payload["gaps"]] == ["Distant"]
+    assert "Maps access" in payload["meeting_gaps_unavailable"]
+    assert "Maps access" in err
 
 
 def test_old_verdict_version_is_not_consumed_or_rewritten(check_travel_bookings, tmp_path):

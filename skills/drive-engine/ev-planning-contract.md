@@ -70,8 +70,10 @@ full battery. Missing distance, unknown forecast, route/vehicle ambiguity,
 invalid measurements or newly introduced overlap retains the affected dependent
 legacy blocks. An unresolved middle drive fences later possible/default vehicle
 uses; only independent fresh exact active-route arrival energy grounds a later
-chain again. Held future route failures also enter this fence with their
-source timing and possible selector. An unknown earliest start conservatively
+chain again. A station-arrival drive does not carry the departure car through
+a train journey; it and later dependent uses retain legacy timing until exact
+fresh active-route evidence grounds the vehicle there. Held future route failures
+also enter this fence with their source timing and possible selector. An unknown earliest start conservatively
 fences from the sweep clock. Exact held keys that are still planned by another
 readable source do not add a gap. Out-of-horizon legs remain unchanged without suppressing nearer
 drives. Disconnected endpoints never replenish the same vehicle's energy. A

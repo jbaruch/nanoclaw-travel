@@ -189,7 +189,6 @@ def adjust_charging(
         "meeting_return": "meeting_outbound",
         "lodging_return": "lodging_outbound",
         "airport_arrival": "airport_departure",
-        "station_arrival": "station_departure",
     }
     unknown_starts = sorted(
         block.start
@@ -238,6 +237,11 @@ def adjust_charging(
                 unknown_index += 1
             predecessor = return_predecessors.get(block.kind)
             if predecessor and (vehicle, block.identity, predecessor) not in eligible_keys:
+                grounded = False
+                crossed_unknown = True
+            if block.kind == "station_arrival":
+                # A train carries the traveller, not the selected Tesla.
+                # Only the existing exact active-route evidence can ground it here.
                 grounded = False
                 crossed_unknown = True
             if crossed_unknown and segment:
