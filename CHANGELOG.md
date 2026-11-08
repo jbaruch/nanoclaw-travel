@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.3.7 — 2026-11-08
+
 ### Match conference rooms by driving distance, not geocoding (#373)
 
 The venue-radius check geocoded the venue and the session address and compared coordinates, which needed the Google Geocoding API (not enabled) and fell back to TomTom guesses. It now asks the Distance Matrix the sweep already uses for the driving distance from venue to session; within `venue_radius_meters` (default 500 m) it is the same venue and gets no drive. The Google geocode path in `maps_client` is removed.
