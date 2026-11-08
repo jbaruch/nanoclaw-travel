@@ -60,7 +60,7 @@ def booked_transport_to(
     if not arrival:
         return None
     connection = route(arrival, destination)
-    if connection is None:
+    if connection is None or connection < timedelta(0):
         return None
     return (
         timedelta(0) <= connection <= _LOCAL_CONNECTION and transport.arrives + connection < until
@@ -103,6 +103,7 @@ def maintain_meeting_routes(
             if leg.origin is not None and leg.destination is not None
         ]
         durations = [route(origin, destination) for origin, destination in endpoints]
+        durations = [d if d is not None and d >= timedelta(0) else None for d in durations]
         unroutable = any(pair in no_routes for pair in endpoints)
         longest = max((d for d in durations if d is not None), default=None)
         if not durations or (

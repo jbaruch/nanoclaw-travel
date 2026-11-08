@@ -711,3 +711,17 @@ def test_asymmetric_booking_replacement_does_not_announce_a_budget_deferred_retu
     assert payload["data"]["applied"]["deleted"] == 1
     assert payload["data"]["deferred"] == 1
     assert payload["data"]["message"] is None
+
+
+def test_multiple_assumed_journeys_each_offer_a_named_fly_reply():
+    message = render_notification(
+        [],
+        [
+            {"meeting": "Asher pickup", "when": "Sat Jul 18, 10:30", "assumed_drive": True},
+            {"meeting": "Atlanta meeting", "when": "Sun Jul 19, 11:00", "assumed_drive": True},
+        ],
+    )
+    assert message is not None
+    assert "reply 'fly Asher pickup' if flying" in message
+    assert "reply 'fly Atlanta meeting' if flying" in message
+    assert "reply 'fly'" not in message

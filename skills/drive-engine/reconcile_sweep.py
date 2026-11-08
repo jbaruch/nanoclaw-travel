@@ -63,6 +63,7 @@ from itinerary import (  # noqa: E402
     AmbiguousTransport,
     Itinerary,
     Transport,
+    parse_time,
 )
 from lodging_source import (  # noqa: E402
     context_from_blocks,
@@ -72,6 +73,7 @@ from lodging_source import (  # noqa: E402
     meetings_on_trip,
 )
 from meeting_source import (  # noqa: E402
+    DEFAULT_MAX_REASONABLE_DRIVE,
     TripPresence,
     exclude_drive_block_events,
     meeting_desired_blocks,
@@ -1075,7 +1077,8 @@ def render_notification(
             lines.append(f"{i}. {d['meeting']} at {d['when']}")
             if d.get("assumed_drive"):
                 lines[-1] += (
-                    " — assumed driving: no flight or train in TripIt; reply 'fly' if flying"
+                    " — assumed driving: no flight or train in TripIt; "
+                    f"reply 'fly {d['meeting']}' if flying"
                 )
             if d.get("charging"):
                 lines[-1] += f" — {d['charging']}"
@@ -1924,6 +1927,17 @@ def _run_sweep() -> dict:
                 and answer.is_operator_answer
             },
             booked_transport=booked_for_meeting,
+            known_long_meetings={
+                meeting.meeting_id
+                for meeting in meetings
+                if (previous := sweep_verdicts.get(meeting_key(meeting.meeting_id))) is not None
+                and previous.drive_seconds is not None
+                and previous.drive_seconds > DEFAULT_MAX_REASONABLE_DRIVE.total_seconds()
+                and previous.meeting is not None
+                and previous.meeting.get("destination") == meeting.location
+                and parse_time(previous.meeting.get("start")) == meeting.start
+                and parse_time(previous.meeting.get("end")) == meeting.end
+            },
         )
         if not _shadow_mode():
             maintain_meeting_routes(

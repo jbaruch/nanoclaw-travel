@@ -33,7 +33,7 @@ Reply in one message. Finish here.
 
 ## Step 2 — Record a drive-or-fly answer
 
-Run this when the operator answers a drive-or-fly question or corrects an assumed meeting road trip — "drive", "fly", "we're driving", "I'll fly that one". Map the answer to the trip or meeting NAME from the notice; a bare "drive" or "fly" refers to the single journey just offered. Never surface an internal key — the operator only ever saw the trip name. Invoke:
+Run this when the operator answers a drive-or-fly question or corrects an assumed meeting road trip — "drive", "fly", "we're driving", "I'll fly that one". Map a named reply such as "fly Asher pickup" to that trip or meeting NAME from the notice. A bare "drive" or "fly" refers only to a single offered journey; with several journeys, ask which one. Never surface an internal key — the operator only ever saw the trip name. Invoke:
 
 ```bash
 python3 /home/node/.claude/skills/tessl__drive-engine/answer_drive_or_fly.py '{"trip": "<trip name>", "answer": "drive"}'

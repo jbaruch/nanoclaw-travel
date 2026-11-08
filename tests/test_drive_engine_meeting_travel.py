@@ -304,3 +304,47 @@ def test_one_known_four_hour_route_still_records_context_for_the_advertised_repl
         now=now,
     )
     assert answer["recorded"] is True
+
+
+def test_negative_transport_connection_is_unavailable_not_no_booking():
+    assert check([flight()], {("ATL airport", "Pickup"): timedelta(seconds=-1)}) is None
+
+
+def test_negative_home_route_preserves_the_existing_operator_answer(monkeypatch, tmp_path):
+    from answer_drive_or_fly import record_answer
+    from drive_decision import load_verdicts
+    from scan import scan
+
+    monkeypatch.setenv("DRIVE_PLANNER_STATE_DIR", str(tmp_path))
+    now = AT - timedelta(days=1)
+    event = {
+        "id": "meeting",
+        "summary": "Distant meeting",
+        "location": "Venue",
+        "start": {"dateTime": AT.isoformat()},
+        "end": {"dateTime": (AT + timedelta(hours=1)).isoformat()},
+    }
+    meetings = scan([event], now=now, home_address="Home", skip_state={})
+    maintain_meeting_routes(
+        meetings,
+        route=lambda *_: timedelta(hours=4),
+        verdicts={},
+        booked=set(),
+        driving_to={},
+        no_routes=set(),
+        now=now,
+    )
+    record_answer(
+        {"trip": "Distant meeting", "answer": "fly"}, schedule=[], events=[event], now=now
+    )
+    previous = load_verdicts(now)
+    maintain_meeting_routes(
+        meetings,
+        route=lambda *_: timedelta(seconds=-1),
+        verdicts=previous,
+        booked=set(),
+        driving_to={},
+        no_routes=set(),
+        now=now,
+    )
+    assert load_verdicts(now) == previous

@@ -430,6 +430,7 @@ def test_booking_replaces_even_an_assumed_drive_with_an_unresolved_new_anchor():
         [meeting],
         route=const_route(227),
         booked_transport=lambda _: True,
+        known_long_meetings={"pickup"},
     )
     assert blocks == held == []
     assert "booked transport" in skipped[0]
@@ -595,8 +596,54 @@ def test_transport_decision_covers_both_directions_even_with_a_failed_or_short_l
             }
         ),
         booked_transport=lambda _: booking,
+        known_long_meetings={"m1"},
     )
     assert blocks == []
     assert {leg.kind for leg in held} == (
         {"meeting_outbound", "meeting_return"} if booking is None else set()
     )
+
+
+@pytest.mark.parametrize("unresolved_anchor", [False, True])
+def test_an_unavailable_local_leg_does_not_trigger_transport_replacement(unresolved_anchor):
+    meeting = FakeMeeting(
+        "local",
+        "Local meeting",
+        (
+            FakeLeg("outbound", None if unresolved_anchor else HOME_ADDR, VENUE, arrive_by=_dt(16)),
+            FakeLeg("return", VENUE, HOME_ADDR, depart_after=_dt(17)),
+        ),
+    )
+
+    def no_transport_lookup(_):
+        raise AssertionError("ordinary local drives do not need transport classification")
+
+    blocks, _, held = meeting_desired_blocks(
+        [meeting],
+        route=_pair_route({(VENUE, HOME_ADDR): timedelta(minutes=20)}),
+        booked_transport=no_transport_lookup,
+    )
+    assert [b.kind for b in blocks] == ["meeting_return"]
+    assert [h.kind for h in held] == ["meeting_outbound"]
+
+
+def test_readable_local_routes_override_old_long_route_context():
+    meeting = FakeMeeting(
+        "m1",
+        "Meeting",
+        (
+            FakeLeg("outbound", HOME_ADDR, VENUE, arrive_by=_dt(16)),
+            FakeLeg("return", VENUE, HOME_ADDR, depart_after=_dt(17)),
+        ),
+    )
+
+    def no_transport_lookup(_):
+        raise AssertionError("current local routes take precedence over old long-route context")
+
+    blocks, _, held = meeting_desired_blocks(
+        [meeting],
+        route=const_route(20),
+        known_long_meetings={"m1"},
+        booked_transport=no_transport_lookup,
+    )
+    assert len(blocks) == 2 and held == []

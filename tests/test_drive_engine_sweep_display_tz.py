@@ -106,6 +106,7 @@ def _stub_live_clients(monkeypatch, reader, state_dir: Path) -> dict:
         display_tz=None,
         operator_answers=None,
         booked_transport=None,
+        known_long_meetings=None,
     ):
         captured["display_tz"] = display_tz
         return [], [], []

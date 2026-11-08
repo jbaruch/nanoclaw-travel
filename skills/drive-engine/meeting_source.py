@@ -180,6 +180,7 @@ def meeting_desired_blocks(
     display_tz: str | None = None,
     operator_answers: dict[str, str] | None = None,
     booked_transport: Callable[[object], bool | None] | None = None,
+    known_long_meetings: set[str] | None = None,
 ) -> tuple[list[DesiredBlock], list[str], list[HeldLeg]]:
     """Turn scan `MeetingClass` results into unified meeting `DesiredBlock`s.
 
@@ -262,16 +263,21 @@ def meeting_desired_blocks(
                 continue
             if leg.origin is None or leg.destination is None:
                 routed.append((leg, kind, None, None, None))
-                check_transport = True
                 continue
             origin, destination = _trip_endpoints(leg, presence.get(meeting.meeting_id))
             drive = timedelta(0) if same_place(origin, destination) else route(origin, destination)
             routed.append((leg, kind, origin, destination, drive))
-            if drive is None or (
-                drive > max_reasonable_drive and meeting.meeting_id not in presence
+            if (
+                drive is not None
+                and drive > max_reasonable_drive
+                and meeting.meeting_id not in presence
             ):
                 check_transport = True
 
+        if meeting.meeting_id in (known_long_meetings or set()) and any(
+            drive is None or drive < timedelta(0) for _, _, _, _, drive in routed
+        ):
+            check_transport = True
         booking = booked_transport(meeting) if check_transport and booked_transport else False
         if check_transport and (booking or answers.get(meeting.meeting_id) == "fly"):
             reason = (
