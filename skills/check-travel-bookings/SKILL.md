@@ -32,7 +32,7 @@ The script outputs JSON:
 
 The "отель есть, рейса нет" issue is the mirror case — a hotel booked with nothing to get there on. It fires for a trip the drive engine has settled as a flight, and — worded as a question, naming the `drive` / `fly` reply words — for one whose drive-or-fly answer is still open. A trip the operator drives to has no transport booking by design and never raises it. Both verdicts are read from drive-engine's `drive-decisions.json` (`load_transport_gap_verdicts`; wordings in `TRANSPORT_GAP_ISSUE` / `TRANSPORT_GAP_ASK_ISSUE`; owner contract in `skills/drive-engine/state-schema.md`). Do not re-derive them — an absent or unreadable store means no such gap.
 
-Relay the issue verbatim. The operator's `drive` / `fly` reply is handled by `Skill(skill: "tessl__drive-engine")` Step 2; either answer clears the line. An expired verdict raises no gap. Long calendar-only meeting journeys also appear in `gaps` when the operator plans to fly or the road route is not viable. Their `meeting:<event id>` slugs are supplied by the script; use the returned slug unchanged for snoozing. They come from the same drive-decision owner, without another calendar or TripIt fetch.
+Relay the issue verbatim. The operator's `drive` / `fly` reply is handled by `Skill(skill: "tessl__drive-engine")` Step 2; either answer clears the line. An expired verdict raises no gap. Long calendar-only meeting journeys also appear in `gaps` when the operator plans to fly or the road route is not viable. Their `meeting:<event id>` slugs are supplied by the script; use the returned slug unchanged for snoozing. The drive-decision owner supplies candidate journeys only. Before reporting one, the script verifies the live Calendar event still has the same time and destination and checks the live TripIt feed for a usable Flight/Rail arrival. It reuses the existing clients and feed parser without writing their caches. Deleted, cancelled, declined or changed meetings produce no recalled gap; the next drive sweep calculates their current route. An arrival plus its local connection must precede the meeting end. An old decision schema supplies no usable prior state until the owner migrates it.
 
 `/workspace/group/travel-db.json` is rebuilt nightly by `tessl__nightly-travel-sync` Step 4. Missing/unreadable/invalid DB → exit 1 with `{"error": "..."}` on stdout plus `check-travel-bookings: ...` on stderr. DB alerting is Step 4's responsibility. On non-zero exit, report error output and stop. On invalid JSON or missing fields, report the parse error with raw output.
 
@@ -60,7 +60,9 @@ Proceed immediately to Step 3.
 
 ## Step 3 — Interpret and report
 
-If `gaps` AND `garbage_lodging` are both empty, stay silent (proceed silently — no output).
+If `meeting_gaps_unavailable` is present in Step 1, report that diagnostic as unavailable meeting coverage, even when both lists are empty; never claim all meetings have bookings. Other verified gaps still report normally.
+
+Otherwise, if `gaps` AND `garbage_lodging` are both empty, stay silent (proceed silently — no output).
 
 Report each present block as Telegram HTML (`parse_mode=HTML`). If conversion is needed, pipe through `/workspace/group/scripts/sanitize-html.py` (Markdown → Telegram HTML).
 

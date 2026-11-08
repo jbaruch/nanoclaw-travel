@@ -246,7 +246,8 @@ def write_schedule(events):
             pass  # Successful replacement already consumed this invocation's file.
 
 
-def main():
+def fetch_schedule(*, now=None):
+    """Read and validate the live TripIt feed without changing the schedule cache."""
     with open(URL_PATH) as f:
         url = f.read().strip()
     if not url:
@@ -285,7 +286,7 @@ def main():
             "Invalid TripIt calendar; verify the feed and retry; previous cache retained."
         )
 
-    now = datetime.now(UTC)
+    now = now if now is not None else datetime.now(UTC)
 
     # First pass: parse every VEVENT into a record. The past-event filter
     # is deferred to a second pass so Lodging events can be paired before
@@ -444,7 +445,12 @@ def main():
         events.append(record)
 
     events.sort(key=lambda e: e["start"])
+    validate_schedule(events)
+    return events
 
+
+def main():
+    events = fetch_schedule()
     # Atomic write per `coding-policy: stateful-artifacts`: stage a
     # same-dir `.tmp` sibling, validate it, then `os.replace` it into
     # place. A failed or partial refresh never truncates or freshens the

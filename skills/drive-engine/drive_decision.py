@@ -221,7 +221,12 @@ def _read_raw(*, migrate: bool = True) -> dict[str, dict]:
     trips = payload.get("trips")
     if not isinstance(trips, dict):
         raise DriveDecisionError(f"drive-decision file {path} `trips` must be a JSON object")
-    if version == 1 and migrate:
+    if version == 1:
+        if not migrate:
+            raise DriveDecisionError(
+                f"drive-decision file {path} needs a live drive-engine sweep to migrate "
+                "v1 to v2 before previewing; preview leaves the file unchanged"
+            )
         _atomic_write(path, {"schema_version": DECISION_SCHEMA_VERSION, "trips": trips})
     return {
         key: record
@@ -278,7 +283,7 @@ def load_verdicts(now: datetime, *, migrate: bool = True) -> dict[str, TripVerdi
 
     Expired and malformed records are dropped from the returned map. A version-1
     envelope is upgraded on live reads; existing trip records remain unchanged.
-    A non-applying preview passes `migrate=False` for a read-only snapshot.
+    A non-applying preview passes `migrate=False` and refuses unmigrated state.
     """
     _require_aware(now, "now")
     active: dict[str, TripVerdict] = {}

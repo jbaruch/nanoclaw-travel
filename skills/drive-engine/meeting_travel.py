@@ -24,6 +24,7 @@ def booked_transport_to(
     *,
     destination: str,
     at: datetime,
+    until: datetime,
     schedule: list[dict],
     itinerary: Itinerary,
     route: Callable[[str, str], timedelta | None],
@@ -39,7 +40,7 @@ def booked_transport_to(
     drives never call this.
     """
     transport = itinerary.latest_transport_before(at)
-    if transport is None or at - transport.arrives > _AROUND_EVENT:
+    if transport is None or at - transport.arrives > _AROUND_EVENT or transport.arrives >= until:
         return False
     if transport.destination is not None:
         arrival = f"{transport.destination} airport"
@@ -61,7 +62,9 @@ def booked_transport_to(
     connection = route(arrival, destination)
     if connection is None:
         return None
-    return timedelta(0) <= connection <= _LOCAL_CONNECTION
+    return (
+        timedelta(0) <= connection <= _LOCAL_CONNECTION and transport.arrives + connection < until
+    )
 
 
 def maintain_meeting_routes(

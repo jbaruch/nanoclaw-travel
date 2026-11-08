@@ -18,6 +18,7 @@ Trips to the operator's own metro are skipped outright — see the home-metro
 guard in `main()`.
 """
 
+import importlib.util
 import json
 import os
 import sys
@@ -33,6 +34,11 @@ if not _TRAVEL_CORE.is_dir():
     _TRAVEL_CORE = _BUNDLE_DIR.parent / "travel-core"
 if str(_TRAVEL_CORE) not in sys.path:
     sys.path.insert(0, str(_TRAVEL_CORE))
+_DRIVE_ENGINE = Path("/home/node/.claude/skills/tessl__drive-engine")
+if not _DRIVE_ENGINE.is_dir():
+    _DRIVE_ENGINE = _BUNDLE_DIR.parent / "drive-engine"
+if str(_DRIVE_ENGINE) not in sys.path:
+    sys.path.insert(0, str(_DRIVE_ENGINE))
 
 from addresses import home_metro_names, is_home_metro  # noqa: E402
 from lodging import CHECK_IN, CHECK_OUT, hotel_name, lodging_role  # noqa: E402
@@ -151,7 +157,7 @@ def load_transport_gap_verdicts(path: Path | None = None, *, now: datetime | Non
 
 
 def _active_drive_decisions(path: Path | None = None, *, now: datetime | None = None) -> dict:
-    """Read accepted owner versions without migrating or writing their file."""
+    """Read the current owner version without migrating or writing its file."""
     target = (
         path
         or Path(os.environ.get(DRIVE_DECISIONS_DIR_ENV, DRIVE_DECISIONS_DEFAULT_DIR))
@@ -164,7 +170,7 @@ def _active_drive_decisions(path: Path | None = None, *, now: datetime | None = 
     if not isinstance(payload, dict):
         return {}
     version = payload.get("schema_version")
-    if type(version) is not int or version not in {1, DRIVE_DECISIONS_SCHEMA_VERSION}:
+    if type(version) is not int or version != DRIVE_DECISIONS_SCHEMA_VERSION:
         return {}
     trips = payload.get("trips")
     if not isinstance(trips, dict):
@@ -177,10 +183,55 @@ def _active_drive_decisions(path: Path | None = None, *, now: datetime | None = 
     }
 
 
-def load_meeting_transport_gaps(path: Path | None = None, *, now: datetime | None = None) -> list:
-    """Calendar-only long journeys join the existing booking-gap report."""
+class MeetingGapUnavailable(RuntimeError):
+    """The report cannot verify a recalled meeting against its current sources."""
+
+
+def _meeting_gap_sources(*, now, until):
+    """Reuse the owner clients; no cache refresh or drive sweep is applied."""
+    from fetch_events import CalendarFetcher, GoogleCalendarError
+    from maps_client import MapsClient
+    from reconcile_sweep import make_route
+
+    nightly = Path("/home/node/.claude/skills/tessl__nightly-travel-sync")
+    if not nightly.is_dir():
+        nightly = _BUNDLE_DIR.parent / "nightly-travel-sync"
+    source = nightly / "scripts" / "refresh-travel-schedule.py"
+    spec = importlib.util.spec_from_file_location("booking_gap_tripit_reader", source)
+    if spec is None or spec.loader is None:
+        raise MeetingGapUnavailable("TripIt reader unavailable; reinstall nanoclaw-travel.")
+    reader = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(reader)
+        events = CalendarFetcher().fetch_window(time_min=now, time_max=until)
+        # A just-arrived flight still covers an upcoming meeting. The nightly
+        # writer's usual future-only filter would otherwise hide that booking.
+        schedule = reader.fetch_schedule(now=now - timedelta(days=2))
+        route = make_route(MapsClient.from_env())
+    except (GoogleCalendarError, OSError, RuntimeError, ValueError, UnicodeError) as exc:
+        # Never echo feed URLs or upstream response bodies into the brief.
+        raise MeetingGapUnavailable(
+            "Meeting booking gaps unavailable; check Calendar, TripIt feed and Maps "
+            "access, then rerun check-travel-bookings."
+        ) from exc
+    return events, schedule, route
+
+
+def load_meeting_transport_gaps(
+    path: Path | None = None,
+    *,
+    now: datetime | None = None,
+    events=None,
+    schedule=None,
+    route=None,
+) -> list:
+    """Verify recalled long journeys against current Calendar and TripIt evidence."""
+    from itinerary import Itinerary
+    from meeting_travel import booked_transport_to
+    from scan import _is_virtual, _parse_event
+
     at = now if now is not None else datetime.now(UTC)
-    gaps = []
+    candidates = []
     for key, record in _active_drive_decisions(path, now=at).items():
         meeting = record.get("meeting")
         if not key.startswith("meeting:") or not isinstance(meeting, dict):
@@ -201,7 +252,7 @@ def load_meeting_transport_gaps(path: Path | None = None, *, now: datetime | Non
         if not issue and record.get("verdict") == VERDICT_FLY:
             issue = "нужен рейс или поезд к встрече — брони в TripIt нет"
         if isinstance(issue, str) and issue:
-            gaps.append(
+            candidates.append(
                 {
                     "trip": meeting["summary"],
                     "start": start.date().isoformat(),
@@ -209,7 +260,56 @@ def load_meeting_transport_gaps(path: Path | None = None, *, now: datetime | Non
                     "issue": issue,
                     "slug": key,
                     "uncovered_nights": [],
+                    "meeting_start": start,
+                    "meeting_end": end,
+                    "destination": meeting["destination"],
                 }
+            )
+    if not candidates:
+        return []
+    if events is None or schedule is None or route is None:
+        events, schedule, route = _meeting_gap_sources(
+            now=at, until=max(gap["meeting_end"] for gap in candidates)
+        )
+    current = {event.raw_id: event for raw in events if (event := _parse_event(raw)).raw_id}
+    itinerary = Itinerary(schedule, home_address=None)
+    gaps = []
+    for gap in candidates:
+        event = current.get(gap["slug"].removeprefix("meeting:"))
+        if (
+            event is None
+            or event.cancelled
+            or event.declined
+            or _is_virtual(event.location)
+            or event.start is None
+            or event.end is None
+            or event.location is None
+            or event.start != gap["meeting_start"]
+            or event.end != gap["meeting_end"]
+            or event.location != gap["destination"]
+        ):
+            continue  # Changed meetings need the owner's next live route calculation.
+        booked = booked_transport_to(
+            destination=event.location,
+            at=event.start,
+            until=event.end,
+            schedule=schedule,
+            itinerary=itinerary,
+            route=route,
+        )
+        if booked is None:
+            raise MeetingGapUnavailable(
+                "Meeting booking gaps unavailable; verify the booked arrival station/airport "
+                "and Maps access, then rerun check-travel-bookings."
+            )
+        if not booked:
+            gaps.append(
+                {
+                    k: v
+                    for k, v in gap.items()
+                    if k not in {"meeting_start", "meeting_end", "destination"}
+                }
+                | {"trip": event.summary}
             )
     return gaps
 
@@ -687,7 +787,14 @@ def main():
             }
         )
 
-    for gap in load_meeting_transport_gaps():
+    meeting_error = None
+    try:
+        meeting_gaps = load_meeting_transport_gaps()
+    except MeetingGapUnavailable as exc:
+        meeting_error = str(exc)
+        print(f"check-travel-bookings: {meeting_error}", file=sys.stderr)
+        meeting_gaps = []
+    for gap in meeting_gaps:
         entry = snooze_state.get(gap["slug"], {})
         until = entry.get("snooze_until") if isinstance(entry, dict) else None
         if isinstance(until, str) and _schema_compatible(entry.get("schema_version")):
@@ -708,6 +815,8 @@ def main():
         # asking "why didn't it flag that one?" reads the answer here.
         "local_trips": local_trips,
     }
+    if meeting_error is not None:
+        output["meeting_gaps_unavailable"] = meeting_error
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
 

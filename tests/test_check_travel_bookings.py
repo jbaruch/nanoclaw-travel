@@ -118,14 +118,32 @@ def _run(module, monkeypatch, capsys):
     return code, captured.out, captured.err
 
 
+@pytest.mark.parametrize("verification_available", [True, False])
 def test_calendar_only_flight_gap_uses_the_existing_report(
     check_travel_bookings,
     monkeypatch,
     capsys,
     tmp_path,
+    verification_available,
 ):
     module, db, _ = check_travel_bookings
     start = _FROZEN_NOW + timedelta(days=1)
+    event = {
+        "id": "pickup",
+        "summary": "Pickup",
+        "location": "ATL",
+        "start": {"dateTime": start.isoformat()},
+        "end": {"dateTime": (start + timedelta(hours=1)).isoformat()},
+    }
+    monkeypatch.setattr(
+        module, "_meeting_gap_sources", lambda **_: ([event], [], lambda a, b: None), raising=False
+    )
+    if not verification_available:
+
+        def unavailable(**_):
+            raise module.MeetingGapUnavailable("Check Calendar access, then rerun.")
+
+        monkeypatch.setattr(module, "_meeting_gap_sources", unavailable)
     db.write_text(json.dumps({"schema_version": 3, "trips": {}}))
     (tmp_path / "drive-decisions.json").write_text(
         json.dumps(
@@ -148,11 +166,143 @@ def test_calendar_only_flight_gap_uses_the_existing_report(
             }
         )
     )
-    code, out, _ = _run(module, monkeypatch, capsys)
+    code, out, err = _run(module, monkeypatch, capsys)
     assert code == 0
+    if not verification_available:
+        payload = json.loads(out)
+        assert payload["gaps"] == []
+        assert payload["meeting_gaps_unavailable"] == "Check Calendar access, then rerun."
+        assert "Check Calendar access" in err
+        return
     [gap] = json.loads(out)["gaps"]
     assert gap["trip"] == "Pickup" and gap["slug"] == "meeting:pickup"
     assert "рейс или поезд" in gap["issue"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["deleted", "cancelled", "declined", "moved", "rescheduled", "booked", "unknown-arrival"],
+)
+def test_meeting_gap_is_checked_against_current_calendar_and_transport(
+    check_travel_bookings, monkeypatch, tmp_path, change
+):
+    module, _, _ = check_travel_bookings
+    start = _FROZEN_NOW + timedelta(days=1)
+    end = start + timedelta(hours=1)
+    record = {
+        "verdict": "fly",
+        "decided_by": "operator",
+        "expires": (end + timedelta(days=2)).isoformat(),
+        "meeting": {
+            "summary": "Pickup",
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "destination": "Pickup",
+            "gap_reason": None,
+        },
+    }
+    (tmp_path / "drive-decisions.json").write_text(
+        json.dumps({"schema_version": 2, "trips": {"meeting:pickup": record}})
+    )
+    event = {
+        "id": "pickup",
+        "summary": "Pickup",
+        "location": "Pickup",
+        "start": {"dateTime": start.isoformat()},
+        "end": {"dateTime": end.isoformat()},
+    }
+    schedule = []
+    if change == "cancelled":
+        event["status"] = "cancelled"
+    elif change == "declined":
+        event["attendees"] = [{"self": True, "responseStatus": "declined"}]
+    elif change == "moved":
+        event["location"] = "Another city"
+    elif change == "rescheduled":
+        event["start"] = {"dateTime": (start + timedelta(hours=3)).isoformat()}
+    elif change in {"booked", "unknown-arrival"}:
+        schedule = [
+            {
+                "type": "Flight",
+                "summary": "DL 123 BNA to ATL",
+                "start": (start - timedelta(hours=4)).isoformat(),
+                "end": (start - timedelta(hours=3)).isoformat(),
+            }
+        ]
+    monkeypatch.setattr(
+        module,
+        "_meeting_gap_sources",
+        lambda **_: (
+            [] if change == "deleted" else [event],
+            schedule,
+            lambda a, b: None if change == "unknown-arrival" else timedelta(minutes=12),
+        ),
+        raising=False,
+    )
+    if change == "unknown-arrival":
+        with pytest.raises(module.MeetingGapUnavailable, match="Maps access"):
+            module.load_meeting_transport_gaps(now=_FROZEN_NOW)
+    else:
+        assert module.load_meeting_transport_gaps(now=_FROZEN_NOW) == []
+
+
+def test_old_verdict_version_is_not_consumed_or_rewritten(check_travel_bookings, tmp_path):
+    module, _, _ = check_travel_bookings
+    path = tmp_path / "drive-decisions.json"
+    path.write_text(
+        json.dumps(
+            {"schema_version": 1, "trips": {"old": {"verdict": "fly", "expires": _ACTIVE_EXPIRY}}}
+        )
+    )
+    before = path.read_bytes()
+    assert module.load_transport_gap_verdicts(now=_FROZEN_NOW) == {}
+    assert path.read_bytes() == before
+
+
+def test_live_meeting_sources_reuse_calendar_feed_and_maps_without_cache_writes(
+    check_travel_bookings, monkeypatch
+):
+    import builtins
+    import io
+    from types import SimpleNamespace
+
+    from fetch_events import CalendarFetcher
+    from maps_client import MapsClient
+
+    module, _, _ = check_travel_bookings
+    real_open = builtins.open
+
+    def scoped_open(path, *args, **kwargs):
+        if str(path) == "/workspace/group/tripit-url.txt":
+            return io.StringIO("https://example.test/calendar.ics")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", scoped_open)
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *a, **k: io.BytesIO(
+            b"BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:item-flight\r\n"
+            b"SUMMARY:DL 123 BNA to ATL\r\nDESCRIPTION:[Flight] BNA to ATL\r\n"
+            b"DTSTART:20260430T100000Z\r\nDTEND:20260430T110000Z\r\n"
+            b"END:VEVENT\r\nEND:VCALENDAR\r\n"
+        ),
+    )
+    monkeypatch.setattr(CalendarFetcher, "fetch_window", lambda self, **_: [{"id": "pickup"}])
+    monkeypatch.setattr(
+        MapsClient,
+        "from_env",
+        lambda: SimpleNamespace(
+            travel_time=lambda a, b: SimpleNamespace(
+                source="google", in_traffic_seconds=None, duration_seconds=720
+            )
+        ),
+    )
+    events, schedule, route = module._meeting_gap_sources(
+        now=_FROZEN_NOW, until=_FROZEN_NOW + timedelta(days=1)
+    )
+    assert events == [{"id": "pickup"}]
+    assert schedule[0]["end"] == "2026-04-30T11:00:00Z"
+    assert route("ATL airport", "Pickup") == timedelta(minutes=12)
 
 
 # ---------------------------------------------------------------------------
@@ -1451,7 +1601,7 @@ def _lodging_only_db():
     )
 
 
-def _write_verdict(tmp_path, verdict, *, slug=_TRIP_SLUG, version=1, expires=_ACTIVE_EXPIRY):
+def _write_verdict(tmp_path, verdict, *, slug=_TRIP_SLUG, version=2, expires=_ACTIVE_EXPIRY):
     (tmp_path / "drive-decisions.json").write_text(
         json.dumps(
             {

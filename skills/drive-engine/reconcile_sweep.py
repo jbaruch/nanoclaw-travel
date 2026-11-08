@@ -1881,11 +1881,12 @@ def _run_sweep() -> dict:
         presence = _trip_presence(driving, meetings, route=route, itinerary=itinerary)
 
         def booked_for_meeting(meeting) -> bool | None:
-            if meeting.start is None or not meeting.location:
+            if meeting.start is None or meeting.end is None or not meeting.location:
                 return False
             matched = booked_transport_to(
                 destination=meeting.location,
                 at=meeting.start,
+                until=meeting.end,
                 schedule=schedule or [],
                 itinerary=itinerary,
                 route=route,

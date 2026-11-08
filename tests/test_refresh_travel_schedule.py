@@ -111,6 +111,34 @@ def _run(module, monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
+def test_live_feed_reader_does_not_write_or_freshen_the_cache(
+    refresh_travel_schedule, monkeypatch, capsys
+):
+    module, url_path, output_path = refresh_travel_schedule
+    url_path.write_text("https://example.test/calendar.ics")
+    output_path.write_text("previous cached schedule")
+    before = output_path.stat().st_mtime_ns
+    _patch_urlopen(
+        monkeypatch,
+        _ics(
+            [
+                ("UID", "item-flight"),
+                ("SUMMARY", "DL 123 BNA to ATL"),
+                ("DTSTART", "20260430T100000Z"),
+                ("DTEND", "20260430T110000Z"),
+                ("DESCRIPTION", "[Flight] BNA to ATL"),
+            ]
+        ),
+    )
+    # Keep an already-arrived flight for the booking check's lookback.
+    records = module.fetch_schedule(now=_FROZEN_NOW.replace(hour=9))
+    assert len(records) == 1 and records[0]["uid"] == "item-flight"
+    assert records[0]["type"] == "Flight"
+    assert output_path.read_text() == "previous cached schedule"
+    assert output_path.stat().st_mtime_ns == before
+    assert capsys.readouterr().out == ""
+
+
 def test_empty_url_file_raises_runtime_error(refresh_travel_schedule, monkeypatch, capsys):
     """Empty url file → RuntimeError carrying the path so an operator
     can fix it."""

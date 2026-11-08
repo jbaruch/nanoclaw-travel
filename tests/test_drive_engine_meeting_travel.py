@@ -4,6 +4,8 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "travel-core"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "drive-engine"))
 
@@ -26,6 +28,7 @@ def check(schedule, pairs):
     return booked_transport_to(
         destination="Pickup",
         at=AT,
+        until=AT + timedelta(hours=1),
         schedule=schedule,
         itinerary=Itinerary(schedule, home_address=None),
         route=lambda a, b: pairs.get((a, b)),
@@ -65,6 +68,14 @@ def test_a_booking_after_the_meeting_does_not_cancel_the_drive():
 
 def test_an_old_flight_does_not_cancel_the_drive():
     assert not check([flight(hours_before=80)], {})
+
+
+@pytest.mark.parametrize("arrival_minutes", [61, 55, 48])
+def test_transport_that_cannot_reach_the_meeting_before_it_ends_is_not_coverage(arrival_minutes):
+    row = flight()
+    row["end"] = (AT + timedelta(minutes=arrival_minutes)).isoformat()
+    # The meeting ends at AT + 1h; the local connection takes twelve minutes.
+    assert not check([row], {("ATL airport", "Pickup"): timedelta(minutes=12)})
 
 
 def test_rail_uses_the_arrival_station_instead_of_location():
@@ -143,12 +154,18 @@ def test_assumption_reply_booking_and_existing_notice_work_together(check_travel
     )
     assert result["recorded"] is True
     booking_check, _, _ = check_travel_bookings
-    assert booking_check.load_meeting_transport_gaps(now=now)[0]["trip"] == "Asher pickup"
+    assert (
+        booking_check.load_meeting_transport_gaps(
+            now=now, events=[event], schedule=[], route=route
+        )[0]["trip"]
+        == "Asher pickup"
+    )
     # The later booking wins even after a subsequent explicit drive answer.
     record_answer({"trip": "Asher pickup", "answer": "drive"}, schedule=[], events=[event], now=now)
     booked = booked_transport_to(
         destination="Pickup",
         at=AT,
+        until=AT + timedelta(hours=1),
         schedule=[flight()],
         itinerary=Itinerary([flight()], home_address="Home"),
         route=route,
@@ -194,6 +211,7 @@ def test_cancelled_preferred_flight_does_not_return_from_the_stale_tripit_copy()
         booked_transport_to(
             destination="Pickup",
             at=AT,
+            until=AT + timedelta(hours=1),
             schedule=[row],
             itinerary=itinerary,
             route=lambda a, b: timedelta(minutes=12),
@@ -233,7 +251,9 @@ def test_long_or_unroutable_meeting_goes_to_booking_check_but_an_outage_does_not
             no_routes=no_routes,
             now=now,
         )
-        gaps = check_bookings.load_meeting_transport_gaps(now=now)
+        gaps = check_bookings.load_meeting_transport_gaps(
+            now=now, events=[event], schedule=[], route=lambda a, b: None
+        )
         assert bool(gaps) is expects_gap
         if gaps:
             assert gaps[0]["trip"] == "Distant meeting"

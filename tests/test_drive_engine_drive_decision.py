@@ -288,7 +288,8 @@ def test_v1_migration_keeps_the_existing_operator_answer(tmp_path):
     raw["schema_version"] = 1
     _write_raw(tmp_path, raw)
     before = _store_file(tmp_path).read_bytes()
-    assert load_verdicts(NOW, migrate=False)[KEY].verdict == VERDICT_FLY
+    with pytest.raises(DriveDecisionError, match="live.*migrat"):
+        load_verdicts(NOW, migrate=False)
     assert _store_file(tmp_path).read_bytes() == before
     assert load_verdicts(NOW)[KEY].verdict == VERDICT_FLY
     migrated = json.loads(_store_file(tmp_path).read_text())

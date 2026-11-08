@@ -83,6 +83,10 @@ Value-shape: `location` arrives with its RFC 5545 escapes decoded (#275). No sto
 
 Bump `SCHEMA_VERSION` in `refresh-travel-schedule.py` for any record-shape change. The file is fully regenerated each run. The next successful Step 2 rewrites every record at the new version. No stored old-version state exists to upgrade. Readers are non-owners per `coding-policy: stateful-artifacts`. They extract the fields they need and tolerate the per-record `schema_version` without migrating it. A reader that gates on the version treats an unfamiliar value as "no usable schedule" and falls back to its own degraded path.
 
+### Live booking verification
+
+`check-travel-bookings` calls the owner parser `scripts/refresh-travel-schedule.py:fetch_schedule(now=...)` to verify recalled long-meeting gaps against the live TripIt feed. The supplied filter instant retains the previous two days of transport arrivals. This entry point validates and returns the same record shape without writing or freshening `travel-schedule.json`; `main()` remains the cache writer.
+
 ## `/workspace/group/travel-trips-seen.json`
 
 Last-seen snapshot of the upcoming trip set, used by Step 5 to detect trips that appeared since the previous nightly run (#204). New-trip detection only — never a source of truth for trip data (that is `travel-db.json`).
