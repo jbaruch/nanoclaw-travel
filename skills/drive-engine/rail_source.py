@@ -63,6 +63,8 @@ def station_desired_blocks(
             continue
         identity = row.get("uid")
         start, end = parse_time(row.get("start")), parse_time(row.get("end"))
+        if (end is not None and end < now) or (start is not None and start > now + window):
+            continue
         if (
             not isinstance(identity, str)
             or not identity
@@ -71,10 +73,15 @@ def station_desired_blocks(
             or end <= start
             or not all("T" in str(row.get(k)) for k in ("start", "end"))
         ):
-            raise ValueError(
-                "TripIt Rail needs its UID and timed start/end — refresh travel-schedule"
-            )
-        if end < now or start > now + window:
+            reason = "Rail row has no usable UID/timed interval — refresh travel-schedule"
+            skipped.append(reason)
+            if isinstance(identity, str) and identity:
+                for kind in ("station_departure", "station_arrival"):
+                    held.append(
+                        HeldLeg(
+                            f"rail:{identity}", kind, "Drive: Train", None, reason, announce=False
+                        )
+                    )
             continue
         identity = f"rail:{identity}"
         departure = station_address(row, arriving=False)

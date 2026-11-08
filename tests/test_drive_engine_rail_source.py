@@ -4,8 +4,6 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 for bundle in ("travel-core", "flight-assist", "drive-engine"):
     sys.path.insert(0, str(ROOT / "skills" / bundle))
@@ -183,14 +181,34 @@ def test_missing_arrival_address_is_held_without_inventing_an_endpoint():
     assert [h.kind for h in held] == ["station_arrival"]
 
 
-def test_unreadable_train_times_require_the_schedule_owner_to_refresh():
+def test_unreadable_train_times_hold_its_blocks_and_skip_with_a_diagnostic():
     rows = schedule()
-    rows[1]["end"] = "unreadable"
-    with pytest.raises(ValueError, match="refresh travel-schedule"):
-        station_desired_blocks(
-            rows,
-            itinerary=Itinerary([], home_address="Home"),
-            route=route,
-            now=NOW,
-            window=timedelta(days=14),
+    good = build_reconcile_plan(
+        flights=[],
+        airport_info={},
+        current_blocks=[],
+        route=route,
+        schedule=rows,
+        home_address="Home",
+        now=NOW,
+    )
+    current = []
+    for i, create in enumerate(good.plan.creates):
+        block = parse_block(
+            build_create_args(create.desired, calendar_id="primary") | {"id": f"old{i}"}
         )
+        assert block is not None
+        current.append(block)
+    rows[1]["end"] = "unreadable"
+    result = build_reconcile_plan(
+        flights=[],
+        airport_info={},
+        current_blocks=current,
+        route=route,
+        schedule=rows,
+        home_address="Home",
+        now=NOW,
+    )
+    assert result.plan.is_noop
+    assert {leg.kind for leg in result.held} == {"station_departure", "station_arrival"}
+    assert any("refresh travel-schedule" in line for line in result.skipped)

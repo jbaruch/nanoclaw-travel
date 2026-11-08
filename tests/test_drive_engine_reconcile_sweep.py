@@ -209,6 +209,52 @@ def test_combines_airport_and_meeting_blocks():
     assert "airport_departure" in kinds and "airport_arrival" in kinds
 
 
+@pytest.mark.parametrize(
+    "rail",
+    [
+        {"type": "Rail", "uid": "pass", "start": "2020-07-12", "end": "2020-07-13"},
+        {"type": "Rail", "uid": "past", "start": "2020-07-01", "end": "2020-07-02"},
+        {
+            "type": "Rail",
+            "uid": "far",
+            "start": (NOW + timedelta(days=60)).date().isoformat(),
+            "end": (NOW + timedelta(days=61)).date().isoformat(),
+        },
+        {"type": "Rail", "start": "2020-07-12T09:00:00Z", "end": "2020-07-12T11:00:00Z"},
+        {"type": "Rail", "uid": "bad", "start": "unreadable", "end": "unreadable"},
+    ],
+)
+def test_unusable_rail_does_not_disable_airport_meeting_or_lodging_drives(rail):
+    from dataclasses import replace
+
+    meeting = _meeting_block()
+    lodging = replace(
+        meeting,
+        identity="stay",
+        kind="lodging_outbound",
+        start=meeting.start + timedelta(days=1),
+        end=meeting.end + timedelta(days=1),
+        anchor=meeting.anchor + timedelta(days=1),
+    )
+    result = build_plan(
+        flight_records=[_record(1, 4, 3, "2020-07-12T09:00:00Z", "2020-07-12T11:00:00Z")],
+        resolve_airport=_resolve_airport,
+        meeting_blocks=[meeting],
+        lodging_blocks=[lodging],
+        current_blocks=[],
+        route=_route,
+        now=NOW,
+        home_address=HOME,
+        schedule=[rail],
+    )
+    assert {c.desired.kind for c in result.plan.creates} == {
+        "airport_departure",
+        "airport_arrival",
+        "meeting_outbound",
+        "lodging_outbound",
+    }
+
+
 def test_no_home_off_trip_degrades_not_crashes():
     # With no home_address and no active trip, the airport side must degrade (legs
     # skipped with a diagnostic) rather than raise — a missing home never takes the
