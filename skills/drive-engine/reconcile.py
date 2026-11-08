@@ -63,6 +63,8 @@ class DesiredBlock:
     zone_from_operator: bool = False
     charging_note: str | None = None
     earliest_start: datetime | None = None
+    # A long meeting drive planned because TripIt has no flight or train (#377).
+    road_trip: bool = False
 
 
 @dataclass(frozen=True)

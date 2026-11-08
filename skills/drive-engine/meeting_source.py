@@ -68,10 +68,15 @@ def exclude_drive_block_events(events: list[dict]) -> list[dict]:
 
 RouteFn = Callable[[str, str], "timedelta | None"]
 
-# A routed meeting drive longer than this is implausible as a "drive to a meeting"
-# — the operator almost certainly is not positioned to drive it (they flew, or are
-# on a trip elsewhere). Mirrors drive-planner's MAX_REASONABLE_DRIVE_SECONDS.
+# Above this a meeting drive is a road trip (owner, #377): planned only when
+# TripIt has no flight or train that gets him there, and the notice says the
+# drive was assumed. Under it, an ordinary meeting drive.
 DEFAULT_MAX_REASONABLE_DRIVE = timedelta(hours=3)
+# A routed drive past this is a missing booking, not a road trip.
+ROAD_TRIP_MAX = timedelta(hours=9)
+# A flight or train landing within this before the event (or leaving within
+# this after it) is how he gets there (or back).
+BOOKING_WINDOW = timedelta(hours=24)
 
 # A zero or at-most-one-minute route is not a useful calendar drive (#356).
 # Treat it as a definitive no-drive, so an earlier bogus block is not retained.
@@ -140,6 +145,33 @@ def _trip_endpoints(leg, presence: TripPresence | None) -> tuple[str, str]:
 _UNKNOWABLE_REASONS = frozenset({"missing or unparseable time"})
 
 
+def booked_trips(schedule: list[dict] | None) -> list[tuple[datetime, datetime]]:
+    """(departure, arrival) of every timed TripIt Flight and Rail record."""
+    trips = []
+    for record in schedule or []:
+        if not isinstance(record, dict) or record.get("type") not in ("Flight", "Rail"):
+            continue
+        try:
+            start = datetime.fromisoformat(str(record.get("start")).replace("Z", "+00:00"))
+            end = datetime.fromisoformat(str(record.get("end")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if start.tzinfo is not None and end.tzinfo is not None:
+            trips.append((start, end))
+    return trips
+
+
+def _booked(leg, booked: list[tuple[datetime, datetime]]) -> bool:
+    """A flight or train gets him to this leg's event, or away from it."""
+    if leg.direction == "return":
+        after = leg.depart_after
+        return after is not None and any(
+            after <= dep <= after + BOOKING_WINDOW for dep, _ in booked
+        )
+    by = leg.arrive_by
+    return by is not None and any(by - BOOKING_WINDOW <= arr <= by for _, arr in booked)
+
+
 def _legs_unknowable(meeting) -> bool:
     bucket = getattr(meeting, "bucket", None)
     return bucket == "past" or (
@@ -174,15 +206,22 @@ def meeting_desired_blocks(
     max_reasonable_drive: timedelta = DEFAULT_MAX_REASONABLE_DRIVE,
     driving_to: dict[str, TripPresence] | None = None,
     display_tz: str | None = None,
+    booked: list[tuple[datetime, datetime]] | None = None,
 ) -> tuple[list[DesiredBlock], list[str], list[HeldLeg]]:
     """Turn scan `MeetingClass` results into unified meeting `DesiredBlock`s.
 
     Only actionable meetings carry legs, so pass the scan output directly. Returns
     `(blocks, skipped_diagnostics, held)`. A leg is skipped (never blindly
-    blocked) when its anchor is unresolved, its route fails, or its routed drive
-    exceeds `max_reasonable_drive` (the travel-away suppression). Each of those
-    is also HELD (#334): the leg exists, so its current block is kept rather
-    than orphan-deleted. Only a leg whose origin is its destination is dropped.
+    blocked) when its anchor is unresolved or its route fails. Each of those is
+    also HELD (#334): the leg exists, so its current block is kept rather than
+    orphan-deleted. Only a leg whose origin is its destination is dropped.
+
+    A drive over `max_reasonable_drive` is a road trip (#377). With a `booked`
+    (departure, arrival) flight or train landing in the BOOKING_WINDOW before
+    the event, or leaving in the one after it, the leg is dropped: the airport
+    or station drives replace it. Without one it is planned and marked
+    `road_trip`, so the notice says the drive was assumed; past ROAD_TRIP_MAX
+    it is held as a missing booking instead.
 
     A leg whose origin IS its destination is skipped too (#301): the scan
     already filters a meeting held at the anchor, but the lodging rewrite below
@@ -280,17 +319,25 @@ def meeting_desired_blocks(
             if drive <= MIN_MEETING_DRIVE:
                 skipped.append(f"{tag}: route at or below one minute — no drive")
                 continue
-            if drive > max_reasonable_drive and meeting.meeting_id not in presence:
+            road_trip = drive > max_reasonable_drive and meeting.meeting_id not in presence
+            if road_trip:
                 minutes = int(drive.total_seconds() // 60)
-                _hold(
-                    skipped,
-                    held,
-                    meeting,
-                    leg,
-                    kind,
-                    f"{tag}: {minutes}min drive implausible — suppressed (away?)",
-                )
-                continue
+                if _booked(leg, booked or []):
+                    skipped.append(
+                        f"{tag}: {minutes}min drive — a TripIt flight or train covers it"
+                    )
+                    continue
+                if drive > ROAD_TRIP_MAX:
+                    _hold(
+                        skipped,
+                        held,
+                        meeting,
+                        leg,
+                        kind,
+                        f"{tag}: {minutes}min drive and no flight or train in TripIt "
+                        "— a missing booking?",
+                    )
+                    continue
 
             # Bridge leg: the drive must fit the gap between two consecutive
             # meetings. A drive longer than the gap can't be made (the "5h drive
@@ -338,6 +385,7 @@ def meeting_desired_blocks(
                     anchor=anchor,
                     timezone=display_tz or getattr(meeting, "timezone", None),
                     zone_from_operator=bool(display_tz),
+                    road_trip=road_trip,
                     earliest_start=(
                         leg.arrive_by - timedelta(seconds=gap)
                         if isinstance(gap, int) and leg.arrive_by is not None

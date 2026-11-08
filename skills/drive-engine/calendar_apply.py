@@ -378,6 +378,8 @@ def apply_plan(
             if c.desired.charging_note is not None:
                 side = "Return" if c.desired.kind in DEPART_AFTER_KINDS else "Outbound"
                 result.added_meeting_legs[-1]["charging"] = f"{side}: {c.desired.charging_note}"
+            if c.desired.road_trip:
+                result.added_meeting_legs[-1]["road_trip"] = True
 
     for d in plan.deletes:
         if over_budget():

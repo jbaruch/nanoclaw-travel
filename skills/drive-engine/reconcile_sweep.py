@@ -73,6 +73,7 @@ from lodging_source import (  # noqa: E402
 )
 from meeting_source import (  # noqa: E402
     TripPresence,
+    booked_trips,
     exclude_drive_block_events,
     meeting_desired_blocks,
 )
@@ -944,6 +945,8 @@ def _group_meeting_adds(legs: list[dict]) -> list[dict]:
         )
         if notes:
             item["charging"] = "; ".join(notes)
+        if any(e["identity"] == leg["identity"] and e.get("road_trip") for e in legs):
+            item["road_trip"] = True
     return result
 
 
@@ -982,6 +985,9 @@ def _dedup_material(updates: list[dict]) -> list[dict]:
         if notes:
             item["charging"] = "; ".join(notes)
     return result
+
+
+_ROAD_TRIP_NOTE = "no flight or train in TripIt, so I assumed you drive"
 
 
 def render_notification(
@@ -1030,7 +1036,11 @@ def render_notification(
         d = added_meeting_drives[0]
         lines.append(
             f"Added a drive for {d['meeting']} at {d['when']} — "
-            "reply 'skip' if you're not driving to it."
+            + (
+                f"{_ROAD_TRIP_NOTE}; reply 'skip' if you're not driving to it."
+                if d.get("road_trip")
+                else "reply 'skip' if you're not driving to it."
+            )
         )
         if d.get("charging"):
             lines[-1] += f" {d['charging']}."
@@ -1041,6 +1051,8 @@ def render_notification(
         )
         for i, d in enumerate(added_meeting_drives, start=1):
             lines.append(f"{i}. {d['meeting']} at {d['when']}")
+            if d.get("road_trip"):
+                lines[-1] += f" ({_ROAD_TRIP_NOTE})"
             if d.get("charging"):
                 lines[-1] += f" — {d['charging']}"
     lines.extend(drive_or_fly_questions or [])
@@ -1830,6 +1842,7 @@ def _run_sweep() -> dict:
             route=route,
             driving_to=presence,
             display_tz=operator.tz if operator is not None else None,
+            booked=booked_trips(schedule),
         )
     else:
         meeting_skipped = [

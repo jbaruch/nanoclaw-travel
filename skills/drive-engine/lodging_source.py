@@ -78,10 +78,10 @@ RouteFn = Callable[[str, str], "timedelta | None"]
 # The drive-or-fly bands, read off the routed home→lodging drive.
 #
 # NOT to be merged with `meeting_source.DEFAULT_MAX_REASONABLE_DRIVE`, which is
-# also three hours and means the opposite thing: there, a drive that long is
-# evidence the operator is somewhere else entirely and the leg is suppressed as
-# implausible. Here it is the ceiling under which a drive is unremarkable. Same
-# number, opposite conclusion — they drift apart independently.
+# also three hours and means something else: there, a longer meeting drive is a
+# road trip, planned only when TripIt has no flight or train for it (#377).
+# Here it is the ceiling under which a drive is unremarkable. Same number,
+# different rules — they drift apart independently.
 DRIVE_CERTAIN_MAX = timedelta(hours=3)
 DRIVE_IMPLAUSIBLE_MIN = timedelta(hours=7)
 
