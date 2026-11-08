@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 from block_codec import build_extended_properties  # noqa: E402
 from meeting_source import (  # noqa: E402
     TripPresence,
+    booked_trips,
     exclude_drive_block_events,
     meeting_desired_blocks,
 )
@@ -105,20 +106,58 @@ def test_outbound_and_return_are_distinct_blocks():
 # --- travel-away suppression (the core fix) ---------------------------------
 
 
-def test_implausible_drive_is_suppressed():
-    # Operator abroad; meeting at home → routed drive is absurd → no block.
+def test_a_drive_past_the_road_trip_bound_is_a_missing_booking():
     m = FakeMeeting(
-        "m1", "Swimming Practice", (FakeLeg("outbound", "Copenhagen", "Pool TN", arrive_by=_dt(9)),)
+        "m1", "Swimming Practice", (FakeLeg("outbound", "Home", "Pool TN", arrive_by=_dt(9)),)
     )
-    blocks, skipped, _held = meeting_desired_blocks([m], route=const_route(9 * 60))  # 9h
+    blocks, skipped, held = meeting_desired_blocks([m], route=const_route(10 * 60))
     assert blocks == []
-    assert any("implausible" in s and "suppressed" in s for s in skipped)
+    assert any("no flight or train in TripIt" in s for s in skipped)
+    assert [leg.identity for leg in held] == ["m1"]  # announced as unplanned
+
+
+def test_a_booked_flight_or_train_replaces_a_long_drive():
+    # A flight landing before the event, or a train leaving after it, is how he
+    # gets there and back: no drive, and no hold keeping an assumed block.
+    m = FakeMeeting(
+        "m1",
+        "Conference",
+        (
+            FakeLeg("outbound", "Home", "Venue", arrive_by=_dt(9)),
+            FakeLeg("return", "Venue", "Home", depart_after=_dt(17)),
+        ),
+    )
+    booked = [(_dt(5), _dt(7)), (_dt(19), _dt(22))]
+    blocks, skipped, held = meeting_desired_blocks([m], route=const_route(5 * 60), booked=booked)
+    assert blocks == [] and held == []
+    assert sum("flight or train covers it" in s for s in skipped) == 2
+
+
+def test_a_flight_outside_the_booking_window_does_not_count():
+    m = FakeMeeting(
+        "m1", "Pickup", (FakeLeg("outbound", "Home", "ATL", arrive_by=_dt(10, day=14)),)
+    )
+    booked = [(_dt(5, day=12), _dt(7, day=12))]  # two days earlier
+    blocks, _skipped, _held = meeting_desired_blocks([m], route=const_route(4 * 60), booked=booked)
+    assert [b.road_trip for b in blocks] == [True]
+
+
+def test_booked_trips_reads_timed_flights_and_trains_only():
+    schedule = [
+        {"type": "Flight", "start": "2020-07-13T05:00:00Z", "end": "2020-07-13T07:00:00Z"},
+        {"type": "Rail", "start": "2020-07-13T19:00:00Z", "end": "2020-07-13T22:00:00Z"},
+        {"type": "Lodging", "start": "2020-07-13T15:00:00Z", "end": "2020-07-14T11:00:00Z"},
+        {"type": "Flight", "start": "2020-07-13", "end": "2020-07-14"},
+        {"type": "Flight", "start": "garbage", "end": None},
+    ]
+    assert booked_trips(schedule) == [(_dt(5), _dt(7)), (_dt(19), _dt(22))]
+    assert booked_trips(None) == []
 
 
 def test_plausible_drive_at_threshold_kept():
     m = FakeMeeting("m1", "Offsite", (FakeLeg("outbound", "Home", "Venue", arrive_by=_dt(9)),))
     blocks, _, _held = meeting_desired_blocks([m], route=const_route(180))  # exactly 3h
-    assert len(blocks) == 1
+    assert [b.road_trip for b in blocks] == [False]  # an ordinary meeting drive
 
 
 def test_bridge_drive_longer_than_gap_is_suppressed():
@@ -316,13 +355,15 @@ def _pair_route(pairs):
     return lambda o, d: pairs.get((o, d))
 
 
-def test_away_suppression_still_fires_for_a_meeting_off_any_trip():
+def test_a_long_drive_with_no_booking_is_planned_as_a_road_trip():
+    # 2026-11-07 Asher pickup at ATL: 227 min from home, no flight or train in
+    # TripIt, and the drive was dropped without a word (#377).
     meeting = FakeMeeting(
-        "m1", "Swim practice", (FakeLeg("outbound", HOME_ADDR, VENUE, arrive_by=_dt(20)),)
+        "m1", "Asher pickup", (FakeLeg("outbound", HOME_ADDR, VENUE, arrive_by=_dt(20)),)
     )
-    blocks, skipped, _held = meeting_desired_blocks([meeting], route=const_route(234))
-    assert blocks == []
-    assert any("implausible" in note for note in skipped)
+    blocks, skipped, held = meeting_desired_blocks([meeting], route=const_route(227))
+    assert [(b.origin, b.road_trip) for b in blocks] == [(HOME_ADDR, True)]
+    assert skipped == [] and held == []
 
 
 def test_away_suppression_spared_for_a_trip_the_operator_drives_to():

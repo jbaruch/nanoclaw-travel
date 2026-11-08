@@ -586,3 +586,34 @@ def test_a_silent_sweep_carries_no_message_so_the_host_stays_quiet():
     payload = build_sweep_payload(ApplyResult(), [])
     assert payload["wake_agent"] is False
     assert payload["data"]["message"] is None
+
+
+def test_an_assumed_road_trip_says_why_it_was_added():
+    # #377: a long drive planned because TripIt has no flight or train.
+    applied = ApplyResult()
+    applied.added_meeting_legs = _legs(
+        ("mtgA", "Asher pickup", "Sat Nov 07, 10:30", "2026-11-07T16:30:00+00:00"),
+    ) + [
+        {
+            "identity": "mtgA",
+            "meeting": "Asher pickup",
+            "when": "Sat Nov 07, 11:00",
+            "anchor": "2026-11-07T17:00:00+00:00",
+            "road_trip": True,
+        }
+    ]
+    payload = build_sweep_payload(applied, [])
+    assert payload["data"]["message"] == (
+        "Added a drive for Asher pickup at Sat Nov 07, 10:30 — no flight or train in TripIt, "
+        "so I assumed you drive; reply 'skip' if you're not driving to it."
+    )
+    two = [
+        {"meeting": "Asher pickup", "when": "Sat 10:30", "road_trip": True},
+        {"meeting": "Dentist", "when": "Mon 08:00"},
+    ]
+    message = render_notification([], two)
+    assert message is not None
+    assert message.split("\n")[1:] == [
+        "1. Asher pickup at Sat 10:30 (no flight or train in TripIt, so I assumed you drive)",
+        "2. Dentist at Mon 08:00",
+    ]
