@@ -42,7 +42,7 @@ Plugin-wide configuration set during install via the `/setup` flow.
 Fields:
 
 - `schema_version` (int, required) — `CONFIG_SCHEMA_VERSION`, currently `9`
-- `venue_radius_meters` (integer, optional, non-negative) — straight-line venue matching radius for drive-engine row-2 attendance, default 500 metres. Zero requires coincident geocoded points; approved exact aliases remain usable. Flight alerts do not interpret it.
+- `venue_radius_meters` (integer, optional, non-negative) — driving-distance venue matching radius for drive-engine row-2 attendance, default 500 metres. Approved exact aliases remain usable. Flight alerts do not interpret it.
 - `home_address` (string, optional) — origin used for the time-to-leave capability when no other location is known
 - `min_transfer_minutes` (int, optional) — overrides `connection_risk.DEFAULT_MIN_TRANSFER_MINUTES` (45) for the connection-risk capability. Set higher for travellers who routinely connect through hubs with longer minimum connect times (LHR, FRA, JFK with terminal change)
 - `byair_calendar_name` (string, optional) — display name of the operator's flight calendar (the byAir calendar in plugin terms; the operator's is literally titled "Flighty Flights"). Operator-supplied data, not hardcoded in plugin code per `rules/flight-data-locality.md`. The calendar `reconcile` script matches this name against the live calendar list once to resolve the calendar ID. Absent → calendar reconciliation no-ops (no flight calendar to write to)

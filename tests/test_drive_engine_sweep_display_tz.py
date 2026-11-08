@@ -677,12 +677,9 @@ def test_attendance_v2_full_sweep_commute_outside_and_late_airport(monkeypatch, 
         events[0]["location"] = "Room 52A"
 
         class CampusMaps:
-            def geocode(self, place):
-                return {
-                    "100 Venue Street": (40.0, -74.0),
-                    "Room 52A": (40.002, -74.0),
-                    "300 Outside Street": (40.02, -74.0),
-                }[place]
+            def travel_time(self, origin, destination):
+                meters = {"Room 52A": 200, "300 Outside Street": 2200}[destination]
+                return type("TT", (), {"distance_meters": meters})()
 
         monkeypatch.setattr(
             maps_client.MapsClient, "from_env", classmethod(lambda cls, **_: CampusMaps())

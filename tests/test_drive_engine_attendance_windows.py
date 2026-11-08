@@ -984,13 +984,12 @@ def test_final_meeting_departure_holds_attendance_outbound_without_removing_reta
 
 def test_nearby_room_has_no_drive_or_notice_but_outside_appointment_still_routes():
     attendance, itinerary = model()
-    points = {VENUE: (40.0, -74.0), "Room 52A": (40.002, -74.0), "Outside Office": (40.02, -74.0)}
     meetings = scan(
         [event("room", "Room 52A"), event("outside", "Outside Office", 14, 15)],
         now=NOW,
         home_address="Home",
         attendances=(attendance,),
-        venue_points=points,
+        venue_near=frozenset({(VENUE, "Room 52A")}),
         anchor_for=lambda at: meeting_anchor(itinerary, at),
     )
     assert meetings[0].attendance_id == attendance.id
@@ -1005,61 +1004,46 @@ def test_nearby_room_has_no_drive_or_notice_but_outside_appointment_still_routes
     assert build_sweep_payload(applied, room_skipped)["data"]["message"] is None
 
 
-def test_radius_respects_window_setting_withdrawal_and_unknown_points():
+def test_near_respects_window_withdrawal_and_literal_labels():
     attendance, _ = model()
     start, end = NOW.replace(hour=12), NOW.replace(hour=13)
-    points = {VENUE: (40.0, -74.0), "Room 52A": (40.002, -74.0)}
-    assert attendance.covers("room", "Room 52A", start, end, points=points)
-    assert not attendance.covers("room", "Room 52A", start, end, points=points, radius_meters=100)
-    assert not attendance.covers("room", "Room 52A", start.replace(hour=8), end, points=points)
+    near = frozenset({(VENUE, "Room 52A")})
+    assert attendance.covers("room", "Room 52A", start, end, near=near)
+    assert not attendance.covers("room", "Room 52A", start, end)
+    assert not attendance.covers("room", "Room 52A", start.replace(hour=8), end, near=near)
     assert not parse_attendance(row(venue_locations=[])).covers(
-        "room", "Room 52A", start, end, points=points
+        "room", "Room 52A", start, end, near=near
     )
-    assert not attendance.covers("room", "Room 52A", start, end, points={VENUE: None})
-    assert attendance.covers("room", "ExampleConf", start, end, points={VENUE: None})
+    assert attendance.covers("room", "ExampleConf", start, end)
 
 
-def test_geocodes_once_per_sweep_only_for_confirmed_window_and_caches_failures(capsys):
+def test_venue_distance_is_asked_once_per_pair_in_window_and_failures_are_not_near(capsys):
     from maps_client import MapsError
-    from reconcile_sweep import attendance_points
+    from reconcile_sweep import attendance_nearby
 
     attendance, _ = model()
     calls = []
 
     class Maps:
-        def geocode(self, place):
-            calls.append(place)
-            if place == "Unresolved room":
+        def travel_time(self, origin, destination):
+            calls.append((origin, destination))
+            if destination == "Unresolved room":
                 raise MapsError("ZERO_RESULTS", "Clarify the address")
-            return (40.0, -74.0)
+            meters = {"Room 52A": 120, "Across town": 9000}[destination]
+            return type("TT", (), {"distance_meters": meters})()
 
-    points = attendance_points(
+    near = attendance_nearby(
         [
-            event("one", "Unresolved room"),
-            event("two", "Unresolved room"),
+            event("one", "Room 52A"),
+            event("two", "Room 52A"),
+            event("three", "Across town"),
+            event("four", "Unresolved room"),
             event("outside-window", "Other room", 18, 19),
         ],
         (attendance,),
         Maps(),
+        500,
     )
-    assert calls == [VENUE, "Unresolved room"]
-    assert points == {VENUE: (40.0, -74.0), "Unresolved room": None}
-    assert "check Maps geocoding access and the address" in capsys.readouterr().err
-
-
-def test_malformed_provider_result_is_cached_unavailable_and_keeps_literal_matching(capsys):
-    from unittest.mock import patch
-
-    from maps_client import MapsClient
-    from reconcile_sweep import attendance_points
-
-    attendance, _ = model()
-    events = [event("one", "Unknown room"), event("two", "Unknown room")]
-    with patch("maps_client._get_json", side_effect=json.JSONDecodeError("bad", "{", 1)) as get:
-        points = attendance_points(events, (attendance,), MapsClient("synthetic"))
-    assert get.call_count == 2  # one venue, one repeated room
-    assert points == {VENUE: None, "Unknown room": None}
-    start, end = NOW.replace(hour=12), NOW.replace(hour=13)
-    assert attendance.covers("native", "ExampleConf", start, end, points=points)
-    assert not attendance.covers("native", "Unknown room", start, end, points=points)
-    assert "check Maps geocoding access" in capsys.readouterr().err
+    assert calls == [(VENUE, "Room 52A"), (VENUE, "Across town"), (VENUE, "Unresolved room")]
+    assert near == frozenset({(VENUE, "Room 52A")})
+    assert "venue distance unavailable" in capsys.readouterr().err
