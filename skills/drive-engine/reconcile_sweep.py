@@ -141,16 +141,19 @@ _SWEEP_BYAIR_TIMEOUT_SECONDS = 6.0
 _DELAY_FRESHNESS_WINDOW = timedelta(hours=24)
 
 
-def attendance_points(
-    events: list[dict], attendances, maps
-) -> dict[str, tuple[float, float] | None]:
-    """Resolve only in-window row-2 locations; cache each label once per sweep."""
+def attendance_nearby(
+    events: list[dict], attendances, maps, radius_meters: int
+) -> frozenset[tuple[str, str]]:
+    """(venue, location) pairs of in-window row-2 events whose driving distance
+    from the venue is within `radius_meters`: another room of the same venue
+    (#373). Uses the Distance Matrix the sweep already routes with; each pair
+    is asked once per sweep, and an unroutable pair is simply not near."""
     import urllib.error
 
     from maps_client import MapsError
     from scan import _is_virtual, _parse_event
 
-    points: dict[str, tuple[float, float] | None] = {}
+    asked: dict[tuple[str, str], bool] = {}
     for raw in events:
         event = _parse_event(raw)
         if (
@@ -158,28 +161,30 @@ def attendance_points(
             or event.cancelled
             or event.declined
             or _is_virtual(event.location)
+            or not event.location
         ):
             continue
         for row in attendances:
             if (
                 row.schema_version != 2
                 or not row.venue_locations
+                or not row.venue_location
                 or not row.covers_time(raw.get("id"), event.start, event.end)
-                or not event.location
             ):
                 continue
-            for place in (row.venue_location, event.location):
-                if place and place not in points:
-                    try:
-                        points[place] = maps.geocode(place)
-                    except (MapsError, urllib.error.URLError, TimeoutError):
-                        print(
-                            "drive-engine: venue geocode unavailable; exact labels remain in use; "
-                            "check Maps geocoding access and the address",
-                            file=sys.stderr,
-                        )
-                        points[place] = None
-    return points
+            pair = (row.venue_location, event.location)
+            if pair in asked:
+                continue
+            try:
+                meters = maps.travel_time(*pair).distance_meters
+            except (MapsError, urllib.error.URLError, TimeoutError):
+                print(
+                    "drive-engine: venue distance unavailable; exact labels remain in use",
+                    file=sys.stderr,
+                )
+                meters = None
+            asked[pair] = isinstance(meters, (int, float)) and 0 <= meters <= radius_meters
+    return frozenset(pair for pair, near in asked.items() if near)
 
 
 def make_route(
@@ -1804,8 +1809,7 @@ def _run_sweep() -> dict:
             flight_windows=[],
             flight_summaries=[],
             attendances=attendances,
-            venue_points=attendance_points(events, attendances, maps),
-            venue_radius_meters=radius,
+            venue_near=attendance_nearby(events, attendances, maps, radius),
             return_anchor_for=anchor_for
             if any(row.schema_version == 2 for row in attendances)
             else None,

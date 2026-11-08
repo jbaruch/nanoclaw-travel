@@ -30,7 +30,7 @@ The script reads `BYAIR_MCP_URL` and `GOOGLE_MAPS_API_KEY`, prints single-line J
 Parse the JSON. All `true`: emit `flight-assist credentials present`. Any `false`: emit one line per missing variable:
 
 - `BYAIR_MCP_URL missing. Add personal MCP link from https://byairapp.com/mcp/ to OneCLI vault and restart container.`
-- `GOOGLE_MAPS_API_KEY missing. Create a Maps API key at https://console.cloud.google.com/apis/credentials, enable Distance Matrix and Geocoding, and add to OneCLI vault.`
+- `GOOGLE_MAPS_API_KEY missing. Create a Maps API key at https://console.cloud.google.com/apis/credentials, enable Distance Matrix, and add to OneCLI vault.`
 Calendar access has no flag: OneCLI's gateway injects the Google OAuth Bearer on the wire, so no credential lives in this container and no env var gates it (nanoclaw#638). If the user is diagnosing calendar writes specifically, tell them to run the reconcile (Step 3) and read its `error` — `gateway` means the gateway is not authenticating the requests, `tier` means this agent's tier is gated from Google by design.
 
 Finish here.
