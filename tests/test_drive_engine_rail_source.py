@@ -222,8 +222,21 @@ def test_grounded_lodging_between_trains_keeps_its_real_drives():
     assert ("Hotel address", "Destination Station") in endpoints
 
 
-def test_train_arrival_reuses_the_meeting_handoff():
+@pytest.mark.parametrize("arrival_base", ["drive", "same_place", "sub_minute"])
+def test_train_arrival_reuses_the_meeting_handoff(arrival_base):
     rows = schedule()
+    if arrival_base == "same_place":
+        for row in rows:
+            if row["type"] == "Lodging":
+                row["location"] = "Destination Station"
+
+    def current_route(a, b):
+        if arrival_base == "sub_minute" and (a, b) == ("Destination Station", "Hotel address"):
+            return timedelta(seconds=20)
+        if arrival_base == "same_place" and (a, b) == ("Venue", "Destination Station"):
+            return timedelta(minutes=20)
+        return route(a, b)
+
     itinerary = Itinerary(rows, home_address="Home")
     event = {
         "id": "meeting",
@@ -239,18 +252,21 @@ def test_train_arrival_reuses_the_meeting_handoff():
         skip_state={},
         anchor_for=lambda at: meeting_anchor(itinerary, at),
     )
-    local, _, held = meeting_desired_blocks(meetings, route=route)
+    local, _, held = meeting_desired_blocks(
+        meetings, route=current_route, display_tz="America/Chicago"
+    )
     result = build_reconcile_plan(
         flights=[],
         airport_info={},
         current_blocks=[],
-        route=route,
+        route=current_route,
         schedule=rows,
         itinerary=itinerary,
         now=NOW,
         extra_desired=local,
         extra_held=held,
         postarrival_meetings=postarrival_meetings_from(meetings, now=NOW),
+        display_tz="America/Chicago",
     )
     blocks = [c.desired for c in result.plan.creates]
     arrival = next(b for b in blocks if b.kind == "station_arrival")
@@ -262,7 +278,71 @@ def test_train_arrival_reuses_the_meeting_handoff():
     )
     assert not any(b.kind == "meeting_outbound" for b in blocks)
     back = next(b for b in blocks if b.kind == "meeting_return")
-    assert (back.origin, back.destination) == ("Venue", "Hotel address")
+    expected_base = "Destination Station" if arrival_base == "same_place" else "Hotel address"
+    assert (back.origin, back.destination) == ("Venue", expected_base)
+    assert arrival.timezone == back.timezone == "America/Chicago"
+    assert arrival.zone_from_operator and back.zone_from_operator
+
+
+@pytest.mark.parametrize("arrival_base", ["same_place", "sub_minute"])
+@pytest.mark.parametrize("navigation", [False, True])
+def test_a_no_drive_rail_arrival_still_fences_remote_ev_energy(
+    monkeypatch, arrival_base, navigation
+):
+    import tesla_planning
+    from ev_charging import EnergySample, Navigation
+    from reconcile_sweep import _ev_adjuster
+
+    rows = schedule()
+    if arrival_base == "same_place":
+        for row in rows:
+            if row["type"] == "Lodging":
+                row["location"] = "Destination Station"
+    base = "Destination Station" if arrival_base == "same_place" else "Hotel address"
+    start = ARR + (timedelta(minutes=2) if navigation else timedelta(hours=2))
+    remote = DesiredBlock(
+        "remote",
+        "meeting_outbound",
+        "Drive: Remote",
+        start,
+        start + timedelta(hours=4),
+        base,
+        "Venue",
+        14400,
+        start + timedelta(hours=4),
+    )
+
+    def current_route(a, b):
+        if (a, b) == ("Destination Station", "Hotel address"):
+            return timedelta(seconds=20)
+        return route(a, b)
+
+    monkeypatch.setattr(tesla_planning.TeslaPlanning, "vehicle", lambda *_: "Car")
+    monkeypatch.setattr(
+        tesla_planning.TeslaPlanning, "estimate", lambda *_: EnergySample("Car", 75, 0.18, ARR, 90)
+    )
+    monkeypatch.setattr(
+        tesla_planning.TeslaPlanning,
+        "navigation",
+        lambda *_: [Navigation("Car", "Venue", ARR, 25, 40)] if navigation else [],
+    )
+    result = build_reconcile_plan(
+        flights=[],
+        airport_info={},
+        current_blocks=[],
+        route=current_route,
+        schedule=rows,
+        itinerary=Itinerary(rows, home_address="Home"),
+        now=ARR,
+        extra_desired=[remote],
+        adjust_drives=_ev_adjuster({}, current_route, {(base, "Venue"): 395}, ARR),
+    )
+    planned = next(c.desired for c in result.plan.creates if c.desired.identity == "remote")
+    if navigation:
+        assert planned.charging_note == "Car navigation ETA"
+    else:
+        assert planned == remote
+    assert not any(c.desired.kind == "station_arrival" for c in result.plan.creates)
 
 
 def test_missing_arrival_address_is_held_without_inventing_an_endpoint():

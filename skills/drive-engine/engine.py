@@ -396,7 +396,13 @@ def build_reconcile_plan(
     extra_held: list[HeldLeg] | None = None,
     postarrival_meetings: list[PostarrivalMeeting] | None = None,
     adjust_drives: Callable[
-        [list[DesiredBlock], list[tuple[datetime, datetime]], list[ParsedBlock], list[HeldLeg]],
+        [
+            list[DesiredBlock],
+            list[tuple[datetime, datetime]],
+            list[ParsedBlock],
+            list[HeldLeg],
+            list[TransportGuard],
+        ],
         tuple[list[DesiredBlock], list[HeldLeg]],
     ]
     | None = None,
@@ -413,6 +419,9 @@ def build_reconcile_plan(
     kept (#334). `postarrival_meetings` are timed in-person meetings composed with
     inbound arrivals before reconcile (#350): a reachable ongoing meeting replaces
     airport-to-lodging, and no desired drive may start inside a flight interval.
+    `adjust_drives` receives desired blocks, protected intervals, current blocks,
+    held legs and the complete transport guards. Rail arrivals fence vehicle
+    continuity even when no station-to-base calendar drive is needed.
 
     A leg that could not be computed — no resolvable position, a failed or
     implausible route, a drive window already past — is held, never dropped: its
@@ -596,12 +605,17 @@ def build_reconcile_plan(
             fallback_lookup=fallback_lookup,
             route=route,
             current_blocks=current_blocks,
+            display_tz=display_tz,
         )
         skipped.extend(post_diags)
 
     if adjust_drives is not None:
         desired, charging_held = adjust_drives(
-            desired, [(guard.guard_start, guard.ready_at) for guard in guards], current_blocks, held
+            desired,
+            [(guard.guard_start, guard.ready_at) for guard in guards],
+            current_blocks,
+            held,
+            guards,
         )
         held.extend(charging_held)
 

@@ -82,7 +82,7 @@ from meeting_travel import (  # noqa: E402
     travel_plan_changes,
 )
 from normalize import flight_from_byair  # noqa: E402
-from postarrival import PostarrivalMeeting, postarrival_meetings_from  # noqa: E402
+from postarrival import PostarrivalMeeting, TransportGuard, postarrival_meetings_from  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg, ReconcilePlan  # noqa: E402
 from shadow import plan_counts, render_plan  # noqa: E402
 from tripit_flights import flights_from_schedule  # noqa: E402
@@ -478,7 +478,13 @@ def build_plan(
     itinerary: Itinerary | None = None,
     postarrival_meetings: list[PostarrivalMeeting] | None = None,
     adjust_drives: Callable[
-        [list[DesiredBlock], list[tuple[datetime, datetime]], list[ParsedBlock], list[HeldLeg]],
+        [
+            list[DesiredBlock],
+            list[tuple[datetime, datetime]],
+            list[ParsedBlock],
+            list[HeldLeg],
+            list[TransportGuard],
+        ],
         tuple[list[DesiredBlock], list[HeldLeg]],
     ]
     | None = None,
@@ -680,7 +686,7 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
             for value in preferences["destination_charges"]
         ]
 
-    def adjust(blocks, windows, current, held=()):
+    def adjust(blocks, windows, current, held=(), transport_guards=()):
         if not blocks:
             return blocks, []
         provider = TeslaPlanning(now=now, configured=preferences is not None)
@@ -764,7 +770,14 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
                 start = block.start or now
                 retained_starts[key] = min(retained_starts.get(key, start), start)
 
-        gaps = []
+        # Every booked rail arrival breaks car continuity, even with no station
+        # drive (the lodging can be the station or a sub-minute walk away).
+        gaps = [
+            EnergyGap(guard.ready_at, possible_vehicle(guard.identity))
+            for guard in transport_guards
+            if guard.arrival_kind == "station_arrival"
+            and now <= guard.ready_at <= now + FORECAST_HORIZON
+        ]
         desired_keys = {(block.identity, block.kind) for block in blocks}
         for leg in held:
             if leg.key in desired_keys:

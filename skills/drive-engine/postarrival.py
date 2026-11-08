@@ -346,6 +346,7 @@ def compose_postarrival(
     route: RouteFn,
     current_blocks: Sequence[ParsedBlock] = (),
     max_handoff_drive: timedelta = _MAX_HANDOFF_DRIVE,
+    display_tz: str | None = None,
 ) -> tuple[list[DesiredBlock], list[HeldLeg], list[str]]:
     """Compose airport/station and meeting blocks around booked arrivals.
 
@@ -362,7 +363,12 @@ def compose_postarrival(
     arrival_keys = {(block.identity, block.kind) for block in desired_list}
 
     for guard in guards:
-        if not guard.arrival_handoff or (guard.identity, guard.arrival_kind) not in arrival_keys:
+        if not guard.arrival_handoff or not guard.arrival_point:
+            continue
+        if (
+            guard.identity,
+            guard.arrival_kind,
+        ) not in arrival_keys and guard.arrival_kind != "station_arrival":
             continue
         candidates = [
             meeting
@@ -419,6 +425,7 @@ def compose_postarrival(
             lodging_lookup=lodging_lookup,
             fallback_lookup=fallback_lookup,
             route=route,
+            display_tz=display_tz,
         )
         diagnostics.extend(extra_diags)
         used_meetings.add(meeting.identity)
@@ -490,6 +497,7 @@ def _apply_handoff(
     lodging_lookup: AddressLookup,
     fallback_lookup: AddressLookup,
     route: RouteFn,
+    display_tz: str | None = None,
 ) -> tuple[list[DesiredBlock], list[str]]:
     """Rewrite the arrival to `meeting`; `drive` is its already-screened route."""
     venue = meeting.location
@@ -542,11 +550,13 @@ def _apply_handoff(
         )
     rewritten: list[DesiredBlock] = []
     found_return = False
+    found_arrival = False
     for block in desired:
         if block.kind == "meeting_outbound" and block.identity == meeting.identity:
             unsafe.add(_key(block))
             continue
         if block.kind == guard.arrival_kind and block.identity == guard.identity:
+            found_arrival = True
             if no_arrival_drive:
                 continue
             rewritten.append(
@@ -582,6 +592,22 @@ def _apply_handoff(
             continue
         rewritten.append(block)
 
+    if not found_arrival and not no_arrival_drive and guard.arrival_kind == "station_arrival":
+        rewritten.append(
+            DesiredBlock(
+                identity=guard.identity,
+                kind=guard.arrival_kind,
+                summary=f"Drive: {guard.arrival_name} → {venue}",
+                start=guard.ready_at,
+                end=guard.ready_at + drive,
+                origin=guard.arrival_label,
+                destination=venue,
+                baseline_seconds=int(drive.total_seconds()),
+                anchor=guard.ready_at,
+                timezone=display_tz or meeting.timezone,
+                zone_from_operator=bool(display_tz),
+            )
+        )
     if need_return and not found_return:
         assert ret_drive is not None and return_dest is not None
         rewritten.append(
@@ -595,7 +621,8 @@ def _apply_handoff(
                 destination=return_dest,
                 baseline_seconds=int(ret_drive.total_seconds()),
                 anchor=meeting.end,
-                timezone=meeting.timezone,
+                timezone=display_tz or meeting.timezone,
+                zone_from_operator=bool(display_tz),
             )
         )
     elif not need_return:

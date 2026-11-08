@@ -874,7 +874,7 @@ def test_final_planned_meeting_drives_fence_only_synthetic_commute(end_minute, c
     assert current is not None
     final_meetings = []
 
-    def adjust(blocks, windows, _current, _held):
+    def adjust(blocks, windows, _current, _held, _guards):
         # Separate explicitly selected synthetic cars let the real EV owner
         # extend the meeting return without clipping the attendance commute.
         # The actor's final drive-conflict check must still reject the overlap.

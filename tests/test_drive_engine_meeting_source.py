@@ -390,6 +390,24 @@ def test_unknown_booking_destination_does_not_become_an_assumed_drive():
     assert "transport destination unavailable" in skipped[0]
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("transport", ["fly", "booking"])
+def test_transport_replaces_both_legs_of_an_asymmetric_long_meeting(reverse, transport):
+    legs = [
+        FakeLeg("outbound", HOME_ADDR, "ATL", arrive_by=_dt(16)),
+        FakeLeg("return", "ATL", HOME_ADDR, depart_after=_dt(17)),
+    ]
+    meeting = FakeMeeting("pickup", "Pickup", tuple(reversed(legs)) if reverse else tuple(legs))
+    blocks, skipped, held = meeting_desired_blocks(
+        [meeting],
+        route=lambda a, b: timedelta(minutes=240 if a == HOME_ADDR else 150),
+        operator_answers={"pickup": "fly"} if transport == "fly" else {},
+        booked_transport=lambda _: transport == "booking",
+    )
+    assert blocks == held == []
+    assert any("operator is flying" in line or "booked transport" in line for line in skipped)
+
+
 def test_an_explicit_drive_answer_is_not_announced_as_an_assumption():
     meeting = FakeMeeting(
         "pickup", "Pickup", (FakeLeg("outbound", HOME_ADDR, "ATL", arrive_by=_dt(16)),)

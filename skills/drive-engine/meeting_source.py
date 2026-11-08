@@ -251,6 +251,8 @@ def meeting_desired_blocks(
                     )
                 )
             continue
+        block_start, held_start = len(blocks), len(held)
+        replaced_reason = None
         for leg in meeting.legs:
             tag = f"meeting {meeting.meeting_id} {leg.direction}"
             kind = _DIRECTION_KIND.get(leg.direction)
@@ -260,11 +262,11 @@ def meeting_desired_blocks(
 
             if leg.origin is None or leg.destination is None:
                 if booked_transport is not None and booked_transport(meeting):
-                    skipped.append(f"{tag}: booked transport replaces the assumed drive")
-                    continue
+                    replaced_reason = "booked transport replaces the assumed drive"
+                    break
                 if answers.get(meeting.meeting_id) == "fly":
-                    skipped.append(f"{tag}: operator is flying — check the missing booking")
-                    continue
+                    replaced_reason = "operator is flying — check the missing booking"
+                    break
                 _hold(
                     skipped,
                     held,
@@ -281,8 +283,8 @@ def meeting_desired_blocks(
             drive = route(origin, destination)
             if drive is None:
                 if answers.get(meeting.meeting_id) == "fly":
-                    skipped.append(f"{tag}: operator is flying — check the missing booking")
-                    continue
+                    replaced_reason = "operator is flying — check the missing booking"
+                    break
                 _hold(skipped, held, meeting, leg, kind, f"{tag}: route failed")
                 continue
             if drive < timedelta(0):
@@ -301,11 +303,11 @@ def meeting_desired_blocks(
             long_drive = drive > max_reasonable_drive and meeting.meeting_id not in presence
             booking = booked_transport(meeting) if long_drive and booked_transport else False
             if booking:
-                skipped.append(f"{tag}: booked transport replaces the assumed drive")
-                continue
+                replaced_reason = "booked transport replaces the assumed drive"
+                break
             if long_drive and answers.get(meeting.meeting_id) == "fly":
-                skipped.append(f"{tag}: operator is flying — check the missing booking")
-                continue
+                replaced_reason = "operator is flying — check the missing booking"
+                break
             if booking is None and answers.get(meeting.meeting_id) != "drive":
                 _hold(
                     skipped,
@@ -384,4 +386,10 @@ def meeting_desired_blocks(
                 )
             )
 
+        if replaced_reason:
+            # A meeting-level transport decision replaces both directions,
+            # including a shorter leg considered before the long one.
+            del blocks[block_start:]
+            del held[held_start:]
+            skipped.append(f"meeting {meeting.meeting_id}: {replaced_reason}")
     return blocks, skipped, held
