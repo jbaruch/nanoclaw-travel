@@ -73,7 +73,6 @@ from lodging_source import (  # noqa: E402
     meetings_on_trip,
 )
 from meeting_source import (  # noqa: E402
-    DEFAULT_MAX_REASONABLE_DRIVE,
     TripPresence,
     exclude_drive_block_events,
     meeting_desired_blocks,
@@ -1931,8 +1930,6 @@ def _run_sweep() -> dict:
                 meeting.meeting_id
                 for meeting in meetings
                 if (previous := sweep_verdicts.get(meeting_key(meeting.meeting_id))) is not None
-                and previous.drive_seconds is not None
-                and previous.drive_seconds > DEFAULT_MAX_REASONABLE_DRIVE.total_seconds()
                 and previous.meeting is not None
                 and previous.meeting.get("destination") == meeting.location
                 and parse_time(previous.meeting.get("start")) == meeting.start

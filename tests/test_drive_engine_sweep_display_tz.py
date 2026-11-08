@@ -762,3 +762,91 @@ def test_attendance_v2_full_sweep_commute_outside_and_late_airport(monkeypatch, 
     second = reconcile_sweep._run_sweep()
     assert Calendar.mutations == before
     assert second["data"]["message"] is None
+
+
+@pytest.mark.parametrize("resolution", ["booked", "fly"])
+def test_no_route_context_rechecks_transport_on_the_next_sweep(monkeypatch, tmp_path, resolution):
+    from datetime import timedelta
+
+    from answer_drive_or_fly import record_answer
+    from calendar_apply import build_create_args
+    from drive_decision import load_verdicts, meeting_key
+    from reconcile import DesiredBlock
+
+    real_meetings = reconcile_sweep.meeting_desired_blocks
+    real_build = reconcile_sweep.build_plan
+    real_load = reconcile_sweep.load_verdicts
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    monkeypatch.setattr(reconcile_sweep, "load_verdicts", real_load)
+    monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", real_meetings)
+    monkeypatch.setattr(reconcile_sweep, "build_plan", real_build)
+    now = _FrozenDatetime.now(UTC)
+    start = now + timedelta(days=1, hours=5)
+    end = start + timedelta(hours=1)
+    event = {
+        "id": "no-road",
+        "summary": "Remote meeting",
+        "location": "Venue",
+        "start": {"dateTime": start.isoformat()},
+        "end": {"dateTime": end.isoformat()},
+    }
+    monkeypatch.setattr(_EmptyFetcher, "fetch_window", lambda self, **_: [event])
+    old = [
+        DesiredBlock(
+            "no-road",
+            "meeting_outbound",
+            "Drive: Remote meeting",
+            start - timedelta(hours=4),
+            start,
+            "12 Example St",
+            "Venue",
+            14400,
+            start,
+        ),
+        DesiredBlock(
+            "no-road",
+            "meeting_return",
+            "Drive: Remote meeting",
+            end,
+            end + timedelta(hours=2),
+            "Venue",
+            "12 Example St",
+            7200,
+            end,
+        ),
+    ]
+    raw = [
+        build_create_args(b, calendar_id="primary") | {"id": f"old{i}"} for i, b in enumerate(old)
+    ]
+    monkeypatch.setattr(_EmptyCalendar, "find_events", lambda self, _: {"items": raw})
+
+    def unavailable_route(_maps, *, no_routes, **_kwargs):
+        def route(a, b):
+            no_routes.add((a, b))
+            return None
+
+        return route
+
+    monkeypatch.setattr(reconcile_sweep, "make_route", unavailable_route)
+    plans = []
+    monkeypatch.setattr(
+        reconcile_sweep, "finish_sweep", lambda plan, *_a, **_kw: plans.append(plan) or {"data": {}}
+    )
+    # First sweep preserves the existing drives and records definitive NO_ROUTE.
+    reconcile_sweep._run_sweep()
+    assert plans[-1].is_noop
+    previous = load_verdicts(now)[meeting_key("no-road")]
+    assert previous.drive_seconds is None
+    assert previous.meeting is not None and previous.meeting["gap_reason"]
+    if resolution == "fly":
+        assert (
+            record_answer(
+                {"trip": "Remote meeting", "answer": "fly"}, events=[event], schedule=[], now=now
+            )["recorded"]
+            is True
+        )
+    monkeypatch.setattr(reconcile_sweep, "booked_transport_to", lambda **_: resolution == "booked")
+    reconcile_sweep._run_sweep()
+    assert {d.event_id for d in plans[-1].deletes} == {"old0", "old1"}
+    assert plans[-1].creates == ()
