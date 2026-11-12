@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.8 — 2026-11-12
+
+- feat(drive-engine): arrive at a talk's Prep hold, not its start (#381) (#382)
+
 ## 0.3.7 — 2026-11-08
 
 ### Match conference rooms by driving distance, not geocoding (#373)
