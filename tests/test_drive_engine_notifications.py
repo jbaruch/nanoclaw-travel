@@ -617,3 +617,67 @@ def test_an_assumed_road_trip_says_why_it_was_added():
         "1. Asher pickup at Sat 10:30 (no flight or train in TripIt, so I assumed you drive)",
         "2. Dentist at Mon 08:00",
     ]
+
+
+# --- a drive arriving at the talk's Prep hold (#381) -------------------------
+
+
+def _qcon_outbound() -> DesiredBlock:
+    """The 11-19 QCon talk at 13:00 PST, its drive arriving at the 12:30 Prep."""
+    talk = datetime(2026, 11, 19, 21, 0, tzinfo=UTC)
+    prep = datetime(2026, 11, 19, 20, 30, tzinfo=UTC)
+    return DesiredBlock(
+        identity="qcon",
+        kind="meeting_outbound",
+        summary="Drive: QCon SF workshop: How To Write Skills That Actually Work",
+        start=prep - timedelta(minutes=8),
+        end=prep,
+        origin="Hotel",
+        destination="Hyatt Regency SF",
+        baseline_seconds=480,
+        anchor=prep,
+        timezone="America/Los_Angeles",
+        prep_for=talk,
+    )
+
+
+def test_an_added_prep_drive_says_when_the_talk_is():
+    result = apply_plan(
+        ReconcilePlan(creates=(Create(_qcon_outbound()),)),
+        calendar=FakeCalendar(),
+        now=datetime(2026, 11, 12, tzinfo=UTC),
+        creation_clock=lambda: datetime(2026, 11, 12, tzinfo=UTC),
+    )
+    message = build_sweep_payload(result, [])["data"]["message"]
+    assert message == (
+        "Added a drive for QCon SF workshop: How To Write Skills That Actually Work at "
+        "Thu Nov 19, 12:30 (Prep; talk at 13:00) — reply 'skip' if you're not driving to it."
+    )
+
+
+def test_an_enumerated_prep_drive_says_when_the_talk_is():
+    other = _desired(identity="m2", kind="meeting_outbound", summary="Drive: Dinner")
+    result = apply_plan(
+        ReconcilePlan(creates=(Create(_qcon_outbound()), Create(other))),
+        calendar=FakeCalendar(),
+        now=_dt(0),
+        creation_clock=lambda: _dt(0),
+    )
+    message = build_sweep_payload(result, [])["data"]["message"]
+    assert "Work at Thu Nov 19, 12:30 (Prep; talk at 13:00)" in message
+    assert "Dinner at Mon Jul 13, 05:35\n" in message + "\n"  # no Prep note on a plain drive
+
+
+def test_a_material_prep_drive_update_says_when_the_talk_is():
+    drive = replace(_qcon_outbound(), start=datetime(2026, 11, 19, 20, 0, tzinfo=UTC))
+    drive = replace(drive, baseline_seconds=1800)
+    result = apply_plan(
+        ReconcilePlan(updates=(Update("e1", drive, 480),)),
+        calendar=FakeCalendar(),
+        now=datetime(2026, 11, 19, 19, 0, tzinfo=UTC),
+    )
+    message = build_sweep_payload(result, [])["data"]["message"]
+    assert message == (
+        "Traffic: leave 22 min sooner for your QCon SF workshop: How To Write Skills "
+        "That Actually Work at Thu Nov 19, 12:30 (Prep; talk at 13:00)"
+    )

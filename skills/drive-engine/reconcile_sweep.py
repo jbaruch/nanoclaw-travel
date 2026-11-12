@@ -79,6 +79,7 @@ from meeting_source import (  # noqa: E402
 )
 from normalize import flight_from_byair  # noqa: E402
 from postarrival import PostarrivalMeeting, postarrival_meetings_from  # noqa: E402
+from prep_window import PrepWindows, prep_targets  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg, ReconcilePlan  # noqa: E402
 from shadow import plan_counts, render_plan  # noqa: E402
 from tripit_flights import flights_from_schedule  # noqa: E402
@@ -932,7 +933,7 @@ def _fresh_live_origin(now: datetime, max_age_minutes: int) -> str | None:
 
 def _group_meeting_adds(legs: list[dict]) -> list[dict]:
     """One entry per meeting (by identity), using its EARLIEST leg anchor — the
-    outbound leg's meeting-start time — so the operator sees "<meeting> at
+    outbound leg's arrival target — so the operator sees "<meeting> at
     <start>". Ordered by that anchor so the enumerated skip list reads
     chronologically (index 1 is the soonest drive)."""
     by_identity: dict[str, dict] = {}
@@ -952,6 +953,8 @@ def _group_meeting_adds(legs: list[dict]) -> list[dict]:
             item["charging"] = "; ".join(notes)
         if any(e["identity"] == leg["identity"] and e.get("road_trip") for e in legs):
             item["road_trip"] = True
+        if leg.get("talk"):
+            item["talk"] = leg["talk"]
     return result
 
 
@@ -980,6 +983,8 @@ def _dedup_material(updates: list[dict]) -> list[dict]:
     for item, update in zip(result, ordered, strict=True):
         if update.get("timing"):
             item["timing"] = update["timing"]
+        if update.get("talk"):
+            item["talk"] = update["talk"]
         notes = dict.fromkeys(
             entry["charging"]
             for entry in updates
@@ -993,6 +998,11 @@ def _dedup_material(updates: list[dict]) -> list[dict]:
 
 
 _ROAD_TRIP_NOTE = "no flight or train in TripIt, so I assumed you drive"
+
+
+def _prep_suffix(item: dict) -> str:
+    """` (Prep; talk at 13:00)` for a drive arriving at its talk-prep Prep hold (#381)."""
+    return f" (Prep; talk at {item['talk']})" if item.get("talk") else ""
 
 
 def render_notification(
@@ -1017,6 +1027,10 @@ def render_notification(
     `departure` or `arrival` for EV spans. `direction` says sooner/later for that
     scheduling side; absent timing preserves ordinary traffic departure wording.
 
+    An entry with `talk` is a drive that arrives at the talk's talk-prep Prep
+    hold (#381): its `when` is the Prep start, so the line adds
+    ` (Prep; talk at HH:MM)` rather than reading as if the talk moved.
+
     `drive_or_fly_questions` are the already-composed questions
     `lodging_source.build_question` produced for flight-less trips whose drive
     time is ambiguous. They are appended verbatim for the same reason the rest
@@ -1033,14 +1047,14 @@ def render_notification(
         else:
             lines.append(
                 f"Traffic: leave {u['minutes']} min {u['direction']} "
-                f"for your {u['meeting']} at {u['when']}"
+                f"for your {u['meeting']} at {u['when']}{_prep_suffix(u)}"
             )
         if u.get("charging"):
             lines[-1] += f" — {u['charging']}"
     if len(added_meeting_drives) == 1:
         d = added_meeting_drives[0]
         lines.append(
-            f"Added a drive for {d['meeting']} at {d['when']} — "
+            f"Added a drive for {d['meeting']} at {d['when']}{_prep_suffix(d)} — "
             + (
                 f"{_ROAD_TRIP_NOTE}; reply 'skip' if you're not driving to it."
                 if d.get("road_trip")
@@ -1055,7 +1069,7 @@ def render_notification(
             "for any you're not driving to:"
         )
         for i, d in enumerate(added_meeting_drives, start=1):
-            lines.append(f"{i}. {d['meeting']} at {d['when']}")
+            lines.append(f"{i}. {d['meeting']} at {d['when']}{_prep_suffix(d)}")
             if d.get("road_trip"):
                 lines[-1] += f" ({_ROAD_TRIP_NOTE})"
             if d.get("charging"):
@@ -1781,8 +1795,13 @@ def _run_sweep() -> dict:
         if home:
             raise  # preserve the established meeting-side failure behavior
         events = []
+        unmasked_events: list = []
         busy_windows = None
     else:
+        # The talk-prep gate reads the window before flight masking (#381): a
+        # Prep hold is never a flight, and the engine's own drive blocks are
+        # already out (one would otherwise abut every talk it serves).
+        unmasked_events = list(events)
         events = [
             e
             for e in events
@@ -1841,12 +1860,17 @@ def _run_sweep() -> dict:
         postarrival_meetings = postarrival_meetings_from(
             meetings, skip_state=skips, now=now, driving_to=frozenset(presence)
         )
+        # A talk with a talk-prep Prep hold arrives at the hold's start (#381).
+        # Read-only, per-sweep, sequential; nothing is persisted.
+        prep_arrival, prep_unavailable = prep_targets(meetings, unmasked_events, PrepWindows())
         meeting_blocks, meeting_skipped, meeting_held = meeting_desired_blocks(
             meetings,
             route=route,
             driving_to=presence,
             display_tz=operator.tz if operator is not None else None,
             booked=booked_trips(schedule),
+            prep_arrival=prep_arrival,
+            prep_unavailable=prep_unavailable,
         )
     else:
         meeting_skipped = [

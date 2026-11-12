@@ -101,6 +101,17 @@ def _local_when(desired: DesiredBlock) -> str:
     return local_dt.strftime("%a %b %d, %H:%M")
 
 
+def _prep_note(desired: DesiredBlock, entry: dict) -> None:
+    """Record the talk's own start on a drive that arrives at its Prep hold (#381).
+
+    The notice's "at HH:MM" is the anchor, which is then the Prep start; without
+    the talk time it reads as if the talk itself moved.
+    """
+    if desired.prep_for is not None:
+        local_dt, _ = _start_in_local(desired.prep_for, desired.timezone)
+        entry["talk"] = local_dt.strftime("%H:%M")
+
+
 def _start_in_local(start: datetime, tz_name: str | None) -> tuple[datetime, str]:
     """Express `start` (a UTC instant) as wall-clock in `tz_name`, or UTC.
 
@@ -338,6 +349,7 @@ def apply_plan(
                     "anchor": u.desired.anchor.isoformat(),
                 }
             )
+            _prep_note(u.desired, result.material_updates[-1])
             if u.prior_effective_seconds is not None:
                 after = u.desired.kind in DEPART_AFTER_KINDS
                 result.material_updates[-1]["timing"] = "arrival" if after else "departure"
@@ -375,6 +387,7 @@ def apply_plan(
                     "anchor": c.desired.anchor.isoformat(),
                 }
             )
+            _prep_note(c.desired, result.added_meeting_legs[-1])
             if c.desired.charging_note is not None:
                 side = "Return" if c.desired.kind in DEPART_AFTER_KINDS else "Outbound"
                 result.added_meeting_legs[-1]["charging"] = f"{side}: {c.desired.charging_note}"
