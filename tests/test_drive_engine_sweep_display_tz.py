@@ -98,8 +98,19 @@ def _stub_live_clients(monkeypatch, reader, state_dir: Path) -> dict:
     monkeypatch.setattr(reconcile_sweep, "_fresh_live_origin", lambda _now, _age: None)
     monkeypatch.setattr(reconcile_sweep, "_boarding_block_end_times", lambda *_args, **_kwargs: [])
 
-    def capture_meeting_blocks(meetings, *, route, driving_to, display_tz=None, booked=None):
+    def capture_meeting_blocks(
+        meetings,
+        *,
+        route,
+        driving_to,
+        display_tz=None,
+        booked=None,
+        prep_arrival=None,
+        prep_unavailable=frozenset(),
+    ):
         captured["display_tz"] = display_tz
+        captured["prep_arrival"] = prep_arrival
+        captured["prep_unavailable"] = prep_unavailable
         return [], [], []
 
     def capture_fetch_window(self, *, time_min, time_max):
@@ -750,3 +761,111 @@ def test_attendance_v2_full_sweep_commute_outside_and_late_airport(monkeypatch, 
     second = reconcile_sweep._run_sweep()
     assert Calendar.mutations == before
     assert second["data"]["message"] is None
+
+
+# --- talk-prep Prep window seam (#381) ---------------------------------------
+
+
+def _talk_events(*, with_prep: bool) -> list[dict]:
+    talk = {
+        "id": "qcontalk1",
+        "summary": "QCon SF workshop",
+        "location": "42 Example Ave",
+        "start": {"dateTime": "2026-09-11T21:00:00Z"},
+        "end": {"dateTime": "2026-09-11T23:00:00Z"},
+    }
+    prep = {
+        "id": "prephold1",
+        "summary": "Prep: QCon SF workshop",
+        "start": {"dateTime": "2026-09-11T20:30:00Z"},
+        "end": {"dateTime": "2026-09-11T21:00:00Z"},
+    }
+    return [prep, talk] if with_prep else [talk]
+
+
+def _installed_mount(tmp_path: Path) -> Path:
+    mount = tmp_path.resolve() / "skills"
+    (mount / "tessl__talk-prep" / "scripts").mkdir(parents=True)
+    (mount / "tessl__talk-prep" / "scripts" / "talk-prep.py").write_text("# provider stand-in\n")
+    return mount
+
+
+def _prep_sweep(monkeypatch, tmp_path, *, with_prep: bool, answer: object):
+    """Run `_run_sweep` end to end over one talk; return (plan, reader argvs)."""
+    from datetime import timedelta
+
+    import prep_window
+
+    real_meeting_blocks = reconcile_sweep.meeting_desired_blocks
+    real_build_plan = reconcile_sweep.build_plan
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    monkeypatch.setattr(
+        _EmptyFetcher, "fetch_window", lambda self, **_: _talk_events(with_prep=with_prep)
+    )
+    monkeypatch.setattr(
+        reconcile_sweep, "make_route", lambda _, **_kwargs: lambda o, d: timedelta(minutes=8)
+    )
+    monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", real_meeting_blocks)
+    monkeypatch.setattr(reconcile_sweep, "build_plan", real_build_plan)
+    calls: list[list[str]] = []
+    mount = _installed_mount(tmp_path)
+
+    def run(argv):
+        calls.append(argv)
+        return answer
+
+    monkeypatch.setattr(
+        reconcile_sweep, "PrepWindows", lambda: prep_window.PrepWindows(run=run, mount=mount)
+    )
+    plans = []
+    monkeypatch.setattr(
+        reconcile_sweep,
+        "finish_sweep",
+        lambda plan, *_args, **_kwargs: plans.append(plan) or {"data": {}},
+    )
+    reconcile_sweep._run_sweep()
+    return plans[0], calls, mount
+
+
+def test_sweep_drives_a_talk_to_its_prep_hold_start(monkeypatch, tmp_path):
+    hold = {
+        "hold": {"id": "prephold1", "start": "2026-09-11T20:30:00Z", "end": "2026-09-11T21:00:00Z"}
+    }
+    plan, calls, mount = _prep_sweep(monkeypatch, tmp_path, with_prep=True, answer=hold)
+    reader = mount / "tessl__talk-prep" / "scripts" / "talk-prep.py"
+    assert calls == [[sys.executable, str(reader), "--prep-window", "qcontalk1"]]
+    desired = {create.desired.kind: create.desired for create in plan.creates}
+    outbound = desired["meeting_outbound"]
+    assert outbound.end == outbound.anchor == datetime(2026, 9, 11, 20, 30, tzinfo=UTC)
+    assert outbound.start == datetime(2026, 9, 11, 20, 22, tzinfo=UTC)
+    assert outbound.prep_for == datetime(2026, 9, 11, 21, 0, tzinfo=UTC)
+    # The return leg is untouched.
+    assert desired["meeting_return"].start == datetime(2026, 9, 11, 23, 0, tzinfo=UTC)
+
+
+def test_sweep_never_calls_the_reader_without_an_abutting_event(monkeypatch, tmp_path):
+    plan, calls, _mount = _prep_sweep(monkeypatch, tmp_path, with_prep=False, answer=None)
+    assert calls == []
+    outbound = next(c.desired for c in plan.creates if c.desired.kind == "meeting_outbound")
+    assert outbound.end == outbound.anchor == datetime(2026, 9, 11, 21, 0, tzinfo=UTC)
+    assert outbound.prep_for is None
+
+
+def test_sweep_hands_a_failed_read_to_the_planner_as_unavailable(monkeypatch, tmp_path):
+    import prep_window
+
+    captured = _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    monkeypatch.setattr(
+        _EmptyFetcher, "fetch_window", lambda self, **_: _talk_events(with_prep=True)
+    )
+    mount = _installed_mount(tmp_path)
+
+    def refuse(_argv):
+        raise prep_window.PrepWindowUnavailable("talk-prep reader exited nonzero.")
+
+    monkeypatch.setattr(
+        reconcile_sweep, "PrepWindows", lambda: prep_window.PrepWindows(run=refuse, mount=mount)
+    )
+    reconcile_sweep._run_sweep()
+    assert captured["prep_arrival"] == {}
+    assert captured["prep_unavailable"] == frozenset({"qcontalk1"})

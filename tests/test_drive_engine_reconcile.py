@@ -248,3 +248,68 @@ def test_unified_orphan_is_deleted():
 
 
 # --- R4: legacy convergence -------------------------------------------------
+
+
+# --- talk-prep Prep arrival target (#381) ------------------------------------
+#
+# The arrival target is the persisted anchor, so retargeting a talk's drive to
+# its Prep start, moving it, or dropping back to the talk start when the hold is
+# removed all converge through the ordinary anchor-change patch, with no new
+# state.
+
+TALK = datetime(2026, 11, 19, 21, 0, tzinfo=UTC)
+PREP = datetime(2026, 11, 19, 20, 30, tzinfo=UTC)
+
+
+def _talk_drive(target):
+    return DesiredBlock(
+        identity="qcon",
+        kind="meeting_outbound",
+        summary="Drive: QCon",
+        start=target - timedelta(minutes=8),
+        end=target,
+        origin="Hotel",
+        destination="Venue",
+        baseline_seconds=480,
+        anchor=target,
+        prep_for=TALK if target != TALK else None,
+    )
+
+
+def _talk_block(anchor):
+    return ParsedBlock(
+        generation=GEN_UNIFIED,
+        event_id="qcon-block",
+        identity="qcon",
+        kind="meeting_outbound",
+        anchor=anchor,
+        origin="Hotel",
+        destination="Venue",
+        baseline_seconds=480,
+    )
+
+
+def test_a_talk_start_block_is_patched_to_the_prep_start():
+    plan = plan_reconcile([_talk_drive(PREP)], [_talk_block(TALK)])
+    assert plan.creates == () and plan.deletes == ()
+    assert [(u.event_id, u.desired.anchor, u.desired.start) for u in plan.updates] == [
+        ("qcon-block", PREP, PREP - timedelta(minutes=8))
+    ]
+
+
+def test_a_removed_prep_hold_patches_the_block_back_to_the_talk_start():
+    plan = plan_reconcile([_talk_drive(TALK)], [_talk_block(PREP)])
+    assert plan.creates == () and plan.deletes == ()
+    assert [(u.event_id, u.desired.anchor) for u in plan.updates] == [("qcon-block", TALK)]
+
+
+def test_a_retargeted_block_already_at_the_prep_start_is_a_noop():
+    assert plan_reconcile([_talk_drive(PREP)], [_talk_block(PREP)]).is_noop
+
+
+def test_a_held_prep_read_keeps_the_retargeted_block():
+    # A failed Prep read holds the leg: no desired block, and the block stays.
+    plan = plan_reconcile(
+        [], [_talk_block(PREP)], held=frozenset({("qcon", "meeting_outbound")}), now=PREP
+    )
+    assert plan.is_noop

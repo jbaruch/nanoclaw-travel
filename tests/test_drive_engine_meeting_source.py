@@ -500,3 +500,162 @@ def test_a_bridge_leg_keeps_its_prior_venue_origin_on_a_driving_trip():
         driving_to={"m2": TripPresence(lodging=LODGING, is_first=False, is_last=False)},
     )
     assert [(b.origin, b.destination) for b in blocks] == [("Prior Venue", VENUE)]
+
+
+# --- talk-prep Prep arrival target (#381) ------------------------------------
+#
+# The 11-19 QCon talk: 13:00 PST (21:00Z), Prep hold 12:30 PST (20:30Z), an
+# 8-minute route from the hotel.
+
+QCON_TALK = datetime(2026, 11, 19, 21, 0, tzinfo=UTC)
+QCON_PREP = datetime(2026, 11, 19, 20, 30, tzinfo=UTC)
+
+
+def _qcon(*, talk=QCON_TALK):
+    return FakeMeeting(
+        "qcon",
+        "QCon SF workshop",
+        (
+            FakeLeg("outbound", "Hotel", "Hyatt Regency SF", arrive_by=talk),
+            FakeLeg("return", "Hyatt Regency SF", "Hotel", depart_after=talk + timedelta(hours=2)),
+        ),
+        timezone="America/Los_Angeles",
+    )
+
+
+def _by_kind(blocks):
+    return {b.kind: b for b in blocks}
+
+
+def test_a_talk_drive_arrives_at_the_prep_start():
+    blocks, skipped, held = meeting_desired_blocks(
+        [_qcon()], route=const_route(8), prep_arrival={"qcon": QCON_PREP}
+    )
+    assert skipped == [] and held == []
+    outbound = _by_kind(blocks)["meeting_outbound"]
+    assert outbound.end == outbound.anchor == QCON_PREP
+    assert outbound.start == datetime(2026, 11, 19, 20, 22, tzinfo=UTC)
+    assert outbound.prep_for == QCON_TALK
+    assert outbound.earliest_start is None
+    returning = _by_kind(blocks)["meeting_return"]
+    assert returning.start == returning.anchor == QCON_TALK + timedelta(hours=2)
+    assert returning.prep_for is None
+
+
+def test_a_moved_talk_drive_follows_the_moved_prep_hold():
+    moved_talk = QCON_TALK + timedelta(days=1, hours=1)
+    blocks, _, _ = meeting_desired_blocks(
+        [_qcon(talk=moved_talk)],
+        route=const_route(8),
+        prep_arrival={"qcon": moved_talk - timedelta(minutes=30)},
+    )
+    outbound = _by_kind(blocks)["meeting_outbound"]
+    assert outbound.anchor == moved_talk - timedelta(minutes=30)
+    assert outbound.prep_for == moved_talk
+
+
+def test_a_talk_without_a_prep_hold_keeps_the_talk_start():
+    # A removed hold (the reader said null) and a talk with no hold read the same.
+    with_none, _, _ = meeting_desired_blocks([_qcon()], route=const_route(8), prep_arrival={})
+    today, _, _ = meeting_desired_blocks([_qcon()], route=const_route(8))
+    assert with_none == today
+    outbound = _by_kind(today)["meeting_outbound"]
+    assert outbound.end == outbound.anchor == QCON_TALK
+    assert outbound.prep_for is None
+
+
+def test_a_prep_target_for_another_meeting_changes_nothing():
+    blocks, _, _ = meeting_desired_blocks(
+        [_qcon()], route=const_route(8), prep_arrival={"other": QCON_PREP}
+    )
+    assert _by_kind(blocks)["meeting_outbound"].anchor == QCON_TALK
+
+
+def test_an_unavailable_prep_read_holds_the_arriving_leg_only():
+    blocks, skipped, held = meeting_desired_blocks(
+        [_qcon()], route=const_route(8), prep_unavailable=frozenset({"qcon"})
+    )
+    assert [b.kind for b in blocks] == ["meeting_return"]
+    assert [(h.identity, h.kind, h.when) for h in held] == [("qcon", "meeting_outbound", QCON_TALK)]
+    assert skipped == ["meeting qcon outbound: talk-prep Prep window unavailable"]
+
+
+def test_a_held_prep_read_keeps_the_existing_block_through_reconcile():
+    from block_codec import GEN_UNIFIED, ParsedBlock
+    from reconcile import plan_reconcile
+
+    blocks, _, held = meeting_desired_blocks(
+        [_qcon()], route=const_route(8), prep_unavailable=frozenset({"qcon"})
+    )
+    current = ParsedBlock(
+        generation=GEN_UNIFIED,
+        event_id="qcon-block",
+        identity="qcon",
+        kind="meeting_outbound",
+        anchor=QCON_PREP,
+        origin="Hotel",
+        destination="Hyatt Regency SF",
+        baseline_seconds=480,
+    )
+    plan = plan_reconcile(
+        [b for b in blocks if b.kind == "meeting_outbound"],
+        [current],
+        held=frozenset(h.key for h in held),
+        now=QCON_PREP - timedelta(days=7),
+    )
+    assert plan.is_noop
+
+
+def _bridged(minutes_gap):
+    return FakeMeeting(
+        "qcon",
+        "QCon SF workshop",
+        (
+            FakeLeg(
+                "bridge",
+                "Moscone West",
+                "Hyatt Regency SF",
+                arrive_by=QCON_TALK,
+                gap_seconds=minutes_gap * 60,
+            ),
+        ),
+    )
+
+
+def test_a_bridge_drive_that_fits_before_prep_arrives_at_the_prep_start():
+    # The previous meeting ends 12:00 PST; 20 min drive; Prep at 12:30.
+    blocks, skipped, held = meeting_desired_blocks(
+        [_bridged(60)], route=const_route(20), prep_arrival={"qcon": QCON_PREP}
+    )
+    assert skipped == [] and held == []
+    (bridge,) = blocks
+    assert bridge.end == bridge.anchor == QCON_PREP
+    assert bridge.start == QCON_PREP - timedelta(minutes=20)
+    assert bridge.prep_for == QCON_TALK
+    assert bridge.earliest_start == QCON_TALK - timedelta(minutes=60)  # previous meeting's end
+
+
+def test_a_bridge_drive_that_cannot_reach_prep_keeps_the_talk_start():
+    # Q1 (a): the previous meeting ends 12:15 PST; a 20 min drive reaches the
+    # 13:00 talk but not the 12:30 Prep, so it is still planned to the talk.
+    blocks, skipped, held = meeting_desired_blocks(
+        [_bridged(45)], route=const_route(20), prep_arrival={"qcon": QCON_PREP}
+    )
+    assert held == []
+    (bridge,) = blocks
+    assert bridge.end == bridge.anchor == QCON_TALK
+    assert bridge.prep_for is None
+    assert bridge.earliest_start == QCON_TALK - timedelta(minutes=45)
+    assert skipped == [
+        "meeting qcon bridge: 20min drive from the previous meeting can't reach the "
+        "talk-prep Prep start — arriving by the talk start"
+    ]
+
+
+def test_a_bridge_drive_that_exactly_fits_before_prep_retargets():
+    blocks, skipped, _ = meeting_desired_blocks(
+        [_bridged(50)], route=const_route(20), prep_arrival={"qcon": QCON_PREP}
+    )
+    assert skipped == []
+    assert blocks[0].anchor == QCON_PREP
+    assert blocks[0].start == QCON_TALK - timedelta(minutes=50)

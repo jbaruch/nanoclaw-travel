@@ -25,7 +25,7 @@ route failure or unresolved anchor skips that leg with a diagnostic, never a blo
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -207,6 +207,8 @@ def meeting_desired_blocks(
     driving_to: dict[str, TripPresence] | None = None,
     display_tz: str | None = None,
     booked: list[tuple[datetime, datetime]] | None = None,
+    prep_arrival: Mapping[str, datetime] | None = None,
+    prep_unavailable: frozenset[str] = frozenset(),
 ) -> tuple[list[DesiredBlock], list[str], list[HeldLeg]]:
     """Turn scan `MeetingClass` results into unified meeting `DesiredBlock`s.
 
@@ -253,8 +255,20 @@ def meeting_desired_blocks(
     meeting's own zone. A block written in the operator's zone is marked
     `zone_from_operator`, so an existing block in another zone converges to it
     on the next sweep (#309) while a fallback zone never triggers a re-patch.
+
+    `prep_arrival` maps a talk's meeting id to the start of its talk-prep Prep
+    hold (#381; read by `prep_window.prep_targets`). The talk's ARRIVING leg
+    (outbound or bridge) then arrives at the Prep start instead of the talk
+    start, and the block carries `prep_for` = the talk start for the notice.
+    A return leg never changes. A bridge leg retargets only when the drive also
+    fits before Prep; otherwise it keeps the talk-start target with a skipped
+    diagnostic, the one plan that can still be driven (Q1). Its `earliest_start`
+    stays the previous meeting's end. `prep_unavailable` are talks whose Prep
+    read failed: their arriving leg is HELD (#334), never re-targeted back to the
+    talk start on a provider blip.
     """
     presence = driving_to or {}
+    prep = prep_arrival or {}
     blocks: list[DesiredBlock] = []
     skipped: list[str] = []
     held: list[HeldLeg] = []
@@ -339,6 +353,12 @@ def meeting_desired_blocks(
                     )
                     continue
 
+            if leg.direction != "return" and meeting.meeting_id in prep_unavailable:
+                _hold(
+                    skipped, held, meeting, leg, kind, f"{tag}: talk-prep Prep window unavailable"
+                )
+                continue
+
             # Bridge leg: the drive must fit the gap between two consecutive
             # meetings. A drive longer than the gap can't be made (the "5h drive
             # inside a 45-min gap" case, #85) — suppress rather than create it.
@@ -355,6 +375,7 @@ def meeting_desired_blocks(
                 )
                 continue
 
+            prep_for: datetime | None = None
             if leg.direction == "return":
                 depart_after: datetime | None = leg.depart_after
                 if depart_after is None:
@@ -370,7 +391,22 @@ def meeting_desired_blocks(
                         skipped, held, meeting, leg, kind, f"{tag}: arrival leg missing arrive_by"
                     )
                     continue
-                start, end, anchor = arrive_by - drive, arrive_by, arrive_by
+                target = arrive_by
+                prep_start = prep.get(meeting.meeting_id)
+                if prep_start is not None and prep_start < arrive_by:
+                    # Arrive by the Prep start (#381). A bridge drive must still
+                    # leave after the previous meeting ends.
+                    if isinstance(gap, int) and drive > timedelta(seconds=gap) - (
+                        arrive_by - prep_start
+                    ):
+                        skipped.append(
+                            f"{tag}: {int(drive.total_seconds() // 60)}min drive from the "
+                            "previous meeting can't reach the talk-prep Prep start — "
+                            "arriving by the talk start"
+                        )
+                    else:
+                        target, prep_for = prep_start, arrive_by
+                start, end, anchor = target - drive, target, target
 
             blocks.append(
                 DesiredBlock(
@@ -391,6 +427,7 @@ def meeting_desired_blocks(
                         if isinstance(gap, int) and leg.arrive_by is not None
                         else None
                     ),
+                    prep_for=prep_for,
                 )
             )
 

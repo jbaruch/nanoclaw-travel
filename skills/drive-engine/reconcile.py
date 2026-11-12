@@ -65,6 +65,10 @@ class DesiredBlock:
     earliest_start: datetime | None = None
     # A long meeting drive planned because TripIt has no flight or train (#377).
     road_trip: bool = False
+    # The talk start when this drive arrives at the talk's talk-prep Prep hold
+    # instead (#381): `anchor` is then the Prep start. Notice-only, never
+    # persisted, so the block itself does not change shape.
+    prep_for: datetime | None = None
 
 
 @dataclass(frozen=True)
