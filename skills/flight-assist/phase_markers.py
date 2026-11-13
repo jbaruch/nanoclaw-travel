@@ -157,8 +157,9 @@ def day_label(
     are expressed in that zone and their calendar dates compared: the same
     date is `"today"`, the next is `"tomorrow"`, anything else is the
     operator-local ISO date (`YYYY-MM-DD`), and `zone` names the zone the
-    comparison ran in. That is the comparison `rules/operator-local-tz-
-    phrasing.md` prescribes, done here deterministically so the compose
+    comparison ran in. That is the comparison
+    `skills/flight-assist/references/operator-local-tz-phrasing.md` prescribes,
+    done here deterministically so the compose
     renders it instead of re-deriving it (#300).
 
     With no usable zone (`None`, or a name `ZoneInfo` cannot resolve) the

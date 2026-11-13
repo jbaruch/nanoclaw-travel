@@ -17,6 +17,10 @@ Available actions:
 - Set home base (record the user's home address for time-to-leave)
 - Explain a missing notice (read the precheck's delivery result)
 
+Before composing relative-date wording in a flight-assist surface, read
+`references/operator-local-tz-phrasing.md` in full, relative to this installed
+skill. Missing or unreadable content stops that composition.
+
 ## Step 1 — Diagnose env
 
 Run the env-presence check (`scripts/check-env.py` relative to this skill; the NanoClaw runtime mounts every `tessl__*` skill at `/home/node/.claude/skills/tessl__<skill-name>/`, so the absolute path the agent must literally invoke is):

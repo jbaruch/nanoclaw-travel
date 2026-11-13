@@ -1,7 +1,3 @@
----
-alwaysApply: true
----
-
 # Operator-Local Timezone Phrasing
 
 Phrase every relative-date word in a flight-assist surface against the operator's local date, never the container's UTC clock.
