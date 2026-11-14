@@ -166,7 +166,7 @@ A `schema_version` mismatch (host bumped) returns `None` from the reader and the
 
 ### `travel-db.json` — trip-window gate (#147)
 
-`/workspace/group/travel-db.json` is the single source of truth for **which trips are active**. **Owner: `check-travel-bookings`** (`scripts/build-travel-db.py`, run nightly); its schema lives in `skills/check-travel-bookings/state-schema.md` (`trips` map keyed by slug, each with `start`/`end` `YYYY-MM-DD` dates). flight-assist is a **non-owner reader** — it never writes this file and keeps no second trip store.
+`/workspace/group/travel-db.json` is the single source of truth for **which trips are active**. **Owner: `check-travel-bookings`** (`skills/check-travel-bookings/scripts/build-travel-db.py`, run nightly); its schema lives in `skills/check-travel-bookings/state-schema.md` (`trips` map keyed by slug, each with `start`/`end` `YYYY-MM-DD` dates). flight-assist is a **non-owner reader** — it never writes this file and keeps no second trip store.
 
 The primary control is **host-side**: a pre-spawn gate (jbaruch/nanoclaw#754, `src/spawn-gates.ts`) reads this file and does **not** spawn the flight-assist container outside a trip window, so the `*/2` cadence costs nothing off-trip. The precheck's `trip_window.evaluate_trip_window` is **defense-in-depth**: if a container spawns anyway, it reads the same file with the same window and exits before any byAir call — emitting `{"wake_agent": false, "data": {"reason": "outside_trip_window"}}`.
 

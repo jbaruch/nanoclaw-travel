@@ -8,7 +8,7 @@ lives in scripts. The agent picks the slug + action (the fuzzy-match
 from natural-language stays in the LLM's hands per the same rule);
 this script handles read, mutate, and atomic write.
 
-State file owner: `check-travel-bookings` (see sibling `state-schema.md`).
+State file owner: `check-travel-bookings` (see `../state-schema.md`).
 Every entry the script writes carries `schema_version: 1`.
 
 Usage:
@@ -17,7 +17,7 @@ Usage:
 
 Output: single-line JSON to stdout `{"action": "...", "slug": "...",
 "state": {<post-update state map>}}`. Errors go to stderr with non-
-zero exit per `rules/file-hygiene.md` I/O conventions.
+zero exit per `jbaruch/coding-policy` `rules/file-hygiene.md` I/O conventions.
 """
 
 import argparse

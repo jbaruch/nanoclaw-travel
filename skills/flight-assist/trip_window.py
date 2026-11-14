@@ -8,7 +8,7 @@ somehow spawned off-window anyway, the precheck consults the SAME file with the
 SAME formula and bails before any byAir call.
 
 Single source of truth: `travel-db.json` is written by this plugin's
-`check-travel-bookings` skill (`scripts/build-travel-db.py`, via
+`check-travel-bookings` skill (`skills/check-travel-bookings/scripts/build-travel-db.py`, via
 `nightly-travel-sync`) and read by the host gate. This reader mirrors the host's
 window definition byte-for-byte so the two layers can never disagree — no second
 trip store. Schema: `skills/check-travel-bookings/state-schema.md`.

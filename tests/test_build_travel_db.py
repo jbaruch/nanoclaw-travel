@@ -4,7 +4,7 @@ Locks down the documented contract per `coding-policy: testing-standards`:
 
   - Reads `travel-schedule.json` (a flat event list); writes
     `travel-db.json` with a `{schema_version, generated_at, trips: {<slug>: {...}}}`
-    shape per the sibling `state-schema.md`
+    shape per `skills/check-travel-bookings/state-schema.md`
   - Trips (events without `item-` in `uid`) are kept iff their `end`
     is on/after today; a transport item (Flight / Rail) files under a
     trip only when its local-first departure day is inside the trip's

@@ -43,7 +43,7 @@ OUTPUT_PATH = "/workspace/group/travel-schedule.json"
 # the version lives on each record because the artifact is regenerated
 # in full from the live TripIt ICS every run (no in-place migration —
 # the writer always emits the current version, cross-plugin readers gate
-# on it). See the sibling `state-schema.md` for the owner/reader contract.
+# on it). See `../state-schema.md` for the owner/reader contract.
 SCHEMA_VERSION = 5
 
 # RFC 5545 §3.3.11 TEXT escapes, as the feed writes them: `San Francisco\, CA`.
@@ -355,7 +355,7 @@ def main():
                 # v4: decoded, not verbatim. `travel-core`'s `resolve_anchor`
                 # hands this string out as a drivable address, so the feed's
                 # transport escapes were riding into the geocode request
-                # (`San Francisco\, CA`) — see the sibling state-schema.md.
+                # (`San Francisco\, CA`) — see ../state-schema.md.
                 "location": _unescape_ics_text(_get_field(component, "LOCATION")),
                 "type": event_type,
                 "uid": uid,
@@ -449,7 +449,7 @@ def main():
     # same-dir `.tmp` sibling, validate it, then `os.replace` it into
     # place. A failed or partial refresh never truncates or freshens the
     # live travel-schedule.json — the mtime-preserving failure contract
-    # the sibling state-schema.md documents. Mirrors build-travel-db.py.
+    # ../state-schema.md documents. Mirrors build-travel-db.py.
     verified = write_schedule(events)
 
     # Structured JSON run summary per `jbaruch/coding-policy:

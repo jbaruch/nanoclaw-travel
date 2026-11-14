@@ -1,5 +1,5 @@
 """Tests for the day-before calendar list (#300): `day_before_calendar.py` and
-`scripts/day-before-calendar.py`.
+`skills/flight-assist/scripts/day-before-calendar.py`.
 
 Deterministic fixtures only — hand-built Google Calendar event dicts, fixed
 instants, a fake calendar client, an injected zone reader. Pins what the
