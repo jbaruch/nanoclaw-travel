@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -16,18 +18,36 @@ MOVED_CONTRACTS = [
 ]
 
 
+@pytest.fixture
+def installed_plugin(tmp_path):
+    """Mirror the host's native skill mounts and materialized startup rules.
+
+    Layout: jbaruch/nanoclaw ef8cf4d, src/volume-mounts.ts:715-759, 830-834.
+    Native Read-tool acceptance: tests/README.md.
+    """
+    native = tmp_path / "home/node/.claude"
+    for skill in MANIFEST["skills"]:
+        shutil.copytree(ROOT / skill, native / "skills" / f"tessl__{Path(skill).name}")
+    rules = native / ".tessl/RULES.md"
+    rules.parent.mkdir()
+    rules.write_text("\n\n---\n\n".join((ROOT / rule).read_text() for rule in MANIFEST["rules"]))
+    return tmp_path, native, rules
+
+
 @pytest.mark.parametrize("rule", MANIFEST["rules"])
 def test_loaded_travel_rules_stay_within_two_kib(rule):
     assert (ROOT / rule).stat().st_size <= 2048
 
 
 @pytest.mark.parametrize(("name", "skill"), MOVED_CONTRACTS)
-def test_moved_contract_has_a_declared_rule_and_native_read_gate(name, skill):
+def test_moved_contract_has_a_declared_rule_and_native_read_gate(installed_plugin, name, skill):
+    _, installed, startup = installed_plugin
     rule_path = f"rules/{name}.md"
     assert rule_path in MANIFEST["rules"]
     assert f"]({rule_path})" in (ROOT / "README.md").read_text()
     rule = (ROOT / rule_path).read_text()
     native = f"/home/node/.claude/skills/tessl__{skill}/references/{name}.md"
+    assert rule in startup.read_text()
     assert f"read `{native}` in full" in rule
     assert "Its full text binds as rule content" in rule
     assert "Missing or unreadable content stops" in rule
@@ -36,25 +56,56 @@ def test_moved_contract_has_a_declared_rule_and_native_read_gate(name, skill):
     assert "applyTo:" in rule
     if skill == "flight-assist":
         assert "Before authoring, modifying or composing" in rule
-        assert native in (ROOT / "skills/flight-assist/SKILL.md").read_text()
+        assert native in (installed / "skills/tessl__flight-assist/SKILL.md").read_text()
 
 
 @pytest.mark.parametrize(("name", "skill"), MOVED_CONTRACTS)
-def test_moved_contract_citations_resolve_to_declared_skill_content(name, skill):
-    reference = ROOT / f"skills/{skill}/references/{name}.md"
+def test_moved_contract_citations_resolve_to_installed_skill_content(installed_plugin, name, skill):
+    root, installed, startup = installed_plugin
+    reference = installed / f"skills/tessl__{skill}/references/{name}.md"
     assert reference.is_file()
     # Native paths resolve to separately mounted declared skills, not a
     # repository-relative skills/ tree underneath another installed skill.
-    content = (ROOT / f"rules/{name}.md").read_text() + reference.read_text()
+    content = startup.read_text() + reference.read_text()
     native_paths = re.findall(r"/home/node/\.claude/skills/tessl__([\w-]+)/([\w./-]+)", content)
     assert native_paths
     for owner, relative in native_paths:
         if owner == "current-tz":
             continue  # External nanoclaw-core reader, covered by test_operator_tz.
         assert f"skills/{owner}" in MANIFEST["skills"]
-        assert (ROOT / "skills" / owner / relative).is_file(), relative
+        native = f"/home/node/.claude/skills/tessl__{owner}/{relative}"
+        assert (root / native.lstrip("/")).is_file(), native
     for citation in re.findall(r"`((?:skills|rules)/[\w./-]+\.(?:md|py))`", content):
-        assert (ROOT / citation).is_file(), citation
+        if citation.startswith("skills/"):
+            _, owner, relative = citation.split("/", 2)
+            assert (installed / "skills" / f"tessl__{owner}" / relative).is_file(), citation
+        else:
+            assert citation in MANIFEST["rules"], citation
+
+
+@pytest.mark.parametrize(
+    ("name", "skill", "digest"),
+    [
+        (
+            "operator-local-tz-phrasing",
+            "flight-assist",
+            "dcda6fa5f419d7c92517a7346a46ffbb795a9fc5f3911f4fa8e00de8f5c11e3b",
+        ),
+        (
+            "travel-schedule-contract",
+            "nightly-travel-sync",
+            "c67ea1175d19b0b4dc6ff3b8e9d53a22cce38255a43c71203f88f3ad6509d60d",
+        ),
+    ],
+)
+def test_installed_references_retain_complete_accepted_contracts(
+    installed_plugin, name, skill, digest
+):
+    # Independent full-body fixtures from e23553a, including the accepted
+    # script-conversion clarification and removal of the expired rollout.
+    _, installed, _ = installed_plugin
+    reference = installed / f"skills/tessl__{skill}/references/{name}.md"
+    assert hashlib.sha256(reference.read_bytes()).hexdigest() == digest
 
 
 def test_schedule_boundary_stays_loaded_and_rollout_exception_is_removed():
