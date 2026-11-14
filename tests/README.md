@@ -9,7 +9,8 @@ removal from the [review correction](https://github.com/jbaruch/nanoclaw-travel/
 for [#384](https://github.com/jbaruch/nanoclaw-travel/issues/384).
 `tests/` is excluded by `.tesslignore`; this plugin ships no evals.
 
-After changing either router or reference, verify native-session behavior:
+After changing the schedule router, flight-assist read gate or either reference,
+verify native-session behavior:
 
 1. Run `tessl plugin pack --output /tmp/nanoclaw-travel-acceptance.tgz .`.
    Extract into a temporary directory outside the checkout. From the packed
@@ -17,12 +18,15 @@ After changing either router or reference, verify native-session behavior:
    `/home/node/.claude/skills/tessl__<skill>/` and concatenate declared rules into
    `/home/node/.claude/.tessl/RULES.md`. This mirrors the host's
    [materialization contract](https://github.com/jbaruch/nanoclaw/blob/ef8cf4d6837427f8924deda83b7af00c215996fc/src/volume-mounts.ts#L715).
+   Confirm the startup rules omit `operator-local-tz-phrasing`; admin owns the
+   [shared timezone rule](https://github.com/jbaruch/nanoclaw-admin/blob/main/rules/surface-uses-operator-local-tz.md).
    Compare both installed reference bodies byte-for-byte with the accepted source.
 2. Start fresh Claude Code sessions with those startup rules as context, only the
    native `Read` tool enabled, hooks disabled and external MCP servers disabled.
    Capture tool events with `claude --print --output-format stream-json --verbose`.
    On macOS, place `/home/node` beneath a temporary root and declare that single
-   prefix translation in context. Keep reference suffixes and skill names intact.
+   prefix translation in context. For the flight-assist session, load its installed
+   `SKILL.md` as context. Keep reference suffixes and skill names intact.
    Keep transcripts outside the checkout; never preload reference text.
 3. Request the workflow explanations below, without executing scripts or external
    queries. Each session must successfully read its complete installed reference

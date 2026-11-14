@@ -39,14 +39,16 @@ def test_loaded_travel_rules_stay_within_two_kb(rule):
     assert (ROOT / rule).stat().st_size <= 2000
 
 
-@pytest.mark.parametrize(("name", "skill"), MOVED_CONTRACTS)
-def test_moved_contract_has_a_declared_rule_and_native_read_gate(installed_plugin, name, skill):
+def test_schedule_contract_has_a_declared_rule_and_native_read_gate(installed_plugin):
     _, installed, startup = installed_plugin
-    rule_path = f"rules/{name}.md"
+    rule_path = "rules/travel-schedule-contract.md"
     assert rule_path in MANIFEST["rules"]
     assert f"]({rule_path})" in (ROOT / "README.md").read_text()
     rule = (ROOT / rule_path).read_text()
-    native = f"/home/node/.claude/skills/tessl__{skill}/references/{name}.md"
+    native = (
+        "/home/node/.claude/skills/tessl__nightly-travel-sync/"
+        "references/travel-schedule-contract.md"
+    )
     assert rule in startup.read_text()
     assert f"read `{native}` in full" in rule
     assert "Its full text binds as rule content" in rule
@@ -54,9 +56,19 @@ def test_moved_contract_has_a_declared_rule_and_native_read_gate(installed_plugi
     assert "never `@`-import the reference" in rule
     assert "alwaysApply: false" in rule
     assert "applyTo:" in rule
-    if skill == "flight-assist":
-        assert "Before authoring, modifying or composing" in rule
-        assert native in (installed / "skills/tessl__flight-assist/SKILL.md").read_text()
+
+
+def test_timezone_contract_is_skill_scoped_without_a_duplicate_startup_rule(installed_plugin):
+    _, installed, startup = installed_plugin
+    assert "rules/operator-local-tz-phrasing.md" not in MANIFEST["rules"]
+    assert not (ROOT / "rules/operator-local-tz-phrasing.md").exists()
+    assert "Operator-Local Timezone Phrasing" not in startup.read_text()
+    skill = (installed / "skills/tessl__flight-assist/SKILL.md").read_text()
+    native = (
+        "/home/node/.claude/skills/tessl__flight-assist/references/operator-local-tz-phrasing.md"
+    )
+    assert native in skill
+    assert "in full. Missing or unreadable content stops" in skill
 
 
 @pytest.mark.parametrize(("name", "skill"), MOVED_CONTRACTS)
@@ -124,9 +136,6 @@ def test_schedule_boundary_stays_loaded_and_rollout_exception_is_removed():
 
 
 def test_timezone_reference_distinguishes_script_conversion_from_model_composition():
-    rule = (ROOT / "rules/operator-local-tz-phrasing.md").read_text()
-    assert "never read its backing store directly" in rule
-    assert "Never derive relative-date wording from the container clock" in rule
     contract = (ROOT / "skills/flight-assist/references/operator-local-tz-phrasing.md").read_text()
     assert "## Script-computed labels" in contract
     assert "at most once per cycle" in contract

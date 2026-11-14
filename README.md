@@ -79,7 +79,11 @@ EV-aware drive planning adds measured-energy charging time and earlier leave-by 
 | [ev-drive-planning](rules/ev-drive-planning.md) | Scoped Tesla read/estimate lookup, grounded planner inputs and legacy fallback; grants no vehicle operation |
 | [flight-data-locality](rules/flight-data-locality.md) | byAir is the single upstream for flight data; AeroAPI / Flighty / airline-specific APIs forbidden. Travel already booked or flown (past trips, PNRs, costs) comes from `jbaruch/tripit-api`, never from hand-parsing the iCal feed |
 | [travel-schedule-contract](rules/travel-schedule-contract.md) | Ownership, version and freshness contract for travel-schedule readers |
-| [operator-local-tz-phrasing](rules/operator-local-tz-phrasing.md) | Requires the flight-assist phrasing reference before authoring or composing relative dates; core `current-tz` supplies the operator's zone |
+
+Operator-local timezone phrasing uses admin's
+[`surface-uses-operator-local-tz` rule](https://github.com/jbaruch/nanoclaw-admin/blob/main/rules/surface-uses-operator-local-tz.md).
+Flight-assist reads its [flight-specific reference](skills/flight-assist/references/operator-local-tz-phrasing.md)
+before composing relative-date wording.
 
 ## Skills
 

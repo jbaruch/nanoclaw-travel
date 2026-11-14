@@ -1047,3 +1047,29 @@ def test_venue_distance_is_asked_once_per_pair_in_window_and_failures_are_not_ne
     assert calls == [(VENUE, "Room 52A"), (VENUE, "Across town"), (VENUE, "Unresolved room")]
     assert near == frozenset({(VENUE, "Room 52A")})
     assert "venue distance unavailable" in capsys.readouterr().err
+
+
+def test_malformed_provider_json_keeps_exact_label_attendance_matching(monkeypatch, capsys):
+    import maps_client
+    from reconcile_sweep import attendance_nearby
+
+    attendance, _ = model()
+    calls = []
+
+    def malformed_json(url, timeout):
+        calls.append(url)
+        raise json.JSONDecodeError("bad", "{", 1)
+
+    monkeypatch.setattr(maps_client, "_get_json", malformed_json)
+    near = attendance_nearby(
+        [event("one", "Unknown room"), event("two", "Unknown room")],
+        (attendance,),
+        maps_client.MapsClient("synthetic"),
+        500,
+    )
+    assert len(calls) == 1  # Repeated venue/location pairs are cached for this sweep.
+    assert near == frozenset()
+    start, end = NOW.replace(hour=12), NOW.replace(hour=13)
+    assert attendance.covers("native", "ExampleConf", start, end, near=near)
+    assert not attendance.covers("native", "Unknown room", start, end, near=near)
+    assert "venue distance unavailable; exact labels remain in use" in capsys.readouterr().err

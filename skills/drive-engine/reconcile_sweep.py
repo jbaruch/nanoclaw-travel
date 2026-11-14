@@ -178,7 +178,7 @@ def attendance_nearby(
                 continue
             try:
                 meters = maps.travel_time(*pair).distance_meters
-            except (MapsError, urllib.error.URLError, TimeoutError):
+            except (MapsError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
                 print(
                     "drive-engine: venue distance unavailable; exact labels remain in use",
                     file=sys.stderr,
