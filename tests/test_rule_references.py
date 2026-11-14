@@ -35,8 +35,8 @@ def installed_plugin(tmp_path):
 
 
 @pytest.mark.parametrize("rule", MANIFEST["rules"])
-def test_loaded_travel_rules_stay_within_two_kib(rule):
-    assert (ROOT / rule).stat().st_size <= 2048
+def test_loaded_travel_rules_stay_within_two_kb(rule):
+    assert (ROOT / rule).stat().st_size <= 2000
 
 
 @pytest.mark.parametrize(("name", "skill"), MOVED_CONTRACTS)
