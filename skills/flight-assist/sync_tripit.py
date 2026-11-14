@@ -110,8 +110,8 @@ def _emit_diff(diff: dict) -> None:
     """Write the sync-contract JSON to stdout (single line).
 
     Wraps the added/removed lists into the same `data.events` shape
-    the precheck script emits, so SKILL.md Step 3's composition
-    table is the single consumer contract — no separate sync-wake
+    the precheck script emits; `skills/flight-assist/references/event-payloads.md`
+    is the consumer contract — no separate sync-wake
     payload to document. Per `coding-policy: script-delegation`
     "Precheck Gating": data must carry the inputs the agent needs.
     """

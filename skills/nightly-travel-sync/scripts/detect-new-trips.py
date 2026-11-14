@@ -61,7 +61,7 @@ from datetime import UTC, date, datetime
 DB_PATH = "/workspace/group/travel-db.json"
 SEEN_PATH = "/workspace/group/travel-trips-seen.json"
 
-# Snapshot schema — see the sibling `state-schema.md`
+# Snapshot schema — see `../state-schema.md`
 # (travel-trips-seen.json section). Bump in lock-step with that doc.
 SCHEMA_VERSION = 1
 

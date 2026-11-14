@@ -18,8 +18,8 @@ Available actions:
 - Explain a missing notice (read the precheck's delivery result)
 
 Before composing relative-date wording in a flight-assist surface, read
-`references/operator-local-tz-phrasing.md` in full, relative to this installed
-skill. Missing or unreadable content stops that composition.
+`/home/node/.claude/skills/tessl__flight-assist/references/operator-local-tz-phrasing.md`
+in full. Missing or unreadable content stops that composition.
 
 ## Step 1 — Diagnose env
 
@@ -41,7 +41,7 @@ Finish here.
 
 ## Step 2 — Set home base
 
-When the user provides their home address (e.g., "set my home base to 1 Infinite Loop, Cupertino, CA"), invoke the `set-home-base.py` script to persist it to the plugin-wide config the precheck reads for `time_to_leave` queries as the fallback origin when no fresh live-location snapshot is available (see Step 3's `time_to_leave` row for the origin-resolution ladder). While a TripIt trip is active the precheck swaps the current trip lodging in for this address (`trip_origin.py`, #122) — the config value is the off-trip base, not a hard override.
+When the user provides their home address (e.g., "set my home base to 1 Infinite Loop, Cupertino, CA"), invoke the `set-home-base.py` script to persist it to the plugin-wide config the precheck reads for `time_to_leave` queries as the fallback origin when no fresh live-location snapshot is available (see `skills/flight-assist/precheck.py` — `_resolve_time_to_leave_origin`). While a TripIt trip is active the precheck swaps the current trip lodging in for this address (`skills/travel-core/trip_origin.py` — `resolve_effective_home`) — the config value is the off-trip base, not a hard override.
 
 ```bash
 python3 /home/node/.claude/skills/tessl__flight-assist/scripts/set-home-base.py "<address from user>"

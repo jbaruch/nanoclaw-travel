@@ -1,6 +1,6 @@
 # Precheck Wake Event Payloads
 
-Reference for the events the precheck renders into notices (`notices.py`) and reports in its `data.events`. Each event is `{"flight_id": int | null, "event": {...}}`. `flight_id` is `null` only for the source-level events (`byair_unreachable`, `byair_recovered`, `sync_internal_error`, `sync_internal_recovered`). Consumed by `SKILL.md` Step 3 to compose user-facing notifications.
+Reference for the events the precheck renders into notices (`skills/flight-assist/notices.py`) and reports in its `data.events`. Each event is `{"flight_id": int | null, "event": {...}}`. `flight_id` is `null` only for the source-level events (`byair_unreachable`, `byair_recovered`, `sync_internal_error`, `sync_internal_recovered`). `SKILL.md` Step 3 uses the delivery results to explain missing notices; the model never sends a flight notice.
 
 Flight poll events also carry an opaque `notification_id`. The precheck persists it before advancing the snapshot, sends the rendered notice through the host itself and confirms the ID only on the host's success (#370).
 
@@ -116,7 +116,7 @@ Suppression rules:
 Fires once per flight. The firing logic lives in `phase_markers.py` (`check_day_before`, `DAY_BEFORE_HOURS`); a flight first tracked late can fire the same local day.
 
 - `hours_until_dep` — the real whole hours from the poll to scheduled departure (24 at the exact threshold, 7 in the example); never the constant 24.
-- `day_label` — `today`, `tomorrow`, or a `YYYY-MM-DD` date, resolved by the precheck against the operator's local date through the core `current-tz` reader. Render it verbatim.
+- `day_label` — `today`, `tomorrow`, or a `YYYY-MM-DD` date, computed by `skills/flight-assist/phase_markers.py` — `day_label` using the current zone returned by the core `current-tz` reader. Render it verbatim. The binding contract is `/home/node/.claude/skills/tessl__flight-assist/references/operator-local-tz-phrasing.md`, Script-computed labels.
 - `day_label_tz` — the IANA zone the label was resolved in; `null` when no operator zone was available, in which case `day_label` is the explicit date `scheduled_dep_time` carries in its own offset.
 
 #### `time_to_leave`

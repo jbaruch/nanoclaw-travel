@@ -131,6 +131,19 @@ def test_utc_date_trap_still_says_tomorrow():
     assert event["hours_until_dep"] == 8
 
 
+def test_day_label_uses_reader_zone_dst_rules_for_each_instant():
+    # Chicago jumps from CST to CDT between these instants. Reusing now's
+    # fixed -06:00 offset for the departure would label it "today".
+    dep = datetime.fromisoformat("2026-03-09T05:30:00+00:00")
+    label, tz = day_label(
+        dep,
+        now_utc=datetime(2026, 3, 8, 7, 30, tzinfo=UTC),
+        operator_tz=_CHICAGO,
+    )
+    assert (label, tz) == ("tomorrow", _CHICAGO)
+    assert dep.isoformat() == "2026-03-09T05:30:00+00:00"
+
+
 def test_no_operator_zone_falls_back_to_the_airport_local_date():
     event = _day_before(_INCIDENT_DEP, _INCIDENT_NOW, None)
     assert event["day_label"] == "2026-09-10"  # the date the -05:00 string carries

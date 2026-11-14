@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """List the operator's calendar events around a flight for the day-before check.
 
-Used by SKILL.md Step 3's `day_before` row. Reads the flight's state, fetches
+Used by `skills/flight-assist/precheck.py` for `day_before` notice context.
+Reads the flight's state, fetches
 the primary calendar across the flight's conflict window, drops events the
 operator declined or that were cancelled, and renders every time on the
 operator's current clock — so the compose summarizes a list, and makes no
 filtering or timezone decision of its own (#300). The rules live in
-`day_before_calendar.py`; the zone comes from the core `current-tz` reader via
-`travel-core/operator_tz.py`.
+`skills/flight-assist/day_before_calendar.py`; the zone comes from the core
+`current-tz` reader via `skills/travel-core/operator_tz.py`.
 
 Usage:
     day-before-calendar.py <flight_id>

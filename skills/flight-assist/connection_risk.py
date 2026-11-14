@@ -214,7 +214,7 @@ def _evaluate_pair(
         # transfer_minutes_remaining can be <= 0 when projected leg-1 arrival
         # is AT or AFTER leg-2 scheduled departure (severe delay; the
         # connection is structurally lost). missed_connection flags that
-        # case so SKILL.md can compose a "rebook required" notification
+        # case so notices.py can render a "rebook required" notification
         # instead of rendering "boards in -15 min".
         "transfer_minutes_remaining": transfer_minutes,
         "missed_connection": transfer_minutes <= 0,

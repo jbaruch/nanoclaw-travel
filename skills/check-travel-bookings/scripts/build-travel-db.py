@@ -7,7 +7,7 @@ organises it into trips with all their items indexed by start date.
 ALL item types are stored; alert logic lives in the consumers.
 
 Output: /workspace/group/travel-db.json
-Schema (see sibling `state-schema.md` for the full contract):
+Schema (see `../state-schema.md` for the full contract):
   {
     "schema_version": 3,
     "generated_at": "...",
@@ -73,7 +73,7 @@ SCHEDULE_PATH = "/workspace/group/travel-schedule.json"
 DB_PATH = "/workspace/group/travel-db.json"
 
 # Bump in lock-step with check-travel-bookings.py per
-# `coding-policy: stateful-artifacts` + state-schema.md sibling file.
+# `coding-policy: stateful-artifacts` + ../state-schema.md.
 SCHEMA_VERSION = 3
 
 # Point-event item types: a segment belongs to the day it departs, so it files

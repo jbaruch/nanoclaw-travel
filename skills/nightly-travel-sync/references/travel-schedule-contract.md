@@ -4,22 +4,17 @@
 
 - Artifact: `/workspace/group/travel-schedule.json`, a JSON array of upcoming TripIt itinerary events.
 - Owner: `jbaruch/nanoclaw-travel` (formerly `nanoclaw-flight-assist`) `nightly-travel-sync`.
-- Schema of record: `skills/nightly-travel-sync/state-schema.md` in this plugin.
+- Schema of record: `/home/node/.claude/skills/tessl__nightly-travel-sync/state-schema.md`.
 - Sole writer: `skills/nightly-travel-sync/scripts/refresh-travel-schedule.py`.
 - The writer regenerates the full array and atomically replaces the file after validation; failed refreshes retain the prior file and mtime.
 - Records require integer `schema_version`, stable `uid`, `type`, `summary`, `start` and `end`.
 - Current record version is 5; optional description, local clocks and location are documented by the schema of record.
 
-## External reader rollout
+## External reader
 
 - This reader contract applies to `nanoclaw-admin` `ask-my-data`; existing in-plugin readers retain the behavior documented by the owner schema.
-- `ask-my-data` requires version 5 and never migrates or writes the artifact.
-- Narrow exception for the initial `ask-my-data` cache rollout.
-- Preconditions (all required):
-  1. The reader is `nanoclaw-admin` `ask-my-data`.
-  2. The read occurs before `2026-10-28T00:00:00Z`.
-  3. Each accepted record has integer version 1 through 5 and the required common fields documented by the owner schema.
-- Every other `ask-my-data` read requires version 5; older records provide no usable prior state and require an owner refresh.
+- `ask-my-data` requires integer record version 5 and never migrates or writes the artifact.
+- Older records provide no usable prior state and require an owner refresh.
 - Unversioned or unknown-version records provide no usable itinerary evidence; report incomplete coverage and an update/refresh diagnostic.
 - Date-only values describe calendar dates.
 - Timed values describe UTC instants.

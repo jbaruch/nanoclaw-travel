@@ -182,8 +182,8 @@ def test_sync_removes_expired_flights(state_root: Path):
         diff = sync_tripit._run_sync(now_utc=fake_now)
     assert diff["added"] == []
     assert [e["flight_id"] for e in diff["removed"]] == [200]
-    # The removed-event payload carries the prior-state metadata so SKILL.md
-    # can compose the notification without re-reading the (now-deleted) state.
+    # The removed-event payload carries prior-state metadata so notices.py
+    # can render the notification without re-reading the (now-deleted) state.
     assert diff["removed"][0]["code"] == "XX123"
     assert diff["removed"][0]["scheduled_dep_time"] == "2026-05-18T17:00:00+00:00"
     assert read_active_flights() == [100]

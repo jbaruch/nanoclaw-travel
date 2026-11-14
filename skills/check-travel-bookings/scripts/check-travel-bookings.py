@@ -71,7 +71,7 @@ TRANSPORT_GAP_ISSUE = "отель есть, рейса нет"
 TRANSPORT_GAP_ASK_ISSUE = "отель есть, рейса нет — едешь на машине? ответь «drive» или «fly»"
 
 # Bump in lock-step with build-travel-db.py per
-# `coding-policy: stateful-artifacts` + state-schema.md sibling file.
+# `coding-policy: stateful-artifacts` + ../state-schema.md.
 # Legacy data lacking schema_version is treated as implicit v1 (the
 # field was introduced at v1; no prior version exists). Higher
 # versions are forward-incompatible — return None / skip the entry.
@@ -339,7 +339,7 @@ def load_trips_from_db(db_path: str) -> list[dict] | None:
         return None
 
     # Schema-version gate per `coding-policy: stateful-artifacts` +
-    # state-schema.md sibling file. Legacy data without `schema_version`
+    # ../state-schema.md. Legacy data without `schema_version`
     # is implicit v1; higher versions are forward-incompatible (treat
     # as no-prior-state).
     if not _schema_compatible(db.get("schema_version")):
