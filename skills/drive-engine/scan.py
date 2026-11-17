@@ -898,7 +898,9 @@ def _classify_transit(
     previous meeting is a DIFFERENT venue with a tight gap; otherwise an
     anchor→venue leg. Return is the mirror on the next meeting. Anchoring
     outbound on the first of a same-venue run and return on the last falls
-    out of this naturally.
+    out of this naturally. An overlap (negative gap) is a calendar conflict,
+    not a gap to drive in: it continues only at the same venue; otherwise
+    both meetings use anchor legs (#391).
 
     The anchor (home off-trip, the current lodging on-trip, #122) is
     resolved once per meeting at its start time — one moment, one answer;
@@ -922,10 +924,13 @@ def _classify_transit(
 
     # --- inbound side: how do we get TO this meeting? ---
     prev_gap = _gap_seconds(prev_event, event)
-    if prev_event is not None and prev_gap is not None and prev_gap <= tight_gap_seconds:
-        if _same_venue(prev_event.location, event.location) or (
-            event.attendance_id is not None and event.attendance_id == prev_event.attendance_id
-        ):
+    if (
+        prev_event is not None
+        and prev_gap is not None
+        and prev_gap <= tight_gap_seconds
+        and (prev_gap >= 0 or _same_stay(prev_event, event))
+    ):
+        if _same_stay(prev_event, event):
             # Same venue, tight gap: you never left — no inbound leg.
             is_back_to_back = True
         else:
@@ -955,9 +960,15 @@ def _classify_transit(
     # --- return side: how do we get back to the anchor AFTER this meeting? ---
     # A tight gap to ANY next meeting cancels the return leg: same venue
     # means you stay put, different venue means the next meeting owns the
-    # bridge leg in (lombot #14/#7) — either way you don't drive back.
+    # bridge leg in (lombot #14/#7) — either way you don't drive back. An
+    # overlap cancels it only at the same venue (#391).
     next_gap = _gap_seconds(event, next_event)
-    skip_return = next_event is not None and next_gap is not None and next_gap <= tight_gap_seconds
+    skip_return = (
+        next_event is not None
+        and next_gap is not None
+        and next_gap <= tight_gap_seconds
+        and (next_gap >= 0 or _same_stay(event, next_event))
+    )
     if not skip_return and event.attendance_id is None:
         return_address, return_note = (
             return_anchor_for(event.end)
@@ -984,6 +995,13 @@ def _classify_transit(
         bucket, reason = "needs_decision", "standalone in-person meeting"
 
     return _make_class(event, bucket, reason, legs=tuple(legs))
+
+
+def _same_stay(earlier: _Event, later: _Event) -> bool:
+    """Same venue, or the same recorded conference attendance."""
+    return _same_venue(earlier.location, later.location) or (
+        later.attendance_id is not None and later.attendance_id == earlier.attendance_id
+    )
 
 
 def _gap_seconds(earlier: _Event | None, later: _Event | None) -> int | None:

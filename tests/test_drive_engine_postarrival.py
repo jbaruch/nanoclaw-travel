@@ -1099,7 +1099,8 @@ def test_scan_route_failed_candidate_stays_in_play_and_keeps_failsafe():
     )
     arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
     assert arrival.destination == HOTEL
-    assert not _created_kinds(result, "real")
+    # An overlapping unknown meeting cannot suppress the real meeting's return.
+    assert _created_kinds(result, "real") == {"meeting_return"}
     assert any("2 overlapping meetings; no automatic choice" in s for s in result.skipped)
 
 

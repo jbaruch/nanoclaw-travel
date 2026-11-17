@@ -395,8 +395,9 @@ def compose_postarrival(
         if not in_play:
             continue
         meeting, drive = in_play[0]
-        if meeting.return_suppressed and dropped:
-            # Scan may have routed a later meeting from the dropped neighbour.
+        if dropped:
+            # Scan may have routed a later meeting from the dropped neighbour, and
+            # a different-venue overlap no longer suppresses the return (#391).
             # Keep suppression only when a surviving continuation is usable.
             continuing, invalid = _remaining_continuations(
                 meeting,
