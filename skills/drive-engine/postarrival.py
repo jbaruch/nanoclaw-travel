@@ -417,10 +417,12 @@ def compose_postarrival(
         if not in_play:
             continue
         meeting, drive = in_play[0]
-        if dropped and drive is not None and drive >= timedelta(0):
+        if dropped:
             # Scan may have routed a later meeting from the dropped neighbour.
             # Recheck the surviving path even when an overlap meant scan kept
-            # the return. Suppress it only for a usable continuation.
+            # the return. Suppress it only for a usable continuation. This runs
+            # even if the handoff below fails: the re-origin after it moves a
+            # rebuilt successor to leave lodging after the airport drive.
             continuing, invalid = _remaining_continuations(
                 meeting,
                 meetings,

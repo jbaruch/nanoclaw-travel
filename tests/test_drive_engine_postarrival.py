@@ -1520,6 +1520,52 @@ def test_failed_handoff_without_a_dropped_overlap_keeps_successor_origin(airport
     assert inbound[0].earliest_start == MEETING_END
 
 
+@pytest.mark.parametrize("existing", [True, False])
+@pytest.mark.parametrize("onward_minutes", [30, None])
+@pytest.mark.parametrize("airport_minutes", [None, -1])
+def test_failed_handoff_still_rejects_bridge_from_dropped_overlap(
+    airport_minutes, onward_minutes, existing
+):
+    next_start = _dt(23, 55)
+    stale = _outbound_current(
+        "C-out", "C", anchor=next_start, minutes=17 * 60, origin=NASHVILLE, destination=VENUE_B
+    )
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(23, 50), NASHVILLE),
+            _gcal_event("C", next_start, _dt(1, day=13), VENUE_B),
+        ],
+        route=_route(
+            {
+                ("DEN airport", VENUE): airport_minutes,
+                ("DEN airport", NASHVILLE): 17 * 60,
+                (NASHVILLE, VENUE_B): 17 * 60,
+                (VENUE, VENUE_B): 5,
+                (HOTEL, VENUE_B): onward_minutes,
+            }
+        ),
+        current_blocks=[stale] if existing else [],
+    )
+    # The dropped Nashville meeting's bridge is neither kept nor announced.
+    assert not any(h.identity == "C" for h in result.held)
+    arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    inbound = [b for b in _created(result) if b.identity == "C" and b.kind == "meeting_outbound"]
+    inbound.extend(
+        u.desired
+        for u in result.plan.updates
+        if u.desired.identity == "C" and u.desired.kind == "meeting_outbound"
+    )
+    if onward_minutes is None:
+        assert inbound == []
+        assert ("C-out" in {d.event_id for d in result.plan.deletes}) == existing
+    else:
+        assert len(inbound) == 1
+        assert inbound[0].origin == HOTEL
+        assert arrival.end <= inbound[0].start < inbound[0].end == next_start
+
+
 @pytest.mark.parametrize("onward_minutes", [5, 6, None])
 def test_dropped_overlap_preserves_reachable_continuation_chain(onward_minutes):
     result = _scan_plan(
