@@ -21,6 +21,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
 
+from meeting_source import meeting_desired_blocks  # noqa: E402
 from scan import (  # noqa: E402
     DEFAULT_TIGHT_GAP_SECONDS,
     MeetingClass,
@@ -93,6 +94,51 @@ def _by_id(results: list[MeetingClass]) -> dict[str, MeetingClass]:
 
 
 # --- baseline -------------------------------------------------------------
+
+
+@pytest.mark.parametrize("rehearsal_end", ["19:30", "22:00", "23:00"])
+@pytest.mark.parametrize("same_venue", [False, True])
+def test_overlapping_rehearsal_and_dinner_use_anchor_legs(rehearsal_end, same_venue):
+    """#391: Calendar dateTime/RSVP shape from the reported SF conflict."""
+    dinner_location = "Sens, 4 Embarcadero Center"
+    events = [
+        {
+            "id": "rehearsal",
+            "summary": "Placeholder-Port Keynote Rehearsal",
+            "location": dinner_location if same_venue else "Shack15, 1 Ferry Building",
+            "start": {"dateTime": "2026-11-17T18:30:00-08:00", "timeZone": "America/Los_Angeles"},
+            "end": {
+                "dateTime": f"2026-11-17T{rehearsal_end}:00-08:00",
+                "timeZone": "America/Los_Angeles",
+            },
+            "attendees": [{"self": True, "responseStatus": "tentative"}],
+        },
+        {
+            "id": "dinner",
+            "summary": "🍽️ QCon San Francisco 2026 - Speakers' Dinner",
+            "location": dinner_location,
+            "start": {"dateTime": "2026-11-17T19:00:00-08:00", "timeZone": "America/Los_Angeles"},
+            "end": {"dateTime": "2026-11-17T22:00:00-08:00", "timeZone": "America/Los_Angeles"},
+            "attendees": [{"self": True, "responseStatus": "accepted"}],
+        },
+    ]
+    meetings = scan(events, now=datetime(2026, 11, 15, tzinfo=UTC), home_address=HOME)
+    for meeting in meetings:
+        assert meeting.bucket == "needs_decision"
+        outbound, returning = meeting.legs
+        assert outbound.direction == "outbound" and outbound.origin == HOME
+        assert returning.direction == "return" and returning.destination == HOME
+        assert all(leg.gap_seconds is None for leg in meeting.legs)
+
+    blocks, skipped, held = meeting_desired_blocks(
+        meetings, route=lambda origin, destination: timedelta(minutes=2)
+    )
+    assert len(blocks) == 4
+    assert skipped == [] and held == []
+
+    blocks, skipped, held = meeting_desired_blocks(meetings, route=lambda origin, destination: None)
+    assert blocks == [] and len(held) == 4
+    assert all("gap" not in reason for reason in skipped)
 
 
 def test_standalone_meeting_is_needs_decision_with_both_legs():

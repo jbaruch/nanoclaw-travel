@@ -348,28 +348,50 @@ def test_only_held_legs_without_a_block_are_missing():
     assert reconcile_sweep._missing([kept, missing], current) == [missing]
 
 
-def test_the_notice_line_reads_in_the_operator_zone():
+def test_the_notice_line_names_the_operator_zone():
     line = reconcile_sweep._unplanned_line(
         _held(when=datetime(2025, 11, 2, 17, 40, tzinfo=UTC)), "America/Chicago"
     )
     assert line == (
-        "Couldn't plan Drive: → BNA (Sun Nov 02, 11:40): route failed. "
-        "Check the flight in byAir, or add the drive to the calendar yourself."
+        "Не удалось запланировать Drive: → BNA (02.11.2025, 11:40 CST): route failed. "
+        "Проверьте рейс в byAir или добавьте поездку в календарь самостоятельно."
     )
+
+
+@pytest.mark.parametrize(
+    ("zone", "clock"),
+    [
+        ("America/Chicago", "17.11.2026, 21:00 CST"),
+        (None, "17.11.2026, 19:00 UTC-08:00"),
+        ("Invalid/Zone", "18.11.2026, 03:00 UTC"),
+    ],
+)
+def test_dinner_notice_disambiguates_time_away_from_operator(zone, clock):
+    leg = HeldLeg(
+        identity="dinner",
+        kind="meeting_outbound",
+        summary="Drive: 🍽️ QCon San Francisco 2026 - Speakers' Dinner",
+        when=datetime.fromisoformat("2026-11-17T19:00:00-08:00"),
+        reason="dinner/outbound: route failed",
+    )
+    line = reconcile_sweep._unplanned_line(leg, zone)
+    assert f"({clock})" in line
+    assert line.startswith("Не удалось запланировать Drive:")
+    assert "Проверьте место и время события" in line
 
 
 @pytest.mark.parametrize(
     ("kind", "check"),
     [
-        ("meeting_return", "the event's location and time"),
-        ("lodging_outbound", "the stay's address in TripIt"),
+        ("meeting_return", "место и время события"),
+        ("lodging_outbound", "адрес проживания в TripIt"),
     ],
 )
 def test_the_notice_line_says_what_to_check(kind, check):
     leg = HeldLeg(identity="x", kind=kind, summary="Drive: X", when=None, reason="r: no route")
     assert reconcile_sweep._unplanned_line(leg, None) == (
-        f"Couldn't plan Drive: X: no route. Check {check}, "
-        "or add the drive to the calendar yourself."
+        f"Не удалось запланировать Drive: X: no route. Проверьте {check} "
+        "или добавьте поездку в календарь самостоятельно."
     )
 
 
@@ -481,7 +503,9 @@ def test_a_live_sweep_announces_a_drive_missing_for_an_hour(state_dir, monkeypat
         for minutes in (0, 60)
     ]
     assert messages[0] is None
-    assert messages[1] is not None and messages[1].startswith("Couldn't plan Drive: → BNA")
+    assert messages[1] is not None and messages[1].startswith(
+        "Не удалось запланировать Drive: → BNA"
+    )
 
 
 def test_a_meeting_under_way_keeps_its_drives():

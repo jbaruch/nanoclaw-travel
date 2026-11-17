@@ -2001,15 +2001,19 @@ def _unplanned_notices(
 
 # What the operator can check for a drive the engine cannot plan, by leg family.
 _UNPLANNED_CHECK = {
-    "airport": "the flight in byAir",
-    "meeting": "the event's location and time",
-    "lodging": "the stay's address in TripIt",
+    "airport": "рейс в byAir",
+    "meeting": "место и время события",
+    "lodging": "адрес проживания в TripIt",
 }
 
 
 def _unplanned_line(leg: HeldLeg, zone: str | None) -> str:
     """One operator line for a drive the engine cannot plan: the drive, when,
-    the reason after the leg's diagnostic tag, and what to do about it."""
+    the reason after the leg's diagnostic tag, and what to do about it.
+
+    Operator prose is Russian; the source diagnostic is kept verbatim. Clock
+    times include their zone so an operator away from the event can place them.
+    """
     when = ""
     if leg.when is not None:
         local = leg.when
@@ -2018,12 +2022,12 @@ def _unplanned_line(leg: HeldLeg, zone: str | None) -> str:
                 local = leg.when.astimezone(ZoneInfo(zone))
             except (ZoneInfoNotFoundError, ValueError):
                 local = leg.when.astimezone(UTC)
-        when = f" ({local.strftime('%a %b %d, %H:%M')})"
+        when = f" ({local.strftime('%d.%m.%Y, %H:%M %Z')})"
     reason = leg.reason.split(": ", 1)[1] if ": " in leg.reason else leg.reason
-    check = _UNPLANNED_CHECK.get(leg.kind.split("_", 1)[0], "the trip's details")
+    check = _UNPLANNED_CHECK.get(leg.kind.split("_", 1)[0], "данные поездки")
     return (
-        f"Couldn't plan {leg.summary}{when}: {reason}. "
-        f"Check {check}, or add the drive to the calendar yourself."
+        f"Не удалось запланировать {leg.summary}{when}: {reason}. "
+        f"Проверьте {check} или добавьте поездку в календарь самостоятельно."
     )
 
 

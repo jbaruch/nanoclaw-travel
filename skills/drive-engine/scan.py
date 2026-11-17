@@ -900,6 +900,9 @@ def _classify_transit(
     outbound on the first of a same-venue run and return on the last falls
     out of this naturally.
 
+    Overlapping neighbours are calendar conflicts, not tight gaps: use the
+    anchor legs instead of bridging or suppressing a return for a negative gap.
+
     The anchor (home off-trip, the current lodging on-trip, #122) is
     resolved once per meeting at its start time — one moment, one answer;
     a return leg after a same-day lodging change re-anchors on the next
@@ -922,7 +925,7 @@ def _classify_transit(
 
     # --- inbound side: how do we get TO this meeting? ---
     prev_gap = _gap_seconds(prev_event, event)
-    if prev_event is not None and prev_gap is not None and prev_gap <= tight_gap_seconds:
+    if prev_event is not None and prev_gap is not None and 0 <= prev_gap <= tight_gap_seconds:
         if _same_venue(prev_event.location, event.location) or (
             event.attendance_id is not None and event.attendance_id == prev_event.attendance_id
         ):
@@ -957,7 +960,9 @@ def _classify_transit(
     # means you stay put, different venue means the next meeting owns the
     # bridge leg in (lombot #14/#7) — either way you don't drive back.
     next_gap = _gap_seconds(event, next_event)
-    skip_return = next_event is not None and next_gap is not None and next_gap <= tight_gap_seconds
+    skip_return = (
+        next_event is not None and next_gap is not None and 0 <= next_gap <= tight_gap_seconds
+    )
     if not skip_return and event.attendance_id is None:
         return_address, return_note = (
             return_anchor_for(event.end)
