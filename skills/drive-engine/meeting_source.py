@@ -302,6 +302,12 @@ def meeting_desired_blocks(
                 skipped.append(f"{tag}: unknown direction")
                 continue
 
+            if leg.direction != "return" and meeting.meeting_id in prep_unavailable:
+                _hold(
+                    skipped, held, meeting, leg, kind, f"{tag}: talk-prep Prep window unavailable"
+                )
+                continue
+
             if leg.origin is None or leg.destination is None:
                 _hold(
                     skipped,
@@ -352,12 +358,6 @@ def meeting_desired_blocks(
                         "— a missing booking?",
                     )
                     continue
-
-            if leg.direction != "return" and meeting.meeting_id in prep_unavailable:
-                _hold(
-                    skipped, held, meeting, leg, kind, f"{tag}: talk-prep Prep window unavailable"
-                )
-                continue
 
             # Bridge leg: the drive must fit the gap between two consecutive
             # meetings. A drive longer than the gap can't be made (the "5h drive

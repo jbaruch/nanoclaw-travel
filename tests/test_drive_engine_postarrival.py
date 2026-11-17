@@ -1425,7 +1425,8 @@ def test_scan_dropped_overlap_rebuilds_next_inbound_from_surviving_venue(minutes
     assert any(b.identity == "C" and b.kind == "meeting_return" for b in created)
 
 
-def test_dropped_overlap_preserves_unavailable_prep_inbound():
+@pytest.mark.parametrize("anchor_minutes", [30, None, -1, 1])
+def test_dropped_overlap_preserves_unavailable_prep_inbound(anchor_minutes):
     next_start = _dt(23, 55)
     prep_start = _dt(23, 50)
     current = _outbound_current(
@@ -1437,7 +1438,13 @@ def test_dropped_overlap_preserves_unavailable_prep_inbound():
             _gcal_event("B", _dt(21), _dt(0, 30, day=13), NASHVILLE),
             _gcal_event("C", next_start, _dt(1, day=13), VENUE_B),
         ],
-        route=_route({("DEN airport", NASHVILLE): 17 * 60, (VENUE, VENUE_B): 5}),
+        route=_route(
+            {
+                ("DEN airport", NASHVILLE): 17 * 60,
+                (HOTEL, VENUE_B): anchor_minutes,
+                (VENUE, VENUE_B): 5,
+            }
+        ),
         current_blocks=[current],
         prep_unavailable=frozenset({"C"}),
     )
@@ -1448,7 +1455,10 @@ def test_dropped_overlap_preserves_unavailable_prep_inbound():
 
 
 @pytest.mark.parametrize("airport_minutes", [None, -1])
-def test_failed_handoff_does_not_create_onward_drive_from_dropped_meeting(airport_minutes):
+@pytest.mark.parametrize("onward_minutes", [30, None, -1, 60])
+def test_failed_handoff_does_not_create_onward_drive_from_dropped_meeting(
+    airport_minutes, onward_minutes
+):
     next_start = _dt(23, 55)
     result = _scan_plan(
         [
@@ -1461,18 +1471,27 @@ def test_failed_handoff_does_not_create_onward_drive_from_dropped_meeting(airpor
                 ("DEN airport", VENUE): airport_minutes,
                 ("DEN airport", NASHVILLE): 17 * 60,
                 (VENUE, VENUE_B): 5,
+                (HOTEL, VENUE_B): onward_minutes,
             }
         ),
     )
     created = _created(result)
     assert any(b.kind == "airport_arrival" and b.destination == HOTEL for b in created)
     assert not any(b.identity == "A" for b in created)
-    inbound = next(b for b in created if b.identity == "C" and b.kind == "meeting_outbound")
-    assert inbound.origin == HOTEL
+    arrival = next(b for b in created if b.kind == "airport_arrival")
+    inbound = [b for b in created if b.identity == "C" and b.kind == "meeting_outbound"]
+    if onward_minutes == 30:
+        assert len(inbound) == 1
+        assert inbound[0].origin == HOTEL
+        assert inbound[0].earliest_start == arrival.end
+        assert arrival.end <= inbound[0].start
+    else:
+        assert inbound == []
     assert any("postarrival A:" in note for note in result.skipped)
 
 
-def test_dropped_overlap_repairs_only_immediate_surviving_successor():
+@pytest.mark.parametrize("onward_minutes", [5, 6, None])
+def test_dropped_overlap_preserves_reachable_continuation_chain(onward_minutes):
     result = _scan_plan(
         [
             _gcal_event("A", MEETING_START, MEETING_END, VENUE),
@@ -1485,16 +1504,38 @@ def test_dropped_overlap_repairs_only_immediate_surviving_successor():
                 ("DEN airport", NASHVILLE): 17 * 60,
                 (VENUE, VENUE_B): 5,
                 (VENUE, "Venue D"): 5,
+                (VENUE_B, "Venue D"): onward_minutes,
             }
         ),
     )
     created = _created(result)
     inbound_c = next(b for b in created if b.identity == "C" and b.kind == "meeting_outbound")
-    inbound_d = next(b for b in created if b.identity == "D" and b.kind == "meeting_outbound")
     assert inbound_c.origin == VENUE
-    assert inbound_d.origin == HOTEL
-    assert any(b.identity == "C" and b.kind == "meeting_return" for b in created)
+    inbound_d = [b for b in created if b.identity == "D" and b.kind == "meeting_outbound"]
+    if onward_minutes == 5:
+        assert len(inbound_d) == 1
+        assert inbound_d[0].origin == VENUE_B
+        assert _dt(0, day=13) <= inbound_d[0].start < inbound_d[0].end == _dt(0, 5, day=13)
+    else:
+        assert inbound_d == []
+        assert any(h.key == ("D", "meeting_outbound") for h in result.held)
+    assert not any(b.identity == "C" and b.kind == "meeting_return" for b in created)
     assert not any(b.identity == "A" and b.kind == "meeting_return" for b in created)
+
+
+def test_dropped_overlap_keeps_return_at_end_of_same_venue_stay():
+    later_end = _dt(0, 10, day=13)
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(23, 30), NASHVILLE),
+            _gcal_event("C", _dt(23, 30), later_end, VENUE),
+        ],
+        route=_far_route(),
+    )
+    returning = [b for b in _created(result) if b.kind == "meeting_return"]
+    assert [(b.identity, b.start) for b in returning] == [("C", later_end)]
+    assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in _created(result))
 
 
 def test_scan_valid_surviving_bridge_after_pruning_still_suppresses_hotel_return():

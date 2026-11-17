@@ -230,6 +230,46 @@ def test_nested_other_venue_does_not_hide_outer_continuation(same_venue):
     assert any(b.identity == "next" and b.kind == "meeting_return" for b in blocks)
 
 
+@pytest.mark.parametrize("same_venue", [True, False])
+@pytest.mark.parametrize("equal_end", [True, False])
+def test_tight_successor_uses_last_finished_meeting_inside_overlaps(same_venue, equal_end):
+    start = NOW + timedelta(hours=3)
+    inner_end = start + timedelta(minutes=45)
+    outer_end = inner_end if equal_end else start + timedelta(hours=2)
+    next_start = inner_end + timedelta(minutes=5)
+    meetings = scan(
+        [
+            _meeting("outer", start=start, end=outer_end, location="Venue X"),
+            _meeting(
+                "inner",
+                start=start + timedelta(minutes=15),
+                end=inner_end,
+                location="Venue X" if equal_end else "Venue Y",
+            ),
+            _meeting(
+                "next",
+                start=next_start,
+                end=next_start + timedelta(minutes=40),
+                location=("Venue X" if equal_end else "Venue Y") if same_venue else "Venue Z",
+            ),
+        ],
+        now=NOW,
+        home_address=HOME,
+    )
+    blocks, skipped, held = meeting_desired_blocks(
+        meetings, route=lambda origin, destination: timedelta(minutes=2)
+    )
+    assert skipped == [] and held == []
+    assert not any(b.identity == "inner" and b.kind == "meeting_return" for b in blocks)
+    inbound = [b for b in blocks if b.identity == "next" and b.kind == "meeting_outbound"]
+    if same_venue:
+        assert inbound == []
+    else:
+        assert len(inbound) == 1
+        assert inbound[0].origin == ("Venue X" if equal_end else "Venue Y")
+        assert inner_end <= inbound[0].start < inbound[0].end == next_start
+
+
 def test_standalone_meeting_is_needs_decision_with_both_legs():
     start = NOW + timedelta(hours=3)
     end = start + timedelta(hours=1)

@@ -353,7 +353,8 @@ def test_the_notice_line_names_the_operator_zone():
         _held(when=datetime(2025, 11, 2, 17, 40, tzinfo=UTC)), "America/Chicago"
     )
     assert line == (
-        "Не удалось запланировать Drive: → BNA (02.11.2025, 11:40 CST): route failed. "
+        "Не удалось запланировать Drive: → BNA (02.11.2025, 11:40 CST): "
+        "не удалось построить маршрут. "
         "Проверьте рейс в byAir или добавьте поездку в календарь самостоятельно."
     )
 
@@ -390,9 +391,42 @@ def test_dinner_notice_disambiguates_time_away_from_operator(zone, clock):
 def test_the_notice_line_says_what_to_check(kind, check):
     leg = HeldLeg(identity="x", kind=kind, summary="Drive: X", when=None, reason="r: no route")
     assert reconcile_sweep._unplanned_line(leg, None) == (
-        f"Не удалось запланировать Drive: X: no route. Проверьте {check} "
+        f"Не удалось запланировать Drive: X: не удалось построить маршрут. Проверьте {check} "
         "или добавьте поездку в календарь самостоятельно."
     )
+
+
+@pytest.mark.parametrize(
+    ("diagnostic", "translation"),
+    [
+        ("route failed", "не удалось построить маршрут"),
+        ("origin route failed", "не удалось построить маршрут"),
+        (
+            "talk-prep Prep window unavailable",
+            "не удалось прочитать время подготовки к выступлению",
+        ),
+        (
+            "negative route duration — check route provider",
+            "сервис маршрутов вернул отрицательное время поездки",
+        ),
+        (
+            "2min drive exceeds the 1min gap — suppressed",
+            "поездка на 2 мин не помещается в промежуток 1 мин",
+        ),
+        ("unresolved anchor", "не удалось определить адрес отправления или назначения"),
+        ("no home address configured — unplanned", "не указан домашний адрес"),
+        (
+            "240min drive and no flight or train in TripIt — a missing booking?",
+            "поездка на 240 мин; в TripIt нет рейса или поезда — проверьте бронирование",
+        ),
+    ],
+)
+def test_unplanned_notice_localizes_diagnostics_and_preserves_source(diagnostic, translation):
+    leg = replace(_held(), reason=f"meeting dinner outbound: {diagnostic}")
+    line = reconcile_sweep._unplanned_line(leg, None)
+    assert f": {translation}." in line
+    assert diagnostic not in line
+    assert leg.reason == f"meeting dinner outbound: {diagnostic}"
 
 
 def test_unplanned_lines_reach_the_rendered_notice():

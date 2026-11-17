@@ -260,8 +260,18 @@ def _remaining_continuations(
             other.identity == meeting.identity
             or other.identity in excluded
             or other.location is None
-            or not 0 <= gap <= tight_gap_seconds
         ):
+            continue
+        # A later-ending overlap at the same venue still owns this stay's
+        # return, even though there is no nonnegative transit gap to it.
+        if (
+            same_place(meeting.location, other.location)
+            and other.start < meeting.end
+            and (other.end, other.start) > (meeting.end, meeting.start)
+        ):
+            continuing = True
+            break
+        if not 0 <= gap <= tight_gap_seconds:
             continue
         if same_place(meeting.location, other.location):
             continuing = True
@@ -469,6 +479,46 @@ def compose_postarrival(
             route=route,
         )
         diagnostics.extend(extra_diags)
+        arrival = next(
+            (
+                block
+                for block in desired_list
+                if block.identity == guard.identity and block.kind == "airport_arrival"
+            ),
+            None,
+        )
+        if arrival is not None and not same_place(arrival.destination, meeting.location):
+            # The handoff failed: the airport drive still takes us to lodging.
+            # A successor must leave from there after arrival, not from the
+            # meeting we could not reach.
+            for block in list(desired_list):
+                if (
+                    block.kind != "meeting_outbound"
+                    or block.earliest_start != meeting.end
+                    or not same_place(block.origin, meeting.location)
+                ):
+                    continue
+                onward = route(arrival.destination, block.destination)
+                desired_list.remove(block)
+                if onward is None or not timedelta(0) <= onward <= block.end - arrival.end:
+                    unsafe.add(_key(block))
+                    diagnostics.append(
+                        f"postarrival {block.identity}: onward drive from lodging unavailable "
+                        "or cannot arrive after airport drive — suppressed"
+                    )
+                    continue
+                if onward <= MIN_MEETING_DRIVE:
+                    unsafe.add(_key(block))
+                    continue
+                desired_list.append(
+                    replace(
+                        block,
+                        origin=arrival.destination,
+                        start=block.end - onward,
+                        baseline_seconds=int(onward.total_seconds()),
+                        earliest_start=arrival.end,
+                    )
+                )
         used_meetings.add(meeting.identity)
 
     kept: list[DesiredBlock] = []

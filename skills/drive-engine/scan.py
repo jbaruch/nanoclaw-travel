@@ -911,8 +911,6 @@ def _classify_transit(
     into the leg endpoints with `anchor_note` set so the planner surfaces
     the meeting instead of silently routing it from the wrong continent.
     """
-    index = order[id(event)]
-
     # Event bounds are non-None here — step 4 filtered missing times before
     # any event reaches transit classification.
     assert event.start is not None and event.end is not None
@@ -930,17 +928,15 @@ def _classify_transit(
     ]
     first = min(same_stay, key=lambda e: (e.start, order[id(e)]), default=event)  # type: ignore[arg-type,return-value]
     last = max(same_stay, key=lambda e: (e.end, order[id(e)]), default=event)  # type: ignore[arg-type,return-value]
-    # A nested meeting must not hide the end of its containing stay when the
-    # next meeting chooses its inbound, or when that stay chooses its return.
-    prev_event = max(candidates[:index], key=lambda e: e.end, default=None)  # type: ignore[arg-type,return-value]
+    # Overlaps are conflicts, not transit gaps. Pick the closest finished
+    # predecessor and the first successor that starts after this meeting ends.
+    prev_event = max(
+        (other for other in candidates if other.end is not None and other.end <= event.start),
+        key=lambda e: (e.end, order[id(e)]),  # type: ignore[arg-type,return-value]
+        default=None,
+    )
     next_event = next(
-        (
-            other
-            for other in candidates[index + 1 :]
-            if other.end is not None
-            and other.end > event.end
-            and (prev_event is None or prev_event.end is None or prev_event.end < event.end)
-        ),
+        (other for other in candidates if other.start is not None and other.start >= event.end),
         None,
     )
     anchor_address, anchor_note = anchor_for(event.start)
