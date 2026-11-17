@@ -97,15 +97,14 @@ def _by_id(results: list[MeetingClass]) -> dict[str, MeetingClass]:
 
 
 @pytest.mark.parametrize("rehearsal_end", ["19:30", "22:00", "23:00"])
-@pytest.mark.parametrize("same_venue", [False, True])
-def test_overlapping_rehearsal_and_dinner_use_anchor_legs(rehearsal_end, same_venue):
+def test_overlapping_rehearsal_and_dinner_use_anchor_legs(rehearsal_end):
     """#391: Calendar dateTime/RSVP shape from the reported SF conflict."""
     dinner_location = "Sens, 4 Embarcadero Center"
     events = [
         {
             "id": "rehearsal",
             "summary": "Placeholder-Port Keynote Rehearsal",
-            "location": dinner_location if same_venue else "Shack15, 1 Ferry Building",
+            "location": "Shack15, 1 Ferry Building",
             "start": {"dateTime": "2026-11-17T18:30:00-08:00", "timeZone": "America/Los_Angeles"},
             "end": {
                 "dateTime": f"2026-11-17T{rehearsal_end}:00-08:00",
@@ -139,6 +138,57 @@ def test_overlapping_rehearsal_and_dinner_use_anchor_legs(rehearsal_end, same_ve
     blocks, skipped, held = meeting_desired_blocks(meetings, route=lambda origin, destination: None)
     assert blocks == [] and len(held) == 4
     assert all("gap" not in reason for reason in skipped)
+
+
+@pytest.mark.parametrize("rehearsal_hours", [1, 3.5, 4.5])
+def test_same_venue_overlaps_have_one_outbound_and_latest_return(rehearsal_hours):
+    start = NOW + timedelta(hours=3)
+    latest_end = start + timedelta(hours=max(rehearsal_hours, 3.5))
+    events = [
+        _meeting("rehearsal", start=start, end=start + timedelta(hours=rehearsal_hours)),
+        _meeting("dinner", start=start + timedelta(minutes=30), end=start + timedelta(hours=3.5)),
+    ]
+    meetings = scan(events, now=NOW, home_address=HOME)
+    blocks, skipped, held = meeting_desired_blocks(
+        meetings, route=lambda origin, destination: timedelta(minutes=2)
+    )
+    assert skipped == [] and held == []
+    assert len(blocks) == 2
+    outbound = next(b for b in blocks if b.kind == "meeting_outbound")
+    returning = next(b for b in blocks if b.kind == "meeting_return")
+    assert outbound.identity == "rehearsal" and outbound.end == start
+    assert returning.start == latest_end
+    assert returning.identity == ("rehearsal" if rehearsal_hours > 3.5 else "dinner")
+
+
+def test_nested_same_venue_meeting_preserves_bridge_after_continuous_stay():
+    start = NOW + timedelta(hours=3)
+    end = start + timedelta(hours=4)
+    meetings = scan(
+        [
+            _meeting("outer", start=start, end=end),
+            _meeting("inner", start=start + timedelta(hours=1), end=end - timedelta(hours=1)),
+            _meeting(
+                "next",
+                start=end + timedelta(minutes=10),
+                end=end + timedelta(hours=1),
+                location="Other Venue",
+            ),
+        ],
+        now=NOW,
+        home_address=HOME,
+    )
+    blocks, skipped, held = meeting_desired_blocks(
+        meetings, route=lambda origin, destination: timedelta(minutes=2)
+    )
+    assert skipped == [] and held == []
+    assert [(b.identity, b.kind) for b in blocks] == [
+        ("outer", "meeting_outbound"),
+        ("next", "meeting_outbound"),
+        ("next", "meeting_return"),
+    ]
+    assert blocks[1].origin == meetings[0].location
+    assert blocks[1].start >= end
 
 
 def test_standalone_meeting_is_needs_decision_with_both_legs():

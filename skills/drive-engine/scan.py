@@ -900,8 +900,9 @@ def _classify_transit(
     outbound on the first of a same-venue run and return on the last falls
     out of this naturally.
 
-    Overlapping neighbours are calendar conflicts, not tight gaps: use the
-    anchor legs instead of bridging or suppressing a return for a negative gap.
+    Different-venue overlaps use anchor legs rather than negative-gap bridges.
+    Same-venue overlaps form a continuous stay, with one inbound at the earliest
+    start and one return at the latest end, including nested meetings.
 
     The anchor (home off-trip, the current lodging on-trip, #122) is
     resolved once per meeting at its start time — one moment, one answer;
@@ -911,12 +912,35 @@ def _classify_transit(
     the meeting instead of silently routing it from the wrong continent.
     """
     index = order[id(event)]
-    prev_event = candidates[index - 1] if index > 0 else None
-    next_event = candidates[index + 1] if index + 1 < len(candidates) else None
 
-    # event.start is non-None here — step 4 filtered missing times before
+    # Event bounds are non-None here — step 4 filtered missing times before
     # any event reaches transit classification.
-    assert event.start is not None
+    assert event.start is not None and event.end is not None
+    same_stay = [
+        other
+        for other in candidates
+        if other.start is not None
+        and other.end is not None
+        and other.start < event.end
+        and event.start < other.end
+        and (
+            _same_venue(other.location, event.location)
+            or (event.attendance_id is not None and event.attendance_id == other.attendance_id)
+        )
+    ]
+    first = min(same_stay, key=lambda e: (e.start, order[id(e)]), default=event)  # type: ignore[arg-type,return-value]
+    last = max(same_stay, key=lambda e: (e.end, order[id(e)]), default=event)  # type: ignore[arg-type,return-value]
+    # A nested meeting must not hide the end of its containing stay when the
+    # next meeting chooses its inbound, or when that stay chooses its return.
+    prev_event = max(candidates[:index], key=lambda e: e.end, default=None)  # type: ignore[arg-type,return-value]
+    next_event = next(
+        (
+            other
+            for other in candidates[index + 1 :]
+            if other not in same_stay or (other.end is not None and other.end > event.end)
+        ),
+        None,
+    )
     anchor_address, anchor_note = anchor_for(event.start)
 
     legs: list[TransitLeg] = []
@@ -925,7 +949,9 @@ def _classify_transit(
 
     # --- inbound side: how do we get TO this meeting? ---
     prev_gap = _gap_seconds(prev_event, event)
-    if prev_event is not None and prev_gap is not None and 0 <= prev_gap <= tight_gap_seconds:
+    if first is not event:
+        is_back_to_back = True
+    elif prev_event is not None and prev_gap is not None and 0 <= prev_gap <= tight_gap_seconds:
         if _same_venue(prev_event.location, event.location) or (
             event.attendance_id is not None and event.attendance_id == prev_event.attendance_id
         ):
@@ -960,7 +986,7 @@ def _classify_transit(
     # means you stay put, different venue means the next meeting owns the
     # bridge leg in (lombot #14/#7) — either way you don't drive back.
     next_gap = _gap_seconds(event, next_event)
-    skip_return = (
+    skip_return = last is not event or (
         next_event is not None and next_gap is not None and 0 <= next_gap <= tight_gap_seconds
     )
     if not skip_return and event.attendance_id is None:

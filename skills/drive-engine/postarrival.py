@@ -408,6 +408,44 @@ def compose_postarrival(
                 held,
                 current_blocks,
             )
+            # An overlapping dropped neighbour may have given the next meeting
+            # an anchor outbound. Rebuild it from the surviving venue before
+            # removing the old path; the routed drive must fit the actual gap.
+            for other in meetings:
+                key = (other.identity, "meeting_outbound")
+                if key not in invalid or meeting.location is None or other.location is None:
+                    continue
+                prior = next((block for block in desired_list if _key(block) == key), None)
+                arrive_by = prior.end if prior is not None else other.start
+                onward_drive = route(meeting.location, other.location)
+                if (
+                    onward_drive is None
+                    or not timedelta(0) <= onward_drive <= arrive_by - meeting.end
+                ):
+                    continue
+                continuing = True
+                desired_list = [block for block in desired_list if _key(block) != key]
+                if onward_drive > MIN_MEETING_DRIVE:
+                    desired_list.append(
+                        DesiredBlock(
+                            identity=other.identity,
+                            kind="meeting_outbound",
+                            summary=f"Drive: {other.summary}",
+                            start=arrive_by - onward_drive,
+                            end=arrive_by,
+                            origin=meeting.location,
+                            destination=other.location,
+                            baseline_seconds=int(onward_drive.total_seconds()),
+                            anchor=arrive_by,
+                            timezone=prior.timezone if prior is not None else other.timezone,
+                            zone_from_operator=prior.zone_from_operator
+                            if prior is not None
+                            else False,
+                            earliest_start=meeting.end,
+                            prep_for=prior.prep_for if prior is not None else None,
+                        )
+                    )
+                    invalid.remove(key)
             unsafe.update(invalid)
             desired_list = [block for block in desired_list if _key(block) not in invalid]
             meeting = replace(meeting, return_suppressed=continuing)

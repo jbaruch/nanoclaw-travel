@@ -1375,6 +1375,53 @@ def test_scan_dropped_middle_meeting_restores_return_and_rejects_its_bridge():
     assert any(d.event_id == "C-out" for d in result.plan.deletes)
 
 
+@pytest.mark.parametrize("minutes", [None, -1, 0, 1, 5, 10, 11])
+def test_scan_dropped_overlap_rebuilds_next_inbound_from_surviving_venue(minutes):
+    next_start = MEETING_END + timedelta(minutes=10)
+    route = _route(
+        {
+            ("DEN airport", VENUE): 37,
+            ("DEN airport", NASHVILLE): 17 * 60,
+            ("DEN airport", HOTEL): 37,
+            (HOTEL, NASHVILLE): 17 * 60,
+            (VENUE, VENUE_B): minutes,
+        }
+    )
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(0, 30, day=13), NASHVILLE),
+            _gcal_event("C", next_start, next_start + timedelta(hours=1), VENUE_B),
+        ],
+        route=route,
+        current_blocks=[
+            _outbound_current(
+                "C-stale", "C", anchor=next_start, minutes=30, origin=HOTEL, destination=VENUE_B
+            )
+        ],
+    )
+    created = _created(result)
+    assert not any(b.identity == "B" for b in created)
+    reachable = minutes is not None and 0 <= minutes <= 10
+    assert any(b.identity == "A" and b.kind == "meeting_return" for b in created) != reachable
+    inbound = [b for b in created if b.identity == "C" and b.kind == "meeting_outbound"]
+    # A safe replacement updates the stale anchor outbound through reconcile.
+    inbound.extend(
+        u.desired
+        for u in result.plan.updates
+        if u.desired.identity == "C" and u.desired.kind == "meeting_outbound"
+    )
+    if not reachable or (minutes is not None and minutes <= 1):
+        assert inbound == []
+        assert any(d.event_id == "C-stale" for d in result.plan.deletes)
+    else:
+        assert len(inbound) == 1
+        assert inbound[0].origin == VENUE and inbound[0].destination == VENUE_B
+        assert MEETING_END <= inbound[0].start < inbound[0].end == next_start
+        assert inbound[0].earliest_start == MEETING_END
+    assert any(b.identity == "C" and b.kind == "meeting_return" for b in created)
+
+
 def test_scan_valid_surviving_bridge_after_pruning_still_suppresses_hotel_return():
     next_start = MEETING_END + timedelta(minutes=10)
     route = _route(
