@@ -78,7 +78,6 @@ EV-aware drive planning adds measured-energy charging time and earlier leave-by 
 |------|---------|
 | [ev-drive-planning](rules/ev-drive-planning.md) | Scoped Tesla read/estimate lookup, grounded planner inputs and legacy fallback; grants no vehicle operation |
 | [flight-data-locality](rules/flight-data-locality.md) | byAir is the single upstream for flight data; AeroAPI / Flighty / airline-specific APIs forbidden. Travel already booked or flown (past trips, PNRs, costs) comes from `jbaruch/tripit-api`, never from hand-parsing the iCal feed |
-| [operator-local-tz-phrasing](rules/operator-local-tz-phrasing.md) | Relative-date words ("today"/"tomorrow") in a surface are phrased against the operator's local date (via the core `current-tz` skill's `read-current-tz.py`), not the container UTC clock; displayed airport clock times stay as-is |
 | [travel-schedule-contract](rules/travel-schedule-contract.md) | Ownership, version and freshness contract for travel-schedule readers |
 
 ## Skills
