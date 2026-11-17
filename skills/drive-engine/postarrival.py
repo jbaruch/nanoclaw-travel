@@ -9,19 +9,24 @@ meetings get no drive. Pure: no I/O, no clock.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
 from block_codec import GEN_UNIFIED, ParsedBlock  # noqa: E402
-from meeting_source import DEFAULT_MAX_REASONABLE_DRIVE, MIN_MEETING_DRIVE  # noqa: E402
+from meeting_source import (  # noqa: E402
+    DEFAULT_MAX_REASONABLE_DRIVE,
+    MIN_MEETING_DRIVE,
+    meeting_desired_blocks,
+)
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
-from scan import DEFAULT_TIGHT_GAP_SECONDS, same_place  # noqa: E402
+from scan import DEFAULT_TIGHT_GAP_SECONDS, TransitLeg, same_place  # noqa: E402
 
 # Matches engine.MAX_AIRPORT_DRIVE: a longer airport-to-venue is not a real drive.
 _MAX_HANDOFF_DRIVE = timedelta(hours=6)
@@ -64,6 +69,8 @@ class PostarrivalMeeting:
     timezone: str | None = None
     return_suppressed: bool = False
     driving_to: bool = False
+    prep_start: datetime | None = None
+    prep_unavailable: bool = False
 
 
 def _skip_is_active(skip_state: dict[str, str] | None, identity: str, now: datetime | None) -> bool:
@@ -125,6 +132,8 @@ def postarrival_meetings_from(
     now: datetime | None = None,
     tight_gap_seconds: int = DEFAULT_TIGHT_GAP_SECONDS,
     driving_to: frozenset[str] = frozenset(),
+    prep_arrival: Mapping[str, datetime] | None = None,
+    prep_unavailable: frozenset[str] = frozenset(),
 ) -> list[PostarrivalMeeting]:
     """Lift scan results that are eligible in-person meeting intents.
 
@@ -173,6 +182,8 @@ def postarrival_meetings_from(
                 timezone=getattr(meeting, "timezone", None),
                 return_suppressed=return_suppressed,
                 driving_to=identity in driving_to,
+                prep_start=(prep_arrival or {}).get(identity),
+                prep_unavailable=identity in prep_unavailable,
             )
         )
     return out
@@ -419,52 +430,59 @@ def compose_postarrival(
                 held,
                 current_blocks,
             )
-            # An overlapping dropped neighbour may have given the next meeting
-            # an anchor outbound. Rebuild it from the surviving venue before
-            # removing the old path; the routed drive must fit the actual gap.
+            # Replan the next meeting's inbound from the surviving venue with
+            # the one leg planner (Prep target #381, provider-failure holds #334),
+            # then check it again.
+            held = list(held)
+            no_drive = False
             for other in meetings:
                 key = (other.identity, "meeting_outbound")
-                if key not in invalid or meeting.location is None or other.location is None:
+                if key not in invalid or meeting.location is None:
                     continue
-                # A provider failure keeps the existing arrival target. In
-                # particular, a missing Prep read cannot fall back to talk start.
-                if any(
-                    item.key == key and item.reason.endswith("talk-prep Prep window unavailable")
-                    for item in held
-                ):
-                    invalid.remove(key)
-                    continue
-                prior = next((block for block in desired_list if _key(block) == key), None)
-                arrive_by = prior.end if prior is not None else other.start
-                onward_drive = route(meeting.location, other.location)
-                if (
-                    onward_drive is None
-                    or not timedelta(0) <= onward_drive <= arrive_by - meeting.end
-                ):
-                    continue
-                continuing = True
-                desired_list = [block for block in desired_list if _key(block) != key]
-                if onward_drive > MIN_MEETING_DRIVE:
-                    desired_list.append(
-                        DesiredBlock(
-                            identity=other.identity,
-                            kind="meeting_outbound",
-                            summary=f"Drive: {other.summary}",
-                            start=arrive_by - onward_drive,
-                            end=arrive_by,
-                            origin=meeting.location,
-                            destination=other.location,
-                            baseline_seconds=int(onward_drive.total_seconds()),
-                            anchor=arrive_by,
-                            timezone=prior.timezone if prior is not None else other.timezone,
-                            zone_from_operator=prior.zone_from_operator
-                            if prior is not None
-                            else False,
-                            earliest_start=meeting.end,
-                            prep_for=prior.prep_for if prior is not None else None,
+                prior = next((b for b in desired_list if _key(b) == key), None)
+                leg = TransitLeg(
+                    direction="bridge",
+                    origin=meeting.location,
+                    destination=other.location,
+                    arrive_by=other.start,
+                    gap_seconds=int((other.start - meeting.end).total_seconds()),
+                )
+                blocks, _notes, holds = meeting_desired_blocks(
+                    [
+                        SimpleNamespace(
+                            meeting_id=other.identity,
+                            summary=other.summary,
+                            timezone=other.timezone,
+                            legs=(leg,),
                         )
-                    )
-                    invalid.remove(key)
+                    ],
+                    route=route,
+                    # A bridge is bounded by its gap, not the road-trip rule.
+                    max_reasonable_drive=timedelta.max,
+                    display_tz=prior.timezone
+                    if prior is not None and prior.zone_from_operator
+                    else None,
+                    prep_arrival={other.identity: other.prep_start} if other.prep_start else None,
+                    prep_unavailable=frozenset({other.identity})
+                    if other.prep_unavailable
+                    else frozenset(),
+                )
+                desired_list = [b for b in desired_list if _key(b) != key] + blocks
+                held = [h for h in held if h.key != key] + holds
+                no_drive = not blocks and not holds
+            continuing, invalid = _remaining_continuations(
+                meeting,
+                meetings,
+                frozenset(dropped),
+                DEFAULT_TIGHT_GAP_SECONDS,
+                desired_list,
+                held,
+                current_blocks,
+            )
+            if invalid and no_drive:  # at or below a minute: nothing to drive
+                continuing = True
+            # A failed Prep read keeps the existing arrival target (#334).
+            invalid -= {(m.identity, "meeting_outbound") for m in meetings if m.prep_unavailable}
             unsafe.update(invalid)
             desired_list = [block for block in desired_list if _key(block) not in invalid]
             meeting = replace(meeting, return_suppressed=continuing)

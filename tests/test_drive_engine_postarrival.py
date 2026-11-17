@@ -729,6 +729,8 @@ def _scan_plan(
     schedule=None,
     route=None,
     prep_unavailable=frozenset(),
+    prep_arrival=None,
+    booked=None,
 ):
     """Real scan → meeting_source → composer → reconcile (no injected meetings)."""
     schedule = list(schedule or _schedule())
@@ -748,7 +750,11 @@ def _scan_plan(
         flight_summaries=[],
     )
     blocks, _skipped, held = meeting_desired_blocks(
-        meetings, route=route or ISSUE_ROUTE, prep_unavailable=prep_unavailable
+        meetings,
+        route=route or ISSUE_ROUTE,
+        prep_unavailable=prep_unavailable,
+        prep_arrival=prep_arrival,
+        booked=booked,
     )
     return _plan(
         extra_desired=blocks,
@@ -757,7 +763,13 @@ def _scan_plan(
         schedule=schedule,
         current_blocks=list(current_blocks),
         route=route or ISSUE_ROUTE,
-        postarrival_meetings=postarrival_meetings_from(meetings, skip_state=skips, now=now),
+        postarrival_meetings=postarrival_meetings_from(
+            meetings,
+            skip_state=skips,
+            now=now,
+            prep_arrival=prep_arrival,
+            prep_unavailable=prep_unavailable,
+        ),
         itinerary=itinerary,
     )
 
@@ -1554,6 +1566,58 @@ def test_dropped_overlap_keeps_return_at_end_of_same_venue_stay():
     returning = [b for b in _created(result) if b.kind == "meeting_return"]
     assert [(b.identity, b.start) for b in returning] == [("C", later_end)]
     assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in _created(result))
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["prep_known", "prep_known_kept", "prep_unavailable_kept", "route_failed_kept", "policy_c5"],
+)
+def test_dropped_overlap_replans_successor_with_prep_and_holds(case):
+    contains = case != "policy_c5"
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(20 if contains else 21), _dt(23, 50), NASHVILLE),
+            _gcal_event("C", _dt(23, 55), _dt(1, day=13), VENUE_B),
+        ],
+        route=_route(
+            {
+                ("DEN airport", NASHVILLE): 17 * 60,
+                (NASHVILLE, VENUE_B): None if case == "policy_c5" else 17 * 60,
+                (VENUE, VENUE_B): None if case == "route_failed_kept" else 5,
+            }
+        ),
+        booked=[(DEP, ARR)] if contains else None,
+        current_blocks=[]
+        if case == "prep_known"
+        else [
+            _outbound_current(
+                "C-prep",
+                "C",
+                anchor=_dt(23, 50),
+                minutes=5,
+                origin=VENUE if contains else HOTEL,
+                destination=VENUE_B,
+            )
+        ],
+        prep_unavailable=frozenset({"C"})
+        if case in {"prep_unavailable_kept", "policy_c5"}
+        else frozenset(),
+        prep_arrival=None if case in {"prep_unavailable_kept", "policy_c5"} else {"C": _dt(23, 50)},
+    )
+    inbound = [b for b in _created(result) if b.identity == "C" and b.kind == "meeting_outbound"]
+    inbound.extend(
+        u.desired
+        for u in result.plan.updates
+        if u.desired.identity == "C" and u.desired.kind == "meeting_outbound"
+    )
+    if case == "prep_known":
+        assert [(b.origin, b.start, b.end, b.prep_for) for b in inbound] == [
+            (VENUE, MEETING_END, _dt(23, 50), _dt(23, 55))
+        ]
+    else:
+        assert inbound == []
+        assert "C-prep" not in {d.event_id for d in result.plan.deletes}
 
 
 def test_scan_valid_surviving_bridge_after_pruning_still_suppresses_hotel_return():
