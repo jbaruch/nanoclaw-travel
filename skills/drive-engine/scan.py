@@ -930,13 +930,29 @@ def _classify_transit(
     last = max(same_stay, key=lambda e: (e.end, order[id(e)]), default=event)  # type: ignore[arg-type,return-value]
     # Overlaps are conflicts, not transit gaps. Pick the closest finished
     # predecessor and the first successor that starts after this meeting ends.
+    # Neighbours sort strictly before/after this meeting by (start, end, candidate
+    # order), so a zero-length meeting is never its own neighbour and coincident
+    # duplicates chain like the old index neighbours.
+    rank = order[id(event)]
     prev_event = max(
-        (other for other in candidates if other.end is not None and other.end <= event.start),
+        (
+            other
+            for other in candidates
+            if other.end is not None
+            and other.end <= event.start
+            and (other.start, other.end, order[id(other)]) < (event.start, event.end, rank)
+        ),
         key=lambda e: (e.end, order[id(e)]),  # type: ignore[arg-type,return-value]
         default=None,
     )
     next_event = next(
-        (other for other in candidates if other.start is not None and other.start >= event.end),
+        (
+            other
+            for other in candidates
+            if other.start is not None
+            and other.start >= event.end
+            and (other.start, other.end, order[id(other)]) > (event.start, event.end, rank)
+        ),
         None,
     )
     anchor_address, anchor_note = anchor_for(event.start)

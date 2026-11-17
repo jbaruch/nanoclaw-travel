@@ -270,6 +270,36 @@ def test_tight_successor_uses_last_finished_meeting_inside_overlaps(same_venue, 
         assert inner_end <= inbound[0].start < inbound[0].end == next_start
 
 
+@pytest.mark.parametrize(
+    "shape", ["standalone", "at_end", "at_start", "at_start_listed_after", "duplicate"]
+)
+def test_zero_length_meeting_is_never_its_own_neighbour(shape):
+    start = NOW + timedelta(hours=3)
+    zero = _meeting("zero", start=start, end=start)
+    if shape == "standalone":
+        events = [zero]
+    elif shape == "at_end":
+        events = [_meeting("talk", start=start - timedelta(hours=1), end=start), zero]
+    elif shape == "at_start":
+        events = [zero, _meeting("talk", start=start, end=start + timedelta(hours=1))]
+    elif shape == "at_start_listed_after":
+        events = [_meeting("talk", start=start, end=start + timedelta(hours=1)), zero]
+    else:
+        events = [zero, _meeting("copy", start=start, end=start)]
+    meetings = scan(events, now=NOW, home_address=HOME)
+    blocks, skipped, held = meeting_desired_blocks(
+        meetings, route=lambda origin, destination: timedelta(minutes=2)
+    )
+    assert skipped == held == []
+    assert sorted(block.kind for block in blocks) == ["meeting_outbound", "meeting_return"]
+    outbound = next(block for block in blocks if block.kind == "meeting_outbound")
+    ret = next(block for block in blocks if block.kind == "meeting_return")
+    assert outbound.end == min(
+        datetime.fromisoformat(event["start"]["dateTime"]) for event in events
+    )
+    assert ret.start == max(datetime.fromisoformat(event["end"]["dateTime"]) for event in events)
+
+
 def test_standalone_meeting_is_needs_decision_with_both_legs():
     start = NOW + timedelta(hours=3)
     end = start + timedelta(hours=1)
