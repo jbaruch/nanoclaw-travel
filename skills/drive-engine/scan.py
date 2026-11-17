@@ -898,11 +898,9 @@ def _classify_transit(
     previous meeting is a DIFFERENT venue with a tight gap; otherwise an
     anchor→venue leg. Return is the mirror on the next meeting. Anchoring
     outbound on the first of a same-venue run and return on the last falls
-    out of this naturally.
-
-    Different-venue overlaps use anchor legs rather than negative-gap bridges.
-    Same-venue overlaps form a continuous stay, with one inbound at the earliest
-    start and one return at the latest end, including nested meetings.
+    out of this naturally. An overlap (negative gap) is a calendar conflict,
+    not a gap to drive in: it continues only at the same venue; otherwise
+    both meetings use anchor legs (#391).
 
     The anchor (home off-trip, the current lodging on-trip, #122) is
     resolved once per meeting at its start time — one moment, one answer;
@@ -911,50 +909,13 @@ def _classify_transit(
     into the leg endpoints with `anchor_note` set so the planner surfaces
     the meeting instead of silently routing it from the wrong continent.
     """
-    # Event bounds are non-None here — step 4 filtered missing times before
+    index = order[id(event)]
+    prev_event = candidates[index - 1] if index > 0 else None
+    next_event = candidates[index + 1] if index + 1 < len(candidates) else None
+
+    # event.start is non-None here — step 4 filtered missing times before
     # any event reaches transit classification.
-    assert event.start is not None and event.end is not None
-    same_stay = [
-        other
-        for other in candidates
-        if other.start is not None
-        and other.end is not None
-        and other.start < event.end
-        and event.start < other.end
-        and (
-            _same_venue(other.location, event.location)
-            or (event.attendance_id is not None and event.attendance_id == other.attendance_id)
-        )
-    ]
-    first = min(same_stay, key=lambda e: (e.start, order[id(e)]), default=event)  # type: ignore[arg-type,return-value]
-    last = max(same_stay, key=lambda e: (e.end, order[id(e)]), default=event)  # type: ignore[arg-type,return-value]
-    # Overlaps are conflicts, not transit gaps. Pick the closest finished
-    # predecessor and the first successor that starts after this meeting ends.
-    # Neighbours sort strictly before/after this meeting by (start, end, candidate
-    # order), so a zero-length meeting is never its own neighbour and coincident
-    # duplicates chain like the old index neighbours.
-    rank = order[id(event)]
-    prev_event = max(
-        (
-            other
-            for other in candidates
-            if other.end is not None
-            and other.end <= event.start
-            and (other.start, other.end, order[id(other)]) < (event.start, event.end, rank)
-        ),
-        key=lambda e: (e.end, order[id(e)]),  # type: ignore[arg-type,return-value]
-        default=None,
-    )
-    next_event = next(
-        (
-            other
-            for other in candidates
-            if other.start is not None
-            and other.start >= event.end
-            and (other.start, other.end, order[id(other)]) > (event.start, event.end, rank)
-        ),
-        None,
-    )
+    assert event.start is not None
     anchor_address, anchor_note = anchor_for(event.start)
 
     legs: list[TransitLeg] = []
@@ -963,12 +924,13 @@ def _classify_transit(
 
     # --- inbound side: how do we get TO this meeting? ---
     prev_gap = _gap_seconds(prev_event, event)
-    if first is not event:
-        is_back_to_back = True
-    elif prev_event is not None and prev_gap is not None and 0 <= prev_gap <= tight_gap_seconds:
-        if _same_venue(prev_event.location, event.location) or (
-            event.attendance_id is not None and event.attendance_id == prev_event.attendance_id
-        ):
+    if (
+        prev_event is not None
+        and prev_gap is not None
+        and prev_gap <= tight_gap_seconds
+        and (prev_gap >= 0 or _same_stay(prev_event, event))
+    ):
+        if _same_stay(prev_event, event):
             # Same venue, tight gap: you never left — no inbound leg.
             is_back_to_back = True
         else:
@@ -998,10 +960,14 @@ def _classify_transit(
     # --- return side: how do we get back to the anchor AFTER this meeting? ---
     # A tight gap to ANY next meeting cancels the return leg: same venue
     # means you stay put, different venue means the next meeting owns the
-    # bridge leg in (lombot #14/#7) — either way you don't drive back.
+    # bridge leg in (lombot #14/#7) — either way you don't drive back. An
+    # overlap cancels it only at the same venue (#391).
     next_gap = _gap_seconds(event, next_event)
-    skip_return = last is not event or (
-        next_event is not None and next_gap is not None and 0 <= next_gap <= tight_gap_seconds
+    skip_return = (
+        next_event is not None
+        and next_gap is not None
+        and next_gap <= tight_gap_seconds
+        and (next_gap >= 0 or _same_stay(event, next_event))
     )
     if not skip_return and event.attendance_id is None:
         return_address, return_note = (
@@ -1029,6 +995,13 @@ def _classify_transit(
         bucket, reason = "needs_decision", "standalone in-person meeting"
 
     return _make_class(event, bucket, reason, legs=tuple(legs))
+
+
+def _same_stay(earlier: _Event, later: _Event) -> bool:
+    """Same venue, or the same recorded conference attendance."""
+    return _same_venue(earlier.location, later.location) or (
+        later.attendance_id is not None and later.attendance_id == earlier.attendance_id
+    )
 
 
 def _gap_seconds(earlier: _Event | None, later: _Event | None) -> int | None:

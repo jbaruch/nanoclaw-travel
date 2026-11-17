@@ -14,8 +14,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "skills" / "travel-core"))
 sys.path.insert(0, str(REPO_ROOT / "skills" / "drive-engine"))
@@ -580,32 +578,6 @@ def test_an_unavailable_prep_read_holds_the_arriving_leg_only():
     assert [b.kind for b in blocks] == ["meeting_return"]
     assert [(h.identity, h.kind, h.when) for h in held] == [("qcon", "meeting_outbound", QCON_TALK)]
     assert skipped == ["meeting qcon outbound: talk-prep Prep window unavailable"]
-
-
-@pytest.mark.parametrize(
-    "origin,destination,minutes,booked,diagnostic",
-    [
-        ("Venue", "Venue", 8, [], "origin is the destination"),
-        ("Hotel", "Venue", 0, [], "at or below one minute"),
-        ("Hotel", "Venue", 1, [], "at or below one minute"),
-        ("Hotel", "Venue", 240, [(_dt(5), _dt(8))], "TripIt flight or train covers it"),
-    ],
-)
-def test_unavailable_prep_does_not_announce_a_drive_that_is_not_needed(
-    origin, destination, minutes, booked, diagnostic
-):
-    meeting = FakeMeeting(
-        "talk", "Talk", (FakeLeg("outbound", origin, destination, arrive_by=_dt(9)),)
-    )
-    blocks, skipped, held = meeting_desired_blocks(
-        [meeting],
-        route=const_route(minutes),
-        booked=booked,
-        prep_unavailable=frozenset({"talk"}),
-    )
-    assert blocks == []
-    assert held == []
-    assert len(skipped) == 1 and diagnostic in skipped[0]
 
 
 def test_a_held_prep_read_keeps_the_existing_block_through_reconcile():

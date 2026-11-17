@@ -9,24 +9,19 @@ meetings get no drive. Pure: no I/O, no clock.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
 from block_codec import GEN_UNIFIED, ParsedBlock  # noqa: E402
-from meeting_source import (  # noqa: E402
-    DEFAULT_MAX_REASONABLE_DRIVE,
-    MIN_MEETING_DRIVE,
-    meeting_desired_blocks,
-)
+from meeting_source import DEFAULT_MAX_REASONABLE_DRIVE, MIN_MEETING_DRIVE  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
-from scan import DEFAULT_TIGHT_GAP_SECONDS, TransitLeg, same_place  # noqa: E402
+from scan import DEFAULT_TIGHT_GAP_SECONDS, same_place  # noqa: E402
 
 # Matches engine.MAX_AIRPORT_DRIVE: a longer airport-to-venue is not a real drive.
 _MAX_HANDOFF_DRIVE = timedelta(hours=6)
@@ -69,8 +64,6 @@ class PostarrivalMeeting:
     timezone: str | None = None
     return_suppressed: bool = False
     driving_to: bool = False
-    prep_start: datetime | None = None
-    prep_unavailable: bool = False
 
 
 def _skip_is_active(skip_state: dict[str, str] | None, identity: str, now: datetime | None) -> bool:
@@ -132,8 +125,6 @@ def postarrival_meetings_from(
     now: datetime | None = None,
     tight_gap_seconds: int = DEFAULT_TIGHT_GAP_SECONDS,
     driving_to: frozenset[str] = frozenset(),
-    prep_arrival: Mapping[str, datetime] | None = None,
-    prep_unavailable: frozenset[str] = frozenset(),
 ) -> list[PostarrivalMeeting]:
     """Lift scan results that are eligible in-person meeting intents.
 
@@ -182,8 +173,6 @@ def postarrival_meetings_from(
                 timezone=getattr(meeting, "timezone", None),
                 return_suppressed=return_suppressed,
                 driving_to=identity in driving_to,
-                prep_start=(prep_arrival or {}).get(identity),
-                prep_unavailable=identity in prep_unavailable,
             )
         )
     return out
@@ -265,28 +254,18 @@ def _remaining_continuations(
     continuing = False
     invalid: set[tuple[str, str]] = set()
     held_keys = {item.key for item in held}
-    for other in sorted(meetings, key=lambda item: item.start):
+    for other in meetings:
         gap = (other.start - meeting.end).total_seconds()
         if (
             other.identity == meeting.identity
             or other.identity in excluded
             or other.location is None
+            or not 0 <= gap <= tight_gap_seconds
         ):
-            continue
-        # A later-ending overlap at the same venue still owns this stay's
-        # return, even though there is no nonnegative transit gap to it.
-        if (
-            same_place(meeting.location, other.location)
-            and other.start < meeting.end
-            and (other.end, other.start) > (meeting.end, meeting.start)
-        ):
-            continuing = True
-            break
-        if not 0 <= gap <= tight_gap_seconds:
             continue
         if same_place(meeting.location, other.location):
             continuing = True
-            break
+            continue
         key = (other.identity, "meeting_outbound")
         planned = any(
             _key(block) == key
@@ -310,7 +289,6 @@ def _remaining_continuations(
             continuing = True
         else:
             invalid.add(key)
-        break
     return continuing, invalid
 
 
@@ -418,11 +396,9 @@ def compose_postarrival(
             continue
         meeting, drive = in_play[0]
         if dropped:
-            # Scan may have routed a later meeting from the dropped neighbour.
-            # Recheck the surviving path even when an overlap meant scan kept
-            # the return. Suppress it only for a usable continuation. This runs
-            # even if the handoff below fails: the re-origin after it moves a
-            # rebuilt successor to leave lodging after the airport drive.
+            # Scan may have routed a later meeting from the dropped neighbour, and
+            # a different-venue overlap no longer suppresses the return (#391).
+            # Keep suppression only when a surviving continuation is usable.
             continuing, invalid = _remaining_continuations(
                 meeting,
                 meetings,
@@ -432,59 +408,6 @@ def compose_postarrival(
                 held,
                 current_blocks,
             )
-            # Replan the next meeting's inbound from the surviving venue with
-            # the one leg planner (Prep target #381, provider-failure holds #334),
-            # then check it again.
-            held = list(held)
-            no_drive = False
-            for other in meetings:
-                key = (other.identity, "meeting_outbound")
-                if key not in invalid or meeting.location is None:
-                    continue
-                prior = next((b for b in desired_list if _key(b) == key), None)
-                leg = TransitLeg(
-                    direction="bridge",
-                    origin=meeting.location,
-                    destination=other.location,
-                    arrive_by=other.start,
-                    gap_seconds=int((other.start - meeting.end).total_seconds()),
-                )
-                blocks, _notes, holds = meeting_desired_blocks(
-                    [
-                        SimpleNamespace(
-                            meeting_id=other.identity,
-                            summary=other.summary,
-                            timezone=other.timezone,
-                            legs=(leg,),
-                        )
-                    ],
-                    route=route,
-                    # A bridge is bounded by its gap, not the road-trip rule.
-                    max_reasonable_drive=timedelta.max,
-                    display_tz=prior.timezone
-                    if prior is not None and prior.zone_from_operator
-                    else None,
-                    prep_arrival={other.identity: other.prep_start} if other.prep_start else None,
-                    prep_unavailable=frozenset({other.identity})
-                    if other.prep_unavailable
-                    else frozenset(),
-                )
-                desired_list = [b for b in desired_list if _key(b) != key] + blocks
-                held = [h for h in held if h.key != key] + holds
-                no_drive = not blocks and not holds
-            continuing, invalid = _remaining_continuations(
-                meeting,
-                meetings,
-                frozenset(dropped),
-                DEFAULT_TIGHT_GAP_SECONDS,
-                desired_list,
-                held,
-                current_blocks,
-            )
-            if invalid and no_drive:  # at or below a minute: nothing to drive
-                continuing = True
-            # A failed Prep read keeps the existing arrival target (#334).
-            invalid -= {(m.identity, "meeting_outbound") for m in meetings if m.prep_unavailable}
             unsafe.update(invalid)
             desired_list = [block for block in desired_list if _key(block) not in invalid]
             meeting = replace(meeting, return_suppressed=continuing)
@@ -499,50 +422,6 @@ def compose_postarrival(
             route=route,
         )
         diagnostics.extend(extra_diags)
-        arrival = next(
-            (
-                block
-                for block in desired_list
-                if block.identity == guard.identity and block.kind == "airport_arrival"
-            ),
-            None,
-        )
-        if (
-            dropped
-            and arrival is not None
-            and not same_place(arrival.destination, meeting.location)
-        ):
-            # The handoff failed: the airport drive still takes us to lodging.
-            # A successor must leave from there after arrival, not from the
-            # meeting we could not reach.
-            for block in list(desired_list):
-                if (
-                    block.kind != "meeting_outbound"
-                    or block.earliest_start != meeting.end
-                    or not same_place(block.origin, meeting.location)
-                ):
-                    continue
-                onward = route(arrival.destination, block.destination)
-                desired_list.remove(block)
-                if onward is None or not timedelta(0) <= onward <= block.end - arrival.end:
-                    unsafe.add(_key(block))
-                    diagnostics.append(
-                        f"postarrival {block.identity}: onward drive from lodging unavailable "
-                        "or cannot arrive after airport drive — suppressed"
-                    )
-                    continue
-                if onward <= MIN_MEETING_DRIVE:
-                    unsafe.add(_key(block))
-                    continue
-                desired_list.append(
-                    replace(
-                        block,
-                        origin=arrival.destination,
-                        start=block.end - onward,
-                        baseline_seconds=int(onward.total_seconds()),
-                        earliest_start=arrival.end,
-                    )
-                )
         used_meetings.add(meeting.identity)
 
     kept: list[DesiredBlock] = []

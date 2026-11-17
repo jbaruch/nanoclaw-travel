@@ -1857,17 +1857,12 @@ def _run_sweep() -> dict:
         operator = read_operator_tz()
         operator_zone = operator.tz if operator is not None else None
         presence = _trip_presence(driving, meetings, route=route, itinerary=itinerary)
+        postarrival_meetings = postarrival_meetings_from(
+            meetings, skip_state=skips, now=now, driving_to=frozenset(presence)
+        )
         # A talk with a talk-prep Prep hold arrives at the hold's start (#381).
         # Read-only, per-sweep, sequential; nothing is persisted.
         prep_arrival, prep_unavailable = prep_targets(meetings, unmasked_events, PrepWindows())
-        postarrival_meetings = postarrival_meetings_from(
-            meetings,
-            skip_state=skips,
-            now=now,
-            driving_to=frozenset(presence),
-            prep_arrival=prep_arrival,
-            prep_unavailable=prep_unavailable,
-        )
         meeting_blocks, meeting_skipped, meeting_held = meeting_desired_blocks(
             meetings,
             route=route,
