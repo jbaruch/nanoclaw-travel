@@ -487,7 +487,11 @@ def compose_postarrival(
             ),
             None,
         )
-        if arrival is not None and not same_place(arrival.destination, meeting.location):
+        if (
+            dropped
+            and arrival is not None
+            and not same_place(arrival.destination, meeting.location)
+        ):
             # The handoff failed: the airport drive still takes us to lodging.
             # A successor must leave from there after arrival, not from the
             # meeting we could not reach.

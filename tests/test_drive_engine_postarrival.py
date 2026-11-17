@@ -1490,6 +1490,24 @@ def test_failed_handoff_does_not_create_onward_drive_from_dropped_meeting(
     assert any("postarrival A:" in note for note in result.skipped)
 
 
+@pytest.mark.parametrize("airport_minutes", [None, -1])
+def test_failed_handoff_without_a_dropped_overlap_keeps_successor_origin(airport_minutes):
+    next_start = _dt(23, 55)
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("C", next_start, _dt(1, day=13), VENUE_B),
+        ],
+        route=_route({("DEN airport", VENUE): airport_minutes, (VENUE, VENUE_B): 5}),
+    )
+    created = _created(result)
+    assert any(b.kind == "airport_arrival" and b.destination == HOTEL for b in created)
+    inbound = [b for b in created if b.identity == "C" and b.kind == "meeting_outbound"]
+    assert len(inbound) == 1
+    assert inbound[0].origin == VENUE
+    assert inbound[0].earliest_start == MEETING_END
+
+
 @pytest.mark.parametrize("onward_minutes", [5, 6, None])
 def test_dropped_overlap_preserves_reachable_continuation_chain(onward_minutes):
     result = _scan_plan(
