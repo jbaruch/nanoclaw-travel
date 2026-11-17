@@ -937,7 +937,9 @@ def _classify_transit(
         (
             other
             for other in candidates[index + 1 :]
-            if other not in same_stay or (other.end is not None and other.end > event.end)
+            if other.end is not None
+            and other.end > event.end
+            and (prev_event is None or prev_event.end is None or prev_event.end < event.end)
         ),
         None,
     )

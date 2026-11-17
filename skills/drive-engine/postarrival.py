@@ -254,7 +254,7 @@ def _remaining_continuations(
     continuing = False
     invalid: set[tuple[str, str]] = set()
     held_keys = {item.key for item in held}
-    for other in meetings:
+    for other in sorted(meetings, key=lambda item: item.start):
         gap = (other.start - meeting.end).total_seconds()
         if (
             other.identity == meeting.identity
@@ -265,7 +265,7 @@ def _remaining_continuations(
             continue
         if same_place(meeting.location, other.location):
             continuing = True
-            continue
+            break
         key = (other.identity, "meeting_outbound")
         planned = any(
             _key(block) == key
@@ -289,6 +289,7 @@ def _remaining_continuations(
             continuing = True
         else:
             invalid.add(key)
+        break
     return continuing, invalid
 
 
@@ -395,7 +396,7 @@ def compose_postarrival(
         if not in_play:
             continue
         meeting, drive = in_play[0]
-        if dropped:
+        if dropped and drive is not None and drive >= timedelta(0):
             # Scan may have routed a later meeting from the dropped neighbour.
             # Recheck the surviving path even when an overlap meant scan kept
             # the return. Suppress it only for a usable continuation.
@@ -414,6 +415,14 @@ def compose_postarrival(
             for other in meetings:
                 key = (other.identity, "meeting_outbound")
                 if key not in invalid or meeting.location is None or other.location is None:
+                    continue
+                # A provider failure keeps the existing arrival target. In
+                # particular, a missing Prep read cannot fall back to talk start.
+                if any(
+                    item.key == key and item.reason.endswith("talk-prep Prep window unavailable")
+                    for item in held
+                ):
+                    invalid.remove(key)
                     continue
                 prior = next((block for block in desired_list if _key(block) == key), None)
                 arrive_by = prior.end if prior is not None else other.start

@@ -728,6 +728,7 @@ def _scan_plan(
     current_blocks=(),
     schedule=None,
     route=None,
+    prep_unavailable=frozenset(),
 ):
     """Real scan → meeting_source → composer → reconcile (no injected meetings)."""
     schedule = list(schedule or _schedule())
@@ -746,7 +747,9 @@ def _scan_plan(
         flight_windows=[],
         flight_summaries=[],
     )
-    blocks, _skipped, held = meeting_desired_blocks(meetings, route=route or ISSUE_ROUTE)
+    blocks, _skipped, held = meeting_desired_blocks(
+        meetings, route=route or ISSUE_ROUTE, prep_unavailable=prep_unavailable
+    )
     return _plan(
         extra_desired=blocks,
         extra_held=held,
@@ -1420,6 +1423,78 @@ def test_scan_dropped_overlap_rebuilds_next_inbound_from_surviving_venue(minutes
         assert MEETING_END <= inbound[0].start < inbound[0].end == next_start
         assert inbound[0].earliest_start == MEETING_END
     assert any(b.identity == "C" and b.kind == "meeting_return" for b in created)
+
+
+def test_dropped_overlap_preserves_unavailable_prep_inbound():
+    next_start = _dt(23, 55)
+    prep_start = _dt(23, 50)
+    current = _outbound_current(
+        "C-prep", "C", anchor=prep_start, minutes=5, origin=HOTEL, destination=VENUE_B
+    )
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(0, 30, day=13), NASHVILLE),
+            _gcal_event("C", next_start, _dt(1, day=13), VENUE_B),
+        ],
+        route=_route({("DEN airport", NASHVILLE): 17 * 60, (VENUE, VENUE_B): 5}),
+        current_blocks=[current],
+        prep_unavailable=frozenset({"C"}),
+    )
+    assert any(h.key == ("C", "meeting_outbound") for h in result.held)
+    assert not any(d.event_id == "C-prep" for d in result.plan.deletes)
+    assert not any(u.desired.identity == "C" for u in result.plan.updates)
+    assert not any(b.identity == "C" and b.kind == "meeting_outbound" for b in _created(result))
+
+
+@pytest.mark.parametrize("airport_minutes", [None, -1])
+def test_failed_handoff_does_not_create_onward_drive_from_dropped_meeting(airport_minutes):
+    next_start = _dt(23, 55)
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(0, 30, day=13), NASHVILLE),
+            _gcal_event("C", next_start, _dt(1, day=13), VENUE_B),
+        ],
+        route=_route(
+            {
+                ("DEN airport", VENUE): airport_minutes,
+                ("DEN airport", NASHVILLE): 17 * 60,
+                (VENUE, VENUE_B): 5,
+            }
+        ),
+    )
+    created = _created(result)
+    assert any(b.kind == "airport_arrival" and b.destination == HOTEL for b in created)
+    assert not any(b.identity == "A" for b in created)
+    inbound = next(b for b in created if b.identity == "C" and b.kind == "meeting_outbound")
+    assert inbound.origin == HOTEL
+    assert any("postarrival A:" in note for note in result.skipped)
+
+
+def test_dropped_overlap_repairs_only_immediate_surviving_successor():
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(0, 30, day=13), NASHVILLE),
+            _gcal_event("C", _dt(23, 55), _dt(0, day=13), VENUE_B),
+            _gcal_event("D", _dt(0, 5, day=13), _dt(1, day=13), "Venue D"),
+        ],
+        route=_route(
+            {
+                ("DEN airport", NASHVILLE): 17 * 60,
+                (VENUE, VENUE_B): 5,
+                (VENUE, "Venue D"): 5,
+            }
+        ),
+    )
+    created = _created(result)
+    inbound_c = next(b for b in created if b.identity == "C" and b.kind == "meeting_outbound")
+    inbound_d = next(b for b in created if b.identity == "D" and b.kind == "meeting_outbound")
+    assert inbound_c.origin == VENUE
+    assert inbound_d.origin == HOTEL
+    assert any(b.identity == "C" and b.kind == "meeting_return" for b in created)
+    assert not any(b.identity == "A" and b.kind == "meeting_return" for b in created)
 
 
 def test_scan_valid_surviving_bridge_after_pruning_still_suppresses_hotel_return():
