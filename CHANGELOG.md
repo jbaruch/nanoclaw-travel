@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.15 — 2026-11-18
+
+- chore(renovate): drop the major update approval gate (#397)
+
 ## 0.3.14 — 2026-11-18
 
 - refactor(rules): delete the expired ask-my-data rollout exception (#396)
