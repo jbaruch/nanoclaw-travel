@@ -762,7 +762,8 @@ def _ev_adjuster(config, route, distances, now, busy_windows=()):
         gaps = []
         desired_keys = {(block.identity, block.kind) for block in blocks}
         for leg in held:
-            if leg.key in desired_keys:
+            # An overlap notice stands for no drive; its meetings' drives are gone.
+            if leg.key in desired_keys or leg.kind == OVERLAP_NOTICE_KIND:
                 continue
             retained_times = [
                 block.start
