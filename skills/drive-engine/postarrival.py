@@ -243,16 +243,24 @@ def _remaining_continuations(
     desired: Sequence[DesiredBlock],
     held: Sequence[HeldLeg],
     current_blocks: Sequence[ParsedBlock],
-) -> tuple[bool, set[tuple[str, str]]]:
+    route: RouteFn,
+) -> tuple[bool, set[tuple[str, str]], list[DesiredBlock], list[HeldLeg]]:
     """Validate the actual surviving path after an unreachable neighbour is dropped.
 
     A chronological neighbour alone cannot suppress the hotel return. Its
     inbound must come from the surviving venue and fit the remaining gap, or
     both meetings must share that venue. A provider-failure hold counts only
     when the existing block proves the same valid continuation.
+
+    Returns `(continuing, invalid, bridges, holds)`. Any other inbound is
+    `invalid` and is recomputed from the surviving venue (#391): a drive that
+    fits becomes a bridge; otherwise the inbound is held for the owner, unless a
+    stale block still exists — it is deleted first, and the next sweep holds it.
     """
     continuing = False
     invalid: set[tuple[str, str]] = set()
+    bridges: list[DesiredBlock] = []
+    holds: list[HeldLeg] = []
     held_keys = {item.key for item in held}
     for other in meetings:
         gap = (other.start - meeting.end).total_seconds()
@@ -287,9 +295,49 @@ def _remaining_continuations(
         )
         if planned or retained:
             continuing = True
-        else:
-            invalid.add(key)
-    return continuing, invalid
+            continue
+        invalid.add(key)
+        assert meeting.location is not None
+        drive = route(meeting.location, other.location)
+        if drive is not None and drive >= timedelta(0) and meeting.end + drive <= other.start:
+            continuing = True
+            if drive > MIN_MEETING_DRIVE:
+                bridges.append(
+                    DesiredBlock(
+                        identity=other.identity,
+                        kind="meeting_outbound",
+                        summary=f"Drive: {other.summary}",
+                        start=other.start - drive,
+                        end=other.start,
+                        origin=meeting.location,
+                        destination=other.location,
+                        baseline_seconds=int(drive.total_seconds()),
+                        anchor=other.start,
+                        timezone=other.timezone,
+                        earliest_start=meeting.end,
+                    )
+                )
+        elif not any(
+            block.generation == GEN_UNIFIED and (block.identity, block.kind) == key
+            for block in current_blocks
+        ):
+            reason = (
+                "route failed"
+                if drive is None or drive < timedelta(0)
+                else f"{int(drive.total_seconds() // 60)}min drive exceeds the "
+                f"{int(gap // 60)}min gap — suppressed"
+            )
+            holds.append(
+                HeldLeg(
+                    identity=other.identity,
+                    kind="meeting_outbound",
+                    summary=f"Drive: {other.summary}",
+                    when=other.start,
+                    reason=f"postarrival {other.identity}: {reason}",
+                    not_before=meeting.end,
+                )
+            )
+    return continuing, invalid, bridges, holds
 
 
 def _current_drive_start(block: ParsedBlock) -> datetime | None:
@@ -359,6 +407,7 @@ def compose_postarrival(
     diagnostics: list[str] = []
     unsafe: set[tuple[str, str]] = set()
     used_meetings: set[str] = set()
+    new_holds: list[HeldLeg] = []
     arrival_ids = {block.identity for block in desired_list if block.kind == "airport_arrival"}
 
     for guard in guards:
@@ -398,8 +447,8 @@ def compose_postarrival(
         if dropped:
             # Scan may have routed a later meeting from the dropped neighbour, and
             # a different-venue overlap no longer suppresses the return (#391).
-            # Keep suppression only when a surviving continuation is usable.
-            continuing, invalid = _remaining_continuations(
+            # Route it from the surviving venue; suppress only when that is usable.
+            continuing, invalid, bridges, holds = _remaining_continuations(
                 meeting,
                 meetings,
                 frozenset(dropped),
@@ -407,9 +456,13 @@ def compose_postarrival(
                 desired_list,
                 held,
                 current_blocks,
+                route,
             )
             unsafe.update(invalid)
             desired_list = [block for block in desired_list if _key(block) not in invalid]
+            desired_list.extend(bridges)
+            new_holds.extend(holds)
+            diagnostics.extend(item.reason for item in holds)
             meeting = replace(meeting, return_suppressed=continuing)
         desired_list, extra_diags = _apply_handoff(
             guard=guard,
@@ -476,7 +529,7 @@ def compose_postarrival(
             if not (block.identity == identity and block.kind == "meeting_return")
         ]
 
-    held_list = [item for item in held if item.key not in unsafe]
+    held_list = [item for item in held if item.key not in unsafe] + new_holds
     return kept, held_list, diagnostics
 
 

@@ -1099,8 +1099,8 @@ def test_scan_route_failed_candidate_stays_in_play_and_keeps_failsafe():
     )
     arrival = next(b for b in _created(result) if b.kind == "airport_arrival")
     assert arrival.destination == HOTEL
-    # An overlapping unknown meeting cannot suppress the real meeting's return.
-    assert _created_kinds(result, "real") == {"meeting_return"}
+    # The overlap is unresolved: neither venue gets a planned drive (#391).
+    assert not _created_kinds(result, "real")
     assert any("2 overlapping meetings; no automatic choice" in s for s in result.skipped)
 
 
@@ -1375,6 +1375,43 @@ def test_scan_dropped_middle_meeting_restores_return_and_rejects_its_bridge():
     assert any(d.event_id == "C-out" for d in result.plan.deletes)
 
 
+def _abc_events(later_start):
+    return [
+        _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+        _gcal_event("B", _dt(21), _dt(23, 30), NASHVILLE),
+        _gcal_event("C", later_start, later_start + timedelta(hours=1), VENUE_B),
+    ]
+
+
+def test_scan_dropped_overlap_recomputes_the_successor_inbound_from_the_surviving_venue():
+    later_start = _dt(23, 55)
+    far = _far_route()
+
+    def route(origin, dest):
+        return timedelta(minutes=5) if (origin, dest) == (VENUE, VENUE_B) else far(origin, dest)
+
+    result = _scan_plan(_abc_events(later_start), route=route)
+    created = _created(result)
+    inbound = next(b for b in created if b.identity == "C" and b.kind == "meeting_outbound")
+    assert (inbound.origin, inbound.destination) == (VENUE, VENUE_B)
+    assert (inbound.start, inbound.end) == (later_start - timedelta(minutes=5), later_start)
+    assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in created)
+    assert not any(b.identity == "A" and b.kind == "meeting_return" for b in created)
+    assert not any(b.identity == "B" for b in created)
+
+
+def test_scan_dropped_overlap_holds_a_successor_the_surviving_venue_cannot_reach():
+    later_start = _dt(23, 55)
+    result = _scan_plan(_abc_events(later_start), route=_far_route())
+    created = _created(result)
+    assert any(
+        b.identity == "A" and b.kind == "meeting_return" and b.destination == HOTEL for b in created
+    )
+    assert not any(b.identity == "C" and b.kind == "meeting_outbound" for b in created)
+    hold = next(h for h in result.held if h.key == ("C", "meeting_outbound"))
+    assert hold.announce and hold.when == later_start and hold.not_before == MEETING_END
+
+
 def test_scan_valid_surviving_bridge_after_pruning_still_suppresses_hotel_return():
     next_start = MEETING_END + timedelta(minutes=10)
     route = _route(
@@ -1557,7 +1594,8 @@ def test_retained_ev_native_span_controls_guard_and_continuation_safety():
         "Airport",
     )
     assert _held_is_unsafe(held, {held.key: [current]}, [guard])
-    continuing, invalid = _remaining_continuations(
-        first, [first, other], frozenset(), 3600, [], [held], [current]
+    continuing, invalid, bridges, holds = _remaining_continuations(
+        first, [first, other], frozenset(), 3600, [], [held], [current], lambda o, d: None
     )
     assert not continuing and held.key in invalid
+    assert bridges == [] and holds == []

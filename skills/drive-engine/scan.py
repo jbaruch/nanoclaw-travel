@@ -899,8 +899,10 @@ def _classify_transit(
     anchor→venue leg. Return is the mirror on the next meeting. Anchoring
     outbound on the first of a same-venue run and return on the last falls
     out of this naturally. An overlap (negative gap) is a calendar conflict,
-    not a gap to drive in: it continues only at the same venue; otherwise
-    both meetings use anchor legs (#391).
+    not a gap to drive in: it continues only at the same venue. At another
+    venue it is the owner's unresolved choice (#391): a leg that would drive
+    while that meeting is under way gets no endpoint, so the planner holds and
+    surfaces it instead of planning an impossible drive.
 
     The anchor (home off-trip, the current lodging on-trip, #122) is
     resolved once per meeting at its start time — one moment, one answer;
@@ -924,7 +926,18 @@ def _classify_transit(
 
     # --- inbound side: how do we get TO this meeting? ---
     prev_gap = _gap_seconds(prev_event, event)
-    if (
+    if _under_way_elsewhere(event, event.start, candidates, arriving=True):
+        if event.attendance_id is None:
+            legs.append(
+                TransitLeg(
+                    direction="outbound",
+                    origin=None,
+                    destination=event.location or anchor_address,
+                    arrive_by=event.start,
+                    anchor_note=_OVERLAP_NOTE,
+                )
+            )
+    elif (
         prev_event is not None
         and prev_gap is not None
         and prev_gap <= tight_gap_seconds
@@ -969,7 +982,21 @@ def _classify_transit(
         and next_gap <= tight_gap_seconds
         and (next_gap >= 0 or _same_stay(event, next_event))
     )
-    if not skip_return and event.attendance_id is None:
+    if (
+        not skip_return
+        and event.attendance_id is None
+        and _under_way_elsewhere(event, event.end, candidates, arriving=False)
+    ):
+        legs.append(
+            TransitLeg(
+                direction="return",
+                origin=event.location or anchor_address,
+                destination=None,
+                depart_after=event.end,
+                anchor_note=_OVERLAP_NOTE,
+            )
+        )
+    elif not skip_return and event.attendance_id is None:
         return_address, return_note = (
             return_anchor_for(event.end)
             if return_anchor_for is not None and event.end is not None and event.attendance_scoped
@@ -995,6 +1022,27 @@ def _classify_transit(
         bucket, reason = "needs_decision", "standalone in-person meeting"
 
     return _make_class(event, bucket, reason, legs=tuple(legs))
+
+
+_OVERLAP_NOTE = "overlaps a meeting at another venue — unresolved"
+
+
+def _under_way_elsewhere(
+    event: _Event, at: datetime | None, candidates: list[_Event], *, arriving: bool
+) -> bool:
+    """True when a meeting at another venue is under way at `at` (#391).
+
+    Arriving at `at` conflicts with a meeting that starts then; leaving at `at`
+    conflicts with one that ends then.
+    """
+    return at is not None and any(
+        other is not event
+        and other.start is not None
+        and other.end is not None
+        and not _same_stay(other, event)
+        and (other.start <= at < other.end if arriving else other.start < at <= other.end)
+        for other in candidates
+    )
 
 
 def _same_stay(earlier: _Event, later: _Event) -> bool:

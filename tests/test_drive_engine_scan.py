@@ -96,9 +96,21 @@ def _by_id(results: list[MeetingClass]) -> dict[str, MeetingClass]:
 # --- baseline -------------------------------------------------------------
 
 
-@pytest.mark.parametrize("rehearsal_end", ["19:30", "22:00", "23:00"])
-def test_overlapping_rehearsal_and_dinner_use_anchor_legs(rehearsal_end):
-    """#391: Calendar dateTime/RSVP shape from the reported SF conflict."""
+@pytest.mark.parametrize(
+    ("rehearsal_end", "planned"),
+    [
+        ("19:30", {("rehearsal", "meeting_outbound"), ("dinner", "meeting_return")}),
+        ("22:00", {("rehearsal", "meeting_outbound")}),
+        ("23:00", {("rehearsal", "meeting_outbound"), ("rehearsal", "meeting_return")}),
+    ],
+)
+def test_overlapping_rehearsal_and_dinner_plan_no_drive_during_the_other(rehearsal_end, planned):
+    """#391: Calendar dateTime/RSVP shape from the reported SF conflict.
+
+    The overlap is an unresolved choice: a leg that would drive while the
+    meeting at the other venue is under way is held for the owner, never a
+    bridge with a negative gap.
+    """
     dinner_location = "Sens, 4 Embarcadero Center"
     events = [
         {
@@ -124,20 +136,21 @@ def test_overlapping_rehearsal_and_dinner_use_anchor_legs(rehearsal_end):
     meetings = scan(events, now=datetime(2026, 11, 15, tzinfo=UTC), home_address=HOME)
     for meeting in meetings:
         assert meeting.bucket == "needs_decision"
-        outbound, returning = meeting.legs
-        assert outbound.direction == "outbound" and outbound.origin == HOME
-        assert returning.direction == "return" and returning.destination == HOME
-        assert all(leg.gap_seconds is None for leg in meeting.legs)
+        assert all(leg.direction != "bridge" and leg.gap_seconds is None for leg in meeting.legs)
 
     blocks, skipped, held = meeting_desired_blocks(
         meetings, route=lambda origin, destination: timedelta(minutes=2)
     )
-    assert len(blocks) == 4
-    assert skipped == [] and held == []
-
-    blocks, skipped, held = meeting_desired_blocks(meetings, route=lambda origin, destination: None)
-    assert blocks == [] and len(held) == 4
+    assert {(b.identity, b.kind) for b in blocks} == planned
+    assert len(blocks) + len(held) == 4
     assert all("gap" not in reason for reason in skipped)
+    for block in blocks:
+        assert HOME in (block.origin, block.destination)
+        other = next(m for m in meetings if m.meeting_id != block.identity)
+        assert other.start is not None and other.end is not None
+        assert block.end <= other.start or block.start >= other.end
+    for leg in held:
+        assert "unresolved" in leg.reason
 
 
 @pytest.mark.parametrize("rehearsal_hours", [1, 3.5])
