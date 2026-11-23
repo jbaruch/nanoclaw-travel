@@ -203,10 +203,11 @@ def _hold(skipped: list[str], held: list[HeldLeg], meeting, leg, kind: str, reas
     )
 
 
-def _overlap_notice(meeting, meetings: list) -> HeldLeg:
+def _overlap_notice(meeting, meetings: list, resolved: tuple) -> HeldLeg:
     """The one owner notice for a cross-venue overlap (#391), keyed on its first
     meeting. It has no block to keep, so the sweep announces it once. Its `when`
     is that meeting's end: the notice stays due while the overlap lasts.
+    `resolved` is the plan without the overlap, for a landing that ends it.
 
     Each time reads on its meeting's own clock: the owner may be elsewhere.
     """
@@ -229,6 +230,7 @@ def _overlap_notice(meeting, meetings: list) -> HeldLeg:
             f"{names} overlap at different places, so no drive is planned for them. "
             "Keep one and decline or move the others."
         ),
+        resolved=resolved,
     )
 
 
@@ -302,7 +304,9 @@ def meeting_desired_blocks(
 
     An `overlap` meeting (#391) has no legs, so reconcile deletes its blocks;
     the first meeting of each overlap adds one announced `OVERLAP_NOTICE_KIND`
-    hold, which keeps no block and only names the conflict for the owner.
+    hold, which keeps no block and only names the conflict for the owner. It
+    carries the plan without the overlap; post-arrival restores it when a
+    landing proves one of the meetings unreachable (91b488f).
     """
     presence = driving_to or {}
     prep = prep_arrival or {}
@@ -333,7 +337,17 @@ def meeting_desired_blocks(
                 )
             continue
         if getattr(meeting, "overlap_group", ())[:1] == (meeting.meeting_id,):
-            notice = _overlap_notice(meeting, meetings)
+            resolved, _skipped, resolved_held = meeting_desired_blocks(
+                list(meeting.resolved),
+                route=route,
+                max_reasonable_drive=max_reasonable_drive,
+                driving_to=driving_to,
+                display_tz=display_tz,
+                booked=booked,
+                prep_arrival=prep_arrival,
+                prep_unavailable=prep_unavailable,
+            )
+            notice = _overlap_notice(meeting, meetings, (*resolved, *resolved_held))
             skipped.append(f"meeting {meeting.meeting_id}: {notice.reason}")
             held.append(notice)
         for leg in meeting.legs:

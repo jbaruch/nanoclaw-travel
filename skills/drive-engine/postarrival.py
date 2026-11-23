@@ -396,13 +396,22 @@ def compose_postarrival(
                 continue
             in_play.append((meeting, drive))
         # A meeting the landing cannot reach, or one over before it, is no overlap
-        # member (#391, 91b488f): an overlap left with one meeting is resolved.
+        # member (#391, 91b488f): an overlap left with one meeting plans as if
+        # it never was, from the plan its notice carries.
         gone = dropped | {
             m.identity for m in meetings if guard.guard_start < m.end <= guard.ready_at
         }
         for group in {m.overlap_group for m in meetings if m.overlap_group}:
-            if len(set(group) - gone) <= 1:
-                unsafe.add((group[0], OVERLAP_NOTICE_KIND))
+            notice = next((h for h in held if h.key == (group[0], OVERLAP_NOTICE_KIND)), None)
+            if notice is None or len(set(group) - gone) > 1:
+                continue
+            blocks = [x for x in notice.resolved if isinstance(x, DesiredBlock)]
+            holds = [x for x in notice.resolved if isinstance(x, HeldLeg)]
+            keys = {notice.key} | {_key(x) for x in blocks} | {x.key for x in holds}
+            held = [h for h in held if h.key not in keys] + holds
+            desired_list = [b for b in desired_list if _key(b) not in keys] + [
+                b for b in blocks if _key(b) not in unsafe
+            ]
         if len(in_play) > 1:
             diagnostics.append(
                 f"postarrival {guard.identity}: {len(in_play)} overlapping meetings; "
@@ -414,7 +423,7 @@ def compose_postarrival(
         meeting, drive = in_play[0]
         if len(set(meeting.overlap_group) - gone) > 1:
             continue  # the overlap stands: the owner picks one
-        if meeting.return_suppressed and (dropped or meeting.overlap_group):
+        if meeting.return_suppressed and dropped:
             # Scan may have routed a later meeting from the dropped neighbour.
             # Keep suppression only when a surviving continuation is usable.
             continuing, invalid = _remaining_continuations(

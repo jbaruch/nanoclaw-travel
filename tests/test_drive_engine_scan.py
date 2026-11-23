@@ -1475,9 +1475,7 @@ def test_skipping_one_overlap_meeting_plans_no_drive_from_either_place():
     blocks, _skipped, held = meeting_desired_blocks(
         meetings, route=lambda origin, destination: timedelta(minutes=5)
     )
-    assert [(b.identity, b.kind, b.origin) for b in blocks] == [
-        ("C", "meeting_return", "Venue C")
-    ]
+    assert [(b.identity, b.kind, b.origin) for b in blocks] == [("C", "meeting_return", "Venue C")]
     assert [h.key for h in held] == [("A", "meeting_overlap")]
 
 

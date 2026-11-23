@@ -92,6 +92,9 @@ class HeldLeg:
     announce: bool = True
     # Source-proved earliest departure; None never invents a route duration.
     not_before: datetime | None = None
+    # An overlap notice (#391): the plan without the overlap, for a landing
+    # that proves one of its meetings unreachable.
+    resolved: tuple[DesiredBlock | HeldLeg, ...] = ()
 
     @property
     def key(self) -> tuple[str, str]:

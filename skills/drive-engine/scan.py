@@ -210,6 +210,9 @@ class MeetingClass:
             (lombot #48/#50)
         overlap_group: for a meeting that overlaps one at another venue, the
             ids of every meeting in that overlap, in start order (#391)
+        resolved: on an overlap's first meeting, how its meetings and the ones
+            right after it classify without the overlap, for a landing that
+            proves one of them unreachable (#391, 91b488f)
     """
 
     meeting_id: str
@@ -224,6 +227,7 @@ class MeetingClass:
     timezone: str | None = None  # IANA tz of the meeting, for the block's CREATE
     attendance_id: str | None = None  # explicit owner-planned presence (#356)
     overlap_group: tuple[str, ...] = ()
+    resolved: tuple[MeetingClass, ...] = ()
 
 
 @dataclass
@@ -777,21 +781,29 @@ def scan(
         (
             event
             for event, result in zip(parsed, results, strict=True)
-            if result.bucket != "filtered"
-            and event.end > now  # type: ignore[operator]
+            if result.bucket != "filtered" and event.end > now  # type: ignore[operator]
         ),
         key=lambda e: e.start,  # type: ignore[arg-type,return-value]
     )
     overlaps = _overlap_groups(live)
     after = _after_overlap(live, overlaps, tight_gap_seconds)
+    planned = list(results)
     for index, event in enumerate(parsed):
-        if id(event) in overlaps:
+        group = overlaps.get(id(event))
+        if group is not None:
             results[index] = replace(
                 results[index],
                 bucket="overlap",
                 reason="overlaps a meeting at another venue — the owner picks one",
                 legs=(),
-                overlap_group=tuple(member.raw_id for member in overlaps[id(event)]),
+                overlap_group=tuple(member.raw_id for member in group),
+                resolved=tuple(
+                    result
+                    for other, result in zip(parsed, planned, strict=True)
+                    if group in (overlaps.get(id(other)), after.get(id(other)))
+                )
+                if event is group[0]
+                else (),
             )
         elif id(event) in after:
             legs = tuple(leg for leg in results[index].legs if leg.direction == "return")
@@ -1046,13 +1058,13 @@ def _overlap_groups(live: list[_Event]) -> dict[int, tuple[_Event, ...]]:
 
 def _after_overlap(
     live: list[_Event], overlaps: dict[int, tuple[_Event, ...]], tight_gap_seconds: int
-) -> set[int]:
-    """Meetings whose drive in would leave an overlap (#391): of the meetings that
-    start earlier and end within the tight gap before it (or after it starts), the
-    last to end is an overlap meeting. Where the owner leaves from is his pick, so
-    that drive is not planned; the drive back still is.
+) -> dict[int, tuple[_Event, ...]]:
+    """Meetings whose drive in would leave an overlap (#391) → that overlap: of
+    the meetings that start earlier and end within the tight gap before it (or
+    after it starts), the last to end is an overlap meeting. Where the owner
+    leaves from is his pick, so that drive is not planned; the drive back still is.
     """
-    after: set[int] = set()
+    after: dict[int, tuple[_Event, ...]] = {}
     for event in live:
         before = [
             other
@@ -1062,7 +1074,7 @@ def _after_overlap(
         ]
         last = max(before, key=lambda o: o.end, default=None)  # type: ignore[arg-type,return-value]
         if id(event) not in overlaps and last is not None and id(last) in overlaps:
-            after.add(id(event))
+            after[id(event)] = overlaps[id(last)]
     return after
 
 
