@@ -578,6 +578,31 @@ def test_an_overlap_created_shortly_before_it_starts_still_notifies(state_dir, m
     assert message is not None and "overlap at different places" in message
 
 
+def test_an_overlap_first_seen_after_it_starts_drops_the_drives_and_notifies_now(
+    state_dir, monkeypatch
+):
+    """#391 review: the rehearsal started 10 minutes ago and the dinner is still
+    ahead. The overlap still holds, so the dinner's drives go, and the notice
+    goes out on this sweep (once), not never because its first meeting began."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    current = [
+        _block("dinner", "meeting_outbound", "dinner-out"),
+        _block("dinner", "meeting_return", "dinner-back"),
+    ]
+    blocks, _skipped, held = meeting_desired_blocks(
+        scan(_overlap_events(NOW - timedelta(minutes=10)), now=NOW, home_address=HOME),
+        route=lambda o, d: timedelta(minutes=10),
+    )
+    assert [leg.key for leg in held] == [("rehearsal", "meeting_overlap")]
+    plan = plan_reconcile(blocks, current, held=frozenset(leg.key for leg in held), now=NOW)
+    assert plan.creates == () and plan.updates == ()
+    assert {d.event_id for d in plan.deletes} == {"dinner-out", "dinner-back"}
+
+    messages = _sweep_messages(plan, held, current, (0, 30))
+    assert messages[0] is not None and "overlap at different places" in messages[0]
+    assert messages[1] is None
+
+
 def test_a_meeting_under_way_keeps_its_drives():
     """#336 review: a meeting that started is bucketed `past` with no legs; its
     return drive may still be ahead, so both its blocks are held."""

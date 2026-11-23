@@ -1027,9 +1027,8 @@ def _assert_overlap_gets_no_drive(result, *members):
 
 
 def test_scan_landing_during_a_cross_venue_overlap_drives_to_neither_meeting():
-    """Whatever the landing could reach, the overlap stays the owner's pick. An
-    in-flight sweep sees both meetings as already started (`past`): it keeps
-    their usual unannounced past holds and has no notice to send."""
+    """Whatever the landing could reach, the overlap stays the owner's pick, also
+    on an in-flight sweep after both meetings started: one notice, no holds."""
     failed = _route(
         {("DEN airport", VENUE): 37, ("DEN airport", HOTEL): 37, (HOME, "BNA airport"): 30},
         default_minutes=None,
@@ -1051,10 +1050,25 @@ def test_scan_landing_during_a_cross_venue_overlap_drives_to_neither_meeting():
                 route=route,
             )
             _assert_overlap_gets_no_drive(result, "real", "other")
-            if now == NOW:
-                assert [h.key for h in result.held] == [("real", "meeting_overlap")], label
-            else:
-                assert not any(h.announce for h in result.held if h.identity in {"real", "other"})
+            assert [h.key for h in result.held if h.kind.startswith("meeting")] == [
+                ("real", "meeting_overlap")
+            ], label
+
+
+@pytest.mark.parametrize("now", [NOW, INFLIGHT])
+def test_scan_landing_before_the_second_overlap_meeting_drives_to_neither(now):
+    """#391 QA: the in-flight sweep runs after A started and before B starts."""
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(23, 15), _dt(23, 40), VENUE_B),
+        ],
+        now=now,
+    )
+    _assert_overlap_gets_no_drive(result, "A", "B")
+    assert [h.key for h in result.held if h.kind.startswith("meeting")] == [
+        ("A", "meeting_overlap")
+    ]
 
 
 def test_scan_unreachable_candidate_blocks_are_deleted_not_held():
@@ -1314,9 +1328,11 @@ def test_scan_landing_during_a_three_meeting_overlap_drives_to_none():
     _assert_overlap_gets_no_drive(result, "real", "unreachable", "ended")
 
 
-def test_scan_no_bridge_out_of_a_pruned_cross_venue_overlap():
+@pytest.mark.parametrize("now", [NOW, INFLIGHT])
+def test_scan_no_drive_for_a_meeting_right_after_a_cross_venue_overlap(now):
     """#391: a meeting right after an overlap at another venue gets no leg out of
-    it, even when the landing could reach only one of the overlapping meetings."""
+    it and no return either, even when the landing could reach only one of the
+    overlapping meetings, and also on an in-flight sweep after both started."""
     next_start = MEETING_END + timedelta(minutes=10)
     route = _route(
         {
@@ -1333,11 +1349,13 @@ def test_scan_no_bridge_out_of_a_pruned_cross_venue_overlap():
             _gcal_event("unreachable", _dt(20), _dt(22, 45), VENUE_B),
             _gcal_event("next", next_start, next_start + timedelta(hours=1), VENUE_B),
         ],
+        now=now,
         route=route,
     )
-    _assert_overlap_gets_no_drive(result, "real", "unreachable")
-    assert not any(b.identity == "next" and b.kind == "meeting_outbound" for b in _created(result))
-    assert [h.key for h in result.held] == [("unreachable", "meeting_overlap")]
+    _assert_overlap_gets_no_drive(result, "real", "unreachable", "next")
+    assert [h.key for h in result.held if h.kind.startswith("meeting")] == [
+        ("unreachable", "meeting_overlap")
+    ]
 
 
 def test_scan_existing_bridge_out_of_a_cross_venue_overlap_is_deleted_not_held():

@@ -331,7 +331,7 @@ def meeting_desired_blocks(
                     )
                 )
             continue
-        if tuple(getattr(meeting, "overlap_group", ()))[:1] == (meeting.meeting_id,):
+        if getattr(meeting, "overlap_group", ())[:1] == (meeting.meeting_id,):
             notice = _overlap_notice(meeting, meetings)
             skipped.append(f"meeting {meeting.meeting_id}: {notice.reason}")
             held.append(notice)

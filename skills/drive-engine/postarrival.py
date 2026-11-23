@@ -118,20 +118,6 @@ def _next_starts_within(meeting: object, others: Sequence[object], tight_gap_sec
     return False
 
 
-def _overlaps_elsewhere(meeting: object, others: Sequence[object]) -> bool:
-    """Whether `meeting` overlaps in time one at another place, the rule scan's
-    overlap groups apply (same venue or same attendance is one stay)."""
-    attendance = getattr(meeting, "attendance_id", None)
-    return any(
-        other is not meeting
-        and other.start < meeting.end  # type: ignore[attr-defined]
-        and meeting.start < other.end  # type: ignore[attr-defined]
-        and not same_place(getattr(meeting, "location", None), getattr(other, "location", None))
-        and (attendance is None or getattr(other, "attendance_id", None) != attendance)
-        for other in others
-    )
-
-
 def postarrival_meetings_from(
     scan_results: Sequence[object],
     *,
@@ -143,8 +129,7 @@ def postarrival_meetings_from(
     """Lift scan results that are eligible in-person meeting intents.
 
     Declined, cancelled, skipped, virtual, at-anchor, planner-block, and other
-    filtered results stay out even when they still carry a timed location, and so
-    does every meeting of a cross-venue overlap (#391), whatever its bucket. An
+    filtered results stay out even when they still carry a timed location. An
     active skip excludes a `past` meeting (scan buckets past before it checks
     skip). A legitimate in-flight `past` in-person meeting remains eligible.
     """
@@ -156,15 +141,11 @@ def postarrival_meetings_from(
         bucket = getattr(meeting, "bucket", None)
         if not isinstance(identity, str) or start is None or end is None:
             continue
-        if bucket not in _ELIGIBLE_BUCKETS or getattr(meeting, "overlap_group", ()):
+        if bucket not in _ELIGIBLE_BUCKETS:
             continue
         if _skip_is_active(skip_state, identity, now):
             continue
         eligible.append(meeting)
-    # A cross-venue overlap (#391) is the owner's pick, never a landing drive.
-    # Scan groups the meetings still ahead; meetings already under way when an
-    # in-flight sweep runs are `past` to scan, so their overlap is caught here.
-    eligible = [meeting for meeting in eligible if not _overlaps_elsewhere(meeting, eligible)]
 
     out: list[PostarrivalMeeting] = []
     for meeting in eligible:
