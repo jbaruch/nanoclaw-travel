@@ -220,10 +220,10 @@ def test_home_metro_placeholder_routes_meeting_from_current_home(monkeypatch, tm
     assert returning.end == datetime(2026, 9, 11, 19, 40, tzinfo=UTC)
 
 
-def test_sweep_an_overlapping_meeting_too_far_to_reach_blocks_no_drive(monkeypatch, tmp_path):
-    """#391 Amendment 4: the sweep hands scan the away cap. A meeting ten hours
-    from the anchor overlaps a local one; it is no overlap member, so the local
-    meeting keeps both drives and no overlap notice is held."""
+def _overlap_sweep(monkeypatch, tmp_path, events, minutes, driving=()):
+    """Run `_run_sweep` over `events` (id, location, start hour, end hour on
+    2026-09-11 UTC) with `minutes(origin, dest)` routes; return the meeting
+    creates as (identity, kind) and the meeting holds as (identity, kind)."""
     from datetime import timedelta
 
     import home_address
@@ -234,29 +234,24 @@ def test_sweep_an_overlapping_meeting_too_far_to_reach_blocks_no_drive(monkeypat
     monkeypatch.setattr(home_address, "read_current_home", lambda: "12 Example St")
     monkeypatch.setattr(state, "read_config", lambda: {})
     monkeypatch.setattr(trip_origin, "load_travel_schedule", lambda: [])
+    monkeypatch.setattr(reconcile_sweep, "driving_trips", lambda *_args, **_kwargs: list(driving))
 
-    def timed(event_id, location):
+    def timed(event_id, location, start, end):
         return {
             "id": event_id,
             "summary": event_id,
             "location": location,
-            "start": {"dateTime": "2026-09-11T18:00:00Z"},
-            "end": {"dateTime": "2026-09-11T19:00:00Z"},
+            "start": {"dateTime": f"2026-09-11T{start}:00Z"},
+            "end": {"dateTime": f"2026-09-11T{end}:00Z"},
         }
 
     monkeypatch.setattr(
-        _EmptyFetcher,
-        "fetch_window",
-        lambda self, **_: [timed("downtown", "42 Example Ave"), timed("far", "Far City Office")],
+        _EmptyFetcher, "fetch_window", lambda self, **_: [timed(*event) for event in events]
     )
     monkeypatch.setattr(
         reconcile_sweep,
         "make_route",
-        lambda _, **_kwargs: (
-            lambda origin, dest: timedelta(
-                hours=10 if "Far City Office" in (origin, dest) else 0, minutes=40
-            )
-        ),
+        lambda _, **_kwargs: lambda origin, dest: timedelta(minutes=minutes(origin, dest)),
     )
     held = []
 
@@ -275,9 +270,82 @@ def test_sweep_an_overlapping_meeting_too_far_to_reach_blocks_no_drive(monkeypat
     )
 
     reconcile_sweep._run_sweep()
-    downtown = {c.desired.kind for c in plans[0].creates if c.desired.identity == "downtown"}
-    assert downtown == {"meeting_outbound", "meeting_return"}
-    assert held and not any(h.kind == "meeting_overlap" for h in held)
+    ids = {event[0] for event in events}
+    creates = {
+        (c.desired.identity, c.desired.kind) for c in plans[0].creates if c.desired.identity in ids
+    }
+    return creates, [h.key for h in held if h.identity in ids]
+
+
+def test_sweep_an_overlapping_meeting_too_far_to_reach_blocks_no_drive(monkeypatch, tmp_path):
+    """#391 Amendments 4-5: a home meeting 10h40 from the anchor, past
+    ROAD_TRIP_MAX, gets no planned drive, so it is no overlap member: the
+    local meeting it overlaps keeps both drives and no overlap notice is held."""
+    creates, held = _overlap_sweep(
+        monkeypatch,
+        tmp_path,
+        [
+            ("downtown", "42 Example Ave", "18:00", "19:00"),
+            ("far", "Far City Office", "18:00", "19:00"),
+        ],
+        lambda origin, dest: (10 * 60 if "Far City Office" in (origin, dest) else 0) + 40,
+    )
+    assert creates == {("downtown", "meeting_outbound"), ("downtown", "meeting_return")}
+    assert (
+        held
+        and ("far", "meeting_overlap") not in held
+        and ("downtown", "meeting_overlap") not in held
+    )
+
+
+def _atlanta_minutes(origin, dest):
+    """Home↔Atlanta 227 min, a road trip; across Atlanta 10 min."""
+    return 10 if "Atlanta" in origin and "Atlanta" in dest else 227
+
+
+_ATLANTA = [
+    ("rehearsal", "Venue A, Atlanta", "17:30", "21:00"),
+    ("dinner", "Venue B, Atlanta", "18:00", "21:00"),
+]
+
+
+def test_sweep_a_road_trip_overlap_gets_no_drives(monkeypatch, tmp_path):
+    """#391 Amendment 5 (verify-7 probe): both meetings are a 3-9 h road trip
+    from home, which the engine plans, so they stay overlap members: no drive
+    and one overlap notice, never a negative-gap bridge."""
+    creates, held = _overlap_sweep(monkeypatch, tmp_path, _ATLANTA, _atlanta_minutes)
+    assert creates == set()
+    assert held == [("rehearsal", "meeting_overlap")]
+
+
+def test_sweep_a_driven_trip_overlap_past_road_trip_max_gets_no_drives(monkeypatch, tmp_path):
+    """The driving_to exemption (#242): on a trip he drives to, the engine plans
+    a drive of any length, so a 10-hour overlap stays the owner's pick."""
+    from datetime import timedelta
+
+    from lodging_source import DriveTrip
+
+    day = datetime(2026, 9, 11, tzinfo=UTC)
+    trip = DriveTrip(
+        key="atl",
+        summary="Atlanta",
+        hotel="Hotel",
+        address="Hotel, Atlanta",
+        check_in=day + timedelta(hours=22),
+        check_out=day + timedelta(days=2),
+        span_start=day,
+        span_end=day + timedelta(days=2),
+        expires=day + timedelta(days=3),
+    )
+    creates, held = _overlap_sweep(
+        monkeypatch,
+        tmp_path,
+        _ATLANTA,
+        lambda origin, dest: 10 if "Atlanta" in origin and "Atlanta" in dest else 10 * 60,
+        driving=[trip],
+    )
+    assert creates == set()
+    assert held == [("rehearsal", "meeting_overlap")]
 
 
 def _arrival_day_sweep(monkeypatch, tmp_path, *, meeting_start, meeting_end):

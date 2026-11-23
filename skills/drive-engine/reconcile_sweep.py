@@ -72,8 +72,8 @@ from lodging_source import (  # noqa: E402
     meetings_on_trip,
 )
 from meeting_source import (  # noqa: E402
-    DEFAULT_MAX_REASONABLE_DRIVE,
     OVERLAP_NOTICE_KIND,
+    ROAD_TRIP_MAX,
     TripPresence,
     booked_trips,
     exclude_drive_block_events,
@@ -1647,7 +1647,7 @@ def _run_sweep() -> dict:
     from home_address import HomeAddressError, read_current_home
     from maps_client import MapsClient
     from operator_tz import read_operator_tz
-    from scan import scan
+    from scan import MeetingClass, scan
     from skip_state import load_active_skips
     from state import (
         MAX_LIVE_ORIGIN_AGE_MINUTES,
@@ -1821,24 +1821,6 @@ def _run_sweep() -> dict:
         radius = config.get("venue_radius_meters", DEFAULT_VENUE_RADIUS_METERS)
         if isinstance(radius, bool) or not isinstance(radius, int) or radius < 0:
             raise ValueError("venue_radius_meters must be a non-negative integer; repair config")
-        meetings = scan(
-            events,
-            now=now,
-            home_address=home,
-            skip_state=skips,
-            anchor_for=anchor_for,
-            flight_windows=[],
-            flight_summaries=[],
-            attendances=attendances,
-            venue_near=attendance_nearby(events, attendances, maps, radius),
-            return_anchor_for=anchor_for
-            if any(row.schema_version == 2 for row in attendances)
-            else None,
-            # The away cap the landing composer applies, from the day's anchor.
-            too_far=lambda origin, venue: (
-                (drive := route(origin, venue)) is not None and drive > DEFAULT_MAX_REASONABLE_DRIVE
-            ),
-        )
         # A trip the operator DRIVES to is resolved before the meeting side, so
         # that trip's own events are spared the away-suppression: with a
         # check-in stamped after the first event the anchor resolves home, the
@@ -1854,6 +1836,31 @@ def _run_sweep() -> dict:
             route=route,
             home_address=home,
             verdicts=sweep_verdicts,
+        )
+
+        def unreachable(meeting: MeetingClass, origin: str) -> bool:
+            # Where meeting_desired_blocks plans no drive at all (#391
+            # Amendment 5): no route, or past ROAD_TRIP_MAX off a driven trip.
+            drive = route(origin, meeting.location)  # type: ignore[arg-type]
+            return drive is None or (
+                drive > ROAD_TRIP_MAX
+                and not _trip_presence(driving, [meeting], route=route, itinerary=itinerary)
+            )
+
+        meetings = scan(
+            events,
+            now=now,
+            home_address=home,
+            skip_state=skips,
+            anchor_for=anchor_for,
+            flight_windows=[],
+            flight_summaries=[],
+            attendances=attendances,
+            venue_near=attendance_nearby(events, attendances, maps, radius),
+            return_anchor_for=anchor_for
+            if any(row.schema_version == 2 for row in attendances)
+            else None,
+            unreachable=unreachable,
         )
         # Meeting drives are written and announced in the operator's current
         # zone (#301): the clock they are reading, not the offset a source

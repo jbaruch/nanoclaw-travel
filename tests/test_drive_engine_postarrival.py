@@ -24,7 +24,7 @@ from engine import AirportInfo, build_reconcile_plan  # noqa: E402
 from flight_identity import BYAIR, Flight, merge_flights  # noqa: E402
 from flight_mask import is_flight_event, known_flight_codes  # noqa: E402
 from itinerary import Itinerary  # noqa: E402
-from meeting_source import DEFAULT_MAX_REASONABLE_DRIVE, meeting_desired_blocks  # noqa: E402
+from meeting_source import ROAD_TRIP_MAX, meeting_desired_blocks  # noqa: E402
 from postarrival import (  # noqa: E402
     FlightGuard,
     PostarrivalMeeting,
@@ -728,7 +728,7 @@ def _scan_plan(
     current_blocks=(),
     schedule=None,
     route=None,
-    too_far=None,
+    unreachable=None,
 ):
     """Real scan → meeting_source → composer → reconcile (no injected meetings)."""
     schedule = list(schedule or _schedule())
@@ -746,7 +746,7 @@ def _scan_plan(
         anchor_for=anchor_for,
         flight_windows=[],
         flight_summaries=[],
-        too_far=too_far,
+        unreachable=unreachable,
     )
     blocks, _skipped, held = meeting_desired_blocks(meetings, route=route or ISSUE_ROUTE)
     return _plan(
@@ -1489,9 +1489,9 @@ def test_scan_an_overlap_member_ended_before_landing_leaves_no_drive_overlapping
     assert not any(h.identity in {"B", "C"} for h in result.held)
 
 
-def _away(origin, venue):
-    drive = _far_route()(origin, venue)
-    return drive is not None and drive > DEFAULT_MAX_REASONABLE_DRIVE
+def _away(meeting, origin):
+    drive = _far_route()(origin, meeting.location)
+    return drive is None or drive > ROAD_TRIP_MAX
 
 
 def test_scan_a_home_city_meeting_mid_trip_is_no_overlap_member():
@@ -1505,7 +1505,7 @@ def test_scan_a_home_city_meeting_mid_trip_is_no_overlap_member():
             _gcal_event("real", _dt(16, 30, day=13), _dt(18, day=13), VENUE),
         ],
         route=_far_route(),
-        too_far=_away,
+        unreachable=_away,
     )
     assert sorted(_meeting_drives(result, "real")) == [
         ("meeting_outbound", HOTEL, VENUE),
@@ -1526,7 +1526,7 @@ def test_scan_a_reachable_mid_trip_overlap_still_gets_no_drives():
             _gcal_event("real", _dt(16, 30, day=13), _dt(18, day=13), VENUE),
         ],
         route=_far_route(),
-        too_far=_away,
+        unreachable=_away,
     )
     assert not _meeting_drives(result, "real") and not _meeting_drives(result, "other")
     assert [h.key for h in result.held if h.kind.startswith("meeting")] == [
