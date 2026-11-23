@@ -251,7 +251,11 @@ def _overlap_sweep(monkeypatch, tmp_path, events, minutes, driving=()):
     monkeypatch.setattr(
         reconcile_sweep,
         "make_route",
-        lambda _, **_kwargs: lambda origin, dest: timedelta(minutes=minutes(origin, dest)),
+        lambda _, **_kwargs: (
+            lambda origin, dest: (
+                None if (m := minutes(origin, dest)) is None else timedelta(minutes=m)
+            )
+        ),
     )
     held = []
 
@@ -296,6 +300,24 @@ def test_sweep_an_overlapping_meeting_too_far_to_reach_blocks_no_drive(monkeypat
         and ("far", "meeting_overlap") not in held
         and ("downtown", "meeting_overlap") not in held
     )
+
+
+def test_sweep_an_overlap_with_one_unresolved_route_gets_no_drives(monkeypatch, tmp_path):
+    """#391 Amendment 6: Maps cannot resolve anchor→far but resolves far→anchor.
+    A failed route is unknown, not unreachable, so "far" stays an overlap
+    member: no drive for either meeting (never a return from a venue the
+    itinerary never reached) and one overlap notice."""
+    creates, held = _overlap_sweep(
+        monkeypatch,
+        tmp_path,
+        [
+            ("downtown", "42 Example Ave", "18:00", "19:00"),
+            ("far", "Far City Office", "18:00", "19:00"),
+        ],
+        lambda origin, dest: None if dest == "Far City Office" else 40,
+    )
+    assert creates == set()
+    assert held == [("downtown", "meeting_overlap")]
 
 
 def _atlanta_minutes(origin, dest):

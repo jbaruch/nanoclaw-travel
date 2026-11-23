@@ -1840,12 +1840,12 @@ def _run_sweep() -> dict:
 
         def unreachable(meeting: MeetingClass, origin: str) -> bool:
             # Where meeting_desired_blocks plans no drive at all (#391
-            # Amendment 5): no route, or past ROAD_TRIP_MAX off a driven trip.
-            drive = route(origin, meeting.location)  # type: ignore[arg-type]
-            return drive is None or (
-                drive > ROAD_TRIP_MAX
-                and not _trip_presence(driving, [meeting], route=route, itinerary=itinerary)
-            )
+            # Amendments 5-6): both ways resolve past ROAD_TRIP_MAX off a
+            # driven trip. A route Maps cannot resolve is unknown, not far.
+            drives = (route(origin, meeting.location), route(meeting.location, origin))  # type: ignore[arg-type]
+            return all(
+                drive is not None and drive > ROAD_TRIP_MAX for drive in drives
+            ) and not _trip_presence(driving, [meeting], route=route, itinerary=itinerary)
 
         meetings = scan(
             events,
