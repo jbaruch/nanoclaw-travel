@@ -484,14 +484,9 @@ def test_a_live_sweep_announces_a_drive_missing_for_an_hour(state_dir, monkeypat
     assert messages[1] is not None and messages[1].startswith("Couldn't plan Drive: → BNA")
 
 
-def test_overlapping_meetings_lose_their_drives_and_announce_the_overlap_once(
-    state_dir, monkeypatch
-):
-    """#391: a different-venue overlap plans no leg, deletes the drives already
-    on the calendar (none is held) and sends one notice naming both meetings."""
-    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
-    start = NOW + timedelta(days=2)
-    events = [
+def _overlap_events(start):
+    """The #391 rehearsal and dinner: different venues, overlapping in time."""
+    return [
         {
             "id": "rehearsal",
             "summary": "Rehearsal",
@@ -507,31 +502,22 @@ def test_overlapping_meetings_lose_their_drives_and_announce_the_overlap_once(
             "end": {"dateTime": (start + timedelta(hours=3.5)).isoformat(), "timeZone": "UTC"},
         },
     ]
-    current = [
-        _block("rehearsal", "meeting_outbound", "rehearsal-out"),
-        _block("rehearsal", "meeting_return", "rehearsal-back"),
-        _block("dinner", "meeting_outbound", "dinner-bridge"),
-    ]
-    blocks, _skipped, held = meeting_desired_blocks(
-        scan(events, now=NOW, home_address=HOME), route=lambda o, d: timedelta(minutes=10)
-    )
-    plan = plan_reconcile(blocks, current, held=frozenset(leg.key for leg in held), now=NOW)
-    assert plan.creates == () and plan.updates == ()
-    deleted = {d.event_id for d in plan.deletes}
-    assert deleted == {"rehearsal-out", "rehearsal-back", "dinner-bridge"}
 
+
+def _sweep_messages(plan, held, current, minutes):
+    """The operator message of a sweep run `minutes` after NOW, for each entry."""
     applied = types.SimpleNamespace(
         added_meeting_legs=[],
         material_updates=[],
         created=0,
         updated=0,
-        deleted=3,
+        deleted=len(plan.deletes),
         converted=0,
         deferred=0,
         errors=[],
         skipped_creations=[],
     )
-    messages = [
+    return [
         reconcile_sweep.finish_sweep(
             plan,
             [],
@@ -540,18 +526,56 @@ def test_overlapping_meetings_lose_their_drives_and_announce_the_overlap_once(
             held=tuple(held),
             current_blocks=current,
             display_zone="America/Chicago",
-            now=NOW + timedelta(minutes=minutes),
+            now=NOW + timedelta(minutes=minute),
         )["data"]["message"]
-        for minutes in (0, 60, 120)
+        for minute in minutes
     ]
+
+
+def test_overlapping_meetings_lose_their_drives_and_announce_the_overlap_once(
+    state_dir, monkeypatch
+):
+    """#391: a different-venue overlap plans no leg, deletes the drives already
+    on the calendar (none is held) and sends one notice naming both meetings,
+    on the first sweep: its drives are already gone, so it does not wait."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    current = [
+        _block("rehearsal", "meeting_outbound", "rehearsal-out"),
+        _block("rehearsal", "meeting_return", "rehearsal-back"),
+        _block("dinner", "meeting_outbound", "dinner-bridge"),
+    ]
+    blocks, _skipped, held = meeting_desired_blocks(
+        scan(_overlap_events(NOW + timedelta(days=2)), now=NOW, home_address=HOME),
+        route=lambda o, d: timedelta(minutes=10),
+    )
+    plan = plan_reconcile(blocks, current, held=frozenset(leg.key for leg in held), now=NOW)
+    assert plan.creates == () and plan.updates == ()
+    deleted = {d.event_id for d in plan.deletes}
+    assert deleted == {"rehearsal-out", "rehearsal-back", "dinner-bridge"}
+
+    messages = _sweep_messages(plan, held, current, (0, 60))
     notice = (
         "Rehearsal (Tue Oct 21, 20:30 UTC) and Dinner (Tue Oct 21, 21:00 UTC) overlap at "
         "different places, so no drive is planned for them. "
         "Keep one and decline or move the others."
     )
-    assert messages[0] is None and messages[2] is None
-    assert messages[1] is not None and notice in messages[1]
-    assert "Couldn't plan" not in messages[1]
+    assert messages[0] is not None and notice in messages[0]
+    assert "Couldn't plan" not in messages[0]
+    assert messages[1] is None
+
+
+def test_an_overlap_created_shortly_before_it_starts_still_notifies(state_dir, monkeypatch):
+    """#391 review: an overlap first seen 20 minutes before it starts is announced
+    on that sweep, not after the 55-minute missing-route wait it would outlast."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    blocks, _skipped, held = meeting_desired_blocks(
+        scan(_overlap_events(NOW + timedelta(minutes=20)), now=NOW, home_address=HOME),
+        route=lambda o, d: timedelta(minutes=10),
+    )
+    plan = plan_reconcile(blocks, [], held=frozenset(leg.key for leg in held), now=NOW)
+    assert plan.creates == ()
+    (message,) = _sweep_messages(plan, held, [], (0,))
+    assert message is not None and "overlap at different places" in message
 
 
 def test_a_meeting_under_way_keeps_its_drives():

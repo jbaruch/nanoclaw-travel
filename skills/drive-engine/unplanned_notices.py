@@ -7,8 +7,10 @@ the calendar with only a stderr line behind it (#335).
 
 `due_notices` decides which missing legs to mention. A leg is mentioned once it
 has been missing for `PERSIST_BEFORE_NOTICE` (a one-sweep routing blip heals on
-the next sweep and is not worth a message) and only once per spell: an entry
-that plans again is forgotten, so a later failure is news again. Only legs due
+the next sweep and is not worth a message) and only once per spell. An overlap
+notice (#391) is no routing blip: its drives are already deleted, so it is
+mentioned on the sweep that first sees it. An entry that plans again is
+forgotten, so a later failure is news again. Only legs due
 within `NOTICE_HORIZON` count; a drive months out has time to resolve itself.
 
 Each schema version keeps its own file (`unplanned-notices.v<N>.json`), so
@@ -35,6 +37,7 @@ if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
 # E402: these bundle-local imports resolve only after the sys.path insert above.
+from meeting_source import OVERLAP_NOTICE_KIND  # noqa: E402
 from reconcile import HeldLeg  # noqa: E402
 from skip_state import state_dir  # noqa: E402
 
@@ -157,7 +160,8 @@ def due_notices(missing: list[HeldLeg], *, now: datetime) -> list[HeldLeg]:
         entry = entries.get(key)
         if entry is None or entry["expires"] <= now:
             entry = {"first_seen": now, "expires": leg.when + _EXPIRY_GRACE, "notified": False}
-        if not entry["notified"] and now - entry["first_seen"] >= PERSIST_BEFORE_NOTICE:
+        persisted = now - entry["first_seen"] >= PERSIST_BEFORE_NOTICE
+        if not entry["notified"] and (persisted or leg.kind == OVERLAP_NOTICE_KIND):
             entry = {**entry, "notified": True}
             due.append(leg)
         updated[key] = entry
