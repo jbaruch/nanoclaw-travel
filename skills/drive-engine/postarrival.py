@@ -19,7 +19,11 @@ if str(_BUNDLE_DIR) not in sys.path:
     sys.path.insert(0, str(_BUNDLE_DIR))
 
 from block_codec import GEN_UNIFIED, ParsedBlock  # noqa: E402
-from meeting_source import DEFAULT_MAX_REASONABLE_DRIVE, MIN_MEETING_DRIVE  # noqa: E402
+from meeting_source import (  # noqa: E402
+    DEFAULT_MAX_REASONABLE_DRIVE,
+    MIN_MEETING_DRIVE,
+    OVERLAP_NOTICE_KIND,
+)
 from reconcile import DesiredBlock, HeldLeg  # noqa: E402
 from scan import DEFAULT_TIGHT_GAP_SECONDS, same_place  # noqa: E402
 
@@ -31,8 +35,11 @@ _MEETING_KINDS = frozenset({"meeting_outbound", "meeting_return"})
 # Scan buckets that represent a real in-person meeting the composer may hand off.
 # filtered / skipped stay out; past is included because an in-flight sweep sees
 # an already-started meeting as past (scan assigns that after declined/cancelled/
-# virtual/anchor filters, and before the skip check).
-_ELIGIBLE_BUCKETS = frozenset({"needs_decision", "bridge", "back_to_back", "has_block", "past"})
+# virtual/anchor filters, and before the skip check). overlap is included so a
+# landing can tell a meeting it cannot reach is no overlap member (#391).
+_ELIGIBLE_BUCKETS = frozenset(
+    {"needs_decision", "bridge", "back_to_back", "has_block", "past", "overlap"}
+)
 
 RouteFn = Callable[[str, str], "timedelta | None"]
 AddressLookup = Callable[[datetime], str | None]
@@ -64,6 +71,7 @@ class PostarrivalMeeting:
     timezone: str | None = None
     return_suppressed: bool = False
     driving_to: bool = False
+    overlap_group: tuple[str, ...] = ()
 
 
 def _skip_is_active(skip_state: dict[str, str] | None, identity: str, now: datetime | None) -> bool:
@@ -173,6 +181,7 @@ def postarrival_meetings_from(
                 timezone=getattr(meeting, "timezone", None),
                 return_suppressed=return_suppressed,
                 driving_to=identity in driving_to,
+                overlap_group=tuple(getattr(meeting, "overlap_group", ()) or ()),
             )
         )
     return out
@@ -386,6 +395,25 @@ def compose_postarrival(
                 dropped.add(meeting.identity)
                 continue
             in_play.append((meeting, drive))
+        # A meeting the landing cannot reach, or one over before it, is no overlap
+        # member (#391, 91b488f): an overlap left with one meeting plans as if
+        # it never was, from the plan its notice carries. The gone get no drive.
+        gone = dropped | {
+            m.identity for m in meetings if guard.guard_start < m.end <= guard.ready_at
+        }
+        for group in {m.overlap_group for m in meetings if m.overlap_group}:
+            notice = next((h for h in held if h.key == (group[0], OVERLAP_NOTICE_KIND)), None)
+            if notice is None or len(set(group) - gone) > 1:
+                continue
+            for identity in set(group) & gone:
+                unsafe.update(_meeting_keys(identity))
+            blocks = [x for x in notice.resolved if isinstance(x, DesiredBlock)]
+            holds = [x for x in notice.resolved if isinstance(x, HeldLeg)]
+            keys = {notice.key} | {_key(x) for x in blocks} | {x.key for x in holds}
+            held = [h for h in held if h.key not in keys] + holds
+            desired_list = [b for b in desired_list if _key(b) not in keys] + [
+                b for b in blocks if _key(b) not in unsafe
+            ]
         if len(in_play) > 1:
             diagnostics.append(
                 f"postarrival {guard.identity}: {len(in_play)} overlapping meetings; "
@@ -395,13 +423,16 @@ def compose_postarrival(
         if not in_play:
             continue
         meeting, drive = in_play[0]
-        if meeting.return_suppressed and dropped:
-            # Scan may have routed a later meeting from the dropped neighbour.
-            # Keep suppression only when a surviving continuation is usable.
+        if len(set(meeting.overlap_group) - gone) > 1:
+            continue  # the overlap stands: the owner picks one
+        if meeting.return_suppressed and gone:
+            # Scan may have routed a later meeting from a dropped or ended
+            # neighbour. Keep suppression only when a surviving continuation is
+            # usable.
             continuing, invalid = _remaining_continuations(
                 meeting,
                 meetings,
-                frozenset(dropped),
+                frozenset(gone),
                 DEFAULT_TIGHT_GAP_SECONDS,
                 desired_list,
                 held,

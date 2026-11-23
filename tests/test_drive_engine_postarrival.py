@@ -24,7 +24,7 @@ from engine import AirportInfo, build_reconcile_plan  # noqa: E402
 from flight_identity import BYAIR, Flight, merge_flights  # noqa: E402
 from flight_mask import is_flight_event, known_flight_codes  # noqa: E402
 from itinerary import Itinerary  # noqa: E402
-from meeting_source import meeting_desired_blocks  # noqa: E402
+from meeting_source import ROAD_TRIP_MAX, meeting_desired_blocks  # noqa: E402
 from postarrival import (  # noqa: E402
     FlightGuard,
     PostarrivalMeeting,
@@ -728,6 +728,7 @@ def _scan_plan(
     current_blocks=(),
     schedule=None,
     route=None,
+    unreachable=None,
 ):
     """Real scan → meeting_source → composer → reconcile (no injected meetings)."""
     schedule = list(schedule or _schedule())
@@ -745,6 +746,7 @@ def _scan_plan(
         anchor_for=anchor_for,
         flight_windows=[],
         flight_summaries=[],
+        unreachable=unreachable,
     )
     blocks, _skipped, held = meeting_desired_blocks(meetings, route=route or ISSUE_ROUTE)
     return _plan(
@@ -1027,9 +1029,12 @@ def _assert_reachable_meeting_replaces_arrival(result):
     assert not any(b.identity == "real" and b.kind == "meeting_outbound" for b in created)
     assert not _created_kinds(result, "home-weekly")
     assert all(not (GUARD <= b.start < READY) for b in created)
+    # #391: a meeting the landing cannot reach is no overlap member (91b488f).
+    assert not any(h.kind == "meeting_overlap" for h in result.held)
 
 
 def test_scan_unreachable_far_meeting_does_not_make_reachable_one_ambiguous():
+    """A home-city meeting during a trip blocks no trip drive (#391, 91b488f)."""
     for now in (NOW, INFLIGHT):
         result = _scan_plan(
             [
@@ -1054,6 +1059,58 @@ def test_scan_unreachable_short_meeting_does_not_make_reachable_one_ambiguous():
     )
     _assert_reachable_meeting_replaces_arrival(result)
     assert any("not reachable" in s for s in result.skipped)
+
+
+def _assert_overlap_gets_no_drive(result, *members):
+    """#391: landing during a cross-venue overlap goes to lodging; no drive is
+    planned for any overlapping meeting."""
+    created = _created(result)
+    arrival = next(b for b in created if b.kind == "airport_arrival")
+    assert arrival.destination == HOTEL
+    assert not any(b.identity in members for b in created)
+
+
+def test_scan_landing_during_a_cross_venue_overlap_drives_to_neither_meeting():
+    """While the landing may reach both, the overlap stays the owner's pick, also
+    on an in-flight sweep after both meetings started: one notice, no holds."""
+    failed = _route(
+        {("DEN airport", VENUE): 37, ("DEN airport", HOTEL): 37, (HOME, "BNA airport"): 30},
+        default_minutes=None,
+    )
+    cases = [
+        ("route-failed", VENUE_B, failed),
+        ("both-reachable", VENUE_B, None),
+    ]
+    for label, venue, route in cases:
+        for now in (NOW, INFLIGHT):
+            result = _scan_plan(
+                [
+                    _gcal_event("real", MEETING_START, MEETING_END, VENUE),
+                    _gcal_event("other", MEETING_START, MEETING_END, venue),
+                ],
+                now=now,
+                route=route,
+            )
+            _assert_overlap_gets_no_drive(result, "real", "other")
+            assert [h.key for h in result.held if h.kind.startswith("meeting")] == [
+                ("real", "meeting_overlap")
+            ], label
+
+
+@pytest.mark.parametrize("now", [NOW, INFLIGHT])
+def test_scan_landing_before_the_second_overlap_meeting_drives_to_neither(now):
+    """#391 QA: the in-flight sweep runs after A started and before B starts."""
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(23, 15), _dt(23, 40), VENUE_B),
+        ],
+        now=now,
+    )
+    _assert_overlap_gets_no_drive(result, "A", "B")
+    assert [h.key for h in result.held if h.kind.startswith("meeting")] == [
+        ("A", "meeting_overlap")
+    ]
 
 
 def test_scan_unreachable_candidate_blocks_are_deleted_not_held():
@@ -1400,6 +1457,140 @@ def test_scan_valid_surviving_bridge_after_pruning_still_suppresses_hotel_return
     assert not any(b.identity == "real" and b.kind == "meeting_return" for b in created)
 
 
+@pytest.mark.parametrize("now", [NOW, INFLIGHT])
+def test_scan_an_overlap_member_ended_before_landing_leaves_no_drive_overlapping_a(now):
+    """#391 review: B overlaps A and ends before the landing is ready; C starts
+    ten minutes after A. B is gone, so A's continuation is checked without it:
+    scan routed C from the hotel, which would leave while A still runs, so that
+    drive goes and A drives back. B, over before the landing, gets no drive."""
+    next_start = MEETING_END + timedelta(minutes=10)
+    route = _route(
+        {
+            ("DEN airport", VENUE): 37,
+            ("DEN airport", HOTEL): 37,
+            (VENUE, VENUE_B): 5,
+            (VENUE, HOTEL): 24,
+        }
+    )
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(22, 20), "Third Venue, Denver"),
+            _gcal_event("C", next_start, next_start + timedelta(hours=1), VENUE_B),
+        ],
+        now=now,
+        route=route,
+    )
+    created = _created(result)
+    assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in created)
+    assert _meeting_drives(result, "A") == [("meeting_return", VENUE, HOTEL)]
+    assert all(b.start >= MEETING_END for b in created if b.identity == "C")
+    assert not any(b.identity == "B" for b in created)
+    assert not any(h.identity in {"B", "C"} for h in result.held)
+
+
+def _away(meeting, origin):
+    drive = _far_route()(origin, meeting.location)
+    return drive is None or drive > ROAD_TRIP_MAX
+
+
+def test_scan_a_home_city_meeting_mid_trip_is_no_overlap_member():
+    """#391 Amendment 4: on day two of the Denver trip (no landing) a Nashville
+    weekly overlaps a Denver meeting. The owner cannot get there from the hotel,
+    so it blocks nothing: the Denver meeting plans as if it were alone, and the
+    weekly keeps its own plan (held: no booking covers a 17-hour drive)."""
+    result = _scan_plan(
+        [
+            _gcal_event("home-weekly", _dt(16, day=13), _dt(18, day=13), NASHVILLE),
+            _gcal_event("real", _dt(16, 30, day=13), _dt(18, day=13), VENUE),
+        ],
+        route=_far_route(),
+        unreachable=_away,
+    )
+    assert sorted(_meeting_drives(result, "real")) == [
+        ("meeting_outbound", HOTEL, VENUE),
+        ("meeting_return", VENUE, HOTEL),
+    ]
+    assert not _meeting_drives(result, "home-weekly")
+    assert [h.key for h in result.held if h.kind.startswith("meeting")] == [
+        ("home-weekly", "meeting_outbound")
+    ]
+
+
+def test_scan_a_reachable_mid_trip_overlap_still_gets_no_drives():
+    """Amendment 4 drops only the unreachable: two Denver meetings that overlap
+    on day two stay the owner's pick."""
+    result = _scan_plan(
+        [
+            _gcal_event("other", _dt(16, day=13), _dt(18, day=13), VENUE_B),
+            _gcal_event("real", _dt(16, 30, day=13), _dt(18, day=13), VENUE),
+        ],
+        route=_far_route(),
+        unreachable=_away,
+    )
+    assert not _meeting_drives(result, "real") and not _meeting_drives(result, "other")
+    assert [h.key for h in result.held if h.kind.startswith("meeting")] == [
+        ("other", "meeting_overlap")
+    ]
+
+
+def _after_overlap_plan(now, other_end):
+    """real, `other` at VENUE_B from 20:00, then `next` at VENUE_B at 23:55."""
+    next_start = MEETING_END + timedelta(minutes=10)
+    route = _route(
+        {
+            ("DEN airport", VENUE): 37,
+            ("DEN airport", VENUE_B): 30,
+            ("DEN airport", HOTEL): 37,
+            (VENUE, VENUE_B): 5,
+            (VENUE, HOTEL): 24,
+        }
+    )
+    result = _scan_plan(
+        [
+            _gcal_event("real", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("other", _dt(20), other_end, VENUE_B),
+            _gcal_event("next", next_start, next_start + timedelta(hours=1), VENUE_B),
+        ],
+        now=now,
+        route=route,
+    )
+    return result
+
+
+def _meeting_drives(result, identity):
+    return [(b.kind, b.origin, b.destination) for b in _created(result) if b.identity == identity]
+
+
+@pytest.mark.parametrize("now", [NOW, INFLIGHT])
+def test_scan_a_meeting_right_after_a_cross_venue_overlap_keeps_only_its_return(now):
+    """#391: a meeting right after an overlap at another venue gets no drive out
+    of it; its own drive back still plans, also on an in-flight sweep."""
+    result = _after_overlap_plan(now, MEETING_END)
+    _assert_overlap_gets_no_drive(result, "real", "other")
+    assert _meeting_drives(result, "next") == [("meeting_return", VENUE_B, HOTEL)]
+    assert [h.key for h in result.held if h.kind.startswith("meeting")] == [
+        ("other", "meeting_overlap")
+    ]
+
+
+@pytest.mark.parametrize("now", [NOW, INFLIGHT])
+def test_scan_an_overlap_the_landing_resolves_plans_as_if_it_never_was(now):
+    """#391 Amendment 3: the landing cannot reach the home-city meeting, so it is
+    no overlap member. `real` gets its drives as main plans them, with no notice."""
+    result = _scan_plan(
+        [
+            _gcal_event("home-weekly", MEETING_START, MEETING_END, NASHVILLE),
+            _gcal_event("real", _dt(23), _dt(0, day=13), VENUE),
+        ],
+        now=now,
+        route=_far_route(),
+    )
+    assert ("meeting_return", VENUE, HOTEL) in _meeting_drives(result, "real")
+    assert not _meeting_drives(result, "home-weekly")
+    assert not any(h.kind == "meeting_overlap" for h in result.held)
+
+
 def test_scan_valid_held_continuation_after_pruning_keeps_its_existing_block():
     later_start = _dt(23, 55)
     current = _outbound_current(
@@ -1419,6 +1610,25 @@ def test_scan_valid_held_continuation_after_pruning_keeps_its_existing_block():
     assert not any(d.event_id == "C-out" for d in result.plan.deletes)
 
 
+def test_scan_existing_bridge_out_of_a_cross_venue_overlap_is_deleted_not_held():
+    later_start = _dt(23, 55)
+    current = _outbound_current(
+        "C-out", "C", anchor=later_start, minutes=5, origin=VENUE, destination=VENUE_B
+    )
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(23, 30), "Third Venue, Denver"),
+            _gcal_event("C", later_start, later_start + timedelta(hours=1), VENUE_B),
+        ],
+        route=_far_route(),
+        current_blocks=[current],
+    )
+    _assert_overlap_gets_no_drive(result, "A", "B")
+    assert not any(h.identity == "C" and h.kind == "meeting_outbound" for h in result.held)
+    assert any(d.event_id == "C-out" for d in result.plan.deletes)
+
+
 def test_scan_same_venue_follow_on_after_pruning_still_needs_no_drive():
     later_start = _dt(23, 55)
     result = _scan_plan(
@@ -1431,6 +1641,20 @@ def test_scan_same_venue_follow_on_after_pruning_still_needs_no_drive():
     )
     assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in _created(result))
     assert not any(b.identity == "A" and b.kind == "meeting_return" for b in _created(result))
+
+
+def test_scan_dropped_same_venue_meeting_restores_the_hotel_return():
+    """A same-venue overlap is one stay: B ends before the landing reaches it and
+    is dropped, so A's hotel return is owed again (main's continuation check)."""
+    result = _scan_plan(
+        [
+            _gcal_event("A", MEETING_START, MEETING_END, VENUE),
+            _gcal_event("B", _dt(21), _dt(22, 50), VENUE),
+        ]
+    )
+    created = _created(result)
+    assert any(b.kind == "airport_arrival" and b.destination == VENUE for b in created)
+    assert _meeting_drives(result, "A") == [("meeting_return", VENUE, HOTEL)]
 
 
 def test_long_airport_to_meeting_handoff_keeps_ordinary_airport_to_lodging():

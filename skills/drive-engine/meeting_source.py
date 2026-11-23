@@ -29,6 +29,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _BUNDLE_DIR = Path(__file__).resolve().parent
 if str(_BUNDLE_DIR) not in sys.path:
@@ -81,6 +82,9 @@ BOOKING_WINDOW = timedelta(hours=24)
 # A zero or at-most-one-minute route is not a useful calendar drive (#356).
 # Treat it as a definitive no-drive, so an earlier bogus block is not retained.
 MIN_MEETING_DRIVE = timedelta(minutes=1)
+
+# The HeldLeg kind of a cross-venue overlap notice (#391). No block has it.
+OVERLAP_NOTICE_KIND = "meeting_overlap"
 
 # scan directions → unified meeting leg kinds (distinct so reconcile keys uniquely).
 _DIRECTION_KIND = {
@@ -199,6 +203,37 @@ def _hold(skipped: list[str], held: list[HeldLeg], meeting, leg, kind: str, reas
     )
 
 
+def _overlap_notice(meeting, meetings: list, resolved: tuple) -> HeldLeg:
+    """The one owner notice for a cross-venue overlap (#391), keyed on its first
+    meeting. It has no block to keep, so the sweep announces it once. Its `when`
+    is that meeting's end: the notice stays due while the overlap lasts.
+    `resolved` is the plan without the overlap, for a landing that ends it.
+
+    Each time reads on its meeting's own clock: the owner may be elsewhere.
+    """
+    parts = []
+    for identity in meeting.overlap_group:
+        member = next(m for m in meetings if m.meeting_id == identity)
+        start = member.start
+        try:
+            start = start.astimezone(ZoneInfo(member.timezone)) if member.timezone else start
+        except (ZoneInfoNotFoundError, ValueError):
+            pass
+        parts.append(f"{member.summary} ({start.strftime('%a %b %d, %H:%M %Z')})")
+    names = ", ".join(parts[:-1]) + " and " + parts[-1]
+    return HeldLeg(
+        identity=meeting.meeting_id,
+        kind=OVERLAP_NOTICE_KIND,
+        summary=f"Overlap: {meeting.summary}",
+        when=meeting.end,
+        reason=(
+            f"{names} overlap at different places, so no drive is planned for them. "
+            "Keep one and decline or move the others."
+        ),
+        resolved=resolved,
+    )
+
+
 def meeting_desired_blocks(
     meetings: list,
     *,
@@ -266,6 +301,12 @@ def meeting_desired_blocks(
     stays the previous meeting's end. `prep_unavailable` are talks whose Prep
     read failed: their arriving leg is HELD (#334), never re-targeted back to the
     talk start on a provider blip.
+
+    An `overlap` meeting (#391) has no legs, so reconcile deletes its blocks;
+    the first meeting of each overlap adds one announced `OVERLAP_NOTICE_KIND`
+    hold, which keeps no block and only names the conflict for the owner. It
+    carries the plan without the overlap; post-arrival restores it when a
+    landing proves one of the meetings unreachable (91b488f).
     """
     presence = driving_to or {}
     prep = prep_arrival or {}
@@ -295,6 +336,20 @@ def meeting_desired_blocks(
                     )
                 )
             continue
+        if getattr(meeting, "overlap_group", ())[:1] == (meeting.meeting_id,):
+            resolved, _skipped, resolved_held = meeting_desired_blocks(
+                list(meeting.resolved),
+                route=route,
+                max_reasonable_drive=max_reasonable_drive,
+                driving_to=driving_to,
+                display_tz=display_tz,
+                booked=booked,
+                prep_arrival=prep_arrival,
+                prep_unavailable=prep_unavailable,
+            )
+            notice = _overlap_notice(meeting, meetings, (*resolved, *resolved_held))
+            skipped.append(f"meeting {meeting.meeting_id}: {notice.reason}")
+            held.append(notice)
         for leg in meeting.legs:
             tag = f"meeting {meeting.meeting_id} {leg.direction}"
             kind = _DIRECTION_KIND.get(leg.direction)

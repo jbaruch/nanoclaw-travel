@@ -638,3 +638,62 @@ def test_missing_outbound_later_return_fences_preceding_extension(monkeypatch, r
         assert [(entry.identity, entry.kind) for entry in held] == [("later", "lodging_return")]
     else:
         assert adjusted[2] is later and not held
+
+
+@pytest.mark.parametrize("notice", [True, False])
+def test_overlap_notice_leaves_unrelated_ev_chain_grounded(monkeypatch, notice):
+    """#391: an overlap notice is held but stands for no drive, so it is no
+    energy gap. A real held leg in its place still ungrounds the later block."""
+    import tesla_planning
+    from ev_charging import EnergySample
+    from meeting_source import OVERLAP_NOTICE_KIND
+    from reconcile import HeldLeg
+    from reconcile_sweep import _ev_adjuster
+
+    class Provider:
+        def __init__(self, **_kwargs):
+            pass
+
+        def vehicle(self, _selector):
+            return "Car"
+
+        def estimate(self, *_args):
+            return EnergySample("Car", 75, 0.18, NOW, 90)
+
+        def navigation(self):
+            return []
+
+        def unavailable(self):
+            pass
+
+    monkeypatch.setattr(tesla_planning, "TeslaPlanning", Provider)
+    later = replace(
+        base(), identity="later", start=NOW + timedelta(hours=8), end=NOW + timedelta(hours=9)
+    )
+    held = HeldLeg(
+        identity="rehearsal",
+        kind=OVERLAP_NOTICE_KIND if notice else "meeting_outbound",
+        summary="Overlap: Rehearsal",
+        when=NOW + timedelta(hours=2),
+        reason="Rehearsal and Dinner overlap at different places",
+    )
+    preferences = {
+        "schema_version": 1,
+        "stop_minutes": 30,
+        "reserve_percent": 10,
+        "cold_allowance_percent": 0,
+        "highway_allowance_percent": 0,
+        "default_vehicle": "Car",
+        "event_vehicles": {},
+        "person_vehicles": {},
+        # A driver with no car: the held identity's vehicle is unknown.
+        "event_drivers": {"rehearsal": "Guest"},
+        "destination_charges": [],
+    }
+    adjusted, _ = _ev_adjuster(
+        {"ev_planning": preferences}, lambda *_: None, {("Home", "Venue"): 395}, NOW
+    )([later], [], [], [held])
+    if notice:
+        assert adjusted[0].charging_note is not None
+    else:
+        assert adjusted[0] is later

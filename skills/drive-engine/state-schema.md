@@ -92,7 +92,7 @@ Migration: version `2` added `lat` / `lon` (#334). The owner reads a version-`1`
 
 ### `unplanned-notices.v1.json`
 
-Which drives the engine has told the operator it cannot plan, so each is mentioned once. Owned by `skills/drive-engine/unplanned_notices.py` (#334). An announced held leg (`HeldLeg.announce`) with no block on the calendar is a missing drive; the sweep mentions it once it has been missing for `PERSIST_BEFORE_NOTICE` and only while it falls within `NOTICE_HORIZON` (constants at the top of `skills/drive-engine/unplanned_notices.py`). A hold that only keeps blocks in place is never announced.
+Which drives the engine has told the operator it cannot plan, so each is mentioned once. Owned by `skills/drive-engine/unplanned_notices.py` (#334). An announced held leg (`HeldLeg.announce`) with no block on the calendar is a missing drive; the sweep mentions it once it has been missing for `PERSIST_BEFORE_NOTICE` (a cross-venue overlap notice, #391, on the first sweep) and only while it falls within `NOTICE_HORIZON`, an overlap notice at any distance until its first meeting ends (constants at the top of `skills/drive-engine/unplanned_notices.py`). A hold that only keeps blocks in place is never announced.
 
 ```json
 {
