@@ -80,7 +80,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -196,7 +196,7 @@ class MeetingClass:
         meeting_id: the source event id
         summary: the event summary (for the user-facing drive/skip prompt)
         bucket: one of needs_decision / bridge / back_to_back / has_block /
-            skipped / past / filtered
+            skipped / past / filtered / overlap
         reason: a short, audit-friendly explanation of the bucket choice
         location: whitespace-normalized venue (lombot #37); None when the
             event has no usable location
@@ -208,6 +208,8 @@ class MeetingClass:
             the calendar (e.g. ["outbound"]) so the sweep can audit a missing
             return without flipping the meeting back to needs_decision
             (lombot #48/#50)
+        overlap_group: for a meeting that overlaps one at another venue, the
+            ids of every meeting in that overlap, in start order (#391)
     """
 
     meeting_id: str
@@ -221,6 +223,7 @@ class MeetingClass:
     present_directions: tuple[str, ...] = ()
     timezone: str | None = None  # IANA tz of the meeting, for the block's CREATE
     attendance_id: str | None = None  # explicit owner-planned presence (#356)
+    overlap_group: tuple[str, ...] = ()
 
 
 @dataclass
@@ -747,24 +750,29 @@ def scan(
     ]
     candidates.sort(key=lambda e: e.start)  # type: ignore[arg-type,return-value]
     order = {id(event): index for index, event in enumerate(candidates)}
+    overlaps = _overlap_groups(candidates)
 
     results: list[MeetingClass] = []
     for event in parsed:
-        results.append(
-            _classify(
-                event,
-                now=now,
-                anchor_for=anchor_for,
-                return_anchor_for=return_anchor_for,
-                skip_state=skip_state,
-                handled_directions=handled_directions,
-                candidates=candidates,
-                order=order,
-                flight_windows=windows,
-                scheduled_codes=scheduled_codes,
-                tight_gap_seconds=tight_gap_seconds,
-            )
+        result = _classify(
+            event,
+            now=now,
+            anchor_for=anchor_for,
+            return_anchor_for=return_anchor_for,
+            skip_state=skip_state,
+            handled_directions=handled_directions,
+            candidates=candidates,
+            order=order,
+            overlaps=overlaps,
+            flight_windows=windows,
+            scheduled_codes=scheduled_codes,
+            tight_gap_seconds=tight_gap_seconds,
         )
+        if id(event) in overlaps:
+            # Also on a skipped or already-blocked member: the notice names it.
+            group = tuple(member.raw_id for member in overlaps[id(event)])
+            result = replace(result, overlap_group=group)
+        results.append(result)
     return results
 
 
@@ -802,6 +810,7 @@ def _classify(
     handled_directions: dict[str, list[str]],
     candidates: list[_Event],
     order: dict[int, int],
+    overlaps: dict[int, tuple[_Event, ...]],
     flight_windows: tuple[tuple[datetime, datetime], ...],
     scheduled_codes: frozenset[str],
     tight_gap_seconds: int,
@@ -878,6 +887,7 @@ def _classify(
         return_anchor_for=return_anchor_for,
         candidates=candidates,
         order=order,
+        overlaps=overlaps,
         tight_gap_seconds=tight_gap_seconds,
     )
 
@@ -889,6 +899,7 @@ def _classify_transit(
     return_anchor_for: Callable[[datetime], tuple[str | None, str | None]] | None,
     candidates: list[_Event],
     order: dict[int, int],
+    overlaps: dict[int, tuple[_Event, ...]],
     tight_gap_seconds: int,
 ) -> MeetingClass:
     """Neighbour-aware leg computation (lombot #14/#7, #2/#40).
@@ -898,11 +909,11 @@ def _classify_transit(
     previous meeting is a DIFFERENT venue with a tight gap; otherwise an
     anchor→venue leg. Return is the mirror on the next meeting. Anchoring
     outbound on the first of a same-venue run and return on the last falls
-    out of this naturally. An overlap (negative gap) is a calendar conflict,
-    not a gap to drive in: it continues only at the same venue. At another
-    venue it is the owner's unresolved choice (#391): a leg that would drive
-    while that meeting is under way gets no endpoint, so the planner holds and
-    surfaces it instead of planning an impossible drive.
+    out of this naturally.
+
+    Meetings at different venues that overlap in time are the owner's choice
+    (#391): none of them gets a leg, and neither does the drive out of them to
+    a meeting within the tight gap after. Same-venue overlaps stay one visit.
 
     The anchor (home off-trip, the current lodging on-trip, #122) is
     resolved once per meeting at its start time — one moment, one answer;
@@ -911,6 +922,11 @@ def _classify_transit(
     into the leg endpoints with `anchor_note` set so the planner surfaces
     the meeting instead of silently routing it from the wrong continent.
     """
+    if id(event) in overlaps:
+        return _make_class(
+            event, "overlap", "overlaps a meeting at another venue — the owner picks one"
+        )
+
     index = order[id(event)]
     prev_event = candidates[index - 1] if index > 0 else None
     next_event = candidates[index + 1] if index + 1 < len(candidates) else None
@@ -926,23 +942,15 @@ def _classify_transit(
 
     # --- inbound side: how do we get TO this meeting? ---
     prev_gap = _gap_seconds(prev_event, event)
-    if _under_way_elsewhere(event, event.start, candidates, arriving=True):
-        if event.attendance_id is None:
-            legs.append(
-                TransitLeg(
-                    direction="outbound",
-                    origin=None,
-                    destination=event.location or anchor_address,
-                    arrive_by=event.start,
-                    anchor_note=_OVERLAP_NOTE,
-                )
-            )
-    elif (
-        prev_event is not None
-        and prev_gap is not None
-        and prev_gap <= tight_gap_seconds
-        and (prev_gap >= 0 or _same_stay(prev_event, event))
-    ):
+    after_overlap = any(
+        id(other) in overlaps
+        and other.start <= event.start  # type: ignore[operator]
+        and _gap_seconds(other, event) <= tight_gap_seconds  # type: ignore[operator]
+        for other in candidates
+    )
+    if after_overlap:
+        pass  # he is still at one of the overlapping meetings: no leg out of it
+    elif prev_event is not None and prev_gap is not None and prev_gap <= tight_gap_seconds:
         if _same_stay(prev_event, event):
             # Same venue, tight gap: you never left — no inbound leg.
             is_back_to_back = True
@@ -973,30 +981,10 @@ def _classify_transit(
     # --- return side: how do we get back to the anchor AFTER this meeting? ---
     # A tight gap to ANY next meeting cancels the return leg: same venue
     # means you stay put, different venue means the next meeting owns the
-    # bridge leg in (lombot #14/#7) — either way you don't drive back. An
-    # overlap cancels it only at the same venue (#391).
+    # bridge leg in (lombot #14/#7) — either way you don't drive back.
     next_gap = _gap_seconds(event, next_event)
-    skip_return = (
-        next_event is not None
-        and next_gap is not None
-        and next_gap <= tight_gap_seconds
-        and (next_gap >= 0 or _same_stay(event, next_event))
-    )
-    if (
-        not skip_return
-        and event.attendance_id is None
-        and _under_way_elsewhere(event, event.end, candidates, arriving=False)
-    ):
-        legs.append(
-            TransitLeg(
-                direction="return",
-                origin=event.location or anchor_address,
-                destination=None,
-                depart_after=event.end,
-                anchor_note=_OVERLAP_NOTE,
-            )
-        )
-    elif not skip_return and event.attendance_id is None:
+    skip_return = next_event is not None and next_gap is not None and next_gap <= tight_gap_seconds
+    if not skip_return and event.attendance_id is None:
         return_address, return_note = (
             return_anchor_for(event.end)
             if return_anchor_for is not None and event.end is not None and event.attendance_scoped
@@ -1024,25 +1012,30 @@ def _classify_transit(
     return _make_class(event, bucket, reason, legs=tuple(legs))
 
 
-_OVERLAP_NOTE = "overlaps a meeting at another venue — unresolved"
+def _overlap_groups(candidates: list[_Event]) -> dict[int, tuple[_Event, ...]]:
+    """Each meeting that overlaps one at another venue → its overlap group (#391).
 
-
-def _under_way_elsewhere(
-    event: _Event, at: datetime | None, candidates: list[_Event], *, arriving: bool
-) -> bool:
-    """True when a meeting at another venue is under way at `at` (#391).
-
-    Arriving at `at` conflicts with a meeting that starts then; leaving at `at`
-    conflicts with one that ends then.
+    `candidates` are in start order and timed. A group is the run of such
+    meetings chained by time overlap, so one conflict gets one notice.
     """
-    return at is not None and any(
-        other is not event
-        and other.start is not None
-        and other.end is not None
-        and not _same_stay(other, event)
-        and (other.start <= at < other.end if arriving else other.start < at <= other.end)
-        for other in candidates
-    )
+    members = [
+        event
+        for event in candidates
+        if any(
+            other is not event
+            and other.start < event.end  # type: ignore[operator]
+            and event.start < other.end  # type: ignore[operator]
+            and not _same_stay(other, event)
+            for other in candidates
+        )
+    ]
+    groups: list[list[_Event]] = []
+    for event in members:
+        if groups and any(event.start < m.end for m in groups[-1]):  # type: ignore[operator]
+            groups[-1].append(event)
+        else:
+            groups.append([event])
+    return {id(event): tuple(group) for group in groups for event in group}
 
 
 def _same_stay(earlier: _Event, later: _Event) -> bool:

@@ -46,7 +46,7 @@ from lodging_source import (  # noqa: E402
 from maps_client import TomTomClient, TravelTime  # noqa: E402
 from meeting_source import meeting_desired_blocks  # noqa: E402
 from reconcile import DesiredBlock, HeldLeg, plan_reconcile  # noqa: E402
-from scan import MeetingClass, TransitLeg  # noqa: E402
+from scan import MeetingClass, TransitLeg, scan  # noqa: E402
 
 HOME = "12 Example St, TN"
 NOW = datetime(2025, 10, 19, 20, 30, tzinfo=UTC)
@@ -348,85 +348,29 @@ def test_only_held_legs_without_a_block_are_missing():
     assert reconcile_sweep._missing([kept, missing], current) == [missing]
 
 
-def test_the_notice_line_names_the_operator_zone():
+def test_the_notice_line_reads_in_the_operator_zone():
     line = reconcile_sweep._unplanned_line(
         _held(when=datetime(2025, 11, 2, 17, 40, tzinfo=UTC)), "America/Chicago"
     )
     assert line == (
-        "Не удалось запланировать Drive: → BNA (02.11.2025, 11:40 CST): "
-        "не удалось построить маршрут. "
-        "Проверьте рейс в byAir или добавьте поездку в календарь самостоятельно."
+        "Couldn't plan Drive: → BNA (Sun Nov 02, 11:40): route failed. "
+        "Check the flight in byAir, or add the drive to the calendar yourself."
     )
-
-
-@pytest.mark.parametrize(
-    ("zone", "clock"),
-    [
-        ("America/Chicago", "17.11.2026, 21:00 CST"),
-        (None, "17.11.2026, 19:00 UTC-08:00"),
-        ("Invalid/Zone", "18.11.2026, 03:00 UTC"),
-    ],
-)
-def test_dinner_notice_disambiguates_time_away_from_operator(zone, clock):
-    leg = HeldLeg(
-        identity="dinner",
-        kind="meeting_outbound",
-        summary="Drive: 🍽️ QCon San Francisco 2026 - Speakers' Dinner",
-        when=datetime.fromisoformat("2026-11-17T19:00:00-08:00"),
-        reason="dinner/outbound: route failed",
-    )
-    line = reconcile_sweep._unplanned_line(leg, zone)
-    assert f"({clock})" in line
-    assert line.startswith("Не удалось запланировать Drive:")
-    assert "Проверьте место и время события" in line
 
 
 @pytest.mark.parametrize(
     ("kind", "check"),
     [
-        ("meeting_return", "место и время события"),
-        ("lodging_outbound", "адрес проживания в TripIt"),
+        ("meeting_return", "the event's location and time"),
+        ("lodging_outbound", "the stay's address in TripIt"),
     ],
 )
 def test_the_notice_line_says_what_to_check(kind, check):
     leg = HeldLeg(identity="x", kind=kind, summary="Drive: X", when=None, reason="r: no route")
     assert reconcile_sweep._unplanned_line(leg, None) == (
-        f"Не удалось запланировать Drive: X: не удалось построить маршрут. Проверьте {check} "
-        "или добавьте поездку в календарь самостоятельно."
+        f"Couldn't plan Drive: X: no route. Check {check}, "
+        "or add the drive to the calendar yourself."
     )
-
-
-@pytest.mark.parametrize(
-    ("diagnostic", "translation"),
-    [
-        ("route failed", "не удалось построить маршрут"),
-        ("origin route failed", "не удалось построить маршрут"),
-        (
-            "talk-prep Prep window unavailable",
-            "не удалось прочитать время подготовки к выступлению",
-        ),
-        (
-            "negative route duration — check route provider",
-            "сервис маршрутов вернул отрицательное время поездки",
-        ),
-        (
-            "2min drive exceeds the 1min gap — suppressed",
-            "поездка на 2 мин не помещается в промежуток 1 мин",
-        ),
-        ("unresolved anchor", "не удалось определить адрес отправления или назначения"),
-        ("no home address configured — unplanned", "не указан домашний адрес"),
-        (
-            "240min drive and no flight or train in TripIt — a missing booking?",
-            "поездка на 240 мин; в TripIt нет рейса или поезда — проверьте бронирование",
-        ),
-    ],
-)
-def test_unplanned_notice_localizes_diagnostics_and_preserves_source(diagnostic, translation):
-    leg = replace(_held(), reason=f"meeting dinner outbound: {diagnostic}")
-    line = reconcile_sweep._unplanned_line(leg, None)
-    assert f": {translation}." in line
-    assert diagnostic not in line
-    assert leg.reason == f"meeting dinner outbound: {diagnostic}"
 
 
 def test_unplanned_lines_reach_the_rendered_notice():
@@ -537,9 +481,77 @@ def test_a_live_sweep_announces_a_drive_missing_for_an_hour(state_dir, monkeypat
         for minutes in (0, 60)
     ]
     assert messages[0] is None
-    assert messages[1] is not None and messages[1].startswith(
-        "Не удалось запланировать Drive: → BNA"
+    assert messages[1] is not None and messages[1].startswith("Couldn't plan Drive: → BNA")
+
+
+def test_overlapping_meetings_lose_their_drives_and_announce_the_overlap_once(
+    state_dir, monkeypatch
+):
+    """#391: a different-venue overlap plans no leg, deletes the drives already
+    on the calendar (none is held) and sends one notice naming both meetings."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+    start = NOW + timedelta(days=2)
+    events = [
+        {
+            "id": "rehearsal",
+            "summary": "Rehearsal",
+            "location": "1 Ferry Building",
+            "start": {"dateTime": start.isoformat(), "timeZone": "UTC"},
+            "end": {"dateTime": (start + timedelta(hours=3.5)).isoformat(), "timeZone": "UTC"},
+        },
+        {
+            "id": "dinner",
+            "summary": "Dinner",
+            "location": "4 Embarcadero Center",
+            "start": {"dateTime": (start + timedelta(minutes=30)).isoformat(), "timeZone": "UTC"},
+            "end": {"dateTime": (start + timedelta(hours=3.5)).isoformat(), "timeZone": "UTC"},
+        },
+    ]
+    current = [
+        _block("rehearsal", "meeting_outbound", "rehearsal-out"),
+        _block("rehearsal", "meeting_return", "rehearsal-back"),
+        _block("dinner", "meeting_outbound", "dinner-bridge"),
+    ]
+    blocks, _skipped, held = meeting_desired_blocks(
+        scan(events, now=NOW, home_address=HOME), route=lambda o, d: timedelta(minutes=10)
     )
+    plan = plan_reconcile(blocks, current, held=frozenset(leg.key for leg in held), now=NOW)
+    assert plan.creates == () and plan.updates == ()
+    deleted = {d.event_id for d in plan.deletes}
+    assert deleted == {"rehearsal-out", "rehearsal-back", "dinner-bridge"}
+
+    applied = types.SimpleNamespace(
+        added_meeting_legs=[],
+        material_updates=[],
+        created=0,
+        updated=0,
+        deleted=3,
+        converted=0,
+        deferred=0,
+        errors=[],
+        skipped_creations=[],
+    )
+    messages = [
+        reconcile_sweep.finish_sweep(
+            plan,
+            [],
+            calendar=None,
+            apply=lambda *a, **k: applied,
+            held=tuple(held),
+            current_blocks=current,
+            display_zone="America/Chicago",
+            now=NOW + timedelta(minutes=minutes),
+        )["data"]["message"]
+        for minutes in (0, 60, 120)
+    ]
+    notice = (
+        "Rehearsal (Tue Oct 21, 20:30 UTC) and Dinner (Tue Oct 21, 21:00 UTC) overlap at "
+        "different places, so no drive is planned for them. "
+        "Keep one and decline or move the others."
+    )
+    assert messages[0] is None and messages[2] is None
+    assert messages[1] is not None and notice in messages[1]
+    assert "Couldn't plan" not in messages[1]
 
 
 def test_a_meeting_under_way_keeps_its_drives():

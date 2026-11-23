@@ -96,114 +96,6 @@ def _by_id(results: list[MeetingClass]) -> dict[str, MeetingClass]:
 # --- baseline -------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("rehearsal_end", "planned"),
-    [
-        ("19:30", {("rehearsal", "meeting_outbound"), ("dinner", "meeting_return")}),
-        ("22:00", {("rehearsal", "meeting_outbound")}),
-        ("23:00", {("rehearsal", "meeting_outbound"), ("rehearsal", "meeting_return")}),
-    ],
-)
-def test_overlapping_rehearsal_and_dinner_plan_no_drive_during_the_other(rehearsal_end, planned):
-    """#391: Calendar dateTime/RSVP shape from the reported SF conflict.
-
-    The overlap is an unresolved choice: a leg that would drive while the
-    meeting at the other venue is under way is held for the owner, never a
-    bridge with a negative gap.
-    """
-    dinner_location = "Sens, 4 Embarcadero Center"
-    events = [
-        {
-            "id": "rehearsal",
-            "summary": "Placeholder-Port Keynote Rehearsal",
-            "location": "Shack15, 1 Ferry Building",
-            "start": {"dateTime": "2026-11-17T18:30:00-08:00", "timeZone": "America/Los_Angeles"},
-            "end": {
-                "dateTime": f"2026-11-17T{rehearsal_end}:00-08:00",
-                "timeZone": "America/Los_Angeles",
-            },
-            "attendees": [{"self": True, "responseStatus": "tentative"}],
-        },
-        {
-            "id": "dinner",
-            "summary": "🍽️ QCon San Francisco 2026 - Speakers' Dinner",
-            "location": dinner_location,
-            "start": {"dateTime": "2026-11-17T19:00:00-08:00", "timeZone": "America/Los_Angeles"},
-            "end": {"dateTime": "2026-11-17T22:00:00-08:00", "timeZone": "America/Los_Angeles"},
-            "attendees": [{"self": True, "responseStatus": "accepted"}],
-        },
-    ]
-    meetings = scan(events, now=datetime(2026, 11, 15, tzinfo=UTC), home_address=HOME)
-    for meeting in meetings:
-        assert meeting.bucket == "needs_decision"
-        assert all(leg.direction != "bridge" and leg.gap_seconds is None for leg in meeting.legs)
-
-    blocks, skipped, held = meeting_desired_blocks(
-        meetings, route=lambda origin, destination: timedelta(minutes=2)
-    )
-    assert {(b.identity, b.kind) for b in blocks} == planned
-    assert len(blocks) + len(held) == 4
-    assert all("gap" not in reason for reason in skipped)
-    for block in blocks:
-        assert HOME in (block.origin, block.destination)
-        other = next(m for m in meetings if m.meeting_id != block.identity)
-        assert other.start is not None and other.end is not None
-        assert block.end <= other.start or block.start >= other.end
-    for leg in held:
-        assert "unresolved" in leg.reason
-
-
-@pytest.mark.parametrize("rehearsal_hours", [1, 3.5])
-def test_same_venue_overlaps_have_one_outbound_and_latest_return(rehearsal_hours):
-    start = NOW + timedelta(hours=3)
-    latest_end = start + timedelta(hours=3.5)
-    events = [
-        _meeting("rehearsal", start=start, end=start + timedelta(hours=rehearsal_hours)),
-        _meeting("dinner", start=start + timedelta(minutes=30), end=start + timedelta(hours=3.5)),
-    ]
-    meetings = scan(events, now=NOW, home_address=HOME)
-    blocks, skipped, held = meeting_desired_blocks(
-        meetings, route=lambda origin, destination: timedelta(minutes=2)
-    )
-    assert skipped == [] and held == []
-    assert len(blocks) == 2
-    outbound = next(b for b in blocks if b.kind == "meeting_outbound")
-    returning = next(b for b in blocks if b.kind == "meeting_return")
-    assert outbound.identity == "rehearsal" and outbound.end == start
-    assert returning.start == latest_end
-    assert returning.identity == "dinner"
-
-
-def test_successor_keeps_index_neighbour_after_a_different_venue_overlap():
-    start = NOW + timedelta(hours=3)
-    meetings = _by_id(
-        scan(
-            [
-                _meeting(
-                    "outer", start=start, end=start + timedelta(hours=2), location="Outer Hall"
-                ),
-                _meeting(
-                    "inner",
-                    start=start + timedelta(minutes=30),
-                    end=start + timedelta(minutes=105),
-                    location="Inner Hall",
-                ),
-                _meeting(
-                    "next",
-                    start=start + timedelta(minutes=135),
-                    end=start + timedelta(hours=3),
-                    location="Next Hall",
-                ),
-            ],
-            now=NOW,
-            home_address=HOME,
-        )
-    )
-    bridge = next(leg for leg in meetings["next"].legs if leg.direction == "bridge")
-    assert bridge.origin == "Inner Hall"
-    assert bridge.gap_seconds == 30 * 60
-
-
 def test_standalone_meeting_is_needs_decision_with_both_legs():
     start = NOW + timedelta(hours=3)
     end = start + timedelta(hours=1)
@@ -1270,3 +1162,197 @@ def test_scan_survives_a_boundary_datetime_that_overflows_conversion():
     # The event is millennia in the past, so it buckets as `past` — the
     # point is that the sweep reaches a verdict at all instead of raising.
     assert result.bucket == "past"
+
+
+# --- cross-venue overlaps (#391) --------------------------------------------
+
+SF_NOW = datetime(2026, 11, 15, 21, 1, tzinfo=UTC)
+
+
+def _sf_conflict(rehearsal_end: str = "22:00") -> list[dict]:
+    """The reported SF conflict in its Calendar dateTime/RSVP shape (#391)."""
+
+    def at(clock: str) -> dict:
+        return {"dateTime": f"2026-11-17T{clock}:00-08:00", "timeZone": "America/Los_Angeles"}
+
+    return [
+        {
+            "id": "rehearsal",
+            "summary": "Placeholder-Port Keynote Rehearsal",
+            "location": "Shack15, 1 Ferry Building",
+            "start": at("18:30"),
+            "end": at(rehearsal_end),
+            "attendees": [{"self": True, "responseStatus": "tentative"}],
+        },
+        {
+            "id": "dinner",
+            "summary": "🍽️ QCon San Francisco 2026 - Speakers' Dinner",
+            "location": "Sens, 4 Embarcadero Center",
+            "start": at("19:00"),
+            "end": at("22:00"),
+            "attendees": [{"self": True, "responseStatus": "accepted"}],
+        },
+    ]
+
+
+@pytest.mark.parametrize("rehearsal_end", ["19:30", "22:00", "23:00"])
+def test_overlapping_meetings_at_different_venues_get_no_drive_legs(rehearsal_end):
+    meetings = scan(_sf_conflict(rehearsal_end), now=SF_NOW, home_address=HOME)
+    for meeting in meetings:
+        assert meeting.bucket == "overlap"
+        assert meeting.legs == ()
+        assert meeting.overlap_group == ("rehearsal", "dinner")
+
+
+def test_overlap_is_one_notice_on_each_meetings_own_clock():
+    meetings = scan(_sf_conflict(), now=SF_NOW, home_address=HOME)
+    blocks, skipped, held = meeting_desired_blocks(
+        meetings, route=lambda origin, destination: timedelta(minutes=2)
+    )
+    assert blocks == []
+    assert [(h.identity, h.kind, h.when, h.announce) for h in held] == [
+        (
+            "rehearsal",
+            "meeting_overlap",
+            datetime.fromisoformat("2026-11-17T18:30:00-08:00"),
+            True,
+        )
+    ]
+    assert held[0].reason == (
+        "Placeholder-Port Keynote Rehearsal (Tue Nov 17, 18:30 PST) and "
+        "🍽️ QCon San Francisco 2026 - Speakers' Dinner (Tue Nov 17, 19:00 PST) "
+        "overlap at different places, so no drive is planned for them. "
+        "Keep one and decline or move the others."
+    )
+    assert not any("gap" in line for line in skipped)
+
+
+def test_no_leg_out_of_an_overlap_to_a_meeting_right_after_it():
+    """Two overlapping meetings, then one 5 minutes after the longer ends."""
+    start = NOW + timedelta(hours=3)
+    meetings = _by_id(
+        scan(
+            [
+                _meeting("a", start=start, end=start + timedelta(hours=2), location="Hall X"),
+                _meeting(
+                    "b",
+                    start=start + timedelta(hours=1),
+                    end=start + timedelta(minutes=90),
+                    location="Hall Y",
+                ),
+                _meeting(
+                    "c",
+                    start=start + timedelta(minutes=125),
+                    end=start + timedelta(hours=3),
+                    location="Hall Z",
+                ),
+            ],
+            now=NOW,
+            home_address=HOME,
+        )
+    )
+    assert meetings["a"].overlap_group == meetings["b"].overlap_group == ("a", "b")
+    assert meetings["a"].legs == meetings["b"].legs == ()
+    assert meetings["c"].overlap_group == ()
+    assert [(leg.direction, leg.origin) for leg in meetings["c"].legs] == [("return", "Hall Z")]
+
+
+def test_a_meeting_past_the_tight_gap_after_an_overlap_drives_from_the_anchor():
+    start = NOW + timedelta(hours=3)
+    later = start + timedelta(hours=2, seconds=DEFAULT_TIGHT_GAP_SECONDS + 60)
+    meetings = _by_id(
+        scan(
+            [
+                _meeting("a", start=start, end=start + timedelta(hours=2), location="Hall X"),
+                _meeting("b", start=start, end=start + timedelta(hours=1), location="Hall Y"),
+                _meeting("c", start=later, end=later + timedelta(hours=1), location="Hall Z"),
+            ],
+            now=NOW,
+            home_address=HOME,
+        )
+    )
+    assert [(leg.direction, leg.origin) for leg in meetings["c"].legs] == [
+        ("outbound", HOME),
+        ("return", "Hall Z"),
+    ]
+
+
+def test_a_chain_of_three_overlapping_meetings_is_one_notice():
+    """a overlaps b, b overlaps c, a ends before c starts: one conflict."""
+    start = NOW + timedelta(hours=3)
+    meetings = scan(
+        [
+            _meeting("a", start=start, end=start + timedelta(hours=2), summary="A", location="X"),
+            _meeting(
+                "b",
+                start=start + timedelta(hours=1),
+                end=start + timedelta(hours=3),
+                summary="B",
+                location="Y",
+            ),
+            _meeting(
+                "c",
+                start=start + timedelta(minutes=150),
+                end=start + timedelta(hours=4),
+                summary="C",
+                location="Z",
+            ),
+        ],
+        now=NOW,
+        home_address=HOME,
+    )
+    expected = ("overlap", ("a", "b", "c"), ())
+    assert [(m.bucket, m.overlap_group, m.legs) for m in meetings] == [expected] * 3
+    blocks, _skipped, held = meeting_desired_blocks(
+        meetings, route=lambda origin, destination: timedelta(minutes=10)
+    )
+    assert blocks == []
+    assert [h.key for h in held] == [("a", "meeting_overlap")]
+    assert held[0].reason.startswith(
+        "A (Wed Jul 01, 11:00 CDT), B (Wed Jul 01, 12:00 CDT) and C (Wed Jul 01, 13:30 CDT) "
+        "overlap at different places"
+    )
+
+
+def test_a_skipped_first_meeting_still_names_the_overlap():
+    start = NOW + timedelta(hours=3)
+    meetings = scan(
+        [
+            _meeting("a", start=start, end=start + timedelta(hours=2), summary="A", location="X"),
+            _meeting(
+                "b", start=start + timedelta(hours=1), end=start + timedelta(hours=3), location="Y"
+            ),
+        ],
+        now=NOW,
+        home_address=HOME,
+        skip_state={"a": (NOW + timedelta(days=2)).isoformat()},
+    )
+    assert [(m.bucket, m.overlap_group, m.legs) for m in meetings] == [
+        ("skipped", ("a", "b"), ()),
+        ("overlap", ("a", "b"), ()),
+    ]
+    blocks, _skipped, held = meeting_desired_blocks(meetings, route=lambda o, d: timedelta(hours=1))
+    assert blocks == [] and [h.key for h in held] == [("a", "meeting_overlap")]
+
+
+@pytest.mark.parametrize("first_hours", [1, 3.5])
+def test_same_venue_overlaps_keep_one_outbound_and_the_latest_return(first_hours):
+    start = NOW + timedelta(hours=3)
+    events = [
+        _meeting("first", start=start, end=start + timedelta(hours=first_hours)),
+        _meeting("second", start=start + timedelta(minutes=30), end=start + timedelta(hours=3.5)),
+    ]
+    blocks, skipped, held = meeting_desired_blocks(
+        scan(events, now=NOW, home_address=HOME),
+        route=lambda origin, destination: timedelta(minutes=2),
+    )
+    assert skipped == [] and held == []
+    assert {(b.identity, b.kind, b.start, b.end) for b in blocks} == {
+        ("first", "meeting_outbound", start - timedelta(minutes=2), start),
+        (
+            "second",
+            "meeting_return",
+            start + timedelta(hours=3.5),
+            start + timedelta(hours=3.5, minutes=2),
+        ),
+    }
