@@ -1214,7 +1214,7 @@ def test_overlap_is_one_notice_on_each_meetings_own_clock():
         (
             "rehearsal",
             "meeting_overlap",
-            datetime.fromisoformat("2026-11-17T18:30:00-08:00"),
+            datetime.fromisoformat("2026-11-17T22:00:00-08:00"),
             True,
         )
     ]
@@ -1227,9 +1227,10 @@ def test_overlap_is_one_notice_on_each_meetings_own_clock():
     assert not any("gap" in line for line in skipped)
 
 
-def test_no_drive_for_a_meeting_right_after_an_overlap():
+def test_a_meeting_right_after_an_overlap_gets_no_drive_in_but_drives_back():
     """Two overlapping meetings, then one 5 minutes after the longer ends: where
-    the owner comes from is his pick, so it gets no drive in and none back."""
+    the owner comes from is his pick, so it gets no drive in; its drive back
+    leaves its own venue, so it is planned."""
     start = NOW + timedelta(hours=3)
     meetings = _by_id(
         scan(
@@ -1254,11 +1255,8 @@ def test_no_drive_for_a_meeting_right_after_an_overlap():
     )
     assert meetings["a"].overlap_group == meetings["b"].overlap_group == ("a", "b")
     assert meetings["a"].legs == meetings["b"].legs == ()
-    assert (meetings["c"].bucket, meetings["c"].overlap_group, meetings["c"].legs) == (
-        "overlap",
-        (),
-        (),
-    )
+    assert meetings["c"].overlap_group == ()
+    assert [(leg.direction, leg.origin) for leg in meetings["c"].legs] == [("return", "Hall Z")]
 
 
 def test_a_meeting_past_the_tight_gap_after_an_overlap_drives_from_the_anchor():
@@ -1319,9 +1317,9 @@ def test_a_chain_of_three_overlapping_meetings_is_one_notice():
 
 
 @pytest.mark.parametrize("skipped", ["a", "b"])
-def test_a_skipped_meeting_leaves_the_overlap(skipped):
-    """Skipping is the owner's no to a meeting, so the other one plans as usual:
-    from the anchor and back, no bridge across the overlap."""
+def test_a_skipped_meeting_still_overlaps(skipped):
+    """A skip only drops a drive; declining or moving a meeting resolves the
+    overlap, so a skipped meeting still counts."""
     start = NOW + timedelta(hours=3)
     meetings = scan(
         [
@@ -1334,11 +1332,153 @@ def test_a_skipped_meeting_leaves_the_overlap(skipped):
         home_address=HOME,
         skip_state={skipped: (NOW + timedelta(days=2)).isoformat()},
     )
-    by_id = _by_id(meetings)
-    kept = by_id["b" if skipped == "a" else "a"]
-    assert (by_id[skipped].bucket, by_id[skipped].overlap_group) == ("skipped", ())
-    assert (kept.bucket, kept.overlap_group) == ("needs_decision", ())
-    assert [leg.direction for leg in kept.legs] == ["outbound", "return"]
+    assert [(m.bucket, m.overlap_group, m.legs) for m in meetings] == [
+        ("overlap", ("a", "b"), ())
+    ] * 2
+
+
+def _legs(meeting) -> list[tuple[str, str | None]]:
+    return [(leg.direction, leg.origin) for leg in meeting.legs]
+
+
+def test_only_the_drive_out_of_an_overlap_is_dropped():
+    """#391 simplicity: a and b overlap, then c, d and e follow each within the
+    tight gap. Only c's drive in leaves the overlap; the rest plans as usual."""
+    at = NOW + timedelta(hours=2)
+
+    def hour(name: str, minutes: int) -> dict:
+        start = at + timedelta(minutes=minutes)
+        return _meeting(
+            name, start=start, end=start + timedelta(minutes=50), location=f"Hall {name.upper()}"
+        )
+
+    meetings = _by_id(
+        scan(
+            [
+                _meeting("a", start=at, end=at + timedelta(hours=1), location="Hall X"),
+                _meeting(
+                    "b",
+                    start=at + timedelta(minutes=30),
+                    end=at + timedelta(hours=1),
+                    location="Hall Y",
+                ),
+                hour("c", 70),
+                hour("d", 130),
+                hour("e", 190),
+            ],
+            now=NOW,
+            home_address=HOME,
+        )
+    )
+    assert meetings["c"].legs == ()
+    assert _legs(meetings["d"]) == [("bridge", "Hall C")]
+    assert _legs(meetings["e"]) == [("bridge", "Hall D"), ("return", "Hall E")]
+
+
+def test_the_drive_in_leaves_the_overlap_meeting_that_ends_last():
+    start = NOW + timedelta(hours=3)
+    meetings = _by_id(
+        scan(
+            [
+                _meeting("a", start=start, end=start + timedelta(hours=2), location="Hall X"),
+                _meeting(
+                    "b",
+                    start=start + timedelta(minutes=15),
+                    end=start + timedelta(minutes=30),
+                    location="Hall Y",
+                ),
+                _meeting(
+                    "c",
+                    start=start + timedelta(minutes=125),
+                    end=start + timedelta(hours=3),
+                    location="Hall Z",
+                ),
+            ],
+            now=NOW,
+            home_address=HOME,
+        )
+    )
+    assert _legs(meetings["c"]) == [("return", "Hall Z")]
+
+
+def test_a_meeting_between_an_overlap_and_the_next_carries_the_drive_on():
+    start = NOW + timedelta(hours=3)
+    end = start + timedelta(hours=2)
+    meetings = _by_id(
+        scan(
+            [
+                _meeting("a", start=start, end=end, location="Hall X"),
+                _meeting("b", start=start + timedelta(hours=1), end=end, location="Hall Y"),
+                _meeting(
+                    "d",
+                    start=end + timedelta(minutes=15),
+                    end=end + timedelta(minutes=45),
+                    location="Hall D",
+                ),
+                _meeting(
+                    "c",
+                    start=end + timedelta(minutes=60),
+                    end=end + timedelta(minutes=120),
+                    location="Hall C",
+                ),
+            ],
+            now=NOW,
+            home_address=HOME,
+        )
+    )
+    assert meetings["d"].legs == ()
+    assert _legs(meetings["c"]) == [("bridge", "Hall D"), ("return", "Hall C")]
+
+
+@pytest.mark.parametrize("minutes", [0, 330, 455])
+def test_a_meeting_after_an_overlap_keeps_the_same_return_at_every_sweep(minutes):
+    """Sweeps before the overlap, while both its meetings run, and once both
+    ended (the fetch drops them): c's drive back never changes, and it gets no
+    drive in while the overlap is still fetched."""
+    a_start = NOW + timedelta(hours=4)
+    overlap_end = NOW + timedelta(hours=7, minutes=30)
+    c_start = overlap_end + timedelta(minutes=10)
+    now = NOW + timedelta(minutes=minutes)
+    events = [
+        _meeting("a", start=a_start, end=overlap_end, location="Hall X"),
+        _meeting("b", start=a_start + timedelta(hours=1), end=overlap_end, location="Hall Y"),
+        _meeting("c", start=c_start, end=c_start + timedelta(hours=1), location="Hall Z"),
+    ]
+    fetched = [e for e in events if e["id"] == "c" or overlap_end > now]
+    c = _by_id(scan(fetched, now=now, home_address=HOME))["c"]
+    [back] = [leg for leg in c.legs if leg.direction == "return"]
+    assert (back.origin, back.destination, back.depart_after) == (
+        "Hall Z",
+        HOME,
+        c_start + timedelta(hours=1),
+    )
+    if overlap_end > now:
+        assert c.legs == (back,)
+
+
+def test_skipping_one_overlap_meeting_plans_no_drive_from_either_place():
+    """#391 converge: A and a skipped B overlap until 23:45, C starts at 23:55.
+    No drive back from A while a drive to C leaves B: C keeps only its return."""
+    start = NOW + timedelta(hours=12)
+    end = start + timedelta(hours=3, minutes=45)
+    c_start = end + timedelta(minutes=10)
+    meetings = scan(
+        [
+            _meeting("A", start=start, end=end, location="Venue A"),
+            _meeting("B", start=start + timedelta(hours=1), end=end, location="Venue B"),
+            _meeting("C", start=c_start, end=c_start + timedelta(hours=1), location="Venue C"),
+        ],
+        now=NOW,
+        home_address=HOME,
+        skip_state={"B": (NOW + timedelta(days=2)).isoformat()},
+    )
+    blocks, _skipped, held = meeting_desired_blocks(
+        meetings, route=lambda origin, destination: timedelta(minutes=5)
+    )
+    assert [(b.identity, b.kind, b.origin) for b in blocks] == [
+        ("C", "meeting_return", "Venue C")
+    ]
+    assert [h.key for h in held] == [("A", "meeting_overlap")]
 
 
 @pytest.mark.parametrize("minutes_in", [10, 20, 40])

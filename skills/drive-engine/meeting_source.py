@@ -205,7 +205,8 @@ def _hold(skipped: list[str], held: list[HeldLeg], meeting, leg, kind: str, reas
 
 def _overlap_notice(meeting, meetings: list) -> HeldLeg:
     """The one owner notice for a cross-venue overlap (#391), keyed on its first
-    meeting. It has no block to keep, so the sweep announces it once.
+    meeting. It has no block to keep, so the sweep announces it once. Its `when`
+    is that meeting's end: the notice stays due while the overlap lasts.
 
     Each time reads on its meeting's own clock: the owner may be elsewhere.
     """
@@ -223,7 +224,7 @@ def _overlap_notice(meeting, meetings: list) -> HeldLeg:
         identity=meeting.meeting_id,
         kind=OVERLAP_NOTICE_KIND,
         summary=f"Overlap: {meeting.summary}",
-        when=meeting.start,
+        when=meeting.end,
         reason=(
             f"{names} overlap at different places, so no drive is planned for them. "
             "Keep one and decline or move the others."

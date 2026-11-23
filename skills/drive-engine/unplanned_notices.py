@@ -9,8 +9,7 @@ the calendar with only a stderr line behind it (#335).
 has been missing for `PERSIST_BEFORE_NOTICE` (a one-sweep routing blip heals on
 the next sweep and is not worth a message) and only once per spell. An overlap
 notice (#391) is no routing blip: its drives are already deleted, so it is
-mentioned on the sweep that first sees it, even once its first meeting has
-started. An entry that plans again is
+mentioned on the sweep that first sees it. An entry that plans again is
 forgotten, so a later failure is news again. Only legs due
 within `NOTICE_HORIZON` count; a drive months out has time to resolve itself.
 
@@ -30,7 +29,6 @@ import json
 import os
 import sys
 import tempfile
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -151,8 +149,6 @@ def due_notices(missing: list[HeldLeg], *, now: datetime) -> list[HeldLeg]:
     entries = _load()
     current: dict[str, HeldLeg] = {}
     for leg in missing:
-        if leg.kind == OVERLAP_NOTICE_KIND and leg.when is not None and leg.when < now:
-            leg = replace(leg, when=now)  # an overlap first seen under way is news now
         if leg.when is None or not (now <= leg.when <= now + NOTICE_HORIZON):
             continue
         current.setdefault(_key(leg), leg)

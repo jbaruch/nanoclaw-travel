@@ -603,6 +603,38 @@ def test_an_overlap_first_seen_after_it_starts_drops_the_drives_and_notifies_now
     assert messages[1] is None
 
 
+def test_an_overlap_longer_than_a_day_is_announced_once(state_dir, monkeypatch):
+    """#391 converge: a two-day block overlaps a day-two dinner elsewhere. The
+    notice is due until the block ends, so a sweep a day later stays silent."""
+    monkeypatch.delenv("DRIVE_ENGINE_SHADOW", raising=False)
+
+    def timed(event_id, location, start, end):
+        return {
+            "id": event_id,
+            "summary": event_id.title(),
+            "location": location,
+            "start": {"dateTime": start.isoformat(), "timeZone": "UTC"},
+            "end": {"dateTime": end.isoformat(), "timeZone": "UTC"},
+        }
+
+    hour = timedelta(hours=1)
+    events = [
+        timed("offsite", "1 Ferry Building", NOW + hour, NOW + 49 * hour),
+        timed("dinner", "4 Embarcadero Center", NOW + 26 * hour, NOW + 28 * hour),
+    ]
+    messages = []
+    for minutes in (0, 27 * 60):
+        _blocks, _skipped, held = meeting_desired_blocks(
+            scan(events, now=NOW + timedelta(minutes=minutes), home_address=HOME),
+            route=lambda o, d: timedelta(minutes=10),
+        )
+        assert [leg.key for leg in held] == [("offsite", "meeting_overlap")]
+        plan = plan_reconcile([], [], held=frozenset(leg.key for leg in held), now=NOW)
+        messages += _sweep_messages(plan, held, [], (minutes,))
+    assert messages[0] is not None and "overlap at different places" in messages[0]
+    assert messages[1] is None
+
+
 def test_a_meeting_under_way_keeps_its_drives():
     """#336 review: a meeting that started is bucketed `past` with no legs; its
     return drive may still be ahead, so both its blocks are held."""

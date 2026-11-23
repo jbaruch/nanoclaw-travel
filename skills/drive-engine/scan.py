@@ -751,33 +751,34 @@ def scan(
     candidates.sort(key=lambda e: e.start)  # type: ignore[arg-type,return-value]
     order = {id(event): index for index, event in enumerate(candidates)}
 
-    results = [
-        _classify(
-            event,
-            now=now,
-            anchor_for=anchor_for,
-            return_anchor_for=return_anchor_for,
-            skip_state=skip_state,
-            handled_directions=handled_directions,
-            candidates=candidates,
-            order=order,
-            flight_windows=windows,
-            scheduled_codes=scheduled_codes,
-            tight_gap_seconds=tight_gap_seconds,
+    results: list[MeetingClass] = []
+    for event in parsed:
+        results.append(
+            _classify(
+                event,
+                now=now,
+                anchor_for=anchor_for,
+                return_anchor_for=return_anchor_for,
+                skip_state=skip_state,
+                handled_directions=handled_directions,
+                candidates=candidates,
+                order=order,
+                flight_windows=windows,
+                scheduled_codes=scheduled_codes,
+                tight_gap_seconds=tight_gap_seconds,
+            )
         )
-        for event in parsed
-    ]
 
     # Pass 3 (#391): meetings at different venues that overlap in time are the
     # owner's pick, so none of them gets a drive. A meeting already under way
-    # still counts until it ends; one the owner skipped does not.
+    # still counts until it ends. A skip is no pick (it only drops a drive):
+    # declining or moving a meeting resolves the overlap.
     live = sorted(
         (
             event
             for event, result in zip(parsed, results, strict=True)
             if result.bucket != "filtered"
             and event.end > now  # type: ignore[operator]
-            and not _skip_active(skip_state, event.raw_id, now)
         ),
         key=lambda e: e.start,  # type: ignore[arg-type,return-value]
     )
@@ -793,12 +794,8 @@ def scan(
                 overlap_group=tuple(member.raw_id for member in overlaps[id(event)]),
             )
         elif id(event) in after:
-            results[index] = replace(
-                results[index],
-                bucket="overlap",
-                reason="right after an overlap — no drive until the owner picks one",
-                legs=(),
-            )
+            legs = tuple(leg for leg in results[index].legs if leg.direction == "return")
+            results[index] = replace(results[index], legs=legs)
     return results
 
 
@@ -955,16 +952,11 @@ def _classify_transit(
     is_back_to_back = False
 
     # --- inbound side: how do we get TO this meeting? ---
-    # A cross-venue overlap is no gap to drive across (#391); scan lets one reach
-    # here only when the owner skipped the other meeting.
     prev_gap = _gap_seconds(prev_event, event)
-    if (
-        prev_event is not None
-        and prev_gap is not None
-        and prev_gap <= tight_gap_seconds
-        and (prev_gap >= 0 or _same_stay(prev_event, event))
-    ):
-        if _same_stay(prev_event, event):
+    if prev_event is not None and prev_gap is not None and prev_gap <= tight_gap_seconds:
+        if _same_venue(prev_event.location, event.location) or (
+            event.attendance_id is not None and event.attendance_id == prev_event.attendance_id
+        ):
             # Same venue, tight gap: you never left — no inbound leg.
             is_back_to_back = True
         else:
@@ -996,12 +988,7 @@ def _classify_transit(
     # means you stay put, different venue means the next meeting owns the
     # bridge leg in (lombot #14/#7) — either way you don't drive back.
     next_gap = _gap_seconds(event, next_event)
-    skip_return = (
-        next_event is not None
-        and next_gap is not None
-        and next_gap <= tight_gap_seconds
-        and (next_gap >= 0 or _same_stay(event, next_event))
-    )
+    skip_return = next_event is not None and next_gap is not None and next_gap <= tight_gap_seconds
     if not skip_return and event.attendance_id is None:
         return_address, return_note = (
             return_anchor_for(event.end)
@@ -1043,7 +1030,8 @@ def _overlap_groups(live: list[_Event]) -> dict[int, tuple[_Event, ...]]:
             other is not event
             and other.start < event.end  # type: ignore[operator]
             and event.start < other.end  # type: ignore[operator]
-            and not _same_stay(other, event)
+            and not _same_venue(other.location, event.location)
+            and (event.attendance_id is None or event.attendance_id != other.attendance_id)
             for other in live
         )
     ]
@@ -1059,28 +1047,23 @@ def _overlap_groups(live: list[_Event]) -> dict[int, tuple[_Event, ...]]:
 def _after_overlap(
     live: list[_Event], overlaps: dict[int, tuple[_Event, ...]], tight_gap_seconds: int
 ) -> set[int]:
-    """Meetings reached only from an overlap (#391): each starts within the tight
-    gap after an overlap meeting, or after another such meeting. Where the owner
-    comes from is his pick, so neither the drive in nor the drive back is known.
+    """Meetings whose drive in would leave an overlap (#391): of the meetings that
+    start earlier and end within the tight gap before it (or after it starts), the
+    last to end is an overlap meeting. Where the owner leaves from is his pick, so
+    that drive is not planned; the drive back still is.
     """
-    held = [event for event in live if id(event) in overlaps]
     after: set[int] = set()
     for event in live:
-        if id(event) not in overlaps and any(
-            other.start <= event.start  # type: ignore[operator]
+        before = [
+            other
+            for other in live
+            if other.start < event.start  # type: ignore[operator]
             and _gap_seconds(other, event) <= tight_gap_seconds  # type: ignore[operator]
-            for other in held
-        ):
+        ]
+        last = max(before, key=lambda o: o.end, default=None)  # type: ignore[arg-type,return-value]
+        if id(event) not in overlaps and last is not None and id(last) in overlaps:
             after.add(id(event))
-            held.append(event)
     return after
-
-
-def _same_stay(earlier: _Event, later: _Event) -> bool:
-    """Same venue, or the same recorded conference attendance."""
-    return _same_venue(earlier.location, later.location) or (
-        later.attendance_id is not None and later.attendance_id == earlier.attendance_id
-    )
 
 
 def _gap_seconds(earlier: _Event | None, later: _Event | None) -> int | None:
