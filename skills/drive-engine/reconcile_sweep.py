@@ -72,6 +72,7 @@ from lodging_source import (  # noqa: E402
     meetings_on_trip,
 )
 from meeting_source import (  # noqa: E402
+    DEFAULT_MAX_REASONABLE_DRIVE,
     OVERLAP_NOTICE_KIND,
     TripPresence,
     booked_trips,
@@ -1833,6 +1834,10 @@ def _run_sweep() -> dict:
             return_anchor_for=anchor_for
             if any(row.schema_version == 2 for row in attendances)
             else None,
+            # The away cap the landing composer applies, from the day's anchor.
+            too_far=lambda origin, venue: (
+                (drive := route(origin, venue)) is not None and drive > DEFAULT_MAX_REASONABLE_DRIVE
+            ),
         )
         # A trip the operator DRIVES to is resolved before the meeting side, so
         # that trip's own events are spared the away-suppression: with a

@@ -12,6 +12,8 @@ notice (#391) is no routing blip: its drives are already deleted, so it is
 mentioned on the sweep that first sees it. An entry that plans again is
 forgotten, so a later failure is news again. Only legs due
 within `NOTICE_HORIZON` count; a drive months out has time to resolve itself.
+An overlap notice's `when` is its first meeting's end, so it counts however
+far out that is: its drives are already gone.
 
 Each schema version keeps its own file (`unplanned-notices.v<N>.json`), so
 engines of different versions never read or write each other's record: after
@@ -149,7 +151,9 @@ def due_notices(missing: list[HeldLeg], *, now: datetime) -> list[HeldLeg]:
     entries = _load()
     current: dict[str, HeldLeg] = {}
     for leg in missing:
-        if leg.when is None or not (now <= leg.when <= now + NOTICE_HORIZON):
+        if leg.when is None or leg.when < now:
+            continue
+        if leg.when > now + NOTICE_HORIZON and leg.kind != OVERLAP_NOTICE_KIND:
             continue
         current.setdefault(_key(leg), leg)
 

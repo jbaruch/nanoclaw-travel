@@ -334,6 +334,22 @@ def test_a_drive_beyond_the_horizon_or_past_is_not_announced(state_dir):
         assert unplanned_notices.due_notices([far, past], now=NOW + timedelta(hours=hour)) == []
 
 
+def test_an_overlap_ending_beyond_the_horizon_is_announced_once(state_dir):
+    """#391 review: a long event that ends past the horizon overlaps a meeting
+    found tomorrow. Its drives are gone at once, so the notice goes out now and
+    stays silent until the event ends."""
+    overlap = HeldLeg(
+        identity="residency",
+        kind="meeting_overlap",
+        summary="Overlap: Residency",
+        when=NOW + timedelta(days=60),
+        reason="Residency and Dinner overlap at different places",
+    )
+    assert unplanned_notices.due_notices([overlap], now=NOW) == [overlap]
+    for days in (1, 30, 59):
+        assert unplanned_notices.due_notices([overlap], now=NOW + timedelta(days=days)) == []
+
+
 def test_an_unreadable_notice_file_starts_fresh_and_says_so(state_dir, capsys):
     (state_dir / "unplanned-notices.v1.json").write_text("{nope", encoding="utf-8")
     assert unplanned_notices.due_notices([_held()], now=NOW) == []

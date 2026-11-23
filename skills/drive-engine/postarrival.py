@@ -397,7 +397,7 @@ def compose_postarrival(
             in_play.append((meeting, drive))
         # A meeting the landing cannot reach, or one over before it, is no overlap
         # member (#391, 91b488f): an overlap left with one meeting plans as if
-        # it never was, from the plan its notice carries.
+        # it never was, from the plan its notice carries. The gone get no drive.
         gone = dropped | {
             m.identity for m in meetings if guard.guard_start < m.end <= guard.ready_at
         }
@@ -405,6 +405,8 @@ def compose_postarrival(
             notice = next((h for h in held if h.key == (group[0], OVERLAP_NOTICE_KIND)), None)
             if notice is None or len(set(group) - gone) > 1:
                 continue
+            for identity in set(group) & gone:
+                unsafe.update(_meeting_keys(identity))
             blocks = [x for x in notice.resolved if isinstance(x, DesiredBlock)]
             holds = [x for x in notice.resolved if isinstance(x, HeldLeg)]
             keys = {notice.key} | {_key(x) for x in blocks} | {x.key for x in holds}
@@ -423,13 +425,14 @@ def compose_postarrival(
         meeting, drive = in_play[0]
         if len(set(meeting.overlap_group) - gone) > 1:
             continue  # the overlap stands: the owner picks one
-        if meeting.return_suppressed and dropped:
-            # Scan may have routed a later meeting from the dropped neighbour.
-            # Keep suppression only when a surviving continuation is usable.
+        if meeting.return_suppressed and gone:
+            # Scan may have routed a later meeting from a dropped or ended
+            # neighbour. Keep suppression only when a surviving continuation is
+            # usable.
             continuing, invalid = _remaining_continuations(
                 meeting,
                 meetings,
-                frozenset(dropped),
+                frozenset(gone),
                 DEFAULT_TIGHT_GAP_SECONDS,
                 desired_list,
                 held,

@@ -220,6 +220,66 @@ def test_home_metro_placeholder_routes_meeting_from_current_home(monkeypatch, tm
     assert returning.end == datetime(2026, 9, 11, 19, 40, tzinfo=UTC)
 
 
+def test_sweep_an_overlapping_meeting_too_far_to_reach_blocks_no_drive(monkeypatch, tmp_path):
+    """#391 Amendment 4: the sweep hands scan the away cap. A meeting ten hours
+    from the anchor overlaps a local one; it is no overlap member, so the local
+    meeting keeps both drives and no overlap notice is held."""
+    from datetime import timedelta
+
+    import home_address
+
+    real_meeting_blocks = reconcile_sweep.meeting_desired_blocks
+    real_build_plan = reconcile_sweep.build_plan
+    _stub_live_clients(monkeypatch, lambda: None, tmp_path)
+    monkeypatch.setattr(home_address, "read_current_home", lambda: "12 Example St")
+    monkeypatch.setattr(state, "read_config", lambda: {})
+    monkeypatch.setattr(trip_origin, "load_travel_schedule", lambda: [])
+
+    def timed(event_id, location):
+        return {
+            "id": event_id,
+            "summary": event_id,
+            "location": location,
+            "start": {"dateTime": "2026-09-11T18:00:00Z"},
+            "end": {"dateTime": "2026-09-11T19:00:00Z"},
+        }
+
+    monkeypatch.setattr(
+        _EmptyFetcher,
+        "fetch_window",
+        lambda self, **_: [timed("downtown", "42 Example Ave"), timed("far", "Far City Office")],
+    )
+    monkeypatch.setattr(
+        reconcile_sweep,
+        "make_route",
+        lambda _, **_kwargs: (
+            lambda origin, dest: timedelta(
+                hours=10 if "Far City Office" in (origin, dest) else 0, minutes=40
+            )
+        ),
+    )
+    held = []
+
+    def meeting_blocks(*args, **kwargs):
+        out = real_meeting_blocks(*args, **kwargs)
+        held.extend(out[2])
+        return out
+
+    monkeypatch.setattr(reconcile_sweep, "meeting_desired_blocks", meeting_blocks)
+    monkeypatch.setattr(reconcile_sweep, "build_plan", real_build_plan)
+    plans = []
+    monkeypatch.setattr(
+        reconcile_sweep,
+        "finish_sweep",
+        lambda plan, *_args, **_kwargs: plans.append(plan) or {"data": {}},
+    )
+
+    reconcile_sweep._run_sweep()
+    downtown = {c.desired.kind for c in plans[0].creates if c.desired.identity == "downtown"}
+    assert downtown == {"meeting_outbound", "meeting_return"}
+    assert held and not any(h.kind == "meeting_overlap" for h in held)
+
+
 def _arrival_day_sweep(monkeypatch, tmp_path, *, meeting_start, meeting_end):
     """Run `_run_sweep` over a BNA→DEN trip whose hotel checks in after landing."""
     from datetime import timedelta

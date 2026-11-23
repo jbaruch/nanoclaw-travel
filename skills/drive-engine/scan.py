@@ -630,6 +630,7 @@ def scan(
     attendances: tuple[Attendance, ...] = (),
     venue_near: frozenset[tuple[str, str]] = frozenset(),
     return_anchor_for: Callable[[datetime], tuple[str | None, str | None]] | None = None,
+    too_far: Callable[[str, str], bool] | None = None,
 ) -> list[MeetingClass]:
     """Classify every event into a transit bucket.
 
@@ -665,6 +666,10 @@ def scan(
         return_anchor_for: optional end-time position resolver for version-2
             occurrence timelines. Omitted, the published start-anchor behavior
             remains unchanged. It grants no attendance or routing authority.
+        too_far: whether the drive from an anchor to a venue is implausible.
+            A meeting that far from its anchor is no overlap member (#391,
+            owner decision 14): it keeps its own plan and the rest classify
+            as if it never was. Omitted, every overlapping meeting counts.
         flight_windows: known TripIt flight (start, end) UTC spans (#85). An
             event overlapping one is air travel — bucketed `filtered` and
             excluded as a routing neighbour, so a flight's airport location
@@ -753,30 +758,31 @@ def scan(
         if _is_routable_candidate(event, now, windows, scheduled_codes, anchor_for)
     ]
     candidates.sort(key=lambda e: e.start)  # type: ignore[arg-type,return-value]
-    order = {id(event): index for index, event in enumerate(candidates)}
 
-    results: list[MeetingClass] = []
-    for event in parsed:
-        results.append(
-            _classify(
-                event,
-                now=now,
-                anchor_for=anchor_for,
-                return_anchor_for=return_anchor_for,
-                skip_state=skip_state,
-                handled_directions=handled_directions,
-                candidates=candidates,
-                order=order,
-                flight_windows=windows,
-                scheduled_codes=scheduled_codes,
-                tight_gap_seconds=tight_gap_seconds,
-            )
+    def classify(event: _Event, neighbours: list[_Event], order: dict[int, int]) -> MeetingClass:
+        return _classify(
+            event,
+            now=now,
+            anchor_for=anchor_for,
+            return_anchor_for=return_anchor_for,
+            skip_state=skip_state,
+            handled_directions=handled_directions,
+            candidates=neighbours,
+            order=order,
+            flight_windows=windows,
+            scheduled_codes=scheduled_codes,
+            tight_gap_seconds=tight_gap_seconds,
         )
+
+    order = {id(event): index for index, event in enumerate(candidates)}
+    results = [classify(event, candidates, order) for event in parsed]
 
     # Pass 3 (#391): meetings at different venues that overlap in time are the
     # owner's pick, so none of them gets a drive. A meeting already under way
     # still counts until it ends. A skip is no pick (it only drops a drive):
-    # declining or moving a meeting resolves the overlap.
+    # declining or moving a meeting resolves the overlap. A meeting too far
+    # from that day's anchor to reach (a home-city weekly mid-trip) is no
+    # member: it keeps its own plan and the rest replan without it.
     live = sorted(
         (
             event
@@ -786,6 +792,23 @@ def scan(
         key=lambda e: e.start,  # type: ignore[arg-type,return-value]
     )
     overlaps = _overlap_groups(live)
+    if too_far is not None:
+        far = {
+            id(event)
+            for event in live
+            if id(event) in overlaps
+            and (anchor := anchor_for(event.start)[0]) is not None  # type: ignore[arg-type]
+            and too_far(anchor, event.location)  # type: ignore[arg-type]
+        }
+        if far:
+            kept = [event for event in candidates if id(event) not in far]
+            order = {id(event): index for index, event in enumerate(kept)}
+            results = [
+                result if id(event) in far else classify(event, kept, order)
+                for event, result in zip(parsed, results, strict=True)
+            ]
+            live = [event for event in live if id(event) not in far]
+            overlaps = _overlap_groups(live)
     after = _after_overlap(live, overlaps, tight_gap_seconds)
     planned = list(results)
     for index, event in enumerate(parsed):
