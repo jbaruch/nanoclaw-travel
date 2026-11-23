@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.16 — 2026-11-23
+
+- fix(drive-engine): skip bridges for overlapping meetings (#393)
+
 ## 0.3.15 — 2026-11-18
 
 - chore(renovate): drop the major update approval gate (#397)
